@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import html
+import json
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+# tqdm optional (CLI only)
+try:
+    from tqdm import tqdm  # type: ignore
+except Exception:
+    tqdm = None  # type: ignore
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from ioc_extract import build_iocs, write_iocs_json, write_iocs_csv  # noqa: E402
+
+try:
+    from pe_meta import extract_pe_metadata, write_pe_metadata  # type: ignore
+except Exception:
+    extract_pe_metadata = None
+    write_pe_metadata = None
+
+try:
+    from lief_meta import extract_lief_metadata, write_lief_metadata  # type: ignore
+except Exception:
+    extract_lief_metadata = None
+    write_lief_metadata = None
+
+
+BASE = Path.home() / "analysis"
+TOOLS = BASE / "tools"
+CASES = BASE / "cases"
+
+CAPA_RULES = TOOLS / "capa-rules"
+CAPA_SIGS = TOOLS / "capa" / "sigs"
+
+
+EventCallback = Callable[[str, str, dict[str, Any]], None]
+# event_type: "start" | "done" | "error" | "info"
+# step_name: e.g. "strings"
+# payload: dict with extra info
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _emit(cb: Optional[EventCallback], event_type: str, step: str, payload: dict[str, Any] | None = None) -> None:
+    if cb:
+        cb(event_type, step, payload or {})
+
+
+def sha_hash(path: Path, algo: str, show_progress: bool = True) -> str:
+    h = hashlib.new(algo)
+    total = path.stat().st_size
+    pbar = None
+    if show_progress and tqdm is not None:
+        pbar = tqdm(total=total, unit="B", unit_scale=True, desc=algo.upper(), leave=True, dynamic_ncols=True)
+
+    try:
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+                if pbar:
+                    pbar.update(len(chunk))
+        return h.hexdigest()
+    finally:
+        if pbar:
+            pbar.close()
+
+
+def run_cmd(cmd: list[str], cwd: Path | None = None, timeout: int = 900) -> dict:
+    start = time.time()
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+        return {
+            "cmd": cmd,
+            "returncode": p.returncode,
+            "duration_sec": round(time.time() - start, 3),
+            "stdout": p.stdout or "",
+            "stderr": p.stderr or "",
+        }
+    except subprocess.TimeoutExpired as e:
+        return {
+            "cmd": cmd,
+            "returncode": -1,
+            "duration_sec": round(time.time() - start, 3),
+            "stdout": (e.stdout or "") if isinstance(e.stdout, str) else "",
+            "stderr": ((e.stderr or "") if isinstance(e.stderr, str) else "") + "\n[!] TIMEOUT",
+        }
+    except Exception as e:
+        return {
+            "cmd": cmd,
+            "returncode": -1,
+            "duration_sec": round(time.time() - start, 3),
+            "stdout": "",
+            "stderr": f"[!] EXCEPTION: {e}",
+        }
+
+
+def ensure_capa_paths() -> None:
+    if not CAPA_RULES.exists() or not CAPA_RULES.is_dir():
+        raise FileNotFoundError(f"capa rules directory not found: {CAPA_RULES}")
+    rule_files = list(CAPA_RULES.rglob("*.yml")) + list(CAPA_RULES.rglob("*.yaml"))
+    if len(rule_files) < 50:
+        raise RuntimeError(f"capa rules directory exists but looks wrong: {CAPA_RULES}")
+    if not CAPA_SIGS.exists() or not CAPA_SIGS.is_dir():
+        raise FileNotFoundError(f"capa signatures directory not found: {CAPA_SIGS}")
+    if len(list(CAPA_SIGS.glob("*.sig"))) < 1:
+        raise RuntimeError(f"capa signatures directory has no *.sig files: {CAPA_SIGS}")
+
+
+def safe_write(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8", errors="ignore")
+
+
+def step_file(sample: Path, case_dir: Path) -> dict:
+    out = case_dir / "file.txt"
+    res = run_cmd(["file", str(sample)], cwd=case_dir, timeout=60)
+    safe_write(out, res["stdout"])
+    res["output_file"] = str(out)
+    return res
+
+
+def step_strings(sample: Path, case_dir: Path) -> dict:
+    out = case_dir / "strings.txt"
+    res = run_cmd(["strings", "-a", "-n", "6", str(sample)], cwd=case_dir, timeout=300)
+    safe_write(out, res["stdout"])
+    res["output_file"] = str(out)
+    return res
+
+
+def step_capa(sample: Path, case_dir: Path) -> dict:
+    ensure_capa_paths()
+    capa_json = case_dir / "capa.json"
+    capa_txt = case_dir / "capa.txt"
+
+    cmd_json = ["capa", "-r", str(CAPA_RULES), "-s", str(CAPA_SIGS), "-j", str(sample)]
+    json_res = run_cmd(cmd_json, cwd=case_dir, timeout=1800)
+
+    if json_res["returncode"] == 0 and json_res["stdout"].strip():
+        try:
+            json.loads(json_res["stdout"])
+            safe_write(capa_json, json_res["stdout"])
+        except Exception as e:
+            json_res["returncode"] = 2
+            json_res["stderr"] += f"\n[!] capa JSON parse failed: {e}"
+            return {**json_res, "capa_json": str(capa_json), "capa_txt": str(capa_txt)}
+    else:
+        json_res["returncode"] = 2
+        if not json_res["stderr"].strip():
+            json_res["stderr"] += "\n[!] capa failed or produced empty stdout in -j mode"
+        return {**json_res, "capa_json": str(capa_json), "capa_txt": str(capa_txt)}
+
+    cmd_text = ["capa", "-r", str(CAPA_RULES), "-s", str(CAPA_SIGS), str(sample)]
+    text_res = run_cmd(cmd_text, cwd=case_dir, timeout=1800)
+    if text_res.get("stdout", "").strip():
+        safe_write(capa_txt, text_res["stdout"])
+
+    return {
+        **json_res,
+        "capa_json": str(capa_json),
+        "capa_txt": str(capa_txt),
+        "text_pass": {"returncode": text_res.get("returncode"), "duration_sec": text_res.get("duration_sec")},
+    }
+
+
+def step_pe_metadata(sample: Path, case_dir: Path) -> dict:
+    out = case_dir / "pe_metadata.json"
+    if not extract_pe_metadata or not write_pe_metadata:
+        return {"returncode": 0, "skipped": True, "reason": "pe_meta.py not available (install pefile)"}
+    try:
+        meta = extract_pe_metadata(sample)
+        write_pe_metadata(out, meta)
+        return {"returncode": 0, "skipped": False, "output_file": str(out)}
+    except Exception as e:
+        return {"returncode": 2, "skipped": False, "stderr": str(e)}
+
+
+def step_lief_metadata(sample: Path, case_dir: Path) -> dict:
+    out = case_dir / "lief_metadata.json"
+    if not extract_lief_metadata or not write_lief_metadata:
+        return {"returncode": 0, "skipped": True, "reason": "lief_meta.py not available (install lief)"}
+    try:
+        meta = extract_lief_metadata(sample)
+        write_lief_metadata(out, meta)
+        return {"returncode": 0, "skipped": False, "output_file": str(out), "parsed": meta.get("parsed", False)}
+    except Exception as e:
+        return {"returncode": 2, "skipped": False, "stderr": str(e)}
+
+
+def step_iocs(case_dir: Path) -> dict:
+    out_json = case_dir / "iocs.json"
+    out_csv = case_dir / "iocs.csv"
+    strings_path = case_dir / "strings.txt"
+    capa_json_path = case_dir / "capa.json"
+
+    if not strings_path.exists():
+        return {"returncode": 2, "stderr": "strings.txt missing; cannot extract IOCs"}
+
+    iocs = build_iocs(strings_path, capa_json_path if capa_json_path.exists() else None)
+    write_iocs_json(out_json, iocs)
+    write_iocs_csv(out_csv, iocs)
+    return {"returncode": 0, "output_files": [str(out_json), str(out_csv)], "counts": iocs.get("stats", {}).get("counts", {})}
+
+
+def _read_text_safe(p: Path, max_bytes: int = 800_000) -> str:
+    if not p.exists():
+        return ""
+    data = p.read_bytes()[:max_bytes]
+    try:
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        return data.decode(errors="replace")
+
+
+def _read_json_safe(p: Path) -> dict:
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+
+
+def _take_lines(s: str, n: int) -> str:
+    return "\n".join(s.splitlines()[:n])
+
+
+def _md_table(rows: list[tuple[str, str]], headers: tuple[str, str] = ("IOC Type", "Value")) -> str:
+    if not rows:
+        return "_None_"
+    out = [f"| {headers[0]} | {headers[1]} |", "|---|---|"]
+    for a, b in rows:
+        out.append(f"| {a} | {str(b).replace('\\n',' ').strip()} |")
+    return "\n".join(out)
+
+
+def _md_table3(rows: list[tuple[str, str, str]], headers: tuple[str, str, str] = ("Indicator", "Count", "Type")) -> str:
+    if not rows:
+        return "_None_"
+    out = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---:|---|"]
+    for a, b, c in rows:
+        out.append(f"| {str(a).replace('\\n',' ').strip()} | {b} | {str(c).replace('\\n',' ').strip()} |")
+    return "\n".join(out)
+
+
+def _top_counts_from_strings(strings_text: str, items: list[str], top_n: int = 15) -> list[tuple[str, int]]:
+    if not strings_text or not items:
+        return []
+    counts: list[tuple[str, int]] = []
+    for it in items:
+        c = strings_text.count(it)
+        if c > 0:
+            counts.append((it, c))
+    counts.sort(key=lambda x: x[1], reverse=True)
+    return counts[:top_n]
+
+
+def _try_osslsigncode_verify(sample_path: Path, case_dir: Path) -> dict:
+    if shutil.which("osslsigncode") is None:
+        return {"available": False, "note": "osslsigncode not installed (optional). Install: `sudo apt-get install osslsigncode`"}
+
+    out = case_dir / "signature.txt"
+    res = run_cmd(["osslsigncode", "verify", "-in", str(sample_path)], cwd=case_dir, timeout=180)
+    safe_write(out, (res.get("stdout") or "") + "\n" + (res.get("stderr") or ""))
+    return {"available": True, "output_file": str(out), "returncode": res.get("returncode"),
+            "stdout_preview": (res.get("stdout") or "")[:600], "stderr_preview": (res.get("stderr") or "")[:600]}
+
+
+def generate_report(case_dir: Path) -> dict:
+    summary = _read_json_safe(case_dir / "summary.json")
+    runlog = _read_json_safe(case_dir / "runlog.json")
+    iocs = _read_json_safe(case_dir / "iocs.json")
+
+    sample = summary.get("sample") or {}
+    file_txt = _read_text_safe(case_dir / "file.txt", max_bytes=50_000)
+    strings_txt_full = _read_text_safe(case_dir / "strings.txt", max_bytes=2_000_000)
+    capa_txt_full = _read_text_safe(case_dir / "capa.txt", max_bytes=2_000_000)
+
+    pe_meta = _read_json_safe(case_dir / "pe_metadata.json")
+    lief_meta = _read_json_safe(case_dir / "lief_metadata.json")
+
+    sig_info: dict[str, Any] = {}
+    sample_case = Path(sample.get("path_case", "")) if sample.get("path_case") else None
+    if sample_case and sample_case.exists():
+        sig_info = _try_osslsigncode_verify(sample_case, case_dir)
+
+    obs = iocs.get("observables") or {}
+    urls_all = obs.get("urls", []) or []
+    domains_all = obs.get("domains", []) or []
+    ips_all = obs.get("ips", []) or []
+    emails_all = obs.get("emails", []) or []
+
+    urls_show = urls_all[:30]
+    domains_show = domains_all[:30]
+    ips_show = ips_all[:30]
+    emails_show = emails_all[:15]
+
+    top_domains = _top_counts_from_strings(strings_txt_full, domains_all, top_n=15)
+    top_urls = _top_counts_from_strings(strings_txt_full, urls_all, top_n=10)
+    top_ips = _top_counts_from_strings(strings_txt_full, ips_all, top_n=10)
+
+    capa_part = iocs.get("capa") or {}
+    capa_techniques = capa_part.get("techniques", []) or []
+    capa_mbc = capa_part.get("mbc", []) or []
+
+    durations_rows: list[tuple[str, str, str]] = []
+    for k, v in runlog.items():
+        if isinstance(v, dict) and "duration_sec" in v:
+            durations_rows.append((k, str(v.get("duration_sec")), ""))
+
+    md: list[str] = []
+    md.append("# Static Triage Report\n")
+    md.append(f"**Case folder:** `{case_dir}`  \n**Generated:** `{utc_now_iso()}`\n")
+
+    md.append("## Sample Metadata\n")
+    md.append("\n".join([
+        f"- **filename**: {sample.get('filename','')}",
+        f"- **size_bytes**: {sample.get('size_bytes','')}",
+        f"- **path_original**: {sample.get('path_original','')}",
+        f"- **path_case**: {sample.get('path_case','')}",
+        f"- **md5**: {sample.get('md5','')}",
+        f"- **sha1**: {sample.get('sha1','')}",
+        f"- **sha256**: {sample.get('sha256','')}",
+        f"- **timestamp_utc**: {sample.get('timestamp_utc','')}",
+    ]) + "\n")
+
+    md.append("## File Identification (`file`)\n")
+    md.append("```text\n" + (file_txt.strip() or "No output") + "\n```\n")
+
+    md.append("## Digital Signature (optional)\n")
+    if sig_info.get("available"):
+        md.append(f"- **osslsigncode verify:** returncode `{sig_info.get('returncode')}`\n")
+        md.append(f"- **Output:** `{sig_info.get('output_file')}`\n")
+        preview = (sig_info.get("stdout_preview") or "") + ("\n" + sig_info.get("stderr_preview") if sig_info.get("stderr_preview") else "")
+        md.append("```text\n" + (_take_lines(preview, 80) or "No output") + "\n```\n")
+    else:
+        md.append(f"_Not available. {sig_info.get('note','')}_\n")
+
+    md.append("## PE Metadata (pefile)\n")
+    md.append("```json\n" + (json.dumps(pe_meta, indent=2)[:140_000] if pe_meta else "null") + "\n```\n")
+
+    md.append("## LIEF Metadata\n")
+    md.append("```json\n" + (json.dumps(lief_meta, indent=2)[:140_000] if lief_meta else "null") + "\n```\n")
+
+    md.append("## capa Summary\n")
+    md.append(f"- **ATT&CK techniques found:** {len(capa_techniques)}\n")
+    if capa_techniques:
+        md.append("  - " + ", ".join(capa_techniques[:30]) + ("" if len(capa_techniques) <= 30 else ", ...") + "\n")
+    md.append(f"- **MBC behaviors found:** {len(capa_mbc)}\n")
+    if capa_mbc:
+        md.append("  - " + ", ".join(capa_mbc[:30]) + ("" if len(capa_mbc) <= 30 else ", ...") + "\n")
+
+    md.append("\n## IOCs (filtered)\n")
+    ioc_rows: list[tuple[str, str]] = []
+    for u in urls_show: ioc_rows.append(("url", u))
+    for d in domains_show: ioc_rows.append(("domain", d))
+    for ip in ips_show: ioc_rows.append(("ip", ip))
+    for e in emails_show: ioc_rows.append(("email", e))
+    md.append(_md_table(ioc_rows) + "\n")
+
+    md.append("## IOC Frequency (from strings)\n")
+    freq_rows: list[tuple[str, str, str]] = []
+    for d, c in top_domains: freq_rows.append((d, str(c), "domain"))
+    for u, c in top_urls: freq_rows.append((u, str(c), "url"))
+    for ip, c in top_ips: freq_rows.append((ip, str(c), "ip"))
+    md.append(_md_table3(freq_rows) + "\n")
+
+    md.append("## Run Timings\n")
+    md.append(_md_table3(durations_rows, headers=("Step", "Seconds", "Notes")) + "\n")
+
+    md.append("\n---\n# Appendix A — capa Output (full)\n")
+    md.append("```text\n" + (capa_txt_full.strip() or "No capa output") + "\n```\n")
+
+    md.append("# Appendix B — strings Output (first 5,000 lines)\n")
+    md.append("```text\n" + (_take_lines(strings_txt_full, 5000) or "No strings output") + "\n```\n")
+
+    report_md = case_dir / "report.md"
+    report_md.write_text("\n".join(md), encoding="utf-8")
+
+    html_body = "<pre style='white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;'>"
+    html_body += html.escape(report_md.read_text(encoding="utf-8", errors="replace"))
+    html_body += "</pre>"
+
+    report_html = case_dir / "report.html"
+    report_html.write_text(
+        "<!doctype html><html><head><meta charset='utf-8'><title>Static Triage Report</title></head>"
+        f"<body>{html_body}</body></html>",
+        encoding="utf-8",
+    )
+    return {"report_md": str(report_md), "report_html": str(report_html)}
+
+
+def run_case(sample_path: str, case_name: Optional[str] = None, show_progress: bool = True, on_event: Optional[EventCallback] = None) -> dict[str, Any]:
+    sample_in = Path(sample_path).expanduser().resolve()
+    if not sample_in.exists():
+        raise FileNotFoundError(sample_in)
+
+    case_name = case_name or sample_in.stem
+    case_dir = CASES / case_name
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    sample_case = case_dir / sample_in.name
+    if sample_case.resolve() != sample_in.resolve():
+        shutil.copy2(sample_in, sample_case)
+
+    _emit(on_event, "info", "case", {"case_dir": str(case_dir), "sample": str(sample_case)})
+
+    # Hashes
+    total = sample_case.stat().st_size
+
+    _emit(on_event, "start", "md5", {})
+    md5 = sha_hash(sample_case, "md5", show_progress=show_progress)
+    _emit(on_event, "done", "md5", {"md5": md5})
+
+    _emit(on_event, "start", "sha1", {})
+    sha1 = sha_hash(sample_case, "sha1", show_progress=show_progress)
+    _emit(on_event, "done", "sha1", {"sha1": sha1})
+
+    _emit(on_event, "start", "sha256", {})
+    sha256 = sha_hash(sample_case, "sha256", show_progress=show_progress)
+    _emit(on_event, "done", "sha256", {"sha256": sha256})
+
+    meta = {
+        "timestamp_utc": utc_now_iso(),
+        "path_original": str(sample_in),
+        "path_case": str(sample_case),
+        "filename": sample_case.name,
+        "size_bytes": total,
+        "analysis": "static",
+        "md5": md5,
+        "sha1": sha1,
+        "sha256": sha256,
+    }
+
+    runlog: dict[str, Any] = {}
+    summary: dict[str, Any] = {"sample": meta, "tools": {}}
+
+    def _run_step(step_name: str, fn: Callable[[], dict]) -> dict:
+        _emit(on_event, "start", step_name, {})
+        res = fn()
+        rc = res.get("returncode", 0)
+        if rc == 0 or res.get("skipped") is True:
+            _emit(on_event, "done", step_name, {"returncode": rc, "skipped": res.get("skipped", False)})
+        else:
+            _emit(on_event, "error", step_name, {"returncode": rc, "stderr": res.get("stderr", "")})
+        return res
+
+    runlog["pe_meta"] = _run_step("pe_meta", lambda: step_pe_metadata(sample_case, case_dir))
+    runlog["lief_meta"] = _run_step("lief_meta", lambda: step_lief_metadata(sample_case, case_dir))
+    runlog["file"] = _run_step("file", lambda: step_file(sample_case, case_dir))
+    runlog["strings"] = _run_step("strings", lambda: step_strings(sample_case, case_dir))
+    runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir))
+    runlog["iocs"] = _run_step("iocs", lambda: step_iocs(case_dir))
+
+    summary["tools"]["pe_meta"] = {"returncode": runlog["pe_meta"].get("returncode"), "skipped": runlog["pe_meta"].get("skipped"), "output_file": runlog["pe_meta"].get("output_file"), "error": runlog["pe_meta"].get("stderr")}
+    summary["tools"]["lief_meta"] = {"returncode": runlog["lief_meta"].get("returncode"), "skipped": runlog["lief_meta"].get("skipped"), "output_file": runlog["lief_meta"].get("output_file"), "error": runlog["lief_meta"].get("stderr")}
+    summary["tools"]["file"] = {"returncode": runlog["file"].get("returncode"), "output_file": runlog["file"].get("output_file"), "stdout_preview": (runlog["file"].get("stdout") or "")[:300]}
+    summary["tools"]["strings"] = {"returncode": runlog["strings"].get("returncode"), "output_file": runlog["strings"].get("output_file"), "string_count_estimate": (runlog["strings"].get("stdout") or "").count("\n")}
+    summary["tools"]["capa"] = {"returncode": runlog["capa"].get("returncode"), "capa_json": runlog["capa"].get("capa_json"), "capa_txt": runlog["capa"].get("capa_txt"), "stderr_preview": (runlog["capa"].get("stderr") or "")[:500]}
+    summary["tools"]["iocs"] = {"returncode": runlog["iocs"].get("returncode"), "output_files": runlog["iocs"].get("output_files"), "counts": runlog["iocs"].get("counts"), "error": runlog["iocs"].get("stderr")}
+
+    (case_dir / "runlog.json").write_text(json.dumps(runlog, indent=2), encoding="utf-8")
+    (case_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    _emit(on_event, "start", "report", {})
+    rep = generate_report(case_dir)
+    _emit(on_event, "done", "report", rep)
+
+    _emit(on_event, "done", "case", {"case_dir": str(case_dir), **rep})
+    return {"case_dir": str(case_dir), "sample_case": str(sample_case), **rep}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("sample")
+    ap.add_argument("--case", default=None)
+    ap.add_argument("--no-progress", action="store_true")
+    args = ap.parse_args()
+
+    r = run_case(args.sample, case_name=args.case, show_progress=(not args.no_progress))
+    print(f"[+] Case: {r['case_dir']}")
+    print(f"[+] report.md: {r['report_md']}")
+    print(f"[+] report.html: {r['report_html']}")
+
+
+if __name__ == "__main__":
+    main()
