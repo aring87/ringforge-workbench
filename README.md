@@ -1,58 +1,61 @@
 # Static Software / Malware Analysis — Static Triage Pipeline
 
-A static triage pipeline for Windows executables/installers (EXE/DLL) that produces SOC-ticket style reports and structured case artifacts for investigation and training.
+A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB/ZIP/7z/Inno Setup) that produces SOC-style reports and structured case artifacts for investigation and training.
+
+> **Safety note:** Do not analyze unknown samples on a production host. Use an isolated VM/WSL environment and never commit samples or case outputs to Git.
+
+---
 
 ## What it does
 
-Given a Windows EXE/DLL (including installers), the pipeline creates a case folder and generates:
+Given a Windows executable/installer, the pipeline creates a case folder and generates:
 
-- Hashes (MD5/SHA1/SHA256)
-- `file` output (`file.txt`)
-- strings (`strings.txt`) with optional lite mode
-- capa analysis (`capa.json`, `capa.txt`)
+- Hashes: **MD5 / SHA1 / SHA256**
+- `file` identification output (`file.txt`)
+- Strings extraction (`strings.txt`) with **lite mode**
+- **capa** analysis (`capa.json`, `capa.txt`)
 - PE metadata (`pe_metadata.json`) + LIEF metadata (`lief_metadata.json`)
 - IOC extraction (`iocs.json`, `iocs.csv`)
-- Reports: `report.md`, `report.html`, `report.pdf` (WeasyPrint)
+- Reports: `report.md`, `report.html`, `report.pdf` (**WeasyPrint**)
 
 ### Installer payload extraction + subfile triage
 
 - Extracts embedded payloads into `cases/<case>/extracted/`
-- Supports recursive extraction (CAB/MSI/ZIP/7z)
-- Supports Inno Setup installers via `innoextract`
-- Triages up to N extracted PE payloads into `cases/<case>/subfiles/<nn>_<filename>/`
+- Supports recursive extraction (ZIP/7z/MSI/CAB; CAB fallback supported)
+- Supports **Inno Setup** installers via `innoextract`
+- Optionally triages extracted payloads into:
+  - `cases/<case>/subfiles/<nn>_<filename>/`
 - Rollups include:
-  - **Top scoring embedded payloads**
-  - **Attention** list (score threshold / unsigned / high-signal)
+  - Top scoring embedded payloads
+  - “Attention” list (score threshold, unsigned, high-signal indicators)
 
 ### Scoring / verdict
 
-- Installer-aware scoring to reduce false positives on legitimate installers
-- Authenticode-aware scoring (valid signature + timestamp reduces risk unless high-signal behaviors present)
+- Installer-aware heuristics to reduce false positives on legitimate installers
+- Authenticode-aware scoring (valid signature/timestamp can lower risk unless strong indicators exist)
 
 ---
 
-## Repository layout
+## Repo layout
 
-Tracked:
-
-- `static_triage_engine/` — core engine + steps + scoring + reporting
-- `scripts/` — CLI + GUI + helper modules
-- `tools/capa/sigs/` — capa signature files (`*.sig`)
-- `triage_inbox.py` — optional helper
-
-Not tracked (by design):
-
-- `tools/capa-rules/` — download separately
-- `samples/` — do not commit binaries
-- `cases/` — do not commit artifacts/reports
-- `.venv/` — do not commit environments
-- `logs/` — do not commit runtime logs
+- `static_triage_engine/` — engine, steps, scoring, reporting
+- `scripts/` — CLI + GUI entry points and helpers
+- `tools/` — helper assets (e.g., capa sigs)
+- `cases/` — **generated output** (ignored)
+- `samples/` — **do not commit samples** (ignored)
+- `logs/` — runtime logs (ignored)
+- `.venv/` — virtualenv (ignored)
 
 ---
 
-## Quick start (Ubuntu)
+## Requirements
 
-### System dependencies
+### OS
+
+Recommended: **Ubuntu** (native or **WSL Ubuntu** on Windows).  
+Windows-native is possible but less reliable due to tooling (WeasyPrint deps, `osslsigncode`, extraction tools).
+
+### System dependencies (Ubuntu/WSL)
 
 ```bash
 sudo apt update
@@ -64,15 +67,17 @@ libcairo2 libffi-dev
 ### Python environment
 
 ```bash
-cd ~/analysis   # or wherever you cloned the repo
+cd /path/to/Static-Software-Malware-Analysis
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Inno Setup support (recommended): build innoextract from source
+---
 
-Ubuntu repo versions can lag. For best compatibility with modern Inno installers:
+## Inno Setup support (recommended)
+
+Ubuntu repo versions can lag. For best compatibility with modern Inno installers, build `innoextract` from source:
 
 ```bash
 sudo apt update
@@ -92,50 +97,21 @@ innoextract --version 2>/dev/null || innoextract -v 2>/dev/null
 
 ---
 
-## Quick start (Windows)
-
-### Option A (recommended): run the pipeline in WSL (Ubuntu)
-
-This project is designed primarily for Linux tooling (7z, osslsigncode, innoextract, WeasyPrint deps).
-
-1. Install WSL + Ubuntu
-2. Clone the repo inside Ubuntu (WSL)
-3. Follow the Ubuntu instructions above
-
-You can store samples on the Windows drive and access them from WSL:
-
-- Windows: `D:\Projects\...`
-- WSL: `/mnt/d/Projects/...`
-
-### Option B: Windows-only mode (limited)
-
-You can still use parts of the pipeline on Windows if you install equivalents:
-
-- 7-Zip CLI (`7z.exe`) in PATH
-- Python packages
-- capa
-
-Notes:
-
-- Authenticode verification differs; `osslsigncode` is Linux-focused
-- WeasyPrint is harder on Windows due to dependencies
-
-If you want “Windows-native” support, WSL is the simplest and most reliable approach.
-
----
-
 ## capa setup (rules + sigs)
 
 ### 1) capa rules (NOT tracked in this repo)
 
-Create the directory:
+This repo does not vendor the default capa rule set. Download the official rules into `tools/capa-rules/`:
 
 ```bash
-mkdir -p tools/capa-rules
+bash scripts/bootstrap_capa_rules.sh
+# optional: pin a different tag
+CAPA_RULES_TAG=v9.3.1 bash scripts/bootstrap_capa_rules.sh
 ```
 
-Then download capa rules into `tools/capa-rules/` (clone the official capa-rules repo or use the rules archive).  
-The engine expects many `.yml/.yaml` rules under this directory.
+Notes:
+- The script creates `tools/capa-rules/` automatically.
+- Rerun it anytime you want to update or change the pinned tag.
 
 ### 2) capa sigs (tracked here)
 
@@ -154,7 +130,7 @@ source .venv/bin/activate
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 ```
 
-Useful flags:
+Common presets:
 
 ```bash
 # Fast triage
@@ -163,7 +139,7 @@ python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 # Deep triage
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --subfile-limit 25
 
-# Hash-only
+# Hash-only (minimal)
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --no-extract --no-subfiles --no-strings
 ```
 
@@ -175,10 +151,9 @@ python3 -m scripts.static_triage_gui
 ```
 
 GUI includes:
-
-- Presets: Fast Triage / Deep Triage / Hash Only
+- Presets (Fast / Deep / Hash Only)
 - Advanced toggle (override preset values)
-- Warning if strings are skipped (IOC extraction depends on strings output)
+- Warning when skipping strings (strings feed IOC extraction)
 
 ---
 
@@ -186,7 +161,7 @@ GUI includes:
 
 Each run creates:
 
-```
+```text
 cases/<case_name>/
   summary.json
   runlog.json
@@ -210,15 +185,24 @@ cases/<case_name>/
 
 ---
 
-## Security notes / safe handling
+## Windows notes (paths)
 
-- Do NOT commit malware samples or case outputs into Git.
-- Use isolated environments for analysis (VM/WSL recommended).
-- Treat unknown installers as potentially malicious until validated.
+If you store samples on the Windows drive and run in WSL:
+
+- Windows path: `D:\Projects\...`
+- WSL path: `/mnt/d/Projects/...`
 
 ---
 
-## License / Attribution
+## Development / contributing
 
-This project integrates or depends on third-party tools/rules (e.g., capa rules/signatures).  
-Follow each upstream license for redistribution and usage.
+- Do not commit samples or `cases/` output.
+- Prefer pinned capa rules tags for reproducible results.
+- If you add new tools, document installation and keep large external datasets out of Git.
+
+---
+
+## License / attribution
+
+This project depends on third-party tooling and rule sets (e.g., capa rules/signatures, extraction utilities).  
+Please follow upstream licenses for redistribution and usage.
