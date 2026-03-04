@@ -29,6 +29,11 @@ Thumbs.db
 # Project runtime artifacts (do NOT commit)
 # -------------------------
 
+# PyInstaller
+/build/
+/dist/
+*.spec
+
 # Optional large tool bundles (install separately)
 tools/ghidra_12.0_PUBLIC/
 tools/capa-rules/
