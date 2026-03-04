@@ -15,6 +15,7 @@ Given a Windows EXE/DLL (including installers), the pipeline creates a case fold
 - Reports: `report.md`, `report.html`, `report.pdf` (WeasyPrint)
 
 ### Installer payload extraction + subfile triage
+
 - Extracts embedded payloads into `cases/<case>/extracted/`
 - Supports recursive extraction (CAB/MSI/ZIP/7z)
 - Supports Inno Setup installers via `innoextract`
@@ -24,6 +25,7 @@ Given a Windows EXE/DLL (including installers), the pipeline creates a case fold
   - **Attention** list (score threshold / unsigned / high-signal)
 
 ### Scoring / verdict
+
 - Installer-aware scoring to reduce false positives on legitimate installers
 - Authenticode-aware scoring (valid signature + timestamp reduces risk unless high-signal behaviors present)
 
@@ -32,12 +34,14 @@ Given a Windows EXE/DLL (including installers), the pipeline creates a case fold
 ## Repository layout
 
 Tracked:
+
 - `static_triage_engine/` — core engine + steps + scoring + reporting
 - `scripts/` — CLI + GUI + helper modules
 - `tools/capa/sigs/` — capa signature files (`*.sig`)
 - `triage_inbox.py` — optional helper
 
 Not tracked (by design):
+
 - `tools/capa-rules/` — download separately
 - `samples/` — do not commit binaries
 - `cases/` — do not commit artifacts/reports
@@ -49,20 +53,26 @@ Not tracked (by design):
 ## Quick start (Ubuntu)
 
 ### System dependencies
+
 ```bash
 sudo apt update
-sudo apt install -y p7zip-full cabextract osslsigncode file binutils \
-  libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0 \
-  libcairo2 libffi-dev
-Python environment
+sudo apt install -y p7zip-full cabextract osslsigncode file binutils   libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0   libcairo2 libffi-dev
+```
+
+### Python environment
+
+```bash
 cd ~/analysis   # or wherever you cloned the repo
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-Inno Setup support (recommended): build innoextract from source
+```
+
+### Inno Setup support (recommended): build innoextract from source
 
 Ubuntu repo versions can lag. For best compatibility with modern Inno installers:
 
+```bash
 sudo apt update
 sudo apt install -y git cmake g++ make libboost-all-dev libssl-dev zlib1g-dev liblzma-dev
 
@@ -76,62 +86,75 @@ sudo cmake --install build
 
 which innoextract
 innoextract --version 2>/dev/null || innoextract -v 2>/dev/null
-Quick start (Windows)
-Option A (recommended): run the pipeline in WSL (Ubuntu)
+```
+
+---
+
+## Quick start (Windows)
+
+### Option A (recommended): run the pipeline in WSL (Ubuntu)
 
 This project is designed primarily for Linux tooling (7z, osslsigncode, innoextract, WeasyPrint deps).
 
-Install WSL + Ubuntu
-
-Clone the repo inside Ubuntu (WSL)
-
-Follow the Ubuntu instructions above
+1. Install WSL + Ubuntu
+2. Clone the repo inside Ubuntu (WSL)
+3. Follow the Ubuntu instructions above
 
 You can store samples on the Windows drive and access them from WSL:
 
-Windows: D:\Projects\...
+- Windows: `D:\Projects\...`
+- WSL: `/mnt/d/Projects/...`
 
-WSL: /mnt/d/Projects/...
-
-Option B: Windows-only mode (limited)
+### Option B: Windows-only mode (limited)
 
 You can still use parts of the pipeline on Windows if you install equivalents:
 
-7-Zip CLI (7z.exe) in PATH
+- 7-Zip CLI (`7z.exe`) in PATH
+- Python packages
+- capa
 
-Python packages
+Notes:
 
-capa
-
-(Authenticode verification differs; osslsigncode is Linux-focused)
-
-WeasyPrint is harder on Windows due to dependencies
+- Authenticode verification differs; `osslsigncode` is Linux-focused
+- WeasyPrint is harder on Windows due to dependencies
 
 If you want “Windows-native” support, WSL is the simplest and most reliable approach.
 
-capa setup (rules + sigs)
-1) capa rules (NOT tracked in this repo)
+---
+
+## capa setup (rules + sigs)
+
+### 1) capa rules (NOT tracked in this repo)
 
 Create the directory:
 
+```bash
 mkdir -p tools/capa-rules
+```
 
-Then download capa rules into tools/capa-rules/ (clone the official capa-rules repo or use the rules archive).
-The engine expects many .yml/.yaml rules under this directory.
+Then download capa rules into `tools/capa-rules/` (clone the official capa-rules repo or use the rules archive).  
+The engine expects many `.yml/.yaml` rules under this directory.
 
-2) capa sigs (tracked here)
+### 2) capa sigs (tracked here)
 
 Signatures are stored in:
 
-tools/capa/sigs/*.sig
+- `tools/capa/sigs/*.sig`
 
-Running
-CLI (Ubuntu/WSL)
+---
+
+## Running
+
+### CLI (Ubuntu/WSL)
+
+```bash
 source .venv/bin/activate
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
+```
 
 Useful flags:
 
+```bash
 # Fast triage
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --strings-lite --subfile-limit 5
 
@@ -140,22 +163,28 @@ python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 
 # Hash-only
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --no-extract --no-subfiles --no-strings
-GUI (Ubuntu/WSL)
+```
+
+### GUI (Ubuntu/WSL)
+
+```bash
 source .venv/bin/activate
 python3 -m scripts.static_triage_gui
+```
 
 GUI includes:
 
-Presets: Fast Triage / Deep Triage / Hash Only
+- Presets: Fast Triage / Deep Triage / Hash Only
+- Advanced toggle (override preset values)
+- Warning if strings are skipped (IOC extraction depends on strings output)
 
-Advanced toggle (override preset values)
+---
 
-Warning if strings are skipped (IOC extraction depends on strings output)
-
-Outputs
+## Outputs
 
 Each run creates:
 
+```
 cases/<case_name>/
   summary.json
   runlog.json
@@ -175,15 +204,19 @@ cases/<case_name>/
   extracted/                      (if extraction enabled)
   extracted_manifest.json
   subfiles/<nn>_<filename>/       (if subfile triage enabled)
-Security notes / safe handling
+```
 
-Do NOT commit malware samples or case outputs into Git.
+---
 
-Use isolated environments for analysis (VM/WSL recommended).
+## Security notes / safe handling
 
-Treat unknown installers as potentially malicious until validated.
+- Do NOT commit malware samples or case outputs into Git.
+- Use isolated environments for analysis (VM/WSL recommended).
+- Treat unknown installers as potentially malicious until validated.
 
-License / Attribution
+---
 
-This project integrates or depends on third-party tools/rules (e.g., capa rules/signatures).
+## License / Attribution
+
+This project integrates or depends on third-party tools/rules (e.g., capa rules/signatures).  
 Follow each upstream license for redistribution and usage.
