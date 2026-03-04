@@ -65,7 +65,9 @@ Windows-native is possible but less reliable due to tooling (WeasyPrint deps, `o
 
 ```bash
 sudo apt update
-sudo apt install -y p7zip-full cabextract osslsigncode file binutils   libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0   libcairo2 libffi-dev
+sudo apt install -y p7zip-full cabextract osslsigncode file binutils \
+  libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0 \
+  libcairo2 libffi-dev
 ```
 
 ### Python environment
