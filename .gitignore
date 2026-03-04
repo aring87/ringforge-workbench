@@ -31,6 +31,7 @@ Thumbs.db
 
 # Optional large tool bundles (install separately)
 tools/ghidra_12.0_PUBLIC/
+tools/capa-rules/
 
 # Malware samples (keep out of git)
 samples/
