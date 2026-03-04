@@ -160,7 +160,37 @@ GUI includes:
 - Advanced toggle (override preset values)
 - Warning when skipping strings (strings feed IOC extraction)
 
----
+## GUI Features
+
+The GUI provides a simplified workflow for running static triage without needing to remember command-line flags.
+
+### Presets dropdown
+The **Presets** dropdown gives quick starting profiles for common use cases:
+
+- **Fast Triage** — quicker run with lighter settings for initial review
+- **Deep Triage** — more thorough analysis with expanded processing
+- **Hash Only** — minimal run for quick identification without full analysis
+
+### Advanced toggle
+The **Advanced** button expands additional options so you can override preset values and customize how the run behaves.
+
+Examples of advanced controls may include:
+- strings collection behavior
+- extraction options
+- subfile triage limits
+- other analysis flags exposed by the GUI
+
+### Skip-strings warning
+If strings collection is disabled, the GUI shows a warning because **IOC extraction depends on strings output**. This helps prevent incomplete results by accident.
+
+### GUI workflow
+Typical usage:
+
+1. Select a sample file
+2. Choose a preset from the dropdown
+3. Open **Advanced** if you want to customize settings
+4. Start the run
+5. Review the generated case folder and reports
 
 ## Outputs
 
