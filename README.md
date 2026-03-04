@@ -1,5 +1,11 @@
 # Static Software / Malware Analysis — Static Triage Pipeline
 
+[![License](https://img.shields.io/github/license/aring87/Static-Software-Malware-Analysis)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL-orange)
+![Repo Size](https://img.shields.io/github/repo-size/aring87/Static-Software-Malware-Analysis)
+![Last Commit](https://img.shields.io/github/last-commit/aring87/Static-Software-Malware-Analysis)
+
 A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB/ZIP/7z/Inno Setup) that produces SOC-style reports and structured case artifacts for investigation and training.
 
 > **Safety note:** Do not analyze unknown samples on a production host. Use an isolated VM/WSL environment and never commit samples or case outputs to Git.
@@ -59,9 +65,7 @@ Windows-native is possible but less reliable due to tooling (WeasyPrint deps, `o
 
 ```bash
 sudo apt update
-sudo apt install -y p7zip-full cabextract osslsigncode file binutils \
-libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0 \
-libcairo2 libffi-dev
+sudo apt install -y p7zip-full cabextract osslsigncode file binutils   libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0   libcairo2 libffi-dev
 ```
 
 ### Python environment
@@ -116,7 +120,6 @@ Notes:
 ### 2) capa sigs (tracked here)
 
 Signatures are stored in:
-
 - `tools/capa/sigs/*.sig`
 
 ---
