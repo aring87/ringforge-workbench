@@ -2,7 +2,15 @@
 
 A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB/ZIP/7z/Inno Setup) that produces SOC-style reports and structured case artifacts for investigation and training.
 
-> **Safety note:** Do not analyze unknown samples on a production host. Use an isolated VM/WSL environment and never commit malware samples or case outputs to Git.
+> ## ⚠️ Safety / Isolation Required
+> **Do NOT run unknown malware on your personal computer or on a production network.**
+>
+> Use an **isolated analysis environment**:
+> - A dedicated **Windows/Linux VM** (VirtualBox/VMware/Hyper‑V), or **WSL Ubuntu** inside a Windows host *that is itself treated as an analysis machine*.
+> - Prefer a VM with **no shared credentials**, **no sensitive files**, and **no access to corporate networks**.
+> - Use **snapshots** so you can roll back after testing.
+>
+> This project also uses a **Python virtual environment (`.venv`)** so dependencies/tools install locally to the project and don’t pollute your system Python.
 
 ---
 
@@ -36,7 +44,7 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 - `cases/` — **generated output** (ignored)
 - `samples/` — **do not commit samples** (ignored)
 - `logs/` — runtime logs (ignored)
-- `.venv/` — virtualenv (ignored)
+- `.venv/` — **Python virtual environment** (ignored)
 
 ---
 
@@ -67,7 +75,7 @@ sudo apt install -y git python3 python3-venv python3-pip \
   libcairo2 libffi-dev
 ```
 
-### Python environment
+### Python virtual environment (`.venv`) (recommended and expected)
 
 ```bash
 cd /path/to/Static-Software-Malware-Analysis
@@ -196,8 +204,8 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 If you downloaded a GitHub Release ZIP and ran the **Windows EXE**, the app may launch, but **some analysis steps require external tools** (capa rules, extraction utilities, PDF deps).
 
 Minimum for “full” results on Windows:
-- `tools\capa-rules\rules\` populated (see Step “Install capa rules” above)
-- capa installed (recommended: inside `.venv` or system Python)
+- `tools\capa-rules\rules\` populated (see “Install capa rules” above)
+- capa installed (recommended: inside `.venv`)
 - 7-Zip installed (recommended) for recursive extraction
 
 ### 7-Zip (recommended)
