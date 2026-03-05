@@ -67,7 +67,10 @@ Kali/Linux works as well. Windows-native is possible but less reliable due to to
 
 ```bash
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip   p7zip-full cabextract osslsigncode file binutils   libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0   libcairo2 libffi-dev
+sudo apt install -y git python3 python3-venv python3-pip \
+  p7zip-full cabextract osslsigncode file binutils \
+  libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0 \
+  libcairo2 libffi-dev
 ```
 
 ### Python environment
@@ -181,14 +184,26 @@ GUI includes:
 
 ## Screenshots
 
-GUI and report screenshots are stored in:
+### Main GUI
+![Main view](docs/screenshots/main%20view.png)
 
-- `docs/screenshots/`
+### While analyzing
+![Analyzing](docs/screenshots/analyzing.png)
 
-Suggested viewing:
-- Presets dropdown + Advanced toggle
-- Progress view (hashes + steps)
-- Example PDF report output
+### Finished run
+![Finished](docs/screenshots/finished.png)
+
+### Case folder output
+![Case folder](docs/screenshots/case%20folder.png)
+
+### HTML report
+![HTML view](docs/screenshots/html%20view.png)
+![HTML view 2](docs/screenshots/html%202.png)
+
+### PDF report
+![PDF](docs/screenshots/pdf.png)
+![PDF 2](docs/screenshots/pdf%202.png)
+
 
 ---
 
