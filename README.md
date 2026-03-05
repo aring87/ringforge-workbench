@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/github/license/aring87/Static-Software-Malware-Analysis)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL%20%7C%20Kali-orange)
+![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL%20%7C%20Kali%20%7C%20Windows-orange)
 ![Repo Size](https://img.shields.io/github/repo-size/aring87/Static-Software-Malware-Analysis)
 ![Last Commit](https://img.shields.io/github/last-commit/aring87/Static-Software-Malware-Analysis)
 
@@ -73,7 +73,7 @@ sudo apt install -y git python3 python3-venv python3-pip \
   libcairo2 libffi-dev
 ```
 
-### Python environment
+### Python environment (Ubuntu/WSL/Kali)
 
 ```bash
 cd /path/to/Static-Software-Malware-Analysis
@@ -146,6 +146,77 @@ Signatures are stored in:
 
 ---
 
+## Windows (Release EXE) — Read this first
+
+If you downloaded a GitHub Release ZIP and ran the **Windows EXE**, the app may launch, but **some analysis steps require external tools** (capa rules, extraction utilities, PDF deps). If these are missing, the run can still finish, but those sections will be skipped or show “tool not found”.
+
+### Recommended: run via WSL Ubuntu (most reliable)
+
+This project is most reliable on **Ubuntu** (native) or **WSL Ubuntu** on Windows.
+
+1) Install **WSL** and **Ubuntu**
+2) In Ubuntu (WSL), follow the normal Linux install steps above
+3) Access Windows files via `/mnt/c/...` or `/mnt/d/...`
+
+Example paths:
+- Windows: `D:\Projects\static_triage_project\analysis\samples\sample.exe`
+- WSL: `/mnt/d/Projects/static_triage_project/analysis/samples/sample.exe`
+
+### Windows-native (supported but best-effort)
+
+Windows-native can work, but you must provide:
+- **capa CLI** and **capa rules**
+- Optional: **7-Zip** (for recursive archive/MSI/CAB/7z/ZIP extraction)
+- Optional: **WeasyPrint deps** (PDF generation is commonly the pain point on Windows)
+
+---
+
+## Windows-native: quick setup
+
+### 1) Install Python
+Install Python 3.10+ and ensure **“Add Python to PATH”** is checked.
+
+Verify (PowerShell or Command Prompt):
+```powershell
+python --version
+pip --version
+```
+
+### 2) Install capa CLI (official FLARE package)
+```powershell
+python -m pip install --upgrade pip
+python -m pip install flare-capa
+capa --version
+```
+
+### 3) Download capa rules into `tools\capa-rules\`
+This repo does not ship the default rules. Download/extract the official capa rules into:
+
+`tools\capa-rules\`
+
+Expected layout:
+`tools\capa-rules\rules\...`
+
+Quick check:
+```powershell
+Test-Path .\tools\capa-rules\rules
+```
+
+### 4) Install 7-Zip (recommended for extraction)
+Install 7-Zip and add it to PATH (or place `7z.exe` somewhere your PATH includes).
+
+Verify:
+```powershell
+7z
+```
+
+### 5) PDF output on Windows (optional)
+PDF generation uses WeasyPrint and can fail on Windows due to system library requirements.
+- If PDF fails, you should still get: `report.md` and `report.html`.
+- For reliable PDFs, use **WSL Ubuntu**.
+
+---
+
 ## Running
 
 ### CLI (Ubuntu/WSL/Kali)
@@ -184,26 +255,11 @@ GUI includes:
 
 ## Screenshots
 
-### Main GUI
 ![Main view](docs/screenshots/main-view.png)
-
-### While analyzing
-![Analyzing](docs/screenshots/analyzing.png)
-
-### Finished run
-![Finished](docs/screenshots/finished.png)
-
-### Case folder output
 ![Case folder](docs/screenshots/case-folder.png)
-
-### HTML report
 ![HTML view](docs/screenshots/html-view.png)
 ![HTML view 2](docs/screenshots/html-2.png)
-
-### PDF report
-![PDF](docs/screenshots/pdf.png)
-![PDF 2](docs/screenshots/pdf-2.png)
-
+![PDF view 2](docs/screenshots/pdf-2.png)
 
 ---
 
@@ -244,16 +300,29 @@ If you store samples on the Windows drive and run in WSL:
 
 ---
 
-## Development / contributing
+## Development
 
-- Do not commit samples or `cases/` output.
-- Keep large external datasets (like capa rules) out of Git.
-- Prefer pinned capa rules tags for reproducible results.
-- If you add new tools, document installation steps in this README.
+### Run tests (if present)
+```bash
+pytest -q
+```
+
+### Lint (if present)
+```bash
+ruff check .
+```
 
 ---
 
-## License / attribution
+## Contributing
 
-This project depends on third-party tooling and rule sets (e.g., capa rules/signatures, extraction utilities).  
-Please follow upstream licenses for redistribution and usage.
+PRs welcome. Please avoid committing:
+- malware samples
+- generated `cases/` output
+- large binaries
+
+---
+
+## License
+
+See [LICENSE](LICENSE).
