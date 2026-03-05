@@ -185,7 +185,7 @@ GUI includes:
 ## Screenshots
 
 ### Main GUI
-![Main view](docs/screenshots/main%20view.png)
+![Main view](docs/screenshots/main-view.png)
 
 ### While analyzing
 ![Analyzing](docs/screenshots/analyzing.png)
@@ -194,15 +194,15 @@ GUI includes:
 ![Finished](docs/screenshots/finished.png)
 
 ### Case folder output
-![Case folder](docs/screenshots/case%20folder.png)
+![Case folder](docs/screenshots/case-folder.png)
 
 ### HTML report
-![HTML view](docs/screenshots/html%20view.png)
-![HTML view 2](docs/screenshots/html%202.png)
+![HTML view](docs/screenshots/html-view.png)
+![HTML view 2](docs/screenshots/html-2.png)
 
 ### PDF report
 ![PDF](docs/screenshots/pdf.png)
-![PDF 2](docs/screenshots/pdf%202.png)
+![PDF 2](docs/screenshots/pdf-2.png)
 
 
 ---
