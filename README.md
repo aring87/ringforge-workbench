@@ -137,7 +137,7 @@ pip install -r requirements.txt
 
 ## Install Windows
 
-### 0) Install Python 3.12 (recommended)
+### Install Python 3.12 (recommended)
 
 If you accidentally downloaded a Python ZIP (embeddable/source), it may not include an installer. The simplest Windows install path is **winget**:
 
