@@ -172,7 +172,7 @@ innoextract --version 2>/dev/null || innoextract -v 2>/dev/null
 
 PowerShell often blocks `Activate.ps1` with “running scripts is disabled”. To avoid that entirely, **do not activate** the venv; call its Python directly.
 
-### 0) Install Python 3.12 (recommended)
+### 1) Install Python 3.12 (recommended)
 
 If you accidentally downloaded a Python ZIP (embeddable or source), it may not include an installer. The simplest Windows install path is **winget**:
 
@@ -188,7 +188,7 @@ py -3.12 -V
 
 > **Python version note:** Many security tooling wheels lag behind new Python releases. If you hit install issues, use **Python 3.11 or 3.12**.
 
-### 1) Create `.venv` using Python 3.12
+### 2) Create `.venv` using Python 3.12
 
 From your repo root:
 
@@ -196,14 +196,14 @@ From your repo root:
 py -3.12 -m venv .venv
 ```
 
-### 2) Install dependencies into the venv (no activation needed)
+### 3) Install dependencies into the venv (no activation needed)
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 3) Install capa CLI into the venv
+### 4) Install capa CLI into the venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install flare-capa
