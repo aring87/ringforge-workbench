@@ -14,6 +14,18 @@ A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB
 
 ---
 
+## Python version support (important)
+
+This project is currently tested and most reliable on:
+
+- **Python 3.11 – 3.12** (recommended)
+
+⚠️ **Python 3.13 is not recommended right now**. Some upstream security tooling dependencies (and Windows build tooling such as PyInstaller-related packages) may not publish compatible wheels for Python 3.13 yet, which can cause `pip install -r requirements.txt` to fail.
+
+If you hit install errors on 3.13, install Python **3.12** and recreate your `.venv`.
+
+---
+
 ## What it does
 
 Given a Windows executable/installer, the pipeline creates a case folder and generates:
@@ -160,19 +172,40 @@ innoextract --version 2>/dev/null || innoextract -v 2>/dev/null
 
 PowerShell often blocks `Activate.ps1` with “running scripts is disabled”. To avoid that entirely, **do not activate** the venv; call its Python directly.
 
+### 0) Install Python 3.12 (recommended)
+
+If you accidentally downloaded a Python ZIP (embeddable or source), it may not include an installer. The simplest Windows install path is **winget**:
+
+```powershell
+winget install -e --id Python.Python.3.12
+```
+
+Then open a new PowerShell window and verify:
+
+```powershell
+py -3.12 -V
+```
+
 > **Python version note:** Many security tooling wheels lag behind new Python releases. If you hit install issues, use **Python 3.11 or 3.12**.
+
+### 1) Create `.venv` using Python 3.12
 
 From your repo root:
 
 ```powershell
-# 1) Create venv (first time only)
-python -m venv .venv
+py -3.12 -m venv .venv
+```
 
-# 2) Install deps into the venv (no activation needed)
+### 2) Install dependencies into the venv (no activation needed)
+
+```powershell
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
-# 3) Install capa CLI into the venv
+### 3) Install capa CLI into the venv
+
+```powershell
 .\.venv\Scripts\python.exe -m pip install flare-capa
 ```
 
