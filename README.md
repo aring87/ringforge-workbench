@@ -1,14 +1,8 @@
 # Static Software / Malware Analysis — Static Triage Pipeline
 
-[![License](https://img.shields.io/github/license/aring87/Static-Software-Malware-Analysis)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL%20%7C%20Kali%20%7C%20Windows-orange)
-![Repo Size](https://img.shields.io/github/repo-size/aring87/Static-Software-Malware-Analysis)
-![Last Commit](https://img.shields.io/github/last-commit/aring87/Static-Software-Malware-Analysis)
-
 A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB/ZIP/7z/Inno Setup) that produces SOC-style reports and structured case artifacts for investigation and training.
 
-> **Safety note:** Do not analyze unknown samples on a production host. Use an isolated VM/WSL environment and never commit samples or case outputs to Git.
+> **Safety note:** Do not analyze unknown samples on a production host. Use an isolated VM/WSL environment and never commit malware samples or case outputs to Git.
 
 ---
 
@@ -17,8 +11,8 @@ A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB
 Given a Windows executable/installer, the pipeline creates a case folder and generates:
 
 - Hashes: **MD5 / SHA1 / SHA256**
-- `file` identification output (`file.txt`)
-- Strings extraction (`strings.txt`) with **lite mode**
+- File identification (`file.txt`)
+- Strings extraction (`strings.txt`) with optional **lite mode**
 - **capa** capability analysis (`capa.json`, `capa.txt`)
 - PE metadata (`pe_metadata.json`) + LIEF metadata (`lief_metadata.json`)
 - IOC extraction (`iocs.json`, `iocs.csv`)
@@ -29,17 +23,7 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 - Extracts embedded payloads into `cases/<case>/extracted/`
 - Supports recursive extraction (ZIP/7z/MSI/CAB; CAB fallback supported)
 - Supports **Inno Setup** installers via `innoextract`
-- Optionally triages extracted payloads into:
-  - `cases/<case>/subfiles/<nn>_<filename>/`
-- Rollups include:
-  - Top scoring embedded payloads
-  - “Attention” list (score threshold, unsigned, high-signal indicators)
-
-### Scoring / verdict
-
-- Installer-aware heuristics to reduce false positives on legitimate installers
-- Authenticode-aware scoring (valid signature/timestamp can lower risk unless strong indicators exist)
-- Verdict output: **BENIGN / SUSPICIOUS / MALICIOUS** (heuristic triage result)
+- Optional subfile triage into `cases/<case>/subfiles/<nn>_<filename>/`
 
 ---
 
@@ -47,8 +31,8 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 
 - `static_triage_engine/` — engine, steps, scoring, reporting
 - `scripts/` — CLI + GUI entry points and helpers
-- `tools/` — helper assets (e.g., capa sigs)
-- `docs/` — documentation assets (screenshots, notes)
+- `tools/` — tool assets (example: capa sigs, capa rules folder)
+- `docs/` — documentation assets (screenshots)
 - `cases/` — **generated output** (ignored)
 - `samples/` — **do not commit samples** (ignored)
 - `logs/` — runtime logs (ignored)
@@ -56,12 +40,22 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 
 ---
 
-## Requirements
+## Recommended environment
 
-### OS
+### Best experience: Ubuntu (native) or WSL Ubuntu
+This project is most reliable on **Ubuntu** (native) or **WSL Ubuntu** on Windows.
 
-Recommended: **Ubuntu** (native or **WSL Ubuntu** on Windows).  
-Kali/Linux works as well. Windows-native is possible but less reliable due to tooling (WeasyPrint deps, extraction tools).
+### Windows-native
+Windows-native can work, but it’s “best effort” because:
+- PowerShell script execution policies can block venv activation
+- Some dependencies/tools are smoother on Linux/WSL
+- WeasyPrint PDF generation can be finicky on Windows
+
+If you are new to this, use **WSL Ubuntu**.
+
+---
+
+## Linux / WSL setup (recommended)
 
 ### System dependencies (Ubuntu/WSL/Kali)
 
@@ -73,7 +67,7 @@ sudo apt install -y git python3 python3-venv python3-pip \
   libcairo2 libffi-dev
 ```
 
-### Python environment (Ubuntu/WSL/Kali)
+### Python environment
 
 ```bash
 cd /path/to/Static-Software-Malware-Analysis
@@ -82,22 +76,53 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### capa (CLI) install
+---
 
-⚠️ **Important:** `pip install capa` may install an unrelated package. Install the official FLARE capa CLI instead:
+## capa setup (CLI + rules)
+
+### 1) Install capa CLI (official FLARE package)
+
+⚠️ **Important:** `pip install capa` may install an unrelated package. Install the official one:
 
 ```bash
 pip install flare-capa
 capa --version
 ```
 
-### LIEF
+### 2) Install capa rules (required)
 
-If `lief` is not installed by your requirements, install it:
+`capa` is separate from the **rules** it uses. This repo does **not** vendor the default rules; you must install them into:
+
+- `tools/capa-rules/rules/`
+
+#### Option A (Linux/WSL): bootstrap script (recommended)
+If your repo includes `scripts/bootstrap_capa_rules.sh`:
 
 ```bash
-pip install lief
+bash scripts/bootstrap_capa_rules.sh
+# optional: pin a different tag
+CAPA_RULES_TAG=v9.3.1 bash scripts/bootstrap_capa_rules.sh
 ```
+
+#### Option B (Windows or manual): download rules release + extract
+1) Download the official capa rules release ZIP from GitHub:
+```text
+https://github.com/fireeye/capa-rules/releases
+```
+2) Extract it and copy the `rules` folder so you end up with:
+```text
+<repo_root>\tools\capa-rules\rules\
+```
+
+**Quick verify (PowerShell):**
+```powershell
+Test-Path .\tools\capa-rules\rules
+dir .\tools\capa-rules\rules | select -First 5
+```
+
+### 3) capa sigs (tracked here)
+Signatures are stored in:
+- `tools/capa/sigs/*.sig`
 
 ---
 
@@ -123,94 +148,67 @@ innoextract --version 2>/dev/null || innoextract -v 2>/dev/null
 
 ---
 
-## capa setup (rules + sigs)
+## Windows setup (PowerShell) — venv without activation (recommended)
 
-### 1) capa rules (NOT tracked in this repo)
+PowerShell often blocks `Activate.ps1` with “running scripts is disabled”. To avoid that entirely, **do not activate** the venv; call its Python directly.
 
-This repo does not vendor the default capa rule set. Download the official rules into `tools/capa-rules/`:
+> **Python version note:** Many security tooling wheels lag behind new Python releases. If you hit install issues, use **Python 3.11 or 3.12**.
 
-```bash
-bash scripts/bootstrap_capa_rules.sh
-# optional: pin a different tag
-CAPA_RULES_TAG=v9.3.1 bash scripts/bootstrap_capa_rules.sh
+From your repo root:
+
+```powershell
+# 1) Create venv (first time only)
+python -m venv .venv
+
+# 2) Install deps into the venv (no activation needed)
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# 3) Install capa CLI into the venv
+.\.venv\Scripts\python.exe -m pip install flare-capa
 ```
 
-Notes:
-- The script creates `tools/capa-rules/` automatically.
-- Rerun it anytime you want to update or change the pinned tag.
+Verify venv Python:
 
-### 2) capa sigs (tracked here)
+```powershell
+.\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"
+```
 
-Signatures are stored in:
-- `tools/capa/sigs/*.sig`
+Verify capa location/version (in venv):
+
+```powershell
+.\.venv\Scripts\capa.exe --version
+.\.venv\Scripts\python.exe -m pip show flare-capa
+```
+
+### Optional: enable activation (if you want)
+If you prefer activation, you can allow it for your user:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+```
 
 ---
 
 ## Windows (Release EXE) — Read this first
 
-If you downloaded a GitHub Release ZIP and ran the **Windows EXE**, the app may launch, but **some analysis steps require external tools** (capa rules, extraction utilities, PDF deps). If these are missing, the run can still finish, but those sections will be skipped or show “tool not found”.
+If you downloaded a GitHub Release ZIP and ran the **Windows EXE**, the app may launch, but **some analysis steps require external tools** (capa rules, extraction utilities, PDF deps).
 
-### Recommended: run via WSL Ubuntu (most reliable)
+Minimum for “full” results on Windows:
+- `tools\capa-rules\rules\` populated (see Step “Install capa rules” above)
+- capa installed (recommended: inside `.venv` or system Python)
+- 7-Zip installed (recommended) for recursive extraction
 
-This project is most reliable on **Ubuntu** (native) or **WSL Ubuntu** on Windows.
-
-1) Install **WSL** and **Ubuntu**
-2) In Ubuntu (WSL), follow the normal Linux install steps above
-3) Access Windows files via `/mnt/c/...` or `/mnt/d/...`
-
-Example paths:
-- Windows: `D:\Projects\static_triage_project\analysis\samples\sample.exe`
-- WSL: `/mnt/d/Projects/static_triage_project/analysis/samples/sample.exe`
-
-### Windows-native (supported but best-effort)
-
-Windows-native can work, but you must provide:
-- **capa CLI** and **capa rules**
-- Optional: **7-Zip** (for recursive archive/MSI/CAB/7z/ZIP extraction)
-- Optional: **WeasyPrint deps** (PDF generation is commonly the pain point on Windows)
-
----
-
-## Windows-native: quick setup
-
-### 1) Install Python
-Install Python 3.10+ and ensure **“Add Python to PATH”** is checked.
-
-Verify (PowerShell or Command Prompt):
-```powershell
-python --version
-pip --version
-```
-
-### 2) Install capa CLI (official FLARE package)
-```powershell
-python -m pip install --upgrade pip
-python -m pip install flare-capa
-capa --version
-```
-
-### 3) Download capa rules into `tools\capa-rules\`
-This repo does not ship the default rules. Download/extract the official capa rules into:
-
-`tools\capa-rules\`
-
-Expected layout:
-`tools\capa-rules\rules\...`
-
-Quick check:
-```powershell
-Test-Path .\tools\capa-rules\rules
-```
-
-### 4) Install 7-Zip (recommended for extraction)
-Install 7-Zip and add it to PATH (or place `7z.exe` somewhere your PATH includes).
+### 7-Zip (recommended)
+Install 7-Zip and add it to PATH (or ensure `7z.exe` is discoverable).
 
 Verify:
 ```powershell
 7z
 ```
 
-### 5) PDF output on Windows (optional)
+### PDF output note
 PDF generation uses WeasyPrint and can fail on Windows due to system library requirements.
 - If PDF fails, you should still get: `report.md` and `report.html`.
 - For reliable PDFs, use **WSL Ubuntu**.
@@ -219,15 +217,13 @@ PDF generation uses WeasyPrint and can fail on Windows due to system library req
 
 ## Running
 
-### CLI (Ubuntu/WSL/Kali)
-
+### CLI (Linux/WSL)
 ```bash
 source .venv/bin/activate
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 ```
 
 Common presets:
-
 ```bash
 # Fast triage
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --strings-lite --subfile-limit 5
@@ -239,27 +235,16 @@ python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --no-extract --no-subfiles --no-strings
 ```
 
-### GUI (Ubuntu/WSL/Kali)
+### CLI (Windows PowerShell, no activation)
+```powershell
+.\.venv\Scripts\python.exe scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
+```
 
+### GUI (Linux/WSL)
 ```bash
 source .venv/bin/activate
 python3 -m scripts.static_triage_gui
 ```
-
-GUI includes:
-- Presets dropdown (Fast / Deep / Hash Only)
-- Advanced toggle (override preset values)
-- Skip-strings warning (IOC extraction depends on strings output)
-
----
-
-## Screenshots
-
-![Main view](docs/screenshots/main-view.png)
-![Case folder](docs/screenshots/case-folder.png)
-![HTML view](docs/screenshots/html-view.png)
-![HTML view 2](docs/screenshots/html-2.png)
-![PDF view 2](docs/screenshots/pdf-2.png)
 
 ---
 
@@ -291,26 +276,22 @@ cases/<case_name>/
 
 ---
 
+## Screenshots
+
+![Main view](docs/screenshots/main-view.png)
+![Case folder](docs/screenshots/case-folder.png)
+![HTML view](docs/screenshots/html-view.png)
+![HTML view 2](docs/screenshots/html-2.png)
+![PDF view 2](docs/screenshots/pdf-2.png)
+
+---
+
 ## Windows notes (paths)
 
 If you store samples on the Windows drive and run in WSL:
 
 - Windows path: `D:\Projects\...`
 - WSL path: `/mnt/d/Projects/...`
-
----
-
-## Development
-
-### Run tests (if present)
-```bash
-pytest -q
-```
-
-### Lint (if present)
-```bash
-ruff check .
-```
 
 ---
 
@@ -325,4 +306,4 @@ PRs welcome. Please avoid committing:
 
 ## License
 
-See [LICENSE](LICENSE).
+See `LICENSE`.
