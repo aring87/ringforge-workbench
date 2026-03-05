@@ -254,10 +254,26 @@ def run_case(
         "issuer": signing_top.get("issuer", "") or "",
     }
 
-    # Hashes
-    md5 = sha_hash(sample_case, "md5", show_progress=show_progress)
-    sha1 = sha_hash(sample_case, "sha1", show_progress=show_progress)
-    sha256 = sha_hash(sample_case, "sha256", show_progress=show_progress)
+    # Hashes (emit progress so GUI can show these first)
+    def _run_hash_step(algo: str) -> str:
+        emit(on_event, "start", algo, {})
+        log_line(case_dir, f"STEP_START {algo}")
+        step_start = time.time()
+        try:
+            value = sha_hash(sample_case, algo, show_progress=show_progress)
+            dur = round(time.time() - step_start, 3)
+            emit(on_event, "done", algo, {"returncode": 0, "value": value})
+            log_line(case_dir, f"STEP_DONE {algo} rc=0 dur={dur}")
+            return value
+        except Exception as e:
+            dur = round(time.time() - step_start, 3)
+            emit(on_event, "error", algo, {"returncode": 1, "stderr": str(e)})
+            log_line(case_dir, f"STEP_FAIL {algo} rc=1 dur={dur} err={str(e)[:200]}")
+            raise
+
+    md5 = _run_hash_step("md5")
+    sha1 = _run_hash_step("sha1")
+    sha256 = _run_hash_step("sha256")
 
     meta = {
         "timestamp_utc": utc_now_iso(),
