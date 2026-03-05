@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/github/license/aring87/Static-Software-Malware-Analysis)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL-orange)
+![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL%20%7C%20Kali-orange)
 ![Repo Size](https://img.shields.io/github/repo-size/aring87/Static-Software-Malware-Analysis)
 ![Last Commit](https://img.shields.io/github/last-commit/aring87/Static-Software-Malware-Analysis)
 
@@ -19,7 +19,7 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 - Hashes: **MD5 / SHA1 / SHA256**
 - `file` identification output (`file.txt`)
 - Strings extraction (`strings.txt`) with **lite mode**
-- **capa** analysis (`capa.json`, `capa.txt`)
+- **capa** capability analysis (`capa.json`, `capa.txt`)
 - PE metadata (`pe_metadata.json`) + LIEF metadata (`lief_metadata.json`)
 - IOC extraction (`iocs.json`, `iocs.csv`)
 - Reports: `report.md`, `report.html`, `report.pdf` (**WeasyPrint**)
@@ -39,6 +39,7 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 
 - Installer-aware heuristics to reduce false positives on legitimate installers
 - Authenticode-aware scoring (valid signature/timestamp can lower risk unless strong indicators exist)
+- Verdict output: **BENIGN / SUSPICIOUS / MALICIOUS** (heuristic triage result)
 
 ---
 
@@ -47,6 +48,7 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 - `static_triage_engine/` — engine, steps, scoring, reporting
 - `scripts/` — CLI + GUI entry points and helpers
 - `tools/` — helper assets (e.g., capa sigs)
+- `docs/` — documentation assets (screenshots, notes)
 - `cases/` — **generated output** (ignored)
 - `samples/` — **do not commit samples** (ignored)
 - `logs/` — runtime logs (ignored)
@@ -59,15 +61,13 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 ### OS
 
 Recommended: **Ubuntu** (native or **WSL Ubuntu** on Windows).  
-Windows-native is possible but less reliable due to tooling (WeasyPrint deps, `osslsigncode`, extraction tools).
+Kali/Linux works as well. Windows-native is possible but less reliable due to tooling (WeasyPrint deps, extraction tools).
 
-### System dependencies (Ubuntu/WSL)
+### System dependencies (Ubuntu/WSL/Kali)
 
 ```bash
 sudo apt update
-sudo apt install -y p7zip-full cabextract osslsigncode file binutils \
-  libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0 \
-  libcairo2 libffi-dev
+sudo apt install -y git python3 python3-venv python3-pip   p7zip-full cabextract osslsigncode file binutils   libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0   libcairo2 libffi-dev
 ```
 
 ### Python environment
@@ -77,6 +77,23 @@ cd /path/to/Static-Software-Malware-Analysis
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+### capa (CLI) install
+
+⚠️ **Important:** `pip install capa` may install an unrelated package. Install the official FLARE capa CLI instead:
+
+```bash
+pip install flare-capa
+capa --version
+```
+
+### LIEF
+
+If `lief` is not installed by your requirements, install it:
+
+```bash
+pip install lief
 ```
 
 ---
@@ -128,7 +145,7 @@ Signatures are stored in:
 
 ## Running
 
-### CLI (Ubuntu/WSL)
+### CLI (Ubuntu/WSL/Kali)
 
 ```bash
 source .venv/bin/activate
@@ -148,7 +165,7 @@ python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --no-extract --no-subfiles --no-strings
 ```
 
-### GUI (Ubuntu/WSL)
+### GUI (Ubuntu/WSL/Kali)
 
 ```bash
 source .venv/bin/activate
@@ -156,41 +173,24 @@ python3 -m scripts.static_triage_gui
 ```
 
 GUI includes:
-- Presets (Fast / Deep / Hash Only)
+- Presets dropdown (Fast / Deep / Hash Only)
 - Advanced toggle (override preset values)
-- Warning when skipping strings (strings feed IOC extraction)
+- Skip-strings warning (IOC extraction depends on strings output)
 
-## GUI Features
+---
 
-The GUI provides a simplified workflow for running static triage without needing to remember command-line flags.
+## Screenshots
 
-### Presets dropdown
-The **Presets** dropdown gives quick starting profiles for common use cases:
+GUI and report screenshots are stored in:
 
-- **Fast Triage** — quicker run with lighter settings for initial review
-- **Deep Triage** — more thorough analysis with expanded processing
-- **Hash Only** — minimal run for quick identification without full analysis
+- `docs/screenshots/`
 
-### Advanced toggle
-The **Advanced** button expands additional options so you can override preset values and customize how the run behaves.
+Suggested viewing:
+- Presets dropdown + Advanced toggle
+- Progress view (hashes + steps)
+- Example PDF report output
 
-Examples of advanced controls may include:
-- strings collection behavior
-- extraction options
-- subfile triage limits
-- other analysis flags exposed by the GUI
-
-### Skip-strings warning
-If strings collection is disabled, the GUI shows a warning because **IOC extraction depends on strings output**. This helps prevent incomplete results by accident.
-
-### GUI workflow
-Typical usage:
-
-1. Select a sample file
-2. Choose a preset from the dropdown
-3. Open **Advanced** if you want to customize settings
-4. Start the run
-5. Review the generated case folder and reports
+---
 
 ## Outputs
 
@@ -232,8 +232,9 @@ If you store samples on the Windows drive and run in WSL:
 ## Development / contributing
 
 - Do not commit samples or `cases/` output.
+- Keep large external datasets (like capa rules) out of Git.
 - Prefer pinned capa rules tags for reproducible results.
-- If you add new tools, document installation and keep large external datasets out of Git.
+- If you add new tools, document installation steps in this README.
 
 ---
 
