@@ -1,32 +1,87 @@
 # Static Software / Malware Analysis — Static Triage Pipeline
 
+[![License](https://img.shields.io/github/license/aring87/Static-Software-Malware-Analysis)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL%20%7C%20Windows-orange)
+![Status](https://img.shields.io/badge/status-active-success)
+
 A static triage pipeline for Windows executables and installers (EXE/DLL/MSI/CAB/ZIP/7z/Inno Setup) that produces SOC-style reports and structured case artifacts for investigation and training.
 
-> ## ⚠️ Safety / Isolation Required
-> **Do NOT run unknown malware on your personal computer or on a production network.**
->
-> Use an **isolated analysis environment**:
-> - A dedicated **Windows/Linux VM** (VirtualBox/VMware/Hyper‑V), or **WSL Ubuntu** inside a Windows host *that is itself treated as an analysis machine*.
-> - Prefer a VM with **no shared credentials**, **no sensitive files**, and **no access to corporate networks**.
-> - Use **snapshots** so you can roll back after testing.
->
-> This project also uses a **Python virtual environment (`.venv`)** so dependencies/tools install locally to the project and don’t pollute your system Python.
+---
+
+## ⚠️ Safety / Isolation Required (Read First)
+
+**Do NOT run unknown malware on your personal computer or on a production network.**
+
+Use an **isolated analysis environment**:
+- A dedicated **Windows/Linux VM** (VirtualBox/VMware/Hyper‑V) **or** **WSL Ubuntu** on an analysis-only Windows host
+- No shared credentials, no sensitive files, and no access to corporate networks
+- Use **snapshots** so you can roll back after testing
+
+This project also expects a **Python virtual environment (`.venv`)** so dependencies install locally to the project and don’t pollute your system Python.
 
 ---
 
-## Python version support (important)
+## Table of Contents
+
+- [Quickstart](#quickstart)
+- [Python Version Support](#python-version-support)
+- [What It Does](#what-it-does)
+- [Repo Layout](#repo-layout)
+- [Install Ubuntu or WSL Ubuntu](#install-ubuntu-or-wsl-ubuntu)
+- [Install Windows](#install-windows)
+  - [Windows — PowerShell (Recommended: No Activation)](#windows--powershell-recommended-no-activation)
+  - [Windows — PowerShell (Activation)](#windows--powershell-activation)
+  - [Windows — CMD (Activation Works)](#windows--cmd-activation-works)
+- [capa Setup](#capa-setup)
+  - [Install capa CLI](#install-capa-cli)
+  - [Install capa Rules](#install-capa-rules)
+  - [Install or Use capa Signatures](#install-or-use-capa-signatures)
+  - [Bootstrap Scripts](#bootstrap-scripts)
+- [Running](#running)
+  - [CLI](#cli)
+  - [GUI](#gui)
+- [Outputs](#outputs)
+- [Screenshots](#screenshots)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Quickstart
+
+### Choose your path
+- ✅ **Best/Most reliable:** **Ubuntu** (native) or **WSL Ubuntu**
+- ⚠️ **Windows-native:** supported “best effort” (works, but dependency/tooling friction is more common)
+
+### Sanity checks
+After setup, these should work:
+
+**Windows**
+```powershell
+.\.venv\Scripts\python.exe -V
+.\.venv\Scripts\python.exe -m pip --version
+```
+
+**Ubuntu/WSL**
+```bash
+python3 -V
+pip --version
+```
+
+---
+
+## Python Version Support
 
 This project is currently tested and most reliable on:
-
 - **Python 3.11 – 3.12** (recommended)
 
-⚠️ **Python 3.13 is not recommended right now**. Some upstream security tooling dependencies (and Windows build tooling such as PyInstaller-related packages) may not publish compatible wheels for Python 3.13 yet, which can cause `pip install -r requirements.txt` to fail.
-
-If you hit install errors on 3.13, install Python **3.12** and recreate your `.venv`.
+⚠️ **Python 3.13 is not recommended right now.** Some upstream security tooling dependencies (and Windows build tooling such as PyInstaller-related packages) may not publish compatible wheels for Python 3.13 yet, which can cause `pip install -r requirements.txt` to fail.
 
 ---
 
-## What it does
+## What It Does
 
 Given a Windows executable/installer, the pipeline creates a case folder and generates:
 
@@ -39,7 +94,6 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 - Reports: `report.md`, `report.html`, `report.pdf` (**WeasyPrint**)
 
 ### Installer payload extraction + subfile triage
-
 - Extracts embedded payloads into `cases/<case>/extracted/`
 - Supports recursive extraction (ZIP/7z/MSI/CAB; CAB fallback supported)
 - Supports **Inno Setup** installers via `innoextract`
@@ -47,11 +101,11 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 
 ---
 
-## Repo layout
+## Repo Layout
 
 - `static_triage_engine/` — engine, steps, scoring, reporting
 - `scripts/` — CLI + GUI entry points and helpers
-- `tools/` — tool assets (example: capa sigs, capa rules folder)
+- `tools/` — tool assets (capa sigs, capa rules folder, etc.)
 - `docs/` — documentation assets (screenshots)
 - `cases/` — **generated output** (ignored)
 - `samples/` — **do not commit samples** (ignored)
@@ -60,25 +114,9 @@ Given a Windows executable/installer, the pipeline creates a case folder and gen
 
 ---
 
-## Recommended environment
-
-### Best experience: Ubuntu (native) or WSL Ubuntu
-This project is most reliable on **Ubuntu** (native) or **WSL Ubuntu** on Windows.
-
-### Windows-native
-Windows-native can work, but it’s “best effort” because:
-- PowerShell script execution policies can block venv activation
-- Some dependencies/tools are smoother on Linux/WSL
-- WeasyPrint PDF generation can be finicky on Windows
-
-If you are new to this, use **WSL Ubuntu**.
-
----
-
-## Linux / WSL setup (recommended)
+## Install Ubuntu or WSL Ubuntu
 
 ### System dependencies (Ubuntu/WSL/Kali)
-
 ```bash
 sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip \
@@ -87,8 +125,7 @@ sudo apt install -y git python3 python3-venv python3-pip \
   libcairo2 libffi-dev
 ```
 
-### Python virtual environment (`.venv`) (recommended and expected)
-
+### Create and use a Python virtual environment
 ```bash
 cd /path/to/Static-Software-Malware-Analysis
 python3 -m venv .venv
@@ -98,190 +135,180 @@ pip install -r requirements.txt
 
 ---
 
-## capa setup (CLI + rules)
+## Install Windows
 
-### 1) Install capa CLI (official FLARE package)
+### 0) Install Python 3.12 (recommended)
 
-⚠️ **Important:** `pip install capa` may install an unrelated package. Install the official one:
-
-```bash
-pip install flare-capa
-capa --version
-```
-
-### 2) Install capa rules (required)
-
-`capa` is separate from the **rules** it uses. This repo does **not** vendor the default rules; you must install them into:
-
-- `tools/capa-rules/rules/`
-
-#### Option A (Linux/WSL): bootstrap script (recommended)
-If your repo includes `scripts/bootstrap_capa_rules.sh`:
-
-```bash
-bash scripts/bootstrap_capa_rules.sh
-# optional: pin a different tag
-CAPA_RULES_TAG=v9.3.1 bash scripts/bootstrap_capa_rules.sh
-```
-
-#### Option B (Windows or manual): download rules release + extract
-1) Download the official capa rules release ZIP from GitHub:
-```text
-https://github.com/fireeye/capa-rules/releases
-```
-2) Extract it and copy the `rules` folder so you end up with:
-```text
-<repo_root>\tools\capa-rules\rules\
-```
-
-**Quick verify (PowerShell):**
-```powershell
-Test-Path .\tools\capa-rules\rules
-dir .\tools\capa-rules\rules | select -First 5
-```
-
-### 3) capa sigs (tracked here)
-Signatures are stored in:
-- `tools/capa/sigs/*.sig`
-
----
-
-## Inno Setup support (recommended)
-
-Ubuntu repo versions can lag. For best compatibility with modern Inno installers, build `innoextract` from source:
-
-```bash
-sudo apt update
-sudo apt install -y git cmake g++ make libboost-all-dev libssl-dev zlib1g-dev liblzma-dev
-
-cd /tmp
-rm -rf innoextract
-git clone https://github.com/dscharrer/innoextract.git
-cd innoextract
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-sudo cmake --install build
-
-which innoextract
-innoextract --version 2>/dev/null || innoextract -v 2>/dev/null
-```
-
----
-
-## Windows setup (PowerShell) — venv without activation (recommended)
-
-PowerShell often blocks `Activate.ps1` with “running scripts is disabled”. To avoid that entirely, **do not activate** the venv; call its Python directly.
-
-### 1) Install Python 3.12 (recommended)
-
-If you accidentally downloaded a Python ZIP (embeddable or source), it may not include an installer. The simplest Windows install path is **winget**:
+If you accidentally downloaded a Python ZIP (embeddable/source), it may not include an installer. The simplest Windows install path is **winget**:
 
 ```powershell
 winget install -e --id Python.Python.3.12
 ```
 
-Then open a new PowerShell window and verify:
-
+Then open a new terminal and verify:
 ```powershell
 py -3.12 -V
 ```
 
-> **Python version note:** Many security tooling wheels lag behind new Python releases. If you hit install issues, use **Python 3.11 or 3.12**.
+---
 
-### 2) Create `.venv` using Python 3.12
+### Windows — PowerShell (Recommended: No Activation)
 
-From your repo root:
+PowerShell often blocks `Activate.ps1` due to execution policy. The simplest method is to **not activate** and instead call the venv Python directly.
 
 ```powershell
+# Create venv (first time only)
 py -3.12 -m venv .venv
-```
 
-### 3) Install dependencies into the venv (no activation needed)
-
-```powershell
+# Install dependencies (no activation needed)
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 4) Install capa CLI into the venv
-
+Run the tool:
 ```powershell
-.\.venv\Scripts\python.exe -m pip install flare-capa
+.\.venv\Scripts\python.exe scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
 ```
 
-Verify venv Python:
+> FYSA: `source .venv/bin/activate` is Linux/WSL syntax and will not work in Windows PowerShell.
+
+---
+
+### Windows — PowerShell (Activation)
+
+If you prefer activation:
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"
-```
-
-Verify capa location/version (in venv):
-
-```powershell
-.\.venv\Scripts\capa.exe --version
-.\.venv\Scripts\python.exe -m pip show flare-capa
-```
-
-### Optional: enable activation (if you want)
-If you prefer activation, you can allow it for your user:
-
-```powershell
+# Allow local scripts for your user (persistent)
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+# Activate
 .\.venv\Scripts\Activate.ps1
+
+# Install deps
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
 ---
 
-## Windows (Release EXE) — Read this first
+### Windows — CMD (Activation Works)
 
-If you downloaded a GitHub Release ZIP and ran the **Windows EXE**, the app may launch, but **some analysis steps require external tools** (capa rules, extraction utilities, PDF deps).
+CMD activation doesn’t hit the PowerShell execution-policy wall.
 
-Minimum for “full” results on Windows:
-- `tools\capa-rules\rules\` populated (see “Install capa rules” above)
-- capa installed (recommended: inside `.venv`)
-- 7-Zip installed (recommended) for recursive extraction
+Open **Command Prompt** in the repo root:
+```bat
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate.bat
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-### 7-Zip (recommended)
-Install 7-Zip and add it to PATH (or ensure `7z.exe` is discoverable).
+Run:
+```bat
+python scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
+```
+
+**FYSA: deleting `.venv`**
+- PowerShell:
+```powershell
+Remove-Item -Recurse -Force .\.venv
+```
+- CMD:
+```bat
+rmdir /s /q .venv
+```
+
+---
+
+## capa Setup
+
+### Install capa CLI
+
+⚠️ **Important:** `pip install capa` may install an unrelated package. Install the official FLARE capa:
+
+**Ubuntu/WSL**
+```bash
+pip install flare-capa
+capa --version
+```
+
+**Windows (recommended inside `.venv`)**
+```powershell
+.\.venv\Scripts\python.exe -m pip install flare-capa
+.\.venv\Scripts\capa.exe --version
+```
+
+---
+
+### Install capa Rules
+
+`capa` is separate from the **rules** it uses. Install rules into:
+
+```
+tools\capa-rules\rules\
+```
 
 Verify:
 ```powershell
-7z
+Test-Path .\tools\capa-rules\rules
+(dir .\tools\capa-rules\rules -Recurse -Filter *.yml).Count
 ```
 
-### PDF output note
-PDF generation uses WeasyPrint and can fail on Windows due to system library requirements.
-- If PDF fails, you should still get: `report.md` and `report.html`.
-- For reliable PDFs, use **WSL Ubuntu**.
+---
+
+### Install or Use capa Signatures
+
+If capa errors about missing signatures, pass your repo sigs path:
+
+```powershell
+.\.venv\Scripts\capa.exe -r .\tools\capa-rules\rules -s .\tools\capa\sigs D:\path\to\sample.exe
+```
+
+Verify sigs exist:
+```powershell
+dir .\tools\capa\sigs
+```
+
+---
+
+### Bootstrap Scripts
+
+#### Windows (PowerShell): bootstrap capa rules
+Place this script in:
+```
+scripts\bootstrap_capa_rules.ps1
+```
+
+Run (one-time bypass, no policy change):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_capa_rules.ps1
+```
+
+#### Linux/WSL: bootstrap capa rules (optional)
+If you maintain a bash bootstrap:
+```bash
+bash scripts/bootstrap_capa_rules.sh
+```
 
 ---
 
 ## Running
 
-### CLI (Linux/WSL)
+### CLI
+
+**Ubuntu/WSL**
 ```bash
 source .venv/bin/activate
 python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress
 ```
 
-Common presets:
-```bash
-# Fast triage
-python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --strings-lite --subfile-limit 5
-
-# Deep triage
-python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --subfile-limit 25
-
-# Hash-only (minimal)
-python3 scripts/static_triage.py /path/to/sample.exe --case MyCase --no-progress --no-extract --no-subfiles --no-strings
-```
-
-### CLI (Windows PowerShell, no activation)
+**Windows PowerShell (no activation)**
 ```powershell
 .\.venv\Scripts\python.exe scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
 ```
 
-### GUI (Linux/WSL)
+### GUI (Ubuntu/WSL)
 ```bash
 source .venv/bin/activate
 python3 -m scripts.static_triage_gui
@@ -327,12 +354,22 @@ cases/<case_name>/
 
 ---
 
-## Windows notes (paths)
+## Troubleshooting
 
-If you store samples on the Windows drive and run in WSL:
+### “running scripts is disabled” (PowerShell)
+Use the **No Activation** method, or:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
 
-- Windows path: `D:\Projects\...`
-- WSL path: `/mnt/d/Projects/...`
+### Dependency conflicts
+Use a **fresh `.venv`** for this project. Don’t reuse a venv that already has other RE tooling installed.
+
+### capa “default signature path doesn’t exist”
+Run with your repo sigs:
+```powershell
+.\.venv\Scripts\capa.exe -r .\tools\capa-rules\rules -s .\tools\capa\sigs <file>
+```
 
 ---
 
