@@ -437,15 +437,6 @@ You can skip activation entirely and call the venv Python directly.
 .\.venv\Scripts\python.exe scripts\static_triage_gui_v10.py
 ```
 
-### 9. You pasted PowerShell error text back into the console
-Only type the command itself. Do not paste prompt text such as:
-
-```text
-PS D:\Projects\...
-At line:1 char:1
-+ ...
-```
-
 ### 10. EXE launches but defaults to bad paths
 The EXE may need a full release folder next to it. Do not test it by copying just the EXE alone without the supporting `scripts` and `tools` folders.
 
