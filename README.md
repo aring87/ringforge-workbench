@@ -437,7 +437,7 @@ You can skip activation entirely and call the venv Python directly.
 .\.venv\Scripts\python.exe scripts\static_triage_gui_v10.py
 ```
 
-### 10. EXE launches but defaults to bad paths
+### 9. EXE launches but defaults to bad paths
 The EXE may need a full release folder next to it. Do not test it by copying just the EXE alone without the supporting `scripts` and `tools` folders.
 
 ---
