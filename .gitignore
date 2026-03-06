@@ -67,6 +67,29 @@ dist/
 *.tar.gz
 
 # -------------------------
+# Release/Build Artifacts
+# -------------------------
+Static_Triage_GUI_Release/
+scripts/Static_Triage_GUI_Release/
+dist/
+build/
+*.spec
+scripts/static_triage_gui_v2.py
+scripts/static_triage_gui_v3.py
+scripts/static_triage_gui_v4.py
+scripts/static_triage_gui_v5.py
+scripts/static_triage_gui_v6.py
+scripts/static_triage_gui_v7.py
+scripts/static_triage_gui_v8.py
+scripts/static_triage_gui_v9.py
+
+# local runtime/config
+config.json
+
+# backups
+*.bak
+
+# -------------------------
 # Optional: if you add local config secrets later
 # -------------------------
 *.env
