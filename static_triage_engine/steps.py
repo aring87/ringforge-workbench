@@ -92,56 +92,48 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, timeout: int = 900) -> dict
             "stderr": f"[!] EXCEPTION: {e}",
         }
 
-
 def ensure_capa_paths(cfg: TriageConfig) -> None:
     """Validate capa rules/signatures paths.
 
     Supports GUI/CLI overrides via environment variables:
-      - CAPA_RULES_DIR: may point to either ...\tools\capa-rules OR ...\tools\capa-rules\rules
-      - CAPA_SIGS_DIR : should point to ...\tools\capa\sigs
+      - CAPA_RULES_DIR: may point to either ...\\tools\\capa-rules OR ...\\tools\\capa-rules\\rules
+      - CAPA_SIGS_DIR : should point to ...\\tools\\capa\\sigs
 
     If CAPA_RULES_DIR points to the parent folder (capa-rules), this function will
-    automatically append \rules when present.
+    automatically append \\rules when present.
+
+    Note: TriageConfig may be a frozen dataclass; we use object.__setattr__.
     """
     import os
+    from pathlib import Path
 
     # --- Env overrides (GUI passes these) ---
     env_rules = os.getenv("CAPA_RULES_DIR")
     env_sigs = os.getenv("CAPA_SIGS_DIR")
 
     if env_rules:
-        try:
-            cfg.capa_rules = Path(env_rules).expanduser()
-        except Exception:
-            pass
+        p = Path(env_rules).expanduser()
+        # accept either ...\\tools\\capa-rules OR ...\\tools\\capa-rules\\rules
+        if (p / "rules").is_dir():
+            p = p / "rules"
+        object.__setattr__(cfg, "capa_rules", p)
 
     if env_sigs:
-        try:
-            cfg.capa_sigs = Path(env_sigs).expanduser()
-        except Exception:
-            pass
+        object.__setattr__(cfg, "capa_sigs", Path(env_sigs).expanduser())
 
-    # --- Normalize rules dir: accept either capa-rules or capa-rules/rules ---
-    if cfg.capa_rules.is_dir() and (cfg.capa_rules / "rules").is_dir():
-        cfg.capa_rules = cfg.capa_rules / "rules"
-
-    # --- Validate rules ---
+    # --- Validate rules directory ---
     if not cfg.capa_rules.exists() or not cfg.capa_rules.is_dir():
         raise FileNotFoundError(f"capa rules directory not found: {cfg.capa_rules}")
+
+    # sanity check: should contain many YAML files
     rule_files = list(cfg.capa_rules.rglob("*.yml")) + list(cfg.capa_rules.rglob("*.yaml"))
     if len(rule_files) < 50:
         raise RuntimeError(f"capa rules directory exists but looks wrong: {cfg.capa_rules}")
 
-    # --- Validate sigs ---
+    # --- Validate sigs directory ---
     if not cfg.capa_sigs.exists() or not cfg.capa_sigs.is_dir():
         raise FileNotFoundError(f"capa signatures directory not found: {cfg.capa_sigs}")
-    sig_files = list(cfg.capa_sigs.glob("*.sig"))
-    if len(sig_files) < 1:
-        raise RuntimeError(f"capa signatures directory has no *.sig files: {cfg.capa_sigs}")
 
-
-    if not cfg.capa_sigs.exists() or not cfg.capa_sigs.is_dir():
-        raise FileNotFoundError(f"capa signatures directory not found: {cfg.capa_sigs}")
     sig_files = list(cfg.capa_sigs.glob("*.sig"))
     if len(sig_files) < 1:
         raise RuntimeError(f"capa signatures directory has no *.sig files: {cfg.capa_sigs}")
