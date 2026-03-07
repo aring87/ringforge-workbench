@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -100,8 +101,6 @@ STEP_NAME_MAP: Dict[str, str] = {
 STEP_START_RE = re.compile(r"\bSTEP_START\b\s+(?P<step>\S+)")
 STEP_DONE_RE  = re.compile(r"\bSTEP_DONE\b\s+(?P<step>\S+)")
 STEP_FAIL_RE  = re.compile(r"\bSTEP_FAIL\b\s+(?P<step>\S+)")
-CASE_START_RE = re.compile(r"\bCASE_START\b")
-CASE_DONE_RE = re.compile(r"\bCASE_DONE\b")
 
 # Case dir detection from stdout (optional)
 CASE_DIR_RE = re.compile(r'(?:\bcase_dir\b\s*[=:]\s*)(?P<p>[^"\'\r\n]+)', re.IGNORECASE)
@@ -178,7 +177,10 @@ def build_cli_args(sample_path: Path, case_name: str, extract: bool, subfiles: b
 
 
 def choose_python_exe() -> Path:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    if os.name == "nt":
+        venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_py = ROOT / ".venv" / "bin" / "python"
     if venv_py.exists():
         return venv_py
     return Path(sys.executable)
@@ -224,6 +226,7 @@ class App(tk.Tk):
         self.case_root_var = tk.StringVar(value=self.cfg.get("case_root_dir", str(DEFAULT_CASE_ROOT)))
         self.rules_var = tk.StringVar(value=self.cfg.get("capa_rules_dir", str(DEFAULT_RULES_DIR)))
         self.sigs_var = tk.StringVar(value=self.cfg.get("capa_sigs_dir", str(DEFAULT_SIGS_DIR)))
+        self.vt_api_key_var = tk.StringVar(value=self.cfg.get("vt_api_key", ""))
 
         self.adv_enabled_var = tk.BooleanVar(value=self.cfg.get("adv_enabled", False))
         self.extract_var = tk.BooleanVar(value=self.cfg.get("extract", True))
@@ -234,6 +237,18 @@ class App(tk.Tk):
 
         self.status_var = tk.StringVar(value="")
         self.running_var = tk.StringVar(value="Idle")
+
+        self.score_var = tk.StringVar(value="—")
+        self.verdict_var = tk.StringVar(value="—")
+        self.confidence_var = tk.StringVar(value="—")
+        self.vt_status_var = tk.StringVar(value="VirusTotal: disabled")
+        self.vt_name_var = tk.StringVar(value="VT Name: —")
+        self.vt_counts_var = tk.StringVar(value="Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
+        self.vt_link: str = ""
+
+        self.open_case_btn: Optional[ttk.Button] = None
+        self.open_html_btn: Optional[ttk.Button] = None
+        self.open_pdf_btn: Optional[ttk.Button] = None
 
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
@@ -246,7 +261,9 @@ class App(tk.Tk):
         self._build_ui()
         self._apply_preset_if_needed()
         self._refresh_path_status()
+        self.vt_api_key_var.trace_add("write", lambda *_: self._refresh_path_status())
         self._reset_progress()
+        self._reset_result_summary()
         self.after(100, self._drain_output)
 
     def _build_ui(self):
@@ -283,7 +300,11 @@ class App(tk.Tk):
         ttk.Entry(paths, textvariable=self.sigs_var, width=105).grid(row=2, column=1, sticky="we", padx=6)
         ttk.Button(paths, text="Browse…", command=self._browse_sigs).grid(row=2, column=2)
 
-        ttk.Label(paths, textvariable=self.status_var).grid(row=3, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(paths, text="VirusTotal API key (optional):").grid(row=3, column=0, sticky="w")
+        ttk.Entry(paths, textvariable=self.vt_api_key_var, width=105, show="*").grid(row=3, column=1, sticky="we", padx=6)
+        ttk.Button(paths, text="Clear", command=self._clear_vt_key).grid(row=3, column=2)
+
+        ttk.Label(paths, textvariable=self.status_var).grid(row=4, column=1, sticky="w", pady=(6, 0))
         paths.columnconfigure(1, weight=1)
 
         adv = ttk.LabelFrame(self, text="Advanced Settings")
@@ -326,7 +347,30 @@ class App(tk.Tk):
         actions.pack(fill="x", **pad)
         self.run_btn = ttk.Button(actions, text="Run Analysis", command=self._start_analysis)
         self.run_btn.pack(side="left")
+
+        ttk.Button(actions, text="Open Case Files", command=self._open_case_files).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Open PDF Report", command=self._open_pdf_report).pack(side="left", padx=(10, 0))
+
         ttk.Label(actions, textvariable=self.running_var).pack(side="right")
+
+        summary = ttk.LabelFrame(self, text="Result Summary")
+        summary.pack(fill="x", **pad)
+        summary.columnconfigure(1, weight=1)
+        summary.columnconfigure(3, weight=1)
+
+        ttk.Label(summary, text="Score:").grid(row=0, column=0, sticky="w")
+        ttk.Label(summary, textvariable=self.score_var).grid(row=0, column=1, sticky="w", padx=(6, 24))
+        ttk.Label(summary, text="Verdict:").grid(row=0, column=2, sticky="w")
+        ttk.Label(summary, textvariable=self.verdict_var).grid(row=0, column=3, sticky="w", padx=(6, 24))
+        ttk.Label(summary, text="Confidence:").grid(row=0, column=4, sticky="w")
+        ttk.Label(summary, textvariable=self.confidence_var).grid(row=0, column=5, sticky="w", padx=(6, 0))
+
+        ttk.Label(summary, textvariable=self.vt_status_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.vt_name_var).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.vt_counts_var).grid(row=1, column=4, sticky="w", pady=(6, 0))
+        self.vt_open_btn = ttk.Button(summary, text="Open VirusTotal", command=self._open_virustotal, state="disabled")
+        self.vt_open_btn.grid(row=1, column=5, sticky="e", pady=(6, 0))
 
         out = ttk.LabelFrame(self, text="Output")
         out.pack(fill="both", expand=True, **pad)
@@ -342,6 +386,152 @@ class App(tk.Tk):
         self._sync_adv_state()
         self._update_effective_label()
 
+
+    def _reset_result_summary(self):
+        self.score_var.set("—")
+        self.verdict_var.set("—")
+        self.confidence_var.set("—")
+        self.vt_status_var.set("VirusTotal: disabled")
+        self.vt_name_var.set("VT Name: —")
+        self.vt_counts_var.set("Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
+        self.vt_link = ""
+        self.vt_open_btn.configure(state="disabled")
+
+    def _clear_vt_key(self):
+        self.vt_api_key_var.set("")
+        self._save_cfg()
+        self._refresh_path_status()
+
+    def _open_virustotal(self):
+        if self.vt_link:
+            try:
+                webbrowser.open(self.vt_link)
+            except Exception as e:
+                messagebox.showerror("VirusTotal", f"Could not open link:\n{e}")
+
+    def _open_path(self, path: Path):
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as e:
+            messagebox.showerror("Open Path", f"Could not open:\n{path}\n\n{e}")
+
+    def _ensure_case_dir(self) -> Optional[Path]:
+        if self.case_dir_detected and self.case_dir_detected.exists():
+            return self.case_dir_detected
+
+        case_name = self.case_var.get().strip()
+        if not case_name:
+            sample = self.sample_var.get().strip()
+            if sample:
+                case_name = Path(sample).stem[:64]
+
+        if not case_name:
+            messagebox.showinfo("Open Case Files", "No case has been selected yet.")
+            return None
+
+        case_dir = Path(self.case_root_var.get().strip()) / case_name
+        if case_dir.exists():
+            self.case_dir_detected = case_dir
+            return case_dir
+
+        messagebox.showinfo("Open Case Files", f"Case folder not found:\n{case_dir}")
+        return None
+
+    def _open_case_files(self):
+        case_dir = self._ensure_case_dir()
+        if case_dir:
+            self._open_path(case_dir)
+
+    def _open_html_report(self):
+        case_dir = self._ensure_case_dir()
+        if not case_dir:
+            return
+        report_html = case_dir / "report.html"
+        if report_html.exists():
+            self._open_path(report_html)
+        else:
+            messagebox.showinfo("Open HTML Report", f"HTML report not found:\n{report_html}")
+
+    def _open_pdf_report(self):
+        case_dir = self._ensure_case_dir()
+        if not case_dir:
+            return
+        report_pdf = case_dir / "report.pdf"
+        if report_pdf.exists():
+            self._open_path(report_pdf)
+        else:
+            messagebox.showinfo("Open PDF Report", f"PDF report not found:\n{report_pdf}")
+
+    def _update_result_summary_from_case(self, case_dir: Optional[Path]):
+        if not case_dir:
+            return
+
+        summary_path = case_dir / "summary.json"
+        vt_path = case_dir / "virustotal.json"
+
+        summary = {}
+        vt = {}
+        try:
+            if summary_path.exists():
+                loaded = json.loads(summary_path.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(loaded, dict):
+                    summary = loaded
+        except Exception:
+            summary = {}
+
+        try:
+            if vt_path.exists():
+                loaded = json.loads(vt_path.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(loaded, dict):
+                    vt = loaded
+        except Exception:
+            vt = {}
+
+        # fall back to summary["virustotal"] when present
+        if not vt:
+            maybe_vt = summary.get("virustotal")
+            if isinstance(maybe_vt, dict):
+                vt = maybe_vt
+
+        self.score_var.set(str(summary.get("risk_score", "—")))
+        self.verdict_var.set(str(summary.get("verdict", "—")))
+        self.confidence_var.set(str(summary.get("confidence", "—")))
+
+        enabled = bool(vt.get("enabled", False))
+        found = bool(vt.get("found", False))
+        permalink = str(vt.get("permalink", "") or "")
+        meaningful_name = str(vt.get("meaningful_name", "") or "")
+        error = str(vt.get("error", "") or "")
+
+        mal = int(vt.get("malicious", 0) or 0)
+        susp = int(vt.get("suspicious", 0) or 0)
+        harmless = int(vt.get("harmless", 0) or 0)
+        undetected = int(vt.get("undetected", 0) or 0)
+
+        if not vt:
+            self.vt_status_var.set("VirusTotal: disabled")
+        elif not enabled:
+            self.vt_status_var.set("VirusTotal: disabled")
+        elif found:
+            self.vt_status_var.set("VirusTotal: found")
+        elif error:
+            self.vt_status_var.set(f"VirusTotal: {error}")
+        else:
+            self.vt_status_var.set("VirusTotal: no result")
+
+        self.vt_name_var.set(f"VT Name: {meaningful_name or '—'}")
+        self.vt_counts_var.set(
+            f"Counts: mal={mal} | susp={susp} | harmless={harmless} | undetected={undetected}"
+        )
+
+        self.vt_link = permalink
+        self.vt_open_btn.configure(state=("normal" if permalink else "disabled"))
+
     def _save_cfg(self):
         self.cfg["sample_path"] = self.sample_var.get().strip()
         self.cfg["case_name"] = self.case_var.get().strip()
@@ -349,6 +539,7 @@ class App(tk.Tk):
         self.cfg["case_root_dir"] = self.case_root_var.get().strip()
         self.cfg["capa_rules_dir"] = self.rules_var.get().strip()
         self.cfg["capa_sigs_dir"] = self.sigs_var.get().strip()
+        self.cfg["vt_api_key"] = self.vt_api_key_var.get().strip()
         self.cfg["adv_enabled"] = bool(self.adv_enabled_var.get())
         self.cfg["extract"] = bool(self.extract_var.get())
         self.cfg["subfiles"] = bool(self.subfiles_var.get())
@@ -453,7 +644,12 @@ class App(tk.Tk):
     def _refresh_path_status(self):
         rules_ok = looks_like_rules_dir(Path(self.rules_var.get().strip()))
         sigs_ok = looks_like_sigs_dir(Path(self.sigs_var.get().strip()))
-        self.status_var.set(f"Rules: {'OK' if rules_ok else 'MISSING/INVALID'} | Sigs: {'OK' if sigs_ok else 'MISSING/INVALID'}")
+        vt_set = bool(self.vt_api_key_var.get().strip())
+        self.status_var.set(
+            f"Rules: {'OK' if rules_ok else 'MISSING/INVALID'} | "
+            f"Sigs: {'OK' if sigs_ok else 'MISSING/INVALID'} | "
+            f"VirusTotal API key: {'SET' if vt_set else 'MISSING'}"
+        )
 
     def _validate_inputs(self) -> Tuple[Path, str, Path, Path, Path]:
         sample = Path(self.sample_var.get().strip())
@@ -503,7 +699,7 @@ class App(tk.Tk):
         completed = 0
         for step_key in STEP_DISPLAY_ORDER:
             st = self.step_widgets[step_key]["status"].cget("text")
-            if st in ("done", "error", "skipped", "not available"):
+            if st in ("done", "error", "skipped"):
                 completed += 1
         pct = int(round((completed / max(1, len(STEP_DISPLAY_ORDER))) * 100))
         self.overall_var.set(pct)
@@ -535,10 +731,6 @@ class App(tk.Tk):
                 if not line:
                     continue
 
-                if CASE_START_RE.search(line):
-                    self.after(0, self._reset_progress)
-                    continue
-
                 m = STEP_START_RE.search(line)
                 if m:
                     raw = m.group("step")
@@ -557,23 +749,7 @@ class App(tk.Tk):
                 if m:
                     raw = m.group("step")
                     step_key = STEP_NAME_MAP.get(raw, raw)
-
-                    line_l = line.lower()
-                    is_windows = os.name == "nt"
-                    optional_windows_skip = False
-
-                    if is_windows:
-                        if step_key == "file" and ("winerror 2" in line_l or "system cannot find the file specified" in line_l):
-                            optional_windows_skip = True
-                        elif step_key == "strings" and ("winerror 2" in line_l or "system cannot find the file specified" in line_l):
-                            optional_windows_skip = True
-                        elif step_key == "extract" and ("rc=127" in line_l):
-                            optional_windows_skip = True
-
-                    if optional_windows_skip:
-                        self.after(0, lambda s=step_key: (self._set_step(s, 100, "not available"), self._recalc_overall()))
-                    else:
-                        self.after(0, lambda s=step_key: (self._set_step(s, 100, "error"), self._recalc_overall()))
+                    self.after(0, lambda s=step_key: (self._set_step(s, 100, "error"), self._recalc_overall()))
                     continue
 
     def _maybe_detect_case_dir_from_stdout(self, line: str) -> Optional[Path]:
@@ -608,12 +784,15 @@ class App(tk.Tk):
         extract, subfiles, limit, sm = self._effective_settings()
         args = build_cli_args(sample, case, extract, subfiles, limit, sm)
 
+        vt_api_key = self.vt_api_key_var.get().strip()
         env_overrides = {
             "CASE_ROOT_DIR": str(case_root),
             "CAPA_RULES_DIR": str(rules),
             "CAPA_SIGS_DIR": str(sigs),
             "PYTHONIOENCODING": "utf-8",
         }
+        if vt_api_key:
+            env_overrides["VT_API_KEY"] = vt_api_key
 
         py_exe = choose_python_exe()
 
@@ -622,6 +801,7 @@ class App(tk.Tk):
         self.stop_tail.clear()
 
         self._reset_progress()
+        self._reset_result_summary()
         self.output.delete("1.0", "end")
         self.output.insert("end", "Starting analysis:\n")
         self.output.insert("end", f"  sample={sample}\n  case={case}\n")
@@ -654,46 +834,36 @@ class App(tk.Tk):
         self.stop_tail.set()
 
         if rc == 0:
-            # If report wasn't already marked done from stdout, infer it from files.
             if self.case_dir_detected:
                 report_md = self.case_dir_detected / "report.md"
                 report_html = self.case_dir_detected / "report.html"
                 report_pdf = self.case_dir_detected / "report.pdf"
-                
                 if report_md.exists() or report_html.exists() or report_pdf.exists():
                     self._set_step("report", 100, "done")
-                    
-            # Finalize should be done when the run exits successfully.
+                self._update_result_summary_from_case(self.case_dir_detected)
+
             self._set_step("finalize", 100, "done")
-            
-            # Only convert truly optional Windows tool gaps to not available.
-            for step_key in ("file", "strings", "extract"):
-                st_lbl = self.step_widgets.get(step_key, {}).get("status")
-                if st_lbl is not None and st_lbl.cget("text") in ("idle", "running"):
-                    self._set_step(step_key, 100, "not available")
-                    
-            # Any other step still idle/running at rc=0 is more likely a UI miss than "not available".
+
             for step_key in STEP_DISPLAY_ORDER:
                 st_lbl = self.step_widgets.get(step_key, {}).get("status")
                 if st_lbl is not None and st_lbl.cget("text") in ("idle", "running"):
                     self._set_step(step_key, 100, "done")
-                    
+
             self._recalc_overall()
             self.overall_var.set(100)
             self.overall_text.configure(text="100%")
         else:
+            if self.case_dir_detected:
+                self._update_result_summary_from_case(self.case_dir_detected)
             self._recalc_overall()
-            
+
         self.run_btn.configure(state="normal")
         self.running_var.set("Idle")
 
         if rc == 0:
             messagebox.showinfo("Completed", "Analysis completed successfully.")
         else:
-            messagebox.showwarning(
-                "Completed",
-                f"Analysis finished with exit code {rc}.\nCheck output for details.",
-            )
+            messagebox.showwarning("Completed", f"Analysis finished with exit code {rc}.\nCheck output for details.")
 
     def _drain_output(self):
         try:
@@ -705,6 +875,7 @@ class App(tk.Tk):
                         self.case_dir_detected = cd
                         self.output.insert("end", f"[info] Detected case_dir: {cd}\n")
                         self._start_log_tail(cd)
+                        self._update_result_summary_from_case(cd)
                 
                 # Report generation completion from stdout (works even if analysis.log doesn't include report lines)
                 mrep = REPORT_STDOUT_MDHTML_RE.search(line)
@@ -719,6 +890,8 @@ class App(tk.Tk):
                         self._recalc_overall()
                 self.output.insert("end", line + "\n")
                 self.output.see("end")
+                if line.startswith("[done]") and self.case_dir_detected:
+                    self._update_result_summary_from_case(self.case_dir_detected)
         except queue.Empty:
             pass
         self.after(100, self._drain_output)
