@@ -32,6 +32,7 @@ This project can analyze Windows EXE, DLL, MSI, CAB, ZIP, 7z, and some installer
 - extracted IOCs
 - extracted payloads and optional subfile triage
 - Markdown, HTML, and optionally PDF reports
+- VirusTotal summary data when a `VT_API_KEY` is provided
 
 ---
 
@@ -80,6 +81,7 @@ For a given sample, the pipeline creates a case folder and can generate:
 - `report.md`
 - `report.html`
 - `report.pdf` when PDF generation is supported
+- `virustotal.json` when VirusTotal lookup is enabled
 
 It can also create:
 - `extracted/` for extracted payloads
@@ -116,13 +118,14 @@ Generated or local-use folders are typically ignored:
 
 ## Optional Environment Variables
 
-These are useful for GUI and EXE workflows:
+These are useful for GUI, CLI, and EXE workflows:
 
 - `CASE_ROOT_DIR` — case output location
 - `CAPA_RULES_DIR` — capa rules folder
 - `CAPA_SIGS_DIR` — capa signatures folder
 - `TOOLS_DIR` — override tools directory
 - `LOGS_DIR` — override logs directory
+- `VT_API_KEY` — optional VirusTotal API key for hash lookup
 
 Example PowerShell:
 
@@ -130,6 +133,7 @@ Example PowerShell:
 $env:CASE_ROOT_DIR="D:\Projects\static_triage_project\analysis\cases"
 $env:CAPA_RULES_DIR="D:\Projects\static_triage_project\analysis\tools\capa-rules"
 $env:CAPA_SIGS_DIR="D:\Projects\static_triage_project\analysis\tools\capa\sigs"
+$env:VT_API_KEY="your_virustotal_api_key_here"
 ```
 
 ---
@@ -283,6 +287,7 @@ D:\Projects\static_triage_project\analysis\tools\capa\sigs
 $env:CASE_ROOT_DIR="D:\Projects\static_triage_project\analysis\cases"
 $env:CAPA_RULES_DIR="D:\Projects\static_triage_project\analysis\tools\capa-rules"
 $env:CAPA_SIGS_DIR="D:\Projects\static_triage_project\analysis\tools\capa\sigs"
+$env:VT_API_KEY="your_virustotal_api_key_here"
 
 .\.venv\Scripts\python.exe scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
 ```
@@ -301,8 +306,19 @@ $env:CAPA_SIGS_DIR="D:\Projects\static_triage_project\analysis\tools\capa\sigs"
 - better progress parsing for timestamped `analysis.log`
 - handles optional Windows-only step results more clearly
 - `Report Generation` and `Finalize` complete correctly on success
-- supports `CASE_ROOT_DIR`, `CAPA_RULES_DIR`, and `CAPA_SIGS_DIR`
+- supports `CASE_ROOT_DIR`, `CAPA_RULES_DIR`, `CAPA_SIGS_DIR`, and `VT_API_KEY`
 - clearer labels for Linux-oriented tools on Windows
+- preserves the VirusTotal API key in saved GUI config
+- includes buttons to open the case folder, HTML report, and PDF report
+
+### VirusTotal support
+If a valid VirusTotal API key is entered in the GUI, the backend receives `VT_API_KEY`, writes `virustotal.json`, and includes VirusTotal summary data in `summary.json`. The scoring workflow also uses VirusTotal verdict counts when lookup data is available.
+
+### Open buttons
+After a run, the GUI can open:
+- the case folder
+- `report.html`
+- `report.pdf`
 
 ### Expected Windows statuses
 Typical successful Windows run:
@@ -316,8 +332,10 @@ Typical successful Windows run:
 
 ### Build command
 
+You can keep the script name as `static_triage_gui_v10.py` while packaging the release itself as **v3**. Example:
+
 ```powershell
-& "D:\Projects\static_triage_project\analysis\.venv\Scripts\python.exe" -m PyInstaller --noconfirm --onefile --windowed --name Static_Triage_GUI_v10 "D:\Projects\static_triage_project\analysis\scripts\static_triage_gui_v10.py"
+& "D:\Projects\static_triage_project\analysis\.venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --name Static_Software_Malware_Analysis_v3 "D:\Projects\static_triage_project\analysis\scripts\static_triage_gui_v10.py"
 ```
 
 ### Important packaging note
@@ -326,8 +344,8 @@ The EXE is currently best treated as a **frontend plus release folder**, not a f
 Recommended release folder layout:
 
 ```text
-Static_Triage_GUI_Release/
-  Static_Triage_GUI_v10.exe
+Static_Software_Malware_Analysis_v3/
+  Static_Software_Malware_Analysis_v3.exe
   scripts/
     static_triage.py
     static_triage_engine/
@@ -362,6 +380,7 @@ cases/<case>/
   report.md
   report.pdf
   runlog.json
+  virustotal.json
   strings.txt
   subfiles/
   summary.json
@@ -373,14 +392,21 @@ On Windows, `report.pdf` may be `None`. In that case, open `report.html` and use
 
 ## Troubleshooting
 
-### 1. `No module named 'lief'`
+### 1. `No module named 'requests'`
+Install dependencies into the same Python interpreter the GUI or backend is actually using.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install requests
+```
+
+### 2. `No module named 'lief'`
 Install `lief` into the same Python the GUI or EXE backend uses.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install lief
 ```
 
-### 2. `where.exe 7z` says not found
+### 3. `where.exe 7z` says not found
 7-Zip may be installed but not in PATH.
 
 Check:
@@ -396,7 +422,7 @@ $env:Path += ";C:\Program Files\7-Zip"
 where.exe 7z
 ```
 
-### 3. `capa rules folder invalid`
+### 4. `capa rules folder invalid`
 The GUI or EXE cannot find the rules folder.
 
 Point it to one of these:
@@ -406,7 +432,7 @@ Point it to one of these:
 ...\tools\capa-rules\rules
 ```
 
-### 4. `Could not find CLI script: ... static_triage.py`
+### 5. `Could not find CLI script: ... static_triage.py`
 Your EXE release folder is missing backend files.
 
 Make sure the release folder includes:
@@ -415,29 +441,32 @@ Make sure the release folder includes:
 - `tools\capa-rules\`
 - `tools\capa\sigs\`
 
-### 5. `File Type` or `Strings` show `Not Available`
+### 6. `File Type` or `Strings` show `Not Available`
 That is expected on many Windows setups.
 
 These steps rely on Linux-oriented tools and are treated as optional on Windows.
 
-### 6. `report.pdf: None`
+### 7. `report.pdf: None`
 Expected on some Windows runs.
 
 Use `report.html` and print it to PDF from the browser.
 
-### 7. Progress looks wrong, stale, or mixed between runs
+### 8. Progress looks wrong, stale, or mixed between runs
 This usually means you are reusing a case folder whose `analysis.log` already contains older runs.
 
 Use a fresh case name for cleaner progress behavior.
 
-### 8. PowerShell activation fails
+### 9. PowerShell activation fails
 You can skip activation entirely and call the venv Python directly.
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\static_triage_gui_v10.py
 ```
 
-### 9. EXE launches but defaults to bad paths
+### 10. VirusTotal shows missing, disabled, or empty results
+Make sure the GUI field contains a valid API key, the key is being saved, and the backend receives `VT_API_KEY`. If the key is valid but results are still empty, you may be hitting API quota or there may be no matching VirusTotal record for the sample hash.
+
+### 11. EXE launches but defaults to bad paths
 The EXE may need a full release folder next to it. Do not test it by copying just the EXE alone without the supporting `scripts` and `tools` folders.
 
 ---
