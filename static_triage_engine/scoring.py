@@ -8,12 +8,47 @@ from typing import Any, Tuple
 from urllib.parse import urlparse
 
 
-def classify_verdict(score: int) -> tuple[str, str]:
+def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple[str, str]:
+    """
+    Classify the final verdict from the heuristic score, with optional
+    VirusTotal-aware adjustments when summary['virustotal'] is present.
+
+    This remains backward-compatible with older callers that only pass score.
+    """
+    vt = summary.get("virustotal", {}) if isinstance(summary, dict) and isinstance(summary.get("virustotal"), dict) else {}
+    vt_found = bool(vt.get("found", False))
+    vt_mal = int(vt.get("malicious", 0) or 0)
+    vt_susp = int(vt.get("suspicious", 0) or 0)
+    vt_harmless = int(vt.get("harmless", 0) or 0)
+    vt_undetected = int(vt.get("undetected", 0) or 0)
+
+    verdict = "BENIGN"
+    confidence = "Low confidence"
+
     if score >= 75:
-        return ("MALICIOUS", "High confidence")
-    if score >= 30:
-        return ("SUSPICIOUS", "Moderate confidence")
-    return ("BENIGN", "Low confidence")
+        verdict = "MALICIOUS"
+        confidence = "High confidence"
+    elif score >= 30:
+        verdict = "SUSPICIOUS"
+        confidence = "Moderate confidence"
+
+    if vt_found:
+        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 40)
+        medium_vt_suspicious = vt_mal >= 5 or vt_susp >= 10 or (vt_mal + vt_susp) >= 8
+        clean_vt_signal = vt_mal == 0 and vt_susp == 0 and vt_harmless > 0 and score < 30
+
+        if strong_vt_malicious:
+            verdict = "MALICIOUS"
+            confidence = "High confidence" if (vt_mal >= 15 or score >= 75) else "Moderate confidence"
+        elif medium_vt_suspicious:
+            if verdict != "MALICIOUS":
+                verdict = "SUSPICIOUS"
+            confidence = "High confidence" if (vt_mal >= 5 or vt_susp >= 10 or score >= 55) else "Moderate confidence"
+        elif clean_vt_signal:
+            verdict = "BENIGN"
+            confidence = "Moderate confidence" if (vt_harmless >= 3 or vt_undetected >= 10) else "Low confidence"
+
+    return (verdict, confidence)
 
 
 # High-signal techniques
@@ -113,9 +148,24 @@ def score_risk(
     is_trusted_signed = bool(signing.get("verify_ok")) and bool(signing.get("timestamp_verified"))
     signer_subject = (signing.get("subject") or "").strip()
 
+    # ---- VirusTotal context ----
+    vt = summary.get("virustotal", {}) if isinstance(summary.get("virustotal"), dict) else {}
+    vt_found = bool(vt.get("found", False))
+    vt_enabled = bool(vt.get("enabled", False))
+    vt_malicious = int(vt.get("malicious", 0) or 0)
+    vt_suspicious = int(vt.get("suspicious", 0) or 0)
+    vt_harmless = int(vt.get("harmless", 0) or 0)
+    vt_undetected = int(vt.get("undetected", 0) or 0)
+
     # ---- File name / path context ----
     sample_info = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
-    sample_name = str(sample_info.get("name") or sample_info.get("path") or "").strip()
+    sample_name = str(
+        sample_info.get("filename")
+        or sample_info.get("name")
+        or sample_info.get("path")
+        or sample_info.get("path_case")
+        or ""
+    ).strip()
     lower_name = sample_name.lower()
 
     hashy_name = bool(re.fullmatch(r"[0-9a-f]{24,}\.(exe|dll|scr|com|bat|ps1)?", lower_name))
@@ -186,7 +236,6 @@ def score_risk(
         if looks_like_installer and low and is_trusted_signed and not high:
             benign.append(f"Installer context detected; down-weighting common techniques: {', '.join(low[:8])}")
     else:
-        # neutral, not benign
         suspicious.append("No ATT&CK techniques detected in capa output (neutral: may be packed/unsupported) (+0)")
 
     # ---- Behavior density ----
@@ -231,6 +280,29 @@ def score_risk(
         if ip_count == 0 and dom_count == 0 and url_count == 0:
             benign.append("No high-confidence network IOCs extracted after filtering")
 
+    # ---- VirusTotal scoring ----
+    if vt_enabled:
+        if vt_found:
+            if vt_malicious >= 10:
+                add = min(28, 14 + vt_malicious)
+                score += add
+                suspicious.append(f"VirusTotal malicious detections present (malicious={vt_malicious}) (+{add})")
+            elif vt_malicious >= 3:
+                add = min(18, 8 + vt_malicious)
+                score += add
+                suspicious.append(f"VirusTotal elevated detections present (malicious={vt_malicious}) (+{add})")
+            elif vt_suspicious >= 5:
+                add = min(12, 4 + vt_suspicious)
+                score += add
+                suspicious.append(f"VirusTotal suspicious detections present (suspicious={vt_suspicious}) (+{add})")
+            elif vt_harmless > 0 and vt_malicious == 0 and vt_suspicious == 0:
+                benign.append(
+                    f"VirusTotal shows no malicious/suspicious detections "
+                    f"(harmless={vt_harmless}, undetected={vt_undetected})"
+                )
+        else:
+            benign.append("VirusTotal lookup did not return a matching record")
+
     # ---- Packer hints ----
     lief_blob = json.dumps(lief_meta, ensure_ascii=False) if lief_meta else ""
     if re.search(r"\bUPX\b", lief_blob, re.I) or re.search(r"\bpacked\b", lief_blob, re.I):
@@ -269,6 +341,8 @@ def score_risk(
             or len(filtered_ips) > 0
             or len(filtered_domains) > 0
             or len(filtered_urls) > 0
+            or vt_malicious > 0
+            or vt_suspicious > 0
             or re.search(r"\bUPX\b|\bpacked\b", lief_blob, re.I)
         )
     ):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+import requests
 
 from .config import TriageConfig
 from .logging import EventCallback, emit, log_line, ledger_append, utc_now_iso
@@ -30,15 +33,14 @@ from .extract import (
     select_subfile_targets,
 )
 
-
 TRUST_OVERRIDE_TECH_PREFIXES = {
-    "T1055",  # injection
-    "T1003",  # credential dumping
-    "T1105",  # ingress tool transfer
-    "T1071",  # C2
-    "T1041",  # exfil
-    "T1218",  # signed binary proxy exec
-    "T1574",  # hijack execution flow
+    "T1055",
+    "T1003",
+    "T1105",
+    "T1071",
+    "T1041",
+    "T1218",
+    "T1574",
 }
 
 
@@ -69,18 +71,81 @@ def _write_json(path: Path, obj: Any) -> None:
         pass
 
 
-# ----------------------------
-# Authenticode verification + cache (NEW)
-# ----------------------------
+def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "enabled": True,
+        "found": False,
+        "sha256": sha256,
+        "malicious": 0,
+        "suspicious": 0,
+        "harmless": 0,
+        "undetected": 0,
+        "meaningful_name": "",
+        "type_description": "",
+        "times_submitted": 0,
+        "permalink": f"https://www.virustotal.com/gui/file/{sha256}",
+        "error": "",
+        "last_analysis_stats": {},
+        "last_analysis_results": {},
+    }
+
+    if not api_key:
+        result["enabled"] = False
+        result["error"] = "VT_API_KEY not set"
+        return result
+
+    try:
+        r = requests.get(
+            f"https://www.virustotal.com/api/v3/files/{sha256}",
+            headers={"x-apikey": api_key},
+            timeout=timeout_sec,
+        )
+
+        if r.status_code == 200:
+            data = r.json().get("data", {}) or {}
+            attrs = data.get("attributes", {}) or {}
+            stats = attrs.get("last_analysis_stats", {}) or {}
+            results = attrs.get("last_analysis_results", {}) or {}
+
+            result["found"] = True
+            result["malicious"] = int(stats.get("malicious", 0) or 0)
+            result["suspicious"] = int(stats.get("suspicious", 0) or 0)
+            result["harmless"] = int(stats.get("harmless", 0) or 0)
+            result["undetected"] = int(stats.get("undetected", 0) or 0)
+            result["meaningful_name"] = attrs.get("meaningful_name", "") or ""
+            result["type_description"] = attrs.get("type_description", "") or ""
+            result["times_submitted"] = int(attrs.get("times_submitted", 0) or 0)
+            result["last_analysis_stats"] = stats
+            result["last_analysis_results"] = results
+            return result
+
+        if r.status_code == 404:
+            result["error"] = "Hash not found in VirusTotal"
+            return result
+
+        try:
+            result["error"] = f"VirusTotal API error {r.status_code}: {r.json()}"
+        except Exception:
+            result["error"] = f"VirusTotal API error {r.status_code}: {r.text[:500]}"
+        return result
+
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {e}"
+        return result
+
+
+def write_virustotal_json(case_dir: Path, sha256: str) -> dict[str, Any]:
+    api_key = os.getenv("VT_API_KEY", "").strip()
+    vt = vt_lookup_by_hash(sha256, api_key)
+    _write_json(case_dir / "virustotal.json", vt)
+    return vt
+
+
 def verify_authenticode_cached(
     file_path: str | Path,
     cache: dict[str, Any],
     timeout_sec: int = 60,
 ) -> dict[str, Any]:
-    """
-    Best-effort Authenticode verification via `osslsigncode verify`, cached by sha256.
-    Never raises.
-    """
     p = Path(file_path)
 
     result: dict[str, Any] = {
@@ -114,7 +179,6 @@ def verify_authenticode_cached(
     if sha256 in cache:
         cached = cache[sha256]
         if isinstance(cached, dict):
-            # return cached but keep path fresh
             out = dict(cached)
             out["path"] = str(p)
             return out
@@ -134,7 +198,7 @@ def verify_authenticode_cached(
             timeout=timeout_sec,
         )
         out = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")
-        result["raw"] = out[:120000]  # keep cache small-ish
+        result["raw"] = out[:120000]
 
         cur = re.search(r"Current message digest\s*:\s*([A-F0-9]{64})", out, re.I)
         calc = re.search(r"Calculated message digest\s*:\s*([A-F0-9]{64})", out, re.I)
@@ -181,7 +245,6 @@ def write_signing_json(case_dir: Path, sample_path: Path, cache: dict[str, Any])
 
 
 def _trust_override_from_case(case_dir: Path) -> bool:
-    # scan capa.json for technique IDs
     capa_json = case_dir / "capa.json"
     if not capa_json.exists():
         return False
@@ -203,6 +266,40 @@ def _reasons_list(suspicious: list[str], benign: list[str], limit_each: int = 12
     return out
 
 
+def _vt_summary_from_result(vt_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(vt_result.get("enabled", False)),
+        "found": bool(vt_result.get("found", False)),
+        "malicious": int(vt_result.get("malicious", 0) or 0),
+        "suspicious": int(vt_result.get("suspicious", 0) or 0),
+        "harmless": int(vt_result.get("harmless", 0) or 0),
+        "undetected": int(vt_result.get("undetected", 0) or 0),
+        "meaningful_name": vt_result.get("meaningful_name", "") or "",
+        "type_description": vt_result.get("type_description", "") or "",
+        "times_submitted": int(vt_result.get("times_submitted", 0) or 0),
+        "permalink": vt_result.get("permalink", "") or "",
+        "error": vt_result.get("error", "") or "",
+    }
+
+
+def _classify_verdict_compat(score: int, summary: Optional[dict[str, Any]] = None) -> tuple[str, str]:
+    """
+    Compatibility wrapper for verdict classification.
+
+    Newer scoring modules may accept (score, summary) so they can incorporate
+    VirusTotal context. Older versions only accept (score). This helper keeps
+    the engine stable across both styles.
+    """
+    try:
+        if summary is not None:
+            return classify_verdict(score, summary)
+    except TypeError as e:
+        msg = str(e)
+        if "positional argument" not in msg or "were given" not in msg:
+            raise
+    return classify_verdict(score)
+
+
 def run_case(
     sample_path: str,
     case_name: Optional[str] = None,
@@ -217,11 +314,6 @@ def run_case(
     skip_strings: bool = False,
     strings_lite: bool = False,
 ) -> dict[str, Any]:
-    """
-    Added knobs:
-      - skip_strings: skip strings extraction
-      - strings_lite: allow strings-lite mode (depends on steps.py supporting it)
-    """
     cfg = config or TriageConfig()
     total_start = time.time()
 
@@ -233,7 +325,6 @@ def run_case(
     case_dir = cfg.cases_dir / case_name
     case_dir.mkdir(parents=True, exist_ok=True)
 
-    # Signing cache (NEW)
     signing_cache_path = cfg.logs_dir / "signing_cache.json"
     signing_cache = _load_json(signing_cache_path)
 
@@ -245,7 +336,6 @@ def run_case(
 
     emit(on_event, "info", "case", {"case_dir": str(case_dir), "sample": str(sample_case)})
 
-    # NEW: signing.json for top-level sample
     signing_top = write_signing_json(case_dir, sample_case, signing_cache)
     signing_summary = {
         "verify_ok": bool(signing_top.get("verify_ok")),
@@ -254,7 +344,6 @@ def run_case(
         "issuer": signing_top.get("issuer", "") or "",
     }
 
-    # Hashes (emit progress so GUI can show these first)
     def _run_hash_step(algo: str) -> str:
         emit(on_event, "start", algo, {})
         log_line(case_dir, f"STEP_START {algo}")
@@ -287,8 +376,16 @@ def run_case(
         "sha256": sha256,
     }
 
-    runlog: dict[str, Any] = {}
-    summary: dict[str, Any] = {"sample": meta, "tools": {}, "signing": signing_summary}
+    vt_result = write_virustotal_json(case_dir, sha256)
+    vt_summary = _vt_summary_from_result(vt_result)
+
+    runlog: dict[str, Any] = {"virustotal": vt_result}
+    summary: dict[str, Any] = {
+        "sample": meta,
+        "tools": {},
+        "signing": signing_summary,
+        "virustotal": vt_summary,
+    }
 
     def _run_step(step_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         emit(on_event, "start", step_name, {})
@@ -303,19 +400,16 @@ def run_case(
             log_line(case_dir, f"STEP_DONE {step_name} rc={rc} dur={dur}")
         else:
             emit(on_event, "error", step_name, {"returncode": rc, "stderr": res.get("stderr", "")})
-            log_line(case_dir, f"STEP_FAIL {step_name} rc={rc} dur={dur} err={str(res.get('stderr',''))[:200]}")
+            log_line(case_dir, f"STEP_FAIL {step_name} rc={rc} dur={dur} err={str(res.get('stderr', ''))[:200]}")
         return res
 
-    # ----------------------------
-    # Payload extraction + recursion (+ Inno happens in extract.py)
-    # ----------------------------
     payload_result: dict[str, Any] = {"attempted": False, "success": False}
 
     if enable_payload_extraction:
 
         def _do_extract() -> dict[str, Any]:
             extracted_dir = case_dir / "extracted"
-            r = extract_payloads(sample_case, extracted_dir)  # may choose innoextract/7z
+            r = extract_payloads(sample_case, extracted_dir)
             rec = recursive_extract(extracted_dir, max_rounds=recursive_rounds)
             r["recursive"] = rec
 
@@ -327,7 +421,11 @@ def run_case(
             r["post_recursive_rescan"] = {"files": len(all_files), "pes": len(all_pes)}
 
             write_extracted_manifest(case_dir, r)
-            return {"returncode": int(r.get("returncode", 0) or 0), "payload": r, "manifest": str(case_dir / "extracted_manifest.json")}
+            return {
+                "returncode": int(r.get("returncode", 0) or 0),
+                "payload": r,
+                "manifest": str(case_dir / "extracted_manifest.json"),
+            }
 
         runlog["extract"] = _run_step("extract", _do_extract)
         payload_result = (runlog["extract"].get("payload") or {}) if isinstance(runlog["extract"], dict) else {}
@@ -345,9 +443,6 @@ def run_case(
     else:
         summary["payload_extraction"] = {"attempted": False, "success": False, "notes": "disabled"}
 
-    # ----------------------------
-    # Top-level steps
-    # ----------------------------
     runlog["pe_meta"] = _run_step("pe_meta", lambda: step_pe_metadata(sample_case, case_dir))
     runlog["lief_meta"] = _run_step("lief_meta", lambda: step_lief_metadata(sample_case, case_dir))
     runlog["file"] = _run_step("file", lambda: step_file(sample_case, case_dir))
@@ -355,15 +450,11 @@ def run_case(
     if skip_strings:
         runlog["strings"] = {"returncode": 0, "skipped": True, "output_file": None, "stdout": "", "stderr": ""}
     else:
-        # strings_lite requires steps.py support; if not supported, it will simply ignore.
         runlog["strings"] = _run_step("strings", lambda: step_strings(sample_case, case_dir, lite=strings_lite))
 
     runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir, cfg))
     runlog["iocs"] = _run_step("iocs", lambda: step_iocs(case_dir))
 
-    # ----------------------------
-    # Subfile triage + rollups (NEW: top_scoring + attention)
-    # ----------------------------
     sub_rollup: dict[str, Any] = {
         "enabled": bool(triage_extracted_pes),
         "count": 0,
@@ -394,7 +485,7 @@ def run_case(
                 if sub_sample.resolve() != t.resolve():
                     shutil.copy2(t, sub_sample)
             except Exception:
-                sub_sample = t  # fallback
+                sub_sample = t
 
             signing_sf = write_signing_json(sub_dir, sub_sample, signing_cache)
             signed_ok = bool(signing_sf.get("verify_ok")) and bool(signing_sf.get("timestamp_verified"))
@@ -417,6 +508,19 @@ def run_case(
                     "issuer": signing_sf.get("issuer", "") or "",
                 },
                 "flags": {},
+                "virustotal": {
+                    "enabled": False,
+                    "found": False,
+                    "malicious": 0,
+                    "suspicious": 0,
+                    "harmless": 0,
+                    "undetected": 0,
+                    "meaningful_name": "",
+                    "type_description": "",
+                    "times_submitted": 0,
+                    "permalink": "",
+                    "error": "subfile VT lookup not performed",
+                },
             }
 
             def _sub_step(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -438,7 +542,6 @@ def run_case(
             _write_json(sub_dir / "runlog.json", sub_runlog)
             _write_json(sub_dir / "summary.json", sub_summary)
 
-            # trust-override flag from capa techniques
             trust_override = _trust_override_from_case(sub_dir)
             sub_summary["flags"]["trust_override"] = trust_override
 
@@ -447,7 +550,7 @@ def run_case(
             lief_sf = _load_json(sub_dir / "lief_metadata.json")
 
             sf_score, sf_susp, sf_ben = score_risk(sub_summary, iocs_sf, pe_sf, lief_sf)
-            sf_verdict, sf_conf = classify_verdict(sf_score)
+            sf_verdict, sf_conf = _classify_verdict_compat(sf_score, sub_summary)
 
             sub_summary["risk_score"] = sf_score
             sub_summary["verdict"] = sf_verdict
@@ -474,7 +577,6 @@ def run_case(
         sub_results_sorted = sorted(sub_results, key=lambda x: int(x.get("score", 0)), reverse=True)
         sub_rollup["top_scoring_subfiles"] = sub_results_sorted[:5]
 
-        # attention list (NEW)
         attention: list[dict[str, Any]] = []
         for r in sub_results_sorted:
             if int(r.get("score", 0)) >= 60 or (not bool(r.get("signed_ok", False))) or bool(r.get("trust_override", False)):
@@ -482,22 +584,17 @@ def run_case(
         sub_rollup["attention_subfiles"] = attention[:10]
 
     summary["subfiles_rollup"] = sub_rollup
-
-    total_sec = round(time.time() - total_start, 3)
-    summary["runtime_sec_total"] = total_sec
+    summary["runtime_sec_total"] = round(time.time() - total_start, 3)
 
     _write_json(case_dir / "runlog.json", runlog)
     _write_json(case_dir / "summary.json", summary)
 
-    # ----------------------------
-    # Score + verdict (top-level)
-    # ----------------------------
     iocs = _load_json(case_dir / "iocs.json")
     pe_meta = _load_json(case_dir / "pe_metadata.json")
     lief_meta = _load_json(case_dir / "lief_metadata.json")
 
     score, suspicious, benign = score_risk(summary, iocs, pe_meta, lief_meta)
-    verdict, confidence = classify_verdict(score)
+    verdict, confidence = _classify_verdict_compat(score, summary)
 
     summary["risk_score"] = score
     summary["verdict"] = verdict
@@ -509,52 +606,53 @@ def run_case(
 
     _write_json(case_dir / "summary.json", summary)
 
-    # ----------------------------
-    # Reports
-    # ----------------------------
     emit(on_event, "start", "report", {})
     rep = generate_reports(case_dir)
     emit(on_event, "done", "report", rep)
 
+    total_sec = round(time.time() - total_start, 3)
     log_line(case_dir, f"CASE_DONE total_sec={total_sec} verdict={verdict} score={score}")
 
-    # ----------------------------
-    # Ledger
-    # ----------------------------
-    ledger_append(
-        cfg.ledger_file,
-        cfg.logs_dir,
-        {
-            "timestamp_utc": utc_now_iso(),
-            "case": case_name,
-            "filename": sample_case.name,
-            "sha256": sha256,
-            "sha1": sha1,
-            "md5": md5,
-            "size_bytes": sample_case.stat().st_size,
-            "case_dir": str(case_dir),
-            "verdict": verdict,
-            "confidence": confidence,
-            "risk_score": score,
-            "runtime_sec_total": total_sec,
-            "report_pdf": rep.get("report_pdf"),
-            "report_html": rep.get("report_html"),
-            "report_md": rep.get("report_md"),
-            "payload_extraction_success": bool(summary.get("payload_extraction", {}).get("success", False)),
-            "subfile_count": int(summary.get("subfiles_rollup", {}).get("count", 0) or 0),
-            "attention_subfiles": len(summary.get("subfiles_rollup", {}).get("attention_subfiles", []) or []),
-        },
-    )
+    try:
+        _write_json(signing_cache_path, signing_cache)
+    except Exception:
+        pass
 
-    # persist signing cache (NEW)
-    _write_json(signing_cache_path, signing_cache)
+    try:
+        ledger_append(
+            cfg.ledger_path,
+            {
+                "timestamp_utc": utc_now_iso(),
+                "case_name": case_name,
+                "sample": str(sample_case),
+                "sha256": sha256,
+                "score": score,
+                "verdict": verdict,
+                "confidence": confidence,
+                "runtime_sec_total": total_sec,
+                "vt_found": bool(summary.get("virustotal", {}).get("found", False)),
+                "vt_malicious": int(summary.get("virustotal", {}).get("malicious", 0) or 0),
+                "vt_suspicious": int(summary.get("virustotal", {}).get("suspicious", 0) or 0),
+            },
+        )
+    except Exception:
+        pass
+
+    report_md = rep.get("report_md") if isinstance(rep, dict) else None
+    report_html = rep.get("report_html") if isinstance(rep, dict) else None
+    report_pdf = rep.get("report_pdf") if isinstance(rep, dict) else None
 
     return {
         "case_dir": str(case_dir),
-        "sample_case": str(sample_case),
-        **rep,
-        "runtime_sec_total": total_sec,
+        "sample": str(sample_case),
+        "score": score,
         "risk_score": score,
         "verdict": verdict,
         "confidence": confidence,
+        "summary": summary,
+        "report": rep,
+        "report_md": report_md,
+        "report_html": report_html,
+        "report_pdf": report_pdf,
+        "virustotal": summary.get("virustotal", {}),
     }
