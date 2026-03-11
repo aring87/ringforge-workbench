@@ -7,12 +7,13 @@ import re
 import shutil
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import requests
 
+from .api_analysis import analyze_apis
 from .config import TriageConfig
 from .logging import EventCallback, emit, log_line, ledger_append, utc_now_iso
 from .report import generate_reports
@@ -141,6 +142,81 @@ def write_virustotal_json(case_dir: Path, sha256: str) -> dict[str, Any]:
     return vt
 
 
+def _extract_first_match(pattern: str, text: str, flags: int = 0) -> str:
+    m = re.search(pattern, text, flags)
+    return m.group(1).strip() if m else ""
+
+
+def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
+    text = raw or ""
+
+    subject = _extract_first_match(
+        r"Signer #0:\s*\n\s*Subject:\s*(.+)",
+        text,
+        re.MULTILINE,
+    )
+    issuer = _extract_first_match(
+        r"Signer #0:\s*\n\s*Subject:\s*.+\n\s*Issuer\s*:\s*(.+)",
+        text,
+        re.MULTILINE,
+    )
+    signing_time_utc = _extract_first_match(r"Signing time:\s*(.+)", text)
+    timestamp_time_utc = _extract_first_match(r"Timestamp time:\s*(.+)", text)
+
+    signature_verification_ok = bool(
+        re.search(r"(?mi)^Signature verification:\s*ok\s*$", text)
+    )
+    timestamp_verified = bool(
+        re.search(r"(?mi)^Timestamp(?: Server Signature)? verification:\s*ok\s*$", text)
+    )
+    timestamp_crl_ok = bool(
+        re.search(r"(?mi)^Timestamp(?: Server Signature)? CRL verification:\s*ok\s*$", text)
+    )
+    signature_crl_ok = bool(
+        re.search(r"(?mi)^Signature CRL verification:\s*ok\s*$", text)
+    )
+    succeeded_marker = bool(re.search(r"(?mi)^Succeeded\s*$", text))
+
+    verified_sig_count = 0
+    m_count = re.search(r"(?mi)^Number of verified signatures:\s*(\d+)\s*$", text)
+    if m_count:
+        try:
+            verified_sig_count = int(m_count.group(1))
+        except ValueError:
+            verified_sig_count = 0
+
+    digest_match_ok = False
+    cur = re.search(r"Current message digest\s*:\s*([A-F0-9]{40,64})", text, re.I)
+    calc = re.search(r"Calculated message digest\s*:\s*([A-F0-9]{40,64})", text, re.I)
+    if cur and calc and cur.group(1).upper() == calc.group(1).upper():
+        digest_match_ok = True
+
+    verify_ok = (
+        signature_verification_ok
+        or verified_sig_count > 0
+        or succeeded_marker
+        or digest_match_ok
+    )
+
+    return {
+        "verify_ok": verify_ok,
+        "timestamp_verified": timestamp_verified,
+        "subject": subject,
+        "issuer": issuer,
+        "signing_time_utc": signing_time_utc,
+        "timestamp_time_utc": timestamp_time_utc,
+        "parse_evidence": {
+            "signature_verification_ok": signature_verification_ok,
+            "verified_sig_count": verified_sig_count,
+            "succeeded_marker": succeeded_marker,
+            "digest_match_ok": digest_match_ok,
+            "timestamp_verified": timestamp_verified,
+            "timestamp_crl_ok": timestamp_crl_ok,
+            "signature_crl_ok": signature_crl_ok,
+        },
+    }
+
+
 def verify_authenticode_cached(
     file_path: str | Path,
     cache: dict[str, Any],
@@ -181,6 +257,21 @@ def verify_authenticode_cached(
         if isinstance(cached, dict):
             out = dict(cached)
             out["path"] = str(p)
+            out["sha256"] = sha256
+
+            raw_cached = str(out.get("raw", "") or "")
+            if raw_cached:
+                reparsed = _parse_osslsigncode_output(raw_cached)
+                out["verify_ok"] = bool(reparsed.get("verify_ok"))
+                out["timestamp_verified"] = bool(reparsed.get("timestamp_verified"))
+                out["subject"] = reparsed.get("subject", out.get("subject", "") or "") or ""
+                out["issuer"] = reparsed.get("issuer", out.get("issuer", "") or "") or ""
+                out["signing_time_utc"] = reparsed.get("signing_time_utc", out.get("signing_time_utc", "") or "") or ""
+                out["timestamp_time_utc"] = reparsed.get("timestamp_time_utc", out.get("timestamp_time_utc", "") or "") or ""
+                out["parse_evidence"] = reparsed.get("parse_evidence", out.get("parse_evidence", {}) or {})
+                cache[sha256] = out
+                return out
+
             return out
 
     exe = shutil.which("osslsigncode")
@@ -197,32 +288,21 @@ def verify_authenticode_cached(
             text=True,
             timeout=timeout_sec,
         )
-        out = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")
-        result["raw"] = out[:120000]
 
-        cur = re.search(r"Current message digest\s*:\s*([A-F0-9]{64})", out, re.I)
-        calc = re.search(r"Calculated message digest\s*:\s*([A-F0-9]{64})", out, re.I)
-        if cur and calc and cur.group(1).upper() == calc.group(1).upper():
-            result["verify_ok"] = True
+        raw = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")
+        result["raw"] = raw[:120000]
 
-        if re.search(r"Timestamp verified using", out, re.I):
-            result["timestamp_verified"] = True
+        parsed = _parse_osslsigncode_output(raw)
+        result["verify_ok"] = bool(parsed.get("verify_ok"))
+        result["timestamp_verified"] = bool(parsed.get("timestamp_verified"))
+        result["subject"] = parsed.get("subject", "") or ""
+        result["issuer"] = parsed.get("issuer", "") or ""
+        result["signing_time_utc"] = parsed.get("signing_time_utc", "") or ""
+        result["timestamp_time_utc"] = parsed.get("timestamp_time_utc", "") or ""
+        result["parse_evidence"] = parsed.get("parse_evidence", {})
 
-        m_sub = re.search(r"Subject:\s*(.+)", out)
-        if m_sub:
-            result["subject"] = m_sub.group(1).strip()
-
-        m_iss = re.search(r"Issuer\s*:\s*(.+)", out)
-        if m_iss:
-            result["issuer"] = m_iss.group(1).strip()
-
-        m_ts = re.search(r"Timestamp time:\s*(.+)", out)
-        if m_ts:
-            result["timestamp_time_utc"] = m_ts.group(1).strip()
-
-        m_st = re.search(r"Signing time:\s*(.+)", out)
-        if m_st:
-            result["signing_time_utc"] = m_st.group(1).strip()
+        if cp.returncode != 0 and not result["verify_ok"]:
+            result["error"] = f"osslsigncode verify returned {cp.returncode}"
 
         cache[sha256] = result
         return result
@@ -239,7 +319,8 @@ def verify_authenticode_cached(
 
 def write_signing_json(case_dir: Path, sample_path: Path, cache: dict[str, Any]) -> dict[str, Any]:
     signing = verify_authenticode_cached(sample_path, cache)
-    signing["generated_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    signing["generated_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    signing["parser_version"] = "signing-v2"
     _write_json(case_dir / "signing.json", signing)
     return signing
 
@@ -283,13 +364,6 @@ def _vt_summary_from_result(vt_result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _classify_verdict_compat(score: int, summary: Optional[dict[str, Any]] = None) -> tuple[str, str]:
-    """
-    Compatibility wrapper for verdict classification.
-
-    Newer scoring modules may accept (score, summary) so they can incorporate
-    VirusTotal context. Older versions only accept (score). This helper keeps
-    the engine stable across both styles.
-    """
     try:
         if summary is not None:
             return classify_verdict(score, summary)
@@ -452,6 +526,7 @@ def run_case(
     else:
         runlog["strings"] = _run_step("strings", lambda: step_strings(sample_case, case_dir, lite=strings_lite))
 
+    runlog["api_analysis"] = _run_step("api_analysis", lambda: analyze_apis(sample_case, case_dir))
     runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir, cfg))
     runlog["iocs"] = _run_step("iocs", lambda: step_iocs(case_dir))
 
@@ -536,6 +611,7 @@ def run_case(
                 sub_runlog["strings"] = {"returncode": 0, "skipped": True}
             else:
                 sub_runlog["strings"] = _sub_step(lambda: step_strings(sub_sample, sub_dir, lite=strings_lite))
+            sub_runlog["api_analysis"] = _sub_step(lambda: analyze_apis(sub_sample, sub_dir))
             sub_runlog["capa"] = _sub_step(lambda: step_capa(sub_sample, sub_dir, cfg))
             sub_runlog["iocs"] = _sub_step(lambda: step_iocs(sub_dir))
 

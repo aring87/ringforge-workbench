@@ -1,4 +1,3 @@
-# ~/analysis/static_triage_engine/report.py
 from __future__ import annotations
 
 import html
@@ -54,7 +53,6 @@ def _extract_attack_techniques_from_capa(capa_json_path: Path) -> Tuple[List[str
 
 
 def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
-    # Prefer iocs["stats"]["counts"] if present
     stats = None
     if isinstance(iocs.get("stats"), dict):
         stats = iocs["stats"].get("counts")
@@ -71,11 +69,9 @@ def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
                 out[k] = int(stats.get(k, 0) or 0)
             except Exception:
                 out[k] = 0
-        # normalize registry key name for display
         out.setdefault("registry", out.get("registry_keys", 0))
         return out
 
-    # fallback
     obs = iocs.get("observables", {}) if isinstance(iocs.get("observables"), dict) else {}
     out = {}
     out["domains"] = len(obs.get("domains", []) or []) if isinstance(obs.get("domains"), list) else 0
@@ -88,12 +84,6 @@ def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
 
 
 def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str], List[str]]:
-    """
-    Supports:
-      - reasons: list[str] (new)
-      - reason_breakdown: {suspicious: [...], benign: [...]} (preferred for split)
-      - reasons: dict (old)
-    """
     rb = summary.get("reason_breakdown")
     if isinstance(rb, dict):
         susp = rb.get("suspicious", [])
@@ -106,7 +96,6 @@ def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str]
 
     reasons = summary.get("reasons")
     if isinstance(reasons, list):
-        # best-effort split based on prefix
         s_out: List[str] = []
         b_out: List[str] = []
         for x in reasons:
@@ -140,6 +129,7 @@ def _artifact_links(case_dir: Path) -> List[Tuple[str, Path]]:
         ("signing.json", case_dir / "signing.json"),
         ("file.txt", case_dir / "file.txt"),
         ("strings.txt", case_dir / "strings.txt"),
+        ("api_analysis.json", case_dir / "api_analysis.json"),
         ("capa.json", case_dir / "capa.json"),
         ("capa.txt", case_dir / "capa.txt"),
         ("iocs.json", case_dir / "iocs.json"),
@@ -152,11 +142,6 @@ def _artifact_links(case_dir: Path) -> List[Tuple[str, Path]]:
 
 
 def _subfiles_block(summary: dict[str, Any]) -> dict[str, Any]:
-    """
-    Pulls subfile rollups created by engine:
-      summary["subfiles_rollup"]["top_scoring_subfiles"]
-      summary["subfiles_rollup"]["attention_subfiles"]
-    """
     sr = summary.get("subfiles_rollup") if isinstance(summary.get("subfiles_rollup"), dict) else {}
     top = sr.get("top_scoring_subfiles", [])
     attn = sr.get("attention_subfiles", [])
@@ -168,6 +153,48 @@ def _subfiles_block(summary: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(crit, dict):
         crit = {}
     return {"top": top[:5], "attn": attn[:10], "crit": crit}
+
+
+def _api_block(case_dir: Path) -> dict[str, Any]:
+    api = _read_json(case_dir / "api_analysis.json")
+    if not isinstance(api, dict):
+        api = {}
+
+    summary = api.get("summary") if isinstance(api.get("summary"), dict) else {}
+    category_hits = api.get("category_hits") if isinstance(api.get("category_hits"), dict) else {}
+    chain_findings = api.get("chain_findings") if isinstance(api.get("chain_findings"), list) else []
+    all_imports = api.get("all_imports") if isinstance(api.get("all_imports"), list) else []
+    imports_by_dll = api.get("imports_by_dll") if isinstance(api.get("imports_by_dll"), dict) else {}
+
+    high = [x for x in chain_findings if isinstance(x, dict) and x.get("severity") == "high"]
+    med = [x for x in chain_findings if isinstance(x, dict) and x.get("severity") == "medium"]
+
+    top_categories = []
+    for cat, funcs in category_hits.items():
+        if isinstance(funcs, list):
+            top_categories.append((str(cat), len(funcs), [str(x) for x in funcs[:12]]))
+    top_categories.sort(key=lambda x: x[1], reverse=True)
+
+    dll_preview = []
+    for dll, funcs in imports_by_dll.items():
+        if isinstance(funcs, list):
+            dll_preview.append((str(dll), len(funcs), [str(x) for x in funcs[:10]]))
+    dll_preview.sort(key=lambda x: x[1], reverse=True)
+
+    return {
+        "present": bool(api),
+        "returncode": int(api.get("returncode", 0) or 0) if api else 0,
+        "error": str(api.get("error", "") or "") if api else "",
+        "dll_count": int(summary.get("dll_count", 0) or 0) if summary else 0,
+        "import_count": int(summary.get("import_count", 0) or 0) if summary else 0,
+        "category_count": int(summary.get("category_count", 0) or 0) if summary else 0,
+        "high_chain_count": int(summary.get("high_severity_chain_count", 0) or 0) if summary else 0,
+        "high_chains": high[:8],
+        "medium_chains": med[:8],
+        "top_categories": top_categories[:8],
+        "top_dlls": dll_preview[:8],
+        "all_imports_preview": [str(x) for x in all_imports[:40]],
+    }
 
 
 def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
@@ -183,7 +210,6 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     lines.append(f"- **Confidence:** `{data['confidence']}`")
     lines.append("")
 
-    # File facts
     lines.append("## File")
     lines.append(f"- **Name:** `{data['filename']}`")
     lines.append(f"- **Size:** `{data['size_bytes']}` bytes")
@@ -207,6 +233,37 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
         lines.append("- No high-signal suspicious reasons recorded.")
     lines.append("")
 
+    lines.append("## API Analysis")
+    api = data["api"]
+    if api["present"] and api["returncode"] == 0:
+        lines.append(f"- **Imported DLLs:** `{api['dll_count']}`")
+        lines.append(f"- **Imported APIs:** `{api['import_count']}`")
+        lines.append(f"- **Behavior Categories Hit:** `{api['category_count']}`")
+        lines.append(f"- **High Severity API Chains:** `{api['high_chain_count']}`")
+        if api["top_categories"]:
+            lines.append("")
+            lines.append("### API Categories")
+            for cat, count, funcs in api["top_categories"]:
+                lines.append(f"- **{cat}** (`{count}`): {', '.join(f'`{x}`' for x in funcs)}")
+        if api["high_chains"] or api["medium_chains"]:
+            lines.append("")
+            lines.append("### API Behavior Chains")
+            for item in api["high_chains"] + api["medium_chains"]:
+                name = item.get("name", "")
+                sev = item.get("severity", "")
+                hits = item.get("matched_apis", []) if isinstance(item.get("matched_apis"), list) else []
+                lines.append(f"- **{name}** (`{sev}`): {', '.join(f'`{x}`' for x in hits[:12])}")
+        if api["top_dlls"]:
+            lines.append("")
+            lines.append("### Top Imported DLLs")
+            for dll, count, funcs in api["top_dlls"]:
+                lines.append(f"- **{dll}** (`{count}` imports): {', '.join(f'`{x}`' for x in funcs)}")
+    elif api["present"]:
+        lines.append(f"- API analysis returned an error: `{api['error']}`")
+    else:
+        lines.append("- API analysis artifact not present.")
+    lines.append("")
+
     lines.append("## ATT&CK / Behavior Density (capa)")
     lines.append(f"- **Technique IDs:** `{len(data['techniques'])}`")
     lines.append(f"- **Match Count (heuristic):** `{data['capa_match_count']}`")
@@ -227,13 +284,11 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     lines.append("- Full IOC list: `iocs.csv` / `iocs.json`")
     lines.append("")
 
-    # NEW: Embedded payload rollup
     sub = data["subfiles"]
     lines.append("## Embedded Payloads")
     if sub["top"]:
         lines.append("### Top Scoring Embedded Payloads (Top 5)")
         for r in sub["top"]:
-            # tolerant keys
             name = r.get("name") or r.get("filename") or "subfile"
             score = r.get("score")
             verdict = r.get("verdict", "")
@@ -263,7 +318,7 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
         lines.append("- **Hunt:** Search for these hashes and any extracted IOCs across EDR/SIEM.")
         lines.append("- **Detonation (controlled):** If permitted, run in an isolated sandbox to confirm runtime behavior.")
     elif data["score"] >= 60:
-        lines.append("- **Triage:** Validate signature/Publisher, compare against known-good installer, and review capa findings.")
+        lines.append("- **Triage:** Validate signature/Publisher, compare against known-good installer, and review capa/API findings.")
         lines.append("- **Hunt:** Search for IOCs and hash occurrences in logs.")
     else:
         lines.append("- **Review:** Likely low risk; verify provenance (source) and signature if required.")
@@ -289,7 +344,7 @@ def _actions_html(score: int) -> str:
     elif score >= 60:
         items = [
             "<li><b>Triage:</b> Validate signature/publisher and compare against known-good.</li>",
-            "<li><b>Review:</b> Inspect capa techniques and suspicious reasons.</li>",
+            "<li><b>Review:</b> Inspect capa techniques, API chains, and suspicious reasons.</li>",
             "<li><b>Hunt:</b> Search IOCs and hash across telemetry.</li>",
         ]
     else:
@@ -326,6 +381,64 @@ def _subfiles_html(sub: dict[str, Any]) -> str:
         <ul>{top_html}</ul>
         <div style="margin-top:10px; font-weight:700;">Attention</div>
         <ul>{attn_html}</ul>
+      </div>
+    """
+
+
+def _api_html(api: dict[str, Any]) -> str:
+    if not api.get("present"):
+        return """
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:8px;">API Analysis</div>
+          <div class="small muted">API analysis artifact not present.</div>
+        </div>
+        """
+
+    if api.get("returncode", 0) != 0:
+        return f"""
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:8px;">API Analysis</div>
+          <div class="small muted">API analysis returned an error.</div>
+          <div><code>{_safe(api.get("error",""))}</code></div>
+        </div>
+        """
+
+    cat_html = ""
+    for cat, count, funcs in api.get("top_categories", []):
+        cat_html += f"<li><b>{_safe(cat)}</b> — <code>{_safe(count)}</code> hits — {', '.join(f'<code>{_safe(x)}</code>' for x in funcs)}</li>"
+    if not cat_html:
+        cat_html = "<li>None</li>"
+
+    chain_items = []
+    for item in api.get("high_chains", []) + api.get("medium_chains", []):
+        name = _safe(item.get("name", ""))
+        sev = _safe(item.get("severity", ""))
+        hits = item.get("matched_apis", []) if isinstance(item.get("matched_apis"), list) else []
+        hit_html = ", ".join(f"<code>{_safe(x)}</code>" for x in hits[:12])
+        chain_items.append(f"<li><b>{name}</b> — <code>{sev}</code> — {hit_html}</li>")
+    chain_html = "".join(chain_items) or "<li>None</li>"
+
+    dll_items = []
+    for dll, count, funcs in api.get("top_dlls", []):
+        func_html = ", ".join(f"<code>{_safe(x)}</code>" for x in funcs)
+        dll_items.append(f"<li><b>{_safe(dll)}</b> — <code>{_safe(count)}</code> imports — {func_html}</li>")
+    dll_html = "".join(dll_items) or "<li>None</li>"
+
+    return f"""
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:8px;">API Analysis</div>
+        <div class="kv">
+          <div>Imported DLLs</div><div><code>{_safe(api.get("dll_count",0))}</code></div>
+          <div>Imported APIs</div><div><code>{_safe(api.get("import_count",0))}</code></div>
+          <div>Behavior Categories</div><div><code>{_safe(api.get("category_count",0))}</code></div>
+          <div>High Severity Chains</div><div><code>{_safe(api.get("high_chain_count",0))}</code></div>
+        </div>
+        <div style="margin-top:10px; font-weight:700;">Top Categories</div>
+        <ul>{cat_html}</ul>
+        <div style="margin-top:10px; font-weight:700;">Behavior Chains</div>
+        <ul>{chain_html}</ul>
+        <div style="margin-top:10px; font-weight:700;">Top Imported DLLs</div>
+        <ul>{dll_html}</ul>
       </div>
     """
 
@@ -432,6 +545,10 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     </div>
 
     <div class="row" style="margin-top:12px;">
+      {_api_html(data["api"])}
+    </div>
+
+    <div class="row" style="margin-top:12px;">
       <div class="card">
         <div style="font-weight:700; margin-bottom:8px;">Key Findings (Suspicious)</div>
         <ul>{susp_html}</ul>
@@ -506,8 +623,8 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     susp, ben = _top_reasons(summary, max_items=6)
     counts = _ioc_counts(iocs_j)
     artifacts = _artifact_links(case_dir)
+    api = _api_block(case_dir)
 
-    # signing summary
     signing = summary.get("signing") if isinstance(summary.get("signing"), dict) else {}
     signing_summary = {}
     if signing:
@@ -536,6 +653,7 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
         "actions_html": _actions_html(score),
         "subfiles": _subfiles_block(summary),
         "signing_summary": signing_summary,
+        "api": api,
     }
 
     report_md = _write_md(case_dir, data)

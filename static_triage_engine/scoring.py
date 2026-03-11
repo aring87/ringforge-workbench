@@ -9,12 +9,6 @@ from urllib.parse import urlparse
 
 
 def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple[str, str]:
-    """
-    Classify the final verdict from the heuristic score, with optional
-    VirusTotal-aware adjustments when summary['virustotal'] is present.
-
-    This remains backward-compatible with older callers that only pass score.
-    """
     vt = summary.get("virustotal", {}) if isinstance(summary, dict) and isinstance(summary.get("virustotal"), dict) else {}
     vt_found = bool(vt.get("found", False))
     vt_mal = int(vt.get("malicious", 0) or 0)
@@ -25,53 +19,62 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
     verdict = "BENIGN"
     confidence = "Low confidence"
 
-    if score >= 75:
+    if score >= 90:
         verdict = "MALICIOUS"
         confidence = "High confidence"
-    elif score >= 30:
+    elif score >= 75:
         verdict = "SUSPICIOUS"
         confidence = "Moderate confidence"
+    elif score >= 40:
+        verdict = "LOW_RISK"
+        confidence = "Low confidence"
 
     if vt_found:
-        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 40)
+        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 55)
         medium_vt_suspicious = vt_mal >= 5 or vt_susp >= 10 or (vt_mal + vt_susp) >= 8
-        clean_vt_signal = vt_mal == 0 and vt_susp == 0 and vt_harmless > 0 and score < 30
+        clean_vt_signal = vt_mal == 0 and vt_susp == 0 and (vt_harmless >= 1 or vt_undetected >= 10)
 
         if strong_vt_malicious:
             verdict = "MALICIOUS"
-            confidence = "High confidence" if (vt_mal >= 15 or score >= 75) else "Moderate confidence"
-        elif medium_vt_suspicious:
-            if verdict != "MALICIOUS":
+            confidence = "High confidence" if (vt_mal >= 15 or score >= 90) else "Moderate confidence"
+        elif medium_vt_suspicious and verdict != "MALICIOUS":
+            if score >= 75:
                 verdict = "SUSPICIOUS"
-            confidence = "High confidence" if (vt_mal >= 5 or vt_susp >= 10 or score >= 55) else "Moderate confidence"
+            elif score >= 40:
+                verdict = "LOW_RISK"
+            else:
+                verdict = "SUSPICIOUS"
+            confidence = "High confidence" if (vt_mal >= 5 or vt_susp >= 10 or score >= 75) else "Moderate confidence"
         elif clean_vt_signal:
-            verdict = "BENIGN"
-            confidence = "Moderate confidence" if (vt_harmless >= 3 or vt_undetected >= 10) else "Low confidence"
+            if score < 40:
+                verdict = "BENIGN"
+                confidence = "Moderate confidence" if (vt_harmless >= 3 or vt_undetected >= 20) else "Low confidence"
+            elif score < 75:
+                verdict = "LOW_RISK"
+                confidence = "Low confidence"
 
-    return (verdict, confidence)
+    return verdict, confidence
 
 
-# High-signal techniques
 HIGH_SIGNAL_TECH_PREFIXES = {
-    "T1055",  # Process Injection
-    "T1059",  # Command and Scripting Interpreter
-    "T1105",  # Ingress Tool Transfer
-    "T1547",  # Boot/Logon Autostart Execution
-    "T1543",  # Create/Modify System Process
-    "T1569",  # System Services
-    "T1021",  # Remote Services
-    "T1071",  # Application Layer Protocol
-    "T1041",  # Exfiltration Over C2 Channel
-    "T1003",  # Credential Dumping
-    "T1110",  # Brute Force
-    "T1552",  # Unsecured Credentials
-    "T1218",  # Signed Binary Proxy Execution
-    "T1574",  # Hijack Execution Flow
-    "T1036",  # Masquerading
-    "T1566",  # Phishing
+    "T1055",
+    "T1059",
+    "T1105",
+    "T1547",
+    "T1543",
+    "T1569",
+    "T1021",
+    "T1071",
+    "T1041",
+    "T1003",
+    "T1110",
+    "T1552",
+    "T1218",
+    "T1574",
+    "T1036",
+    "T1566",
 }
 
-# Lower-signal techniques that often appear in installers
 LOW_SIGNAL_TECH_PREFIXES = {
     "T1027",
     "T1033",
@@ -121,13 +124,11 @@ def score_risk(
 
     case_dir = _get_case_dir(summary)
 
-    # ---- Load capa ----
     capa_json_path = case_dir / "capa.json"
     capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
     techs = sorted(set(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", capa_blob)))
     match_count = capa_blob.count('"matches"')
 
-    # ---- Version info / installer look ----
     file_info = _pe_string_table(pe_meta)
     company = (file_info.get("CompanyName") or "").strip()
     product = (file_info.get("ProductName") or "").strip()
@@ -136,19 +137,21 @@ def score_risk(
 
     looks_like_installer = _looks_like_installer(company, product, desc, summary, case_dir)
 
-    # ---- Parent/subfile context ----
     is_subfile = _is_subfile_case(case_dir)
     parent_case_dir = _get_parent_case_dir_from_subfile(case_dir) if is_subfile else None
     parent_summary = _safe_load_json(parent_case_dir / "summary.json") if parent_case_dir else None
     parent_verdict = (parent_summary or {}).get("verdict") if isinstance(parent_summary, dict) else None
-    parent_is_benign = parent_verdict == "BENIGN"
+    parent_is_low = parent_verdict in {"BENIGN", "LOW_RISK"}
 
-    # ---- Signing context ----
     signing = _load_signing(case_dir)
-    is_trusted_signed = bool(signing.get("verify_ok")) and bool(signing.get("timestamp_verified"))
+    verify_ok = bool(signing.get("verify_ok"))
+    timestamp_verified = bool(signing.get("timestamp_verified"))
     signer_subject = (signing.get("subject") or "").strip()
+    has_signer_subject = bool(signer_subject)
 
-    # ---- VirusTotal context ----
+    is_trusted_signed = verify_ok and timestamp_verified
+    is_partially_trusted_signed = (timestamp_verified and has_signer_subject) or verify_ok
+
     vt = summary.get("virustotal", {}) if isinstance(summary.get("virustotal"), dict) else {}
     vt_found = bool(vt.get("found", False))
     vt_enabled = bool(vt.get("enabled", False))
@@ -156,8 +159,10 @@ def score_risk(
     vt_suspicious = int(vt.get("suspicious", 0) or 0)
     vt_harmless = int(vt.get("harmless", 0) or 0)
     vt_undetected = int(vt.get("undetected", 0) or 0)
+    clean_vt = vt_found and vt_malicious == 0 and vt_suspicious == 0 and (vt_harmless > 0 or vt_undetected > 0)
 
-    # ---- File name / path context ----
+    api_json = _load_api_analysis(case_dir)
+
     sample_info = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
     sample_name = str(
         sample_info.get("filename")
@@ -171,41 +176,48 @@ def score_risk(
     hashy_name = bool(re.fullmatch(r"[0-9a-f]{24,}\.(exe|dll|scr|com|bat|ps1)?", lower_name))
     suspicious_ext = lower_name.endswith((".scr", ".com", ".js", ".jse", ".vbs", ".ps1", ".hta"))
 
-    # ---- Technique grouping ----
     high = [t for t in techs if _prefix_in(t, HIGH_SIGNAL_TECH_PREFIXES)]
     low = [t for t in techs if _prefix_in(t, LOW_SIGNAL_TECH_PREFIXES)]
     other = [t for t in techs if t not in set(high) and t not in set(low)]
     trust_override = any(_prefix_in(t, TRUST_OVERRIDE_TECH_PREFIXES) for t in techs)
 
-    # ---- Baseline trust / metadata ----
     if is_trusted_signed:
         benign.append(
             f"Valid Authenticode signature with verified timestamp"
             f"{f' (Subject={signer_subject})' if signer_subject else ''}"
         )
+    elif is_partially_trusted_signed:
+        score += 4
+        suspicious.append("File has partial signing trust (signer/timestamp present but full verification not confirmed) (+4)")
     else:
         score += 12
         suspicious.append("File is unsigned or signature/timestamp verification failed (+12)")
 
+    meta_penalty_scale = 0.5 if looks_like_installer else 1.0
+
     if not company:
-        score += 5
-        suspicious.append("Missing CompanyName in version info (+5)")
+        add = max(1, int(5 * meta_penalty_scale))
+        score += add
+        suspicious.append(f"Missing CompanyName in version info (+{add})")
     else:
         benign.append(f"CompanyName present: {company}")
 
     if not product:
-        score += 4
-        suspicious.append("Missing ProductName in version info (+4)")
+        add = max(1, int(4 * meta_penalty_scale))
+        score += add
+        suspicious.append(f"Missing ProductName in version info (+{add})")
     else:
         benign.append(f"ProductName present: {product}")
 
     if not desc:
-        score += 3
-        suspicious.append("Missing FileDescription in version info (+3)")
+        add = max(1, int(3 * meta_penalty_scale))
+        score += add
+        suspicious.append(f"Missing FileDescription in version info (+{add})")
 
     if not original_filename:
-        score += 3
-        suspicious.append("Missing OriginalFilename in version info (+3)")
+        add = max(1, int(3 * meta_penalty_scale))
+        score += add
+        suspicious.append(f"Missing OriginalFilename in version info (+{add})")
 
     if hashy_name:
         score += 8
@@ -215,7 +227,6 @@ def score_risk(
         score += 12
         suspicious.append(f"Suspicious executable/script extension observed: {sample_name} (+12)")
 
-    # ---- Technique scoring ----
     if techs:
         if high:
             add = min(50, 22 + 8 * len(high))
@@ -224,32 +235,46 @@ def score_risk(
                 f"High-signal ATT&CK techniques present (count={len(high)}): {', '.join(high[:10])} (+{add})"
             )
         else:
-            add = 10 if not looks_like_installer else 4
+            add = 8 if not looks_like_installer else 3
             score += add
             suspicious.append(f"Only low/medium-signal ATT&CK techniques detected (count={len(techs)}) (+{add})")
 
+        if looks_like_installer and low and not high:
+            benign.append(f"Installer/launcher context detected; down-weighting common techniques: {', '.join(low[:8])}")
+
         if other:
-            add = min(20, 4 + 2 * len(other))
+            if looks_like_installer and not high and not trust_override:
+                add = min(8, 2 + len(other))
+            else:
+                add = min(20, 4 + 2 * len(other))
             score += add
             suspicious.append(f"Additional ATT&CK techniques detected (count={len(other)}) (+{add})")
-
-        if looks_like_installer and low and is_trusted_signed and not high:
-            benign.append(f"Installer context detected; down-weighting common techniques: {', '.join(low[:8])}")
     else:
-        suspicious.append("No ATT&CK techniques detected in capa output (neutral: may be packed/unsupported) (+0)")
+        benign.append("No ATT&CK technique IDs detected in capa output")
 
-    # ---- Behavior density ----
     if match_count > 0:
-        if looks_like_installer and is_trusted_signed and not high:
-            density = min(10, 3 + int(match_count / 20))
+        if looks_like_installer and not high:
+            density = min(5, 1 + int(match_count / 35))
+        elif is_trusted_signed and not trust_override and not high:
+            density = min(8, 2 + int(match_count / 25))
         else:
             density = min(24, 6 + int(match_count / 8))
         score += density
         suspicious.append(f"capa match density (match_count≈{match_count}) (+{density})")
     else:
-        suspicious.append("No capa matches detected (neutral: may be packed/unsupported) (+0)")
+        benign.append("No capa matches detected")
 
-    # ---- IOC scoring ----
+    score += _score_api_findings(
+        api_json=api_json,
+        looks_like_installer=looks_like_installer,
+        is_trusted_signed=is_trusted_signed,
+        is_partially_trusted_signed=is_partially_trusted_signed,
+        clean_vt=clean_vt,
+        trust_override=trust_override,
+        suspicious=suspicious,
+        benign=benign,
+    )
+
     observables = _extract_observables(iocs)
     filtered_ips = _filter_ips(observables.get("ips", []))
     filtered_domains = _filter_domains(observables.get("domains", []))
@@ -268,19 +293,25 @@ def score_risk(
         url_count = len(filtered_urls)
 
         if ip_count > 0:
-            add = min(22, 10 + 3 * ip_count)
+            if clean_vt and ip_count <= 1 and not trust_override:
+                add = min(6, 2 + ip_count)
+            else:
+                add = min(22, 10 + 3 * ip_count)
             score += add
             suspicious.append(f"Network IP IOCs present (filtered_ips={ip_count}) (+{add})")
+        else:
+            benign.append("No high-confidence network IP IOCs extracted after filtering")
 
         if dom_count + url_count > 0:
-            add = min(16, 3 + (2 * dom_count) + min(5, url_count))
+            if clean_vt and (dom_count + url_count) <= 6 and not trust_override:
+                add = min(4, 1 + dom_count)
+            else:
+                add = min(16, 3 + (2 * dom_count) + min(5, url_count))
             score += add
             suspicious.append(f"Domains/URLs present (filtered_domains={dom_count}, filtered_urls={url_count}) (+{add})")
+        elif ip_count == 0:
+            benign.append("No high-confidence network domains/URLs extracted after filtering")
 
-        if ip_count == 0 and dom_count == 0 and url_count == 0:
-            benign.append("No high-confidence network IOCs extracted after filtering")
-
-    # ---- VirusTotal scoring ----
     if vt_enabled:
         if vt_found:
             if vt_malicious >= 10:
@@ -295,7 +326,7 @@ def score_risk(
                 add = min(12, 4 + vt_suspicious)
                 score += add
                 suspicious.append(f"VirusTotal suspicious detections present (suspicious={vt_suspicious}) (+{add})")
-            elif vt_harmless > 0 and vt_malicious == 0 and vt_suspicious == 0:
+            elif clean_vt:
                 benign.append(
                     f"VirusTotal shows no malicious/suspicious detections "
                     f"(harmless={vt_harmless}, undetected={vt_undetected})"
@@ -303,59 +334,124 @@ def score_risk(
         else:
             benign.append("VirusTotal lookup did not return a matching record")
 
-    # ---- Packer hints ----
     lief_blob = json.dumps(lief_meta, ensure_ascii=False) if lief_meta else ""
     if re.search(r"\bUPX\b", lief_blob, re.I) or re.search(r"\bpacked\b", lief_blob, re.I):
-        score += 15
-        suspicious.append("Packer/compression indicators present (+15)")
+        score += 10
+        suspicious.append("Packer/compression indicators present (+10)")
 
-    # ---- Installer discounts (more conservative than before) ----
-    if looks_like_installer and is_trusted_signed and not trust_override and not high:
+    if clean_vt and not high and not trust_override:
         before = score
-        score = max(0, int(score * 0.75))
-        benign.append(f"Trusted installer context detected; applying mild score reduction: {before} -> {score}")
+        discount_factor = 0.75
+        if looks_like_installer:
+            discount_factor = 0.65
+        if is_trusted_signed:
+            discount_factor = min(discount_factor, 0.55)
+        elif is_partially_trusted_signed:
+            discount_factor = min(discount_factor, 0.70)
 
-    # ---- Signature-aware trust discount (only when genuinely low-risk context) ----
-    if is_trusted_signed and not trust_override and not high and not filtered_ips and not filtered_domains and not filtered_urls:
+        score = max(0, int(score * discount_factor))
+        benign.append(f"VirusTotal found sample with no malicious/suspicious detections; applying clean-VT discount: {before} -> {score}")
+
+    if is_trusted_signed and not trust_override:
         before = score
-        score = max(0, int(score * 0.85))
+        score = int(score * 0.75) if high else int(score * 0.55)
         benign.append(
-            f"Trusted signature in otherwise low-signal context; applying mild trust discount: {before} -> {score}"
+            f"Valid Authenticode signature (timestamp verified) detected"
+            f"{f' (Subject={signer_subject})' if signer_subject else ''}; applying trust discount: {before} -> {score}"
         )
 
-    # ---- Subfile damping (only for BENIGN parents) ----
-    if is_subfile and parent_is_benign and not trust_override and not high:
-        cap = 60
+    if looks_like_installer and not trust_override and not high:
+        cap = 59 if clean_vt else 69
         if score > cap:
-            benign.append(f"Parent verdict BENIGN and no high-signal override; capping subfile score at {cap}")
+            benign.append(f"Installer/launcher context and no trust-override behavior; capping score at {cap}")
             score = cap
 
-    # ---- Safety floor ----
-    if (
-        not is_trusted_signed
-        and (
-            hashy_name
-            or suspicious_ext
-            or match_count > 0
-            or len(high) > 0
-            or len(filtered_ips) > 0
-            or len(filtered_domains) > 0
-            or len(filtered_urls) > 0
-            or vt_malicious > 0
-            or vt_suspicious > 0
-            or re.search(r"\bUPX\b|\bpacked\b", lief_blob, re.I)
-        )
-    ):
-        if score < 35:
-            suspicious.append("Applying unsigned suspicious-file floor (+adjust)")
-            score = 35
+    if is_subfile and parent_is_low and not trust_override:
+        cap = 60
+        if score > cap:
+            benign.append(f"Parent verdict {parent_verdict} and no high-signal override; capping subfile score at {cap}")
+            score = cap
 
     score = max(0, min(100, score))
-
-    if score < 30:
+    if score < 40:
         benign.append("Low overall heuristic score")
+    elif score < 75:
+        benign.append("Moderate overall heuristic score")
+    else:
+        suspicious.append("High overall heuristic score")
 
     return score, suspicious, benign
+
+
+def _load_api_analysis(case_dir: Path) -> dict[str, Any]:
+    p = case_dir / "api_analysis.json"
+    return _safe_load_json(p) or {}
+
+
+def _score_api_findings(
+    api_json: dict[str, Any],
+    looks_like_installer: bool,
+    is_trusted_signed: bool,
+    is_partially_trusted_signed: bool,
+    clean_vt: bool,
+    trust_override: bool,
+    suspicious: list[str],
+    benign: list[str],
+) -> int:
+    if not isinstance(api_json, dict) or not api_json:
+        benign.append("No API analysis artifact present")
+        return 0
+
+    if int(api_json.get("returncode", 0) or 0) != 0:
+        err = str(api_json.get("error", "") or "")
+        suspicious.append(f"API analysis failed or returned incomplete data ({err or 'unknown error'}) (+0)")
+        return 0
+
+    chains = api_json.get("chain_findings", [])
+    if not isinstance(chains, list):
+        chains = []
+
+    high = [x for x in chains if isinstance(x, dict) and x.get("severity") == "high"]
+    medium = [x for x in chains if isinstance(x, dict) and x.get("severity") == "medium"]
+    low = [x for x in chains if isinstance(x, dict) and x.get("severity") == "low"]
+
+    if not chains:
+        benign.append("No API behavior chains detected")
+        return 0
+
+    raw_add = 0
+    if high:
+        raw_add += min(12, 6 * len(high))
+    if medium:
+        raw_add += min(6, 2 * len(medium))
+    if low:
+        raw_add += min(2, len(low))
+
+    net_add = raw_add
+    dampening_reasons: list[str] = []
+
+    if net_add > 0 and looks_like_installer and clean_vt and not trust_override:
+        net_add = max(0, net_add - 2)
+        dampening_reasons.append("installer/clean-VT context")
+
+    if net_add > 0 and is_trusted_signed and clean_vt and not trust_override:
+        net_add = max(0, net_add - 2)
+        dampening_reasons.append("trusted signature + clean VT")
+    elif net_add > 0 and is_partially_trusted_signed and clean_vt and not trust_override:
+        net_add = max(0, net_add - 1)
+        dampening_reasons.append("partial signing trust + clean VT")
+
+    counts = f"high={len(high)}, medium={len(medium)}, low={len(low)}"
+
+    if net_add > 0:
+        suspicious.append(f"API behavior chains detected ({counts}); net contribution (+{net_add})")
+    else:
+        benign.append(f"API behavior chains detected ({counts}); net contribution (+0) after benign-context dampening")
+
+    if dampening_reasons:
+        benign.append(f"API-chain dampening applied: {', '.join(dampening_reasons)}")
+
+    return net_add
 
 
 def _prefix_in(t: str, prefixes: set[str]) -> bool:
@@ -363,17 +459,30 @@ def _prefix_in(t: str, prefixes: set[str]) -> bool:
 
 
 def _looks_like_installer(company: str, product: str, desc: str, summary: dict[str, Any], case_dir: Path) -> bool:
-    s = (company + " " + product + " " + desc).lower()
-    if "installer" in s or "setup" in s or "update" in s:
+    words = " ".join(
+        [
+            company or "",
+            product or "",
+            desc or "",
+            str((summary.get("sample", {}) or {}).get("filename", "") or ""),
+            str((summary.get("sample", {}) or {}).get("name", "") or ""),
+        ]
+    ).lower()
+
+    installer_keywords = ("installer", "setup", "update", "updater", "launcher", "bootstrap")
+    if any(x in words for x in installer_keywords):
         return True
+
     file_line = ""
     fp = case_dir / "file.txt"
     if fp.exists():
         try:
-            file_line = fp.read_text(encoding="utf-8", errors="replace").splitlines()[0].lower()
+            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+            file_line = lines[0].lower() if lines else ""
         except Exception:
             file_line = ""
-    return ("installer" in file_line) or ("setup" in file_line) or ("installshield" in file_line)
+
+    return any(x in file_line for x in ("installer", "setup", "installshield", "launcher", "bootstrap"))
 
 
 def _get_case_dir(summary: dict[str, Any]) -> Path:
@@ -518,6 +627,7 @@ def _filter_ips(ips: list[str]) -> list[str]:
 def _pe_string_table(pe_meta: dict[str, Any]) -> dict[str, str]:
     blob = json.dumps(pe_meta, ensure_ascii=False) if pe_meta else ""
     out: dict[str, str] = {}
+
     for key in [
         "CompanyName",
         "ProductName",
@@ -530,9 +640,11 @@ def _pe_string_table(pe_meta: dict[str, Any]) -> dict[str, str]:
         m = re.search(rf'"{key}"\s*:\s*"([^"]+)"', blob)
         if m:
             out[key] = m.group(1)
+
     for k in ["version_strings", "version_info_strings", "strings"]:
         if isinstance(pe_meta, dict) and isinstance(pe_meta.get(k), dict):
             for kk, vv in pe_meta[k].items():
                 if isinstance(vv, str):
                     out.setdefault(kk, vv)
+
     return out
