@@ -1,364 +1,110 @@
 # Static Software / Malware Analysis — Static Triage Pipeline
 
-[![License](https://img.shields.io/github/license/aring87/Static-Software-Malware-Analysis)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
-![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20WSL%20%7C%20Windows-orange)
-![Status](https://img.shields.io/badge/status-active-success)
+A static triage pipeline for Windows executables and installers that produces structured case artifacts, risk scoring, IOC extraction, signing verification results, API behavior analysis, and analyst-friendly reports.
 
-A static triage pipeline for Windows executables and installers that generates structured case artifacts, IOC output, and SOC-style reports for triage, training, and investigation.
+## Overview
 
----
+This project is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, and launcher files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, and executable API import analysis into a single workflow.
 
-## Safety / Isolation Required
+The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, and PDF reports when supported.
 
-**Do not run unknown malware on your personal computer or on a production network.**
+## What’s New in v4
 
-Use an isolated lab environment:
-- A dedicated Windows or Linux VM, or WSL Ubuntu on an analysis-only host
-- No shared credentials or sensitive files
-- No access to corporate or home production networks
-- Snapshots/checkpoints so you can roll back safely
+Version 4 adds stronger signing validation, executable API analysis, API-chain-aware scoring, and improved false-positive handling for legitimate signed installer and launcher software.
 
-This project is designed for offline static triage, but you should still treat all samples as hostile.
+### Highlights
 
----
+- corrected Authenticode verification parsing from `osslsigncode`
+- signing cache now reparses cached raw output so parser improvements apply to older samples
+- executable API import analysis for PE files
+- API behavior chain detection
+- `api_analysis.json` output artifact
+- API Analysis section in Markdown and HTML reports
+- light API-chain contribution to scoring
+- benign-context dampening for trusted signed clean installers and updaters
+- improved scoring stability for legitimate software from vendor sources
 
-## Quick Summary
+## Core Features
 
-This project can analyze Windows EXE, DLL, MSI, CAB, ZIP, 7z, and some installer formats and produce:
-- MD5 / SHA1 / SHA256 hashes
-- PE and LIEF metadata
-- capa capability analysis
-- extracted IOCs
-- extracted payloads and optional subfile triage
-- Markdown, HTML, and optionally PDF reports
-- VirusTotal summary data when a `VT_API_KEY` is provided
+### Static file triage
 
----
+- MD5, SHA1, and SHA256 hashing
+- `file` signature identification
+- strings extraction
+- PE metadata extraction
+- LIEF metadata extraction
+- IOC extraction
+- capa analysis
 
-## Recommended Platforms
+### Signing validation
 
-### Best overall
-- **Ubuntu native**
-- **WSL Ubuntu**
+- Authenticode verification via `osslsigncode`
+- verified timestamp handling
+- signer subject and issuer extraction
+- signing cache support
+- improved parser handling for valid signed files
 
-### Windows native
-Supported, but some tool dependencies are less smooth than Linux.
+### Reputation and scoring
 
-On Windows, the GUI may show:
-- **File Type (Linux tool / optional on Windows): Not Available**
-- **Strings (Linux tool / optional on Windows): Not Available**
+- VirusTotal hash lookup
+- verdict classification
+- risk scoring with benign-context dampening
+- installer and launcher-aware false-positive reduction
 
-That is expected when the underlying Linux-oriented tools are not present or are not worth forcing into the Windows workflow.
+### Executable API analysis
 
----
+- imported DLL and API extraction
+- API behavior category mapping
+- API behavior chain detection
+- `api_analysis.json` artifact generation
+- report integration
+- light API-chain scoring support
 
-## Python Version Support
+### Reporting
 
-Recommended:
-- **Python 3.11**
-- **Python 3.12**
+- Markdown report
+- HTML report
+- PDF report when environment supports it
+- structured summary and runlog outputs
 
-Not recommended right now:
-- **Python 3.13**
+### Extraction support
 
-Reason: some upstream security tooling and packaging dependencies may not have stable wheels yet.
+- embedded payload extraction
+- recursive extraction support
+- extracted payload manifest
+- optional extracted PE subfile triage
 
----
+## API Analysis
 
-## What the Pipeline Produces
+v4 adds executable API import analysis for Windows PE files.
 
-For a given sample, the pipeline creates a case folder and can generate:
-- `file.txt`
-- `strings.txt`
-- `pe_metadata.json`
-- `lief_metadata.json`
-- `capa.json`
-- `capa.txt`
-- `iocs.json`
-- `iocs.csv`
-- `summary.json`
-- `report.md`
-- `report.html`
-- `report.pdf` when PDF generation is supported
-- `virustotal.json` when VirusTotal lookup is enabled
+This feature:
 
-It can also create:
-- `extracted/` for extracted payloads
-- `subfiles/` for optional subfile triage
-- `analysis.log` for step tracking
-- `runlog.json` for execution details
+- extracts imported DLLs and API functions
+- groups APIs into behavior categories
+- detects API behavior chains such as:
+  - possible process injection
+  - possible service installation
+  - possible registry persistence
+  - possible memory execution
+- writes results to `api_analysis.json`
+- includes findings in the Markdown and HTML reports
 
----
+API-chain findings can contribute lightly to the final risk score. For trusted benign contexts such as signed clean installers or launchers, API-chain impact is automatically dampened so legitimate software is less likely to be over-scored.
 
-## Repo Layout
+## Typical Workflow
 
-```text
-analysis/
-  docs/
-  scripts/
-  static_triage_engine/
-  tools/
-  .gitignore
-  LICENSE
-  README.md
-  requirements.txt
-  Static_Triage_GUI.spec
-  triage_inbox.py
-```
-
-Generated or local-use folders are typically ignored:
-- `cases/`
-- `logs/`
-- `.venv/`
-- `build/`
-- `dist/`
-
----
-
-## Optional Environment Variables
-
-These are useful for GUI, CLI, and EXE workflows:
-
-- `CASE_ROOT_DIR` — case output location
-- `CAPA_RULES_DIR` — capa rules folder
-- `CAPA_SIGS_DIR` — capa signatures folder
-- `TOOLS_DIR` — override tools directory
-- `LOGS_DIR` — override logs directory
-- `VT_API_KEY` — optional VirusTotal API key for hash lookup
-
-Example PowerShell:
-
-```powershell
-$env:CASE_ROOT_DIR="D:\Projects\static_triage_project\analysis\cases"
-$env:CAPA_RULES_DIR="D:\Projects\static_triage_project\analysis\tools\capa-rules"
-$env:CAPA_SIGS_DIR="D:\Projects\static_triage_project\analysis\tools\capa\sigs"
-$env:VT_API_KEY="your_virustotal_api_key_here"
-```
-
----
-
-## Install on Ubuntu or WSL Ubuntu
-
-### System packages
-
-```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip \
-  p7zip-full cabextract osslsigncode file binutils \
-  libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0 \
-  libcairo2 libffi-dev
-```
-
-### Create venv and install Python dependencies
-
-```bash
-cd /path/to/analysis
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install flare-capa
-```
-
----
-
-## Install on Windows
-
-### Install Python 3.12
-
-```powershell
-winget install -e --id Python.Python.3.12
-```
-
-Verify:
-
-```powershell
-py -3.12 -V
-```
-
-### Recommended Windows approach: use the venv Python directly
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip install flare-capa
-```
-
-If you prefer activation:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install flare-capa
-```
-
-If PowerShell activation is annoying, you can always call the venv Python directly instead.
-
----
-
-## Windows Tool Notes
-
-### LIEF
-If `LIEF Analysis` fails with `No module named 'lief'`, install it into the **same Python environment the GUI is actually using**.
-
-Examples:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install lief
-.\.venv\Scripts\python.exe -c "import lief; print(lief.__version__)"
-```
-
-Important: installing `lief` into your system Python will not help if the GUI is launching the backend with `.venv\Scripts\python.exe`.
-
-### 7-Zip
-Extraction on Windows may require `7z.exe`.
-
-Common install path:
-
-```text
-C:\Program Files\7-Zip\7z.exe
-```
-
-Temporary PATH test:
-
-```powershell
-$env:Path += ";C:\Program Files\7-Zip"
-where.exe 7z
-```
-
-Permanent user PATH update:
-
-```powershell
-[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files\7-Zip", "User")
-```
-
-### File Type and Strings on Windows
-The GUI may show these steps as **Not Available**.
-
-That is intentional and beginner-friendly.
-
-They are Linux-oriented helper tools and may be skipped on Windows rather than treated as hard failures.
-
----
-
-## capa Setup
-
-### Install official capa
-
-Use the official FLARE package, not the unrelated `capa` package.
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install flare-capa
-.\.venv\Scripts\capa.exe --version
-```
-
-### Rules folder
-Acceptable examples:
-
-```text
-D:\Projects\static_triage_project\analysis\tools\capa-rules
-D:\Projects\static_triage_project\analysis\tools\capa-rules\rules
-```
-
-### Sigs folder
-Example:
-
-```text
-D:\Projects\static_triage_project\analysis\tools\capa\sigs
-```
-
----
-
-## Running the CLI
-
-### Basic example
-
-```powershell
-.\.venv\Scripts\python.exe scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
-```
-
-### With explicit directories
-
-```powershell
-$env:CASE_ROOT_DIR="D:\Projects\static_triage_project\analysis\cases"
-$env:CAPA_RULES_DIR="D:\Projects\static_triage_project\analysis\tools\capa-rules"
-$env:CAPA_SIGS_DIR="D:\Projects\static_triage_project\analysis\tools\capa\sigs"
-$env:VT_API_KEY="your_virustotal_api_key_here"
-
-.\.venv\Scripts\python.exe scripts\static_triage.py D:\path\to\sample.exe --case MyCase --no-progress
-```
-
----
-
-## Running the GUI
-
-### Source mode
-
-```powershell
-.\.venv\Scripts\python.exe scripts\static_triage_gui_v10.py
-```
-
-### What GUI v10 improves
-- better progress parsing for timestamped `analysis.log`
-- handles optional Windows-only step results more clearly
-- `Report Generation` and `Finalize` complete correctly on success
-- supports `CASE_ROOT_DIR`, `CAPA_RULES_DIR`, `CAPA_SIGS_DIR`, and `VT_API_KEY`
-- clearer labels for Linux-oriented tools on Windows
-- preserves the VirusTotal API key in saved GUI config
-- includes buttons to open the case folder, HTML report, and PDF report
-
-### VirusTotal support
-If a valid VirusTotal API key is entered in the GUI, the backend receives `VT_API_KEY`, writes `virustotal.json`, and includes VirusTotal summary data in `summary.json`. The scoring workflow also uses VirusTotal verdict counts when lookup data is available.
-
-### Open buttons
-After a run, the GUI can open:
-- the case folder
-- `report.html`
-- `report.pdf`
-
-### Expected Windows statuses
-Typical successful Windows run:
-- `done` for core steps
-- `not available` for Linux-tool-dependent optional steps
-- overall progress reaches **100%** on success
-
----
-
-## Building the Windows EXE
-
-### Build command
-
-You can keep the script name as `static_triage_gui_v10.py` while packaging the release itself as **v3**. Example:
-
-```powershell
-& "D:\Projects\static_triage_project\analysis\.venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --name Static_Software_Malware_Analysis_v3 "D:\Projects\static_triage_project\analysis\scripts\static_triage_gui_v10.py"
-```
-
-### Important packaging note
-The EXE is currently best treated as a **frontend plus release folder**, not a fully self-contained one-file app with every support asset embedded.
-
-Recommended release folder layout:
-
-```text
-Static_Software_Malware_Analysis_v3/
-  Static_Software_Malware_Analysis_v3.exe
-  scripts/
-    static_triage.py
-    static_triage_engine/
-  tools/
-    capa-rules/
-    capa/
-      sigs/
-  README.md
-```
-
-This is the most reliable Windows packaging model right now.
-
----
+1. Select a Windows executable, DLL, installer, or launcher
+2. Create a new case name
+3. Run static triage
+4. Review:
+   - signing results
+   - VirusTotal summary
+   - capa findings
+   - API Analysis
+   - IOC output
+   - final score and verdict
+5. Export or archive the case folder
 
 ## Outputs
 
@@ -367,6 +113,7 @@ A typical case folder may contain:
 ```text
 cases/<case>/
   analysis.log
+  api_analysis.json
   capa.json
   capa.txt
   extracted/
@@ -380,156 +127,228 @@ cases/<case>/
   report.md
   report.pdf
   runlog.json
-  virustotal.json
+  signing.json
   strings.txt
   subfiles/
   summary.json
+  virustotal.json
 ```
 
-On Windows, `report.pdf` may be `None`. In that case, open `report.html` and use your browser's **Print to PDF** option.
+On some environments, `report.pdf` may not be generated. In that case, open `report.html` and use your browser’s Print to PDF option.
 
----
+## Recommended Release Folder Layout
+
+```text
+Static_Software_Malware_Analysis_v4/
+  Static_Software_Malware_Analysis_v4.exe
+  scripts/
+    static_triage.py
+    static_triage_engine/
+  tools/
+    capa-rules/
+    capa/
+      sigs/
+  README.md
+```
+
+This is the most reliable packaging model right now.
+
+## Requirements
+
+### Python
+
+- Python 3.11 or 3.12 recommended
+
+### Python packages
+
+Typical dependencies include:
+
+- `requests`
+- `pefile`
+- `lief`
+- `pyyaml`
+- `pyinstaller`
+- any packages listed in `requirements.txt`
+
+### Linux / WSL tools
+
+Common external tools:
+
+- `file`
+- `strings`
+- `osslsigncode`
+- `cabextract`
+- `p7zip-full`
+- `binutils`
+
+Optional:
+
+- `innoextract`
+- `msitools`
+- `unar`
+
+### capa resources
+
+You should also have:
+
+- `tools/capa-rules`
+- `tools/capa/sigs`
+
+## Linux Setup Example
+
+```bash
+cd ~/analysis/Static-Software-Malware-Analysis
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install pefile pyyaml lief flare-capa
+bash scripts/bootstrap_capa_rules.sh
+```
+
+## Running the GUI
+
+```bash
+cd ~/analysis/Static-Software-Malware-Analysis
+source .venv/bin/activate
+python scripts/static_triage_gui_v10.py
+```
+
+## Running the CLI
+
+Example help command:
+
+```bash
+python scripts/static_triage.py --help
+```
+
+Example analysis run:
+
+```bash
+python scripts/static_triage.py "/path/to/sample.exe"
+```
+
+## Packaging Version 4
+
+### Build
+
+Example PyInstaller build:
+
+```bash
+pyinstaller --onedir --windowed --name Static_Software_Malware_Analysis_v4 scripts/static_triage_gui_v10.py
+```
+
+### Release folder
+
+Create the release folder and copy:
+
+- built executable
+- `static_triage_engine`
+- `scripts`
+- `tools/capa-rules`
+- `tools/capa/sigs`
+- `README.md`
+- `LICENSE`
+- `requirements.txt` if needed
+
+### Zip
+
+```bash
+cd release
+zip -r Static_Software_Malware_Analysis_v4.zip Static_Software_Malware_Analysis_v4
+```
+
+## Release Notes – v4.0
+
+This release improves the static triage pipeline with stronger signing validation, better false-positive control, executable API analysis, and clearer risk scoring.
+
+### Added
+
+- executable API import analysis
+- API behavior chain detection for PE files
+- `api_analysis.json` output artifact
+- API Analysis section in Markdown and HTML reports
+- API-chain scoring support in the risk model
+
+### Improved
+
+- Authenticode parsing now correctly recognizes successful verification states from `osslsigncode`
+- signing cache handling now reparses cached raw signing output so improved parsing logic is applied to previously analyzed files
+- scoring logic better handles legitimate signed installers and launchers
+- VirusTotal-aware dampening and trusted-signature handling reduce false positives more reliably
+
+### Fixed
+
+- cases where valid signed software could still be treated like unsigned or partially trusted samples
+- over-scoring of legitimate installer and launcher software
+- missing API analysis visibility in reports after feature integration
+- stale signing cache results preventing corrected verification logic from being reflected in new runs
 
 ## Troubleshooting
 
-### 1. `No module named 'requests'`
-Install dependencies into the same Python interpreter the GUI or backend is actually using.
+### 1. `api_analysis.json` is missing
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install requests
+Make sure:
+
+- `static_triage_engine/api_analysis.py` exists
+- `engine.py` imports and runs `analyze_apis()`
+- `pefile` is installed in the active Python environment
+
+Linux example:
+
+```bash
+source .venv/bin/activate
+pip install pefile
 ```
 
-### 2. `No module named 'lief'`
-Install `lief` into the same Python the GUI or EXE backend uses.
+### 2. API Analysis section says artifact not present
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install lief
+This usually means the analysis ran with an older `engine.py` that did not yet call the API analysis step, or the case folder was generated before the feature was added.
+
+Use a fresh case name and rerun.
+
+### 3. Signing looks wrong for a valid signed file
+
+Clear the signing cache and rerun so the updated signing parser can re-evaluate the sample:
+
+```bash
+rm -f logs/signing_cache.json
 ```
 
-### 3. `where.exe 7z` says not found
-7-Zip may be installed but not in PATH.
+### 4. capa fails
 
 Check:
 
-```powershell
-Test-Path "C:\Program Files\7-Zip\7z.exe"
+- `tools/capa-rules` exists
+- `tools/capa/sigs` exists
+- capa is installed in the active virtual environment
+
+### 5. LIEF fails
+
+Make sure LIEF is installed in the active virtual environment:
+
+```bash
+pip install lief
 ```
 
-Temporary fix:
+### 6. VirusTotal lookup fails
 
-```powershell
-$env:Path += ";C:\Program Files\7-Zip"
-where.exe 7z
-```
+Common reasons:
 
-### 4. `capa rules folder invalid`
-The GUI or EXE cannot find the rules folder.
+- `VT_API_KEY` is not set
+- network/DNS failure
+- rate limit or API response issue
 
-Point it to one of these:
+### 7. Paths fail in Linux
 
-```text
-...\tools\capa-rules
-...\tools\capa-rules\rules
-```
+Use Linux-style paths in the GUI, not Windows paths.
 
-### 5. `Could not find CLI script: ... static_triage.py`
-Your EXE release folder is missing backend files.
+## Notes
 
-Make sure the release folder includes:
-- `scripts\static_triage.py`
-- `scripts\static_triage_engine\`
-- `tools\capa-rules\`
-- `tools\capa\sigs\`
-
-### 6. `File Type` or `Strings` show `Not Available`
-That is expected on many Windows setups.
-
-These steps rely on Linux-oriented tools and are treated as optional on Windows.
-
-### 7. `report.pdf: None`
-Expected on some Windows runs.
-
-Use `report.html` and print it to PDF from the browser.
-
-### 8. Progress looks wrong, stale, or mixed between runs
-This usually means you are reusing a case folder whose `analysis.log` already contains older runs.
-
-Use a fresh case name for cleaner progress behavior.
-
-### 9. PowerShell activation fails
-You can skip activation entirely and call the venv Python directly.
-
-```powershell
-.\.venv\Scripts\python.exe scripts\static_triage_gui_v10.py
-```
-
-### 10. VirusTotal shows missing, disabled, or empty results
-Make sure the GUI field contains a valid API key, the key is being saved, and the backend receives `VT_API_KEY`. If the key is valid but results are still empty, you may be hitting API quota or there may be no matching VirusTotal record for the sample hash.
-
-### 11. EXE launches but defaults to bad paths
-The EXE may need a full release folder next to it. Do not test it by copying just the EXE alone without the supporting `scripts` and `tools` folders.
-
----
-
-## Recommended `.gitignore`
-
-A clean repo should ignore build artifacts, runtime output, and local-only configuration.
-
-```gitignore
-# Python
-__pycache__/
-*.pyc
-*.pyo
-
-# Virtual environments
-.venv/
-venv/
-
-# Build artifacts
-build/
-dist/
-
-# Runtime output
-cases/
-logs/
-config.json
-
-# Release artifacts
-*.zip
-
-# Backups
-*.bak
-
-# OS/editor junk
-Thumbs.db
-.DS_Store
-```
-
-If you want to keep `Static_Triage_GUI.spec`, do not ignore `*.spec`.
-
----
-
-## Contributing
-
-Keep commits focused and avoid committing:
-- malware samples
-- generated case folders
-- local config files
-- build artifacts
-- release ZIPs
-
-Good candidates to commit:
-- `scripts/`
-- `static_triage_engine/`
-- `tools/`
-- `docs/`
-- `README.md`
-- `requirements.txt`
-- `LICENSE`
-- `Static_Triage_GUI.spec`
-
----
+- API analysis in v4 currently applies to Windows PE executables and DLLs through import/API-chain analysis
+- separate API spec and endpoint analysis is planned as a future mode
+- legitimate software can still contain powerful APIs; scoring is intentionally conservative and context-aware
 
 ## License
 
-See [LICENSE](LICENSE).
+See `LICENSE`.
