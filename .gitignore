@@ -106,3 +106,16 @@ tools/Procmon.exe
 tools/Procmon64.exe
 *.pml
 *.pmc
+
+# ---------------------------
+# Local third-party tools
+# ---------------------------
+tools/*.exe
+tools/*.chm
+tools/*.txt
+
+# ----------------------------
+# Keep Procmon configs tracked
+# -----------------------------
+!tools/procmon-configs/
+!tools/procmon-configs/*.pmc
