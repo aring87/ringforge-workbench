@@ -1,72 +1,248 @@
 from __future__ import annotations
 
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 
-SUSPICIOUS_PATH_HINTS = [
-    r"\appdata\\",
-    r"\temp\\",
-    r"\programdata\\",
-    r"\startup\\",
-    r"\users\public\\",
-    r"currentversion\run",
-    r"currentversion\runonce",
-]
-
-LOLBIN_HINTS = {
-    "powershell.exe",
-    "pwsh.exe",
-    "cmd.exe",
-    "mshta.exe",
-    "rundll32.exe",
-    "regsvr32.exe",
-    "wscript.exe",
-    "cscript.exe",
-    "schtasks.exe",
-    "sc.exe",
-    "certutil.exe",
-    "bitsadmin.exe",
-    "installutil.exe",
+KNOWN_NOISE_PROCESSES = {
+    "spotify.exe",
+    "chrome.exe",
+    "steamwebhelper.exe",
+    "discord.exe",
+    "onedrive.exe",
+    "steelseriesgg.exe",
+    "steelseriesengine.exe",
+    "steelseriessonar.exe",
+    "steelseriesprism.exe",
+    "nvidia overlay.exe",
+    "gamemanagerservice.exe",
+    "gamemanagerservice3.exe",
+    "game managerservice.exe",
+    "razer synapse service.exe",
+    "razercortex.exe",
+    "msedge.exe",
+    "teams.exe",
+    "epicgameslauncher.exe",
+    "dashost.exe",
+    "sihost.exe",
+    "asus_framework.exe",
+    "acpowernotification.exe",
 }
 
 
-def _path_is_suspicious(path_value: str) -> bool:
-    p = path_value.lower()
-    return any(h in p for h in SUSPICIOUS_PATH_HINTS)
+KNOWN_NOISE_PATH_SUBSTRINGS = (
+    r"\onedrive\logs\\",
+    r"\google\chrome\user data\\",
+    r"\razer\gamemanager3\logs\\",
+    r"\windows\debug\wia\\",
+    r"startupprofiledata-noninteractive",
+    r".vdi",
+    r"g:\vms\\",
+        r"\program files\bitdefender\\",
+    r"\users\aring\appdata\local\google\chrome\\",
+    r"\users\aring\appdata\local\microsoft\onedrive\logs\\",
+)
 
 
-def _basename(path_value: str) -> str:
+ANALYZER_NOISE_PATH_SUBSTRINGS = (
+    r"\appdata\local\temp\tmp",
+    r"__psscriptpolicytest_",
+    r"d:\ring_forge_analyzer\cases\\",   
+)
+
+
+SUSPICIOUS_PATH_KEYWORDS = (
+    r"\appdata\roaming\microsoft\windows\start menu\programs\startup",
+    r"\windows\system32\tasks",
+    r"\windows\tasks",
+    r"\software\microsoft\windows\currentversion\run",
+    r"\software\microsoft\windows\currentversion\runonce",
+    r"\software\microsoft\windows nt\currentversion\winlogon",
+    r"\services",
+    r"\drivers",
+    r"\temp",
+    r"\programdata",
+)
+
+
+PERSISTENCE_KEYWORDS = (
+    r"\software\microsoft\windows\currentversion\run",
+    r"\software\microsoft\windows\currentversion\runonce",
+    r"\windows\system32\tasks",
+    r"\windows\tasks",
+    "schtasks",
+    "service control manager",
+)
+
+
+LOLBIN_NAMES = {
+    "powershell.exe",
+    "cmd.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "mshta.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "wmic.exe",
+    "certutil.exe",
+    "bitsadmin.exe",
+    "msbuild.exe",
+    "installutil.exe",
+    "reg.exe",
+    "net.exe",
+    "net1.exe",
+}
+
+
+def _normalize_process_name(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_text_lower(value: object) -> str:
+    return _normalize_text(value).lower()
+
+
+def _safe_int(value: object, default: int = 0) -> int:
     try:
-        return Path(path_value).name.lower()
+        return int(value)
     except Exception:
-        return path_value.lower()
+        return default
 
 
-def _is_self_generated_snapshot_activity(event: dict[str, Any]) -> bool:
-    process_name = str(event.get("process_name", "")).lower()
-    path_value = str(event.get("path", "")).lower()
-    detail = str(event.get("detail", "")).lower()
+def _is_noise_process(value: object) -> bool:
+    return _normalize_process_name(value) in KNOWN_NOISE_PROCESSES
 
-    # Our launcher process spawning helper tools
-    if process_name == "python.exe":
-        if "get-scheduledtask" in detail or "get-ciminstance win32_service" in detail:
+
+def _is_noise_path(value: object) -> bool:
+    lowered = _normalize_text_lower(value)
+    return any(part in lowered for part in KNOWN_NOISE_PATH_SUBSTRINGS)
+
+
+def _is_analyzer_noise_path(value: object) -> bool:
+    lowered = _normalize_text_lower(value)
+    return any(part in lowered for part in ANALYZER_NOISE_PATH_SUBSTRINGS)
+
+def _is_analyzer_activity(process_name: object, path: object = None, detail: object = None) -> bool:
+    proc = _normalize_process_name(process_name)
+    path_l = _normalize_text_lower(path)
+    detail_l = _normalize_text_lower(detail)
+
+    if _is_analyzer_noise_path(path_l):
+        return True
+
+    if r"d:\ring_forge_analyzer\cases\\" in path_l or r"d:\ring_forge_analyzer\cases\\" in detail_l:
+        return True
+
+    if r"d:\ring_forge_analyzer\\" in path_l and r"\cases\\" in path_l:
+        return True
+
+    if "get-scheduledtask" in detail_l:
+        return True
+
+    if "get-ciminstance win32_service" in detail_l:
+        return True
+
+    if "convertto-json" in detail_l and "set-content -path" in detail_l:
+        return True
+
+    if "executionpolicy bypass" in detail_l and "powershell.exe" in detail_l:
+        return True
+
+    if proc == "powershell.exe":
+        if "write-output $outfile" in detail_l:
             return True
-        if "powershell.exe -noprofile -executionpolicy bypass" in detail:
+        if "$outfile =" in detail_l:
             return True
 
-    # Temp JSON files written by our snapshot modules
-    if path_value.endswith(".json") and r"\appdata\local\temp\tmp" in path_value:
-        return True
-
-    if "get-scheduledtask" in detail:
-        return True
-
-    if "get-ciminstance win32_service" in detail:
-        return True
+    if proc == "python.exe":
+        if "powershell.exe -noprofile -executionpolicy bypass" in detail_l:
+            return True
 
     return False
+
+def _looks_suspicious_path(value: object) -> bool:
+    lowered = _normalize_text_lower(value)
+    return any(part in lowered for part in SUSPICIOUS_PATH_KEYWORDS)
+
+
+def _looks_persistence(value: object) -> bool:
+    lowered = _normalize_text_lower(value)
+    return any(part in lowered for part in PERSISTENCE_KEYWORDS)
+
+
+def _is_lolbin(process_name: object, path: object = None, detail: object = None) -> bool:
+    proc = _normalize_process_name(process_name)
+    if proc in LOLBIN_NAMES:
+        return True
+    combined = " ".join(
+        [
+            _normalize_text_lower(process_name),
+            _normalize_text_lower(path),
+            _normalize_text_lower(detail),
+        ]
+    )
+    return any(name in combined for name in LOLBIN_NAMES)
+
+
+def _event_process_name(event: dict[str, Any]) -> str:
+    for key in ("process_name", "Process Name", "image", "Image", "process"):
+        if key in event and event.get(key):
+            return _normalize_text(event.get(key))
+    return ""
+
+
+def _event_path(event: dict[str, Any]) -> str:
+    for key in ("path", "Path", "target_path", "TargetPath"):
+        if key in event and event.get(key):
+            return _normalize_text(event.get(key))
+    return ""
+
+
+def _event_operation(event: dict[str, Any]) -> str:
+    for key in ("operation", "Operation"):
+        if key in event and event.get(key):
+            return _normalize_text_lower(event.get(key))
+    return ""
+
+
+def _event_detail(event: dict[str, Any]) -> str:
+    for key in ("detail", "Detail", "details"):
+        if key in event and event.get(key):
+            return _normalize_text(event.get(key))
+    return ""
+
+
+def _event_timestamp(event: dict[str, Any]) -> str:
+    for key in ("timestamp", "Timestamp", "time", "Time of Day"):
+        if key in event and event.get(key):
+            return _normalize_text(event.get(key))
+    return ""
+
+
+def _event_pid(event: dict[str, Any]) -> int | None:
+    for key in ("pid", "PID", "process_id", "ProcessId"):
+        if key in event and event.get(key) not in (None, ""):
+            return _safe_int(event.get(key), default=0)
+    return None
+
+
+def _build_process_create_record(event: dict[str, Any]) -> dict[str, Any]:
+    process_name = _event_process_name(event)
+    path = _event_path(event)
+    detail = _event_detail(event)
+    return {
+        "timestamp": _event_timestamp(event),
+        "process_name": process_name,
+        "pid": _event_pid(event),
+        "path": path,
+        "detail": detail,
+        "is_lolbin": _is_lolbin(process_name, path, detail),
+        "is_analyzer_activity": _is_analyzer_activity(process_name, path, detail),
+    }
 
 
 def summarize_dynamic_findings(
@@ -83,96 +259,126 @@ def summarize_dynamic_findings(
         "counts": {},
     }
 
-    filtered_events = [ev for ev in interesting_events if not _is_self_generated_snapshot_activity(ev)]
-
-    file_write_counter: Counter[str] = Counter()
+    write_counter: Counter[str] = Counter()
+    write_counter_clean: Counter[str] = Counter()
     network_counter: Counter[str] = Counter()
+    network_counter_clean: Counter[str] = Counter()
+
     process_creates: list[dict[str, Any]] = []
     suspicious_path_hits: list[dict[str, Any]] = []
     persistence_hits: list[dict[str, Any]] = []
 
-    for ev in filtered_events:
-        category = str(ev.get("category", ""))
-        path_value = str(ev.get("path", ""))
-        proc_name = str(ev.get("process_name", ""))
+    process_create_count = 0
+    network_event_count = 0
+    file_write_event_count = 0
+    lolbin_count = 0
 
-        if category == "file_write" and path_value:
-            file_write_counter[path_value] += 1
+    for event in interesting_events:
+        operation = _event_operation(event)
+        process_name = _event_process_name(event)
+        path = _event_path(event)
+        detail = _event_detail(event)
 
-        if category == "network":
-            network_counter[proc_name or "<unknown>"] += 1
+        is_noise_proc = _is_noise_process(process_name)
+        is_noise_path = _is_noise_path(path)
+        is_analyzer = _is_analyzer_activity(process_name, path, detail)
 
-        if category == "process_create":
-            process_creates.append(
-                {
-                    "timestamp": str(ev.get("timestamp", "")),
-                    "process_name": proc_name,
-                    "pid": ev.get("pid"),
-                    "path": path_value,
-                    "detail": str(ev.get("detail", "")),
-                    "is_lolbin": _basename(path_value) in LOLBIN_HINTS or _basename(proc_name) in LOLBIN_HINTS,
-                }
-            )
+        if "process" in operation and "create" in operation:
+            record = _build_process_create_record(event)
+            process_creates.append(record)
+            process_create_count += 1
+            if record["is_lolbin"] and not record["is_analyzer_activity"]:
+                lolbin_count += 1
 
-        if path_value and _path_is_suspicious(path_value):
-            suspicious_path_hits.append(
-                {
-                    "timestamp": str(ev.get("timestamp", "")),
-                    "category": category,
-                    "process_name": proc_name,
-                    "path": path_value,
-                    "detail": str(ev.get("detail", "")),
-                }
-            )
+        if "tcp" in operation or "udp" in operation or "network" in operation:
+            network_event_count += 1
+            if process_name:
+                network_counter[process_name] += 1
+                if not is_noise_proc and not is_analyzer:
+                    network_counter_clean[process_name] += 1
 
-        low_path = path_value.lower()
-        if "currentversion\\run" in low_path or "currentversion\\runonce" in low_path:
-            persistence_hits.append(
-                {
-                    "timestamp": str(ev.get("timestamp", "")),
-                    "category": category,
-                    "process_name": proc_name,
-                    "path": path_value,
-                    "detail": str(ev.get("detail", "")),
-                }
-            )
+        if (
+            "writefile" in operation
+            or "setrenameinformationfile" in operation
+            or "setdispositioninformationfile" in operation
+        ):
+            file_write_event_count += 1
+            if path:
+                write_counter[path] += 1
+                if not is_noise_path and not is_analyzer:
+                    write_counter_clean[path] += 1
 
+        if path and _looks_suspicious_path(path):
+            if not is_noise_proc and not is_noise_path and not is_analyzer:
+                suspicious_path_hits.append(
+                    {
+                        "timestamp": _event_timestamp(event),
+                        "process_name": process_name,
+                        "path": path,
+                        "operation": operation,
+                        "detail": detail,
+                    }
+                )
+
+        joined = f"{path} {detail}"
+        if joined and _looks_persistence(joined):
+            if not is_noise_proc and not is_analyzer:
+                persistence_hits.append(
+                    {
+                        "timestamp": _event_timestamp(event),
+                        "process_name": process_name,
+                        "path": path,
+                        "operation": operation,
+                        "detail": detail,
+                    }
+                )
+
+    top_written_source = write_counter_clean if write_counter_clean else write_counter
     findings["top_written_paths"] = [
         {"path": path, "count": count}
-        for path, count in file_write_counter.most_common(10)
+        for path, count in top_written_source.most_common(10)
     ]
+
+    top_network_source = network_counter_clean if network_counter_clean else network_counter
     findings["top_network_processes"] = [
-        {"process_name": name, "count": count}
-        for name, count in network_counter.most_common(10)
+        {"process_name": process_name, "count": count}
+        for process_name, count in top_network_source.most_common(10)
     ]
-    findings["spawned_processes"] = process_creates[:25]
+
+    clean_process_creates = [
+        item
+        for item in process_creates
+        if not _is_noise_process(item.get("process_name"))
+        and not item.get("is_analyzer_activity", False)
+    ]
+    findings["spawned_processes"] = (clean_process_creates if clean_process_creates else process_creates)[:25]
     findings["suspicious_path_hits"] = suspicious_path_hits[:50]
     findings["persistence_hits"] = persistence_hits[:25]
 
     counts = {
-        "interesting_events": len(filtered_events),
-        "process_creates": len(process_creates),
-        "network_events": sum(network_counter.values()),
-        "file_write_events": sum(file_write_counter.values()),
+        "interesting_events": len(interesting_events),
+        "process_creates": process_create_count,
+        "network_events": network_event_count,
+        "file_write_events": file_write_event_count,
         "suspicious_path_hits": len(suspicious_path_hits),
         "persistence_hits": len(persistence_hits),
-        "lolbin_processes": sum(1 for p in process_creates if p.get("is_lolbin")),
+        "lolbin_processes": lolbin_count,
     }
     findings["counts"] = counts
 
     highlights: list[str] = []
-    if counts["process_creates"]:
-        highlights.append(f"Spawned processes observed: {counts['process_creates']}")
-    if counts["lolbin_processes"]:
-        highlights.append(f"Potential LOLBin launches observed: {counts['lolbin_processes']}")
-    if counts["network_events"]:
-        highlights.append(f"Network events observed: {counts['network_events']}")
-    if counts["file_write_events"]:
-        highlights.append(f"File writes observed: {counts['file_write_events']}")
-    if counts["suspicious_path_hits"]:
-        highlights.append(f"Suspicious/user-writable path hits: {counts['suspicious_path_hits']}")
-    if counts["persistence_hits"]:
-        highlights.append(f"Potential autorun persistence hits: {counts['persistence_hits']}")
+    if process_create_count:
+        highlights.append(f"Spawned processes observed: {process_create_count}")
+    if network_event_count:
+        highlights.append(f"Network events observed: {network_event_count}")
+    if file_write_event_count:
+        highlights.append(f"File writes observed: {file_write_event_count}")
+    if suspicious_path_hits:
+        highlights.append(f"Suspicious path hits observed: {len(suspicious_path_hits)}")
+    if persistence_hits:
+        highlights.append(f"Persistence-related hits observed: {len(persistence_hits)}")
+    if lolbin_count:
+        highlights.append(f"LOLBin processes observed: {lolbin_count}")
 
     findings["highlights"] = highlights
     return findings
