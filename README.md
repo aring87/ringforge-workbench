@@ -1,16 +1,18 @@
-# Static Software / Malware Analysis — Static + Dynamic Analysis Pipeline
+# RingForge Analyzer — Static and Dynamic Software Analysis Platform
 
-A malware/software analysis toolkit for Windows executables and installers that supports both **static triage** and early-stage **dynamic behavior analysis**. The project generates structured case artifacts, IOC output, persistence-diff data, dropped-file triage results, signing results, API behavior analysis, and analyst-facing reports for triage, training, and investigation.
+**Static insight. Dynamic visibility.**
+
+RingForge Analyzer is a malware/software analysis toolkit for Windows executables and installers that supports both **static triage** and early-stage **dynamic behavior analysis**. It generates structured case artifacts, IOC output, persistence-diff data, dropped-file triage results, signing results, API behavior analysis, and analyst-facing reports for triage, training, and investigation.
 
 ## Overview
 
-This project is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, and dynamic runtime behavior collection into a single workflow.
+RingForge Analyzer is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, and controlled dynamic runtime behavior collection into a single workflow.
 
 The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, and dynamic findings summaries.
 
-## What’s New in v5
+## What’s New in RingForge Analyzer v1.0
 
-Version 5 expands the project from a static triage pipeline into a hybrid **static + dynamic analysis** platform.
+RingForge Analyzer v1.0 is the **first branded release** of the platform. It builds on the project’s earlier static triage foundation and expands it into a hybrid **static + dynamic analysis** workflow.
 
 ### Highlights
 
@@ -246,7 +248,7 @@ cases/<case_name>/
 ## Repo Layout
 
 ```text
-Static-Software-Malware-Analysis/
+RingForge-Analyzer/
   docs/
   scripts/
   static_triage_engine/
@@ -276,8 +278,8 @@ Static-Software-Malware-Analysis/
 ## Recommended Release Folder Layout
 
 ```text
-Static_Software_Malware_Analysis_v5/
-  Static_Software_Malware_Analysis_v5.exe
+RingForge_Analyzer_v1/
+  RingForgeAnalyzer.exe
   scripts/
   static_triage_engine/
   dynamic_analysis/
@@ -340,7 +342,7 @@ You should also have:
 ## Linux Setup Example
 
 ```bash
-cd ~/analysis/Static-Software-Malware-Analysis
+cd ~/analysis/RingForge-Analyzer
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -352,7 +354,7 @@ bash scripts/bootstrap_capa_rules.sh
 ## Running the GUI
 
 ```bash
-cd ~/analysis/Static-Software-Malware-Analysis
+cd ~/analysis/RingForge-Analyzer
 source .venv/bin/activate
 python scripts/static_triage_gui_v10.py
 ```
@@ -384,14 +386,14 @@ Example analysis run:
 python scripts/static_triage.py "/path/to/sample.exe"
 ```
 
-## Packaging Version 5
+## Packaging RingForge Analyzer v1.0
 
 ### Build
 
 Example PyInstaller build:
 
 ```bash
-pyinstaller --onedir --windowed --name Static_Software_Malware_Analysis_v5 --paths . --collect-submodules dynamic_analysis scripts/static_triage_gui_v10.py
+pyinstaller --onedir --windowed --name RingForgeAnalyzer --paths . --collect-submodules dynamic_analysis scripts/static_triage_gui_v10.py
 ```
 
 ### Release folder
@@ -410,12 +412,12 @@ Create the release folder and copy:
 
 ```bash
 cd release
-zip -r Static_Software_Malware_Analysis_v5.zip Static_Software_Malware_Analysis_v5
+zip -r RingForge_Analyzer_v1.0.zip RingForge_Analyzer_v1
 ```
 
-## Release Notes – v5.0
+## Release Notes – RingForge Analyzer v1.0
 
-This release expands the project from a static triage pipeline into a hybrid static + dynamic analysis platform. It introduces the first major dynamic-analysis workflow for behavioral capture, persistence-change detection, dropped-file triage, and analyst-facing findings.
+This is the first branded release of RingForge Analyzer. It expands the project from a static triage pipeline into a hybrid static + dynamic analysis platform and introduces the first major dynamic-analysis workflow for behavioral capture, persistence-change detection, dropped-file triage, and analyst-facing findings.
 
 ### Added
 
@@ -540,7 +542,7 @@ Use Linux-style paths in the GUI, not Windows paths.
 ## Notes
 
 - API analysis currently applies to Windows PE executables and DLLs through import/API-chain analysis
-- dynamic analysis in v5 is intended as a practical triage layer, not a full sandbox replacement
+- dynamic analysis in RingForge Analyzer v1.0 is intended as a practical triage layer, not a full sandbox replacement
 - future work may include tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
 
 ## License
