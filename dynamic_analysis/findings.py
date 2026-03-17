@@ -23,10 +23,15 @@ KNOWN_NOISE_PROCESSES = {
     "msedge.exe",
     "teams.exe",
     "epicgameslauncher.exe",
+    "epicwebhelper.exe",
     "dashost.exe",
     "sihost.exe",
     "asus_framework.exe",
     "acpowernotification.exe",
+    "bdservicehost.exe",
+    "productagentservice.exe",
+    "wsnativepushservice.exe",
+    "galaxyclient.exe",
 }
 
 
@@ -41,6 +46,10 @@ KNOWN_NOISE_PATH_SUBSTRINGS = (
         r"\program files\bitdefender\\",
     r"\users\aring\appdata\local\google\chrome\\",
     r"\users\aring\appdata\local\microsoft\onedrive\logs\\",
+    r"\programdata\gog.com\galaxy\logs\\",
+    r"\users\aring\appdata\local\asus\armoury crate diagnosis\\",
+    r"\windows\system32\winevt\logs\microsoft-windows-powershell%4operational.evtx",
+    r"\windows\debug\wia\\",
 )
 
 
@@ -173,6 +182,18 @@ def _looks_persistence(value: object) -> bool:
     lowered = _normalize_text_lower(value)
     return any(part in lowered for part in PERSISTENCE_KEYWORDS)
 
+def _is_benign_registry_noise(path: object, operation: object, detail: object = None) -> bool:
+    path_l = _normalize_text_lower(path)
+    op_l = _normalize_text_lower(operation)
+    detail_l = _normalize_text_lower(detail)
+
+    if "services\\bam\\state\\usersettings" in path_l and op_l == "regsetvalue":
+        return True
+
+    if r"\software\microsoft\windows\currentversion\run" in path_l and "reg_opened_existing_key" in detail_l:
+        return True
+
+    return False
 
 def _is_lolbin(process_name: object, path: object = None, detail: object = None) -> bool:
     proc = _normalize_process_name(process_name)
@@ -282,6 +303,7 @@ def summarize_dynamic_findings(
         is_noise_proc = _is_noise_process(process_name)
         is_noise_path = _is_noise_path(path)
         is_analyzer = _is_analyzer_activity(process_name, path, detail)
+        is_benign_registry = _is_benign_registry_noise(path, operation, detail)
 
         if "process" in operation and "create" in operation:
             record = _build_process_create_record(event)
@@ -309,7 +331,7 @@ def summarize_dynamic_findings(
                     write_counter_clean[path] += 1
 
         if path and _looks_suspicious_path(path):
-            if not is_noise_proc and not is_noise_path and not is_analyzer:
+            if not is_noise_proc and not is_noise_path and not is_analyzer and not is_benign_registry:
                 suspicious_path_hits.append(
                     {
                         "timestamp": _event_timestamp(event),
@@ -322,7 +344,7 @@ def summarize_dynamic_findings(
 
         joined = f"{path} {detail}"
         if joined and _looks_persistence(joined):
-            if not is_noise_proc and not is_analyzer:
+            if not is_noise_proc and not is_noise_path and not is_analyzer and not is_benign_registry:
                 persistence_hits.append(
                     {
                         "timestamp": _event_timestamp(event),
