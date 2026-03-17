@@ -96,3 +96,13 @@ config.json
 .env
 config.local.*
 secrets.*
+
+# --------------------------
+# Optional large tool bundles (install separately)
+# --------------------------
+tools/ghidra_12.0_PUBLIC/
+tools/capa-rules/
+tools/Procmon.exe
+tools/Procmon64.exe
+*.pml
+*.pmc

@@ -30,8 +30,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+from dynamic_analysis.orchestrator import run_dynamic_analysis
 
 
 def app_root() -> Path:
@@ -209,6 +215,262 @@ def run_cli_streaming(python_exe: Path, args: List[str], env_overrides: Dict[str
     return proc.wait()
 
 
+
+
+class DynamicAnalysisWindow(tk.Toplevel):
+    def __init__(self, app: "App"):
+        super().__init__(app)
+        self.app = app
+        self.title("Dynamic Analysis")
+        self.geometry("980x720")
+        self.minsize(840, 620)
+
+        cfg = app.cfg
+        default_case = str(DEFAULT_CASE_ROOT / "dynamic_case")
+        self.sample_var = tk.StringVar(value=app.sample_var.get().strip())
+        self.case_dir_var = tk.StringVar(value=cfg.get("dynamic_case_dir", default_case))
+        self.timeout_var = tk.IntVar(value=int(cfg.get("dynamic_timeout_seconds", 30)))
+        self.procmon_enabled_var = tk.BooleanVar(value=bool(cfg.get("dynamic_procmon_enabled", True)))
+        self.procmon_path_var = tk.StringVar(value=cfg.get("dynamic_procmon_path", str(ROOT / "tools" / "Procmon64.exe")))
+        self.procmon_config_var = tk.StringVar(value=cfg.get("dynamic_procmon_config_path", str(ROOT / "tools" / "procmon-configs" / "dynamic_default.pmc")))
+        self.status_var = tk.StringVar(value="Idle")
+
+        self.output_q: "queue.Queue[str]" = queue.Queue()
+        self.worker_thread: Optional[threading.Thread] = None
+
+        self._build_ui()
+        self.after(150, self._drain_output)
+
+        self.transient(app)
+        self.grab_set()
+
+    def _build_ui(self):
+        pad = {"padx": 10, "pady": 8}
+
+        frm = ttk.Frame(self)
+        frm.pack(fill="both", expand=True, **pad)
+        frm.columnconfigure(1, weight=1)
+        frm.rowconfigure(6, weight=1)
+
+        ttk.Label(frm, text="Sample:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.sample_var, width=100).grid(row=0, column=1, sticky="we", padx=6)
+        ttk.Button(frm, text="Use Main Sample", command=self._use_main_sample).grid(row=0, column=2, sticky="e")
+
+        ttk.Label(frm, text="Dynamic case folder:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.case_dir_var, width=100).grid(row=1, column=1, sticky="we", padx=6)
+        ttk.Button(frm, text="Browse…", command=self._browse_case_dir).grid(row=1, column=2, sticky="e")
+
+        ttk.Label(frm, text="Timeout (seconds):").grid(row=2, column=0, sticky="w")
+        ttk.Spinbox(frm, from_=5, to=7200, textvariable=self.timeout_var, width=10).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Checkbutton(frm, text="Enable Procmon Capture", variable=self.procmon_enabled_var).grid(row=2, column=2, sticky="e")
+
+        ttk.Label(frm, text="Procmon path:").grid(row=3, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.procmon_path_var, width=100).grid(row=3, column=1, sticky="we", padx=6)
+        ttk.Button(frm, text="Browse…", command=self._browse_procmon).grid(row=3, column=2, sticky="e")
+
+        ttk.Label(frm, text="Procmon config:").grid(row=4, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.procmon_config_var, width=100).grid(row=4, column=1, sticky="we", padx=6)
+        ttk.Button(frm, text="Browse…", command=self._browse_procmon_config).grid(row=4, column=2, sticky="e")
+
+        actions = ttk.Frame(frm)
+        actions.grid(row=5, column=0, columnspan=3, sticky="we", pady=(6, 0))
+        self.run_btn = ttk.Button(actions, text="Run Dynamic Analysis", command=self._start_dynamic_analysis)
+        self.run_btn.pack(side="left")
+        ttk.Button(actions, text="Open Case Folder", command=self._open_case_folder).pack(side="left", padx=(10, 0))
+        ttk.Label(actions, textvariable=self.status_var).pack(side="right")
+
+        outwrap = ttk.LabelFrame(frm, text="Output")
+        outwrap.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        outwrap.columnconfigure(0, weight=1)
+        outwrap.rowconfigure(0, weight=1)
+
+        self.output = tk.Text(outwrap, wrap="word", height=22)
+        self.output.grid(row=0, column=0, sticky="nsew")
+        ysb = ttk.Scrollbar(outwrap, orient="vertical", command=self.output.yview)
+        ysb.grid(row=0, column=1, sticky="ns")
+        self.output.configure(yscrollcommand=ysb.set)
+
+    def _save_cfg(self):
+        self.app.cfg["dynamic_case_dir"] = self.case_dir_var.get().strip()
+        self.app.cfg["dynamic_timeout_seconds"] = int(self.timeout_var.get())
+        self.app.cfg["dynamic_procmon_enabled"] = bool(self.procmon_enabled_var.get())
+        self.app.cfg["dynamic_procmon_path"] = self.procmon_path_var.get().strip()
+        self.app.cfg["dynamic_procmon_config_path"] = self.procmon_config_var.get().strip()
+        save_config(self.app.cfg)
+
+    def _use_main_sample(self):
+        self.sample_var.set(self.app.sample_var.get().strip())
+
+    def _browse_case_dir(self):
+        start = Path(self.case_dir_var.get()) if self.case_dir_var.get().strip() else DEFAULT_CASE_ROOT
+        chosen = filedialog.askdirectory(title="Select dynamic case folder", initialdir=str(start))
+        if chosen:
+            self.case_dir_var.set(norm_path_str(chosen))
+            self._save_cfg()
+
+    def _browse_procmon(self):
+        start = Path(self.procmon_path_var.get()).parent if self.procmon_path_var.get().strip() else (ROOT / "tools")
+        chosen = filedialog.askopenfilename(
+            title="Select Procmon executable",
+            initialdir=str(start),
+            filetypes=[("Executable", "*.exe"), ("All Files", "*.*")],
+        )
+        if chosen:
+            self.procmon_path_var.set(norm_path_str(chosen))
+            self._save_cfg()
+
+    def _browse_procmon_config(self):
+        raw = self.procmon_config_var.get().strip()
+        start = Path(raw).parent if raw else (ROOT / "tools" / "procmon-configs")
+        chosen = filedialog.askopenfilename(
+            title="Select Procmon config (.pmc)",
+            initialdir=str(start),
+            filetypes=[("Procmon Config", "*.pmc"), ("All Files", "*.*")],
+        )
+        if chosen:
+            self.procmon_config_var.set(norm_path_str(chosen))
+            self._save_cfg()
+
+    def _open_case_folder(self):
+        case_dir = Path(self.case_dir_var.get().strip())
+        if not case_dir.exists():
+            messagebox.showwarning("Open Case Folder", f"Folder not found:\n{case_dir}", parent=self)
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(case_dir))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(case_dir)])
+            else:
+                subprocess.Popen(["xdg-open", str(case_dir)])
+        except Exception as e:
+            messagebox.showerror("Open Case Folder", str(e), parent=self)
+
+    def _start_dynamic_analysis(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            return
+
+        sample = Path(self.sample_var.get().strip())
+        if not sample.exists():
+            messagebox.showerror("Dynamic Analysis failed", f"Sample not found:\n{sample}", parent=self)
+            return
+
+        case_dir = Path(self.case_dir_var.get().strip())
+        case_dir.mkdir(parents=True, exist_ok=True)
+
+        procmon_path = Path(self.procmon_path_var.get().strip())
+        if self.procmon_enabled_var.get() and not procmon_path.exists():
+            messagebox.showerror("Dynamic Analysis failed", f"Procmon not found:\n{procmon_path}", parent=self)
+            return
+
+        timeout_seconds = int(self.timeout_var.get())
+        procmon_config = self.procmon_config_var.get().strip()
+        config = {
+            "sample_path": str(sample),
+            "case_dir": str(case_dir),
+            "timeout_seconds": timeout_seconds,
+            "procmon_enabled": bool(self.procmon_enabled_var.get()),
+            "procmon_path": str(procmon_path),
+            "procmon_config_path": procmon_config,
+        }
+
+        self._save_cfg()
+        self.output.delete("1.0", "end")
+        self.output.insert("end", "Starting dynamic analysis:\n")
+        self.output.insert("end", f"  sample={sample}\n")
+        self.output.insert("end", f"  case_dir={case_dir}\n")
+        self.output.insert("end", f"  timeout_seconds={timeout_seconds}\n")
+        self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n\n")
+        self.output.see("end")
+
+        self.status_var.set("Running dynamic…")
+        self.run_btn.configure(state="disabled")
+
+        def worker():
+            try:
+                summary = run_dynamic_analysis(
+                    config,
+                    status_cb=lambda msg: self.output_q.put(f"[status] {msg}\n"),
+                )
+
+                findings = summary.get("findings", {})
+                highlights = findings.get("highlights", [])
+
+                if highlights:
+                    self.output_q.put("Highlights:\n")
+                    for item in highlights:
+                        self.output_q.put(f"  - {item}\n")
+                    self.output_q.put("\n")
+                
+                task_counts = summary.get("task_diff_summary", {})
+                if task_counts:
+                    self.output_q.put("Scheduled task diff:\n")
+                    self.output_q.put(f"  - New tasks: {task_counts.get('new_tasks', 0)}\n")
+                    self.output_q.put(f"  - Modified tasks: {task_counts.get('modified_tasks', 0)}\n")
+                    self.output_q.put(f"  - Removed tasks: {task_counts.get('removed_tasks', 0)}\n")
+                    self.output_q.put(f"  - Suspicious new/modified: {task_counts.get('suspicious_new_or_modified', 0)}\n\n")
+
+                service_counts = summary.get("service_diff_summary", {})
+                if service_counts:
+                    self.output_q.put("Service diff:\n")
+                    self.output_q.put(f"  - New services: {service_counts.get('new_services', 0)}\n")
+                    self.output_q.put(f"  - Modified services: {service_counts.get('modified_services', 0)}\n")
+                    self.output_q.put(f"  - Removed services: {service_counts.get('removed_services', 0)}\n")
+                    self.output_q.put(f"  - Suspicious new/modified: {service_counts.get('suspicious_new_or_modified', 0)}\n\n")
+                
+                top_written = findings.get("top_written_paths", [])
+                if top_written:
+                    self.output_q.put("Top written paths:\n")
+                    for row in top_written[:5]:
+                        self.output_q.put(f"  - {row.get('count', 0)}x  {row.get('path', '')}\n")
+                    self.output_q.put("\n")
+
+                top_net = findings.get("top_network_processes", [])
+                if top_net:
+                    self.output_q.put("Top network processes:\n")
+                    for row in top_net[:5]:
+                        self.output_q.put(f"  - {row.get('process_name', '')}: {row.get('count', 0)}\n")
+                    self.output_q.put("\n")
+
+                self.output_q.put(json.dumps(summary, indent=2))
+                self.after(0, lambda s=summary: self._on_done(s))
+            except Exception as e:
+                self.output_q.put(f"[error] {e}")
+                self.after(0, lambda err=str(e): self._on_error(err))
+                
+        # Start the background worker thread for dynamic analysis
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
+        
+    def _on_done(self, summary: Dict):
+        self.run_btn.configure(state="normal")
+        self.status_var.set("Idle")
+        exit_code = summary.get("exit_code")
+        if exit_code == 0:
+            messagebox.showinfo("Completed", "Dynamic analysis completed successfully.", parent=self)
+        else:
+            messagebox.showwarning(
+                "Completed",
+                f"Dynamic analysis completed. Sample exited with code {exit_code}.",
+                parent=self,
+            )
+
+    def _on_error(self, err: str):
+        self.run_btn.configure(state="normal")
+        self.status_var.set("Idle")
+        messagebox.showerror("Dynamic Analysis failed", err, parent=self)
+
+    def _drain_output(self):
+        try:
+            while True:
+                line = self.output_q.get_nowait()
+                self.output.insert("end", line + "\n")
+                self.output.see("end")
+        except queue.Empty:
+            pass
+        self.after(150, self._drain_output)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -249,6 +511,7 @@ class App(tk.Tk):
         self.open_case_btn: Optional[ttk.Button] = None
         self.open_html_btn: Optional[ttk.Button] = None
         self.open_pdf_btn: Optional[ttk.Button] = None
+        self.dynamic_window: Optional[DynamicAnalysisWindow] = None
 
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
@@ -347,6 +610,7 @@ class App(tk.Tk):
         actions.pack(fill="x", **pad)
         self.run_btn = ttk.Button(actions, text="Run Analysis", command=self._start_analysis)
         self.run_btn.pack(side="left")
+        ttk.Button(actions, text="Dynamic Analysis…", command=self._open_dynamic_window).pack(side="left", padx=(10, 0))
 
         ttk.Button(actions, text="Open Case Files", command=self._open_case_files).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(10, 0))
@@ -766,6 +1030,17 @@ class App(tk.Tk):
             if pp.is_dir():
                 return pp
         return None
+
+    def _open_dynamic_window(self):
+        if self.dynamic_window is not None and self.dynamic_window.winfo_exists():
+            self.dynamic_window.lift()
+            self.dynamic_window.focus_force()
+            return
+        self.dynamic_window = DynamicAnalysisWindow(self)
+        self.dynamic_window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda win=self.dynamic_window: (win.destroy(), setattr(self, "dynamic_window", None)),
+        )
 
     def _start_analysis(self):
         if self.worker_thread and self.worker_thread.is_alive():
