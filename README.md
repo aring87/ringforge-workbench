@@ -4,27 +4,28 @@
 
 RingForge Analyzer is a malware/software analysis toolkit for Windows executables and installers that supports both **static triage** and early-stage **dynamic behavior analysis**. It generates structured case artifacts, IOC output, persistence-diff data, dropped-file triage results, signing results, API behavior analysis, and analyst-facing reports for triage, training, and investigation.
 
+**Current release: v1.1**
+
 ## Overview
 
 RingForge Analyzer is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, and controlled dynamic runtime behavior collection into a single workflow.
 
 The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, and dynamic findings summaries.
 
-## What’s New in RingForge Analyzer v1.0
+## What’s New in RingForge Analyzer v1.1
 
-RingForge Analyzer v1.0 is the **first branded release** of the platform. It builds on the project’s earlier static triage foundation and expands it into a hybrid **static + dynamic analysis** workflow.
+RingForge Analyzer v1.1 builds on the v1.0 hybrid static + dynamic workflow and adds a more polished analyst experience for dynamic triage and reporting.
 
 ### Highlights
 
-- Procmon-backed dynamic capture
-- parsed Procmon CSV output and normalized event JSON
-- interesting-event filtering for high-value runtime activity
-- dropped-file candidate triage
-- scheduled task snapshotting and diffing
-- Windows service snapshotting and diffing
-- analyst-facing dynamic findings summaries
 - separate Dynamic Analysis GUI window
-- live phase/status updates during dynamic runs
+- Procmon-backed dynamic capture workflow
+- dynamic HTML report export
+- browser-based PDF fallback workflow
+- Procmon configuration file support
+- improved dynamic findings noise reduction
+- improved progress/status wording for optional steps
+- early UI theming updates aligned to report styling
 
 ## Core Features
 
@@ -73,12 +74,14 @@ RingForge Analyzer v1.0 is the **first branded release** of the platform. It bui
 - Windows service snapshotting and diffing
 - analyst-facing findings summaries
 - live GUI status output during dynamic runs
+- dynamic HTML report export
 
 ### Reporting
 
 - Markdown report
 - HTML report
 - PDF report when environment supports it
+- browser-based PDF fallback from HTML
 - structured summary and runlog outputs
 - dynamic findings output
 - persistence diff outputs
@@ -110,7 +113,7 @@ API-chain findings can contribute lightly to the final risk score. For trusted b
 
 ## Dynamic Analysis
 
-The project now includes an early-stage dynamic-analysis pipeline focused on practical analyst visibility rather than full sandbox emulation.
+The project includes an early-stage dynamic-analysis pipeline focused on practical analyst visibility rather than full sandbox emulation.
 
 ### Current capabilities
 
@@ -125,6 +128,7 @@ The project now includes an early-stage dynamic-analysis pipeline focused on pra
 - snapshot and diff Windows services
 - generate analyst-facing findings summaries
 - display live phase/status updates in the GUI
+- export polished HTML reports from dynamic summaries
 
 ### Recommended workflow
 
@@ -132,13 +136,14 @@ The project now includes an early-stage dynamic-analysis pipeline focused on pra
 2. Test first with a simple benign executable
 3. Test with a small benign installer
 4. Then test the target installer or sample
-5. Review findings, persistence diffs, dropped files, and Procmon summaries
+5. Review findings, persistence diffs, dropped files, Procmon summaries, and the HTML report
 
 ### Current limitations
 
 - host-side background activity can create significant noise when run on a personal workstation
 - Procmon filtering is still intentionally conservative
 - dynamic analysis is designed as a practical triage layer, not a full malware sandbox replacement
+- automatic PDF generation on Windows may require additional WeasyPrint system dependencies
 
 ## Typical Workflow
 
@@ -171,6 +176,7 @@ The project now includes an early-stage dynamic-analysis pipeline focused on pra
    - service diffs
    - dropped-file output
    - final dynamic summary
+7. Export the HTML report and optionally print it to PDF from the browser
 
 ## Outputs
 
@@ -231,6 +237,8 @@ cases/<case_name>/
     dropped_files_summary.json
   reports/
     dynamic_findings.json
+    dynamic_report.html
+    dynamic_report.pdf
 ```
 
 ### Artifact purpose
@@ -244,6 +252,8 @@ cases/<case_name>/
 - `service_diffs.json` — before/after Windows service changes
 - `dropped_files.json` — candidate dropped-file details
 - `dynamic_findings.json` — analyst-facing highlights and summaries
+- `dynamic_report.html` — themed analyst-facing HTML report
+- `dynamic_report.pdf` — PDF report when PDF backend is available
 
 ## Repo Layout
 
@@ -260,12 +270,15 @@ RingForge-Analyzer/
     procmon_parser.py
     dropped_file_triage.py
     findings.py
+    html_report.py
+    report_theme.py
     snapshot_tasks.py
     diff_tasks.py
     snapshot_services.py
     diff_services.py
     utils.py
   tools/
+    procmon-configs/
   cases/                 # generated locally, usually gitignored
   logs/                  # generated locally, usually gitignored
   .gitignore
@@ -278,7 +291,7 @@ RingForge-Analyzer/
 ## Recommended Release Folder Layout
 
 ```text
-RingForge_Analyzer_v1/
+RingForge_Analyzer_v1.1/
   RingForgeAnalyzer.exe
   scripts/
   static_triage_engine/
@@ -304,6 +317,7 @@ Typical dependencies include:
 - `lief`
 - `pyyaml`
 - `pyinstaller`
+- `weasyprint` (optional for direct PDF generation)
 - any packages listed in `requirements.txt`
 
 ### Linux / WSL tools
@@ -329,6 +343,7 @@ For dynamic analysis on Windows, Procmon is required for full runtime capture.
 
 Typical setup:
 - Procmon obtained separately from Microsoft Sysinternals
+- optional Procmon config file under `tools/procmon-configs`
 - a dedicated Windows VM for execution and observation
 - administrative rights where required for capture and snapshotting
 
@@ -338,6 +353,25 @@ You should also have:
 
 - `tools/capa-rules`
 - `tools/capa/sigs`
+
+## Windows Setup Example
+
+```powershell
+cd D:\ring_forge_analyzer
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install lief
+```
+
+Optional PDF support:
+
+```powershell
+pip install weasyprint
+```
+
+If WeasyPrint dependencies are unavailable on Windows, HTML export still works and can be printed to PDF from the browser.
 
 ## Linux Setup Example
 
@@ -353,6 +387,16 @@ bash scripts/bootstrap_capa_rules.sh
 
 ## Running the GUI
 
+### Windows
+
+```powershell
+cd D:\ring_forge_analyzer
+.\.venv\Scripts\Activate.ps1
+python .\scripts\static_triage_gui_v10.py
+```
+
+### Linux
+
 ```bash
 cd ~/analysis/RingForge-Analyzer
 source .venv/bin/activate
@@ -367,10 +411,13 @@ The GUI includes a separate Dynamic Analysis window with:
 - case folder selection
 - timeout configuration
 - Procmon path selection
+- Procmon config selection
 - Procmon enable/disable toggle
 - live output pane
 - phase/status progress messages
 - findings summary output
+- HTML report export
+- browser-based PDF fallback
 
 ## Running the CLI
 
@@ -386,7 +433,7 @@ Example analysis run:
 python scripts/static_triage.py "/path/to/sample.exe"
 ```
 
-## Packaging RingForge Analyzer v1.0
+## Packaging RingForge Analyzer v1.1
 
 ### Build
 
@@ -410,43 +457,34 @@ Create the release folder and copy:
 
 ### Zip
 
-```bash
+```powershell
 cd release
-zip -r RingForge_Analyzer_v1.0.zip RingForge_Analyzer_v1
+Compress-Archive -Path .\RingForge_Analyzer_v1.1 -DestinationPath .\RingForge_Analyzer_v1.1.zip -Force
 ```
 
-## Release Notes – RingForge Analyzer v1.0
-
-This is the first branded release of RingForge Analyzer. It expands the project from a static triage pipeline into a hybrid static + dynamic analysis platform and introduces the first major dynamic-analysis workflow for behavioral capture, persistence-change detection, dropped-file triage, and analyst-facing findings.
+## Release Notes – RingForge Analyzer v1.1
 
 ### Added
 
-- dedicated `dynamic_analysis` package
-- Procmon-backed dynamic capture workflow
-- Procmon CSV parsing and normalized JSON output
-- interesting-event filtering
-- dropped-file candidate triage
-- scheduled task snapshotting and diffing
-- Windows service snapshotting and diffing
-- analyst-facing findings summaries
-- separate Dynamic Analysis GUI window
-- live phase/status updates during runs
+- dynamic HTML report export
+- browser-open workflow for reviewing dynamic reports
+- browser-based PDF fallback workflow
+- Procmon configuration file support
+- shared dark/blue HTML report theme foundation
+- improved dynamic GUI controls for report actions
 
 ### Improved
 
-- cleaner dynamic case structure under metadata, procmon, persistence, files, and reports
-- more useful GUI output with highlights, task/service diff summaries, top written paths, top network processes, and final JSON summary
-- reduced dropped-file triage noise by focusing on suspicious and user-writable locations
-- reduced false findings caused by the tool’s own snapshotting activity
-- better GUI handling of samples that exit with nonzero return codes
+- dynamic findings noise reduction on non-isolated hosts
+- cleaner dynamic findings presentation
+- better handling for optional or non-applicable analysis steps
+- initial GUI theming work aligned to report styling
 
 ### Fixed
 
-- Procmon launch hang caused by blocking startup behavior
-- GUI worker-thread issue that prevented backend execution
-- scheduled-task snapshot reliability issues from PowerShell JSON handling
-- excessive dropped-file overcounting during benign runs
-- self-generated false persistence and LOLBin findings
+- report export path resolution for dynamic runs
+- issues caused by duplicate or broken Dynamic Analysis helper methods
+- improved report button integration inside the Dynamic Analysis window
 
 ## Troubleshooting
 
@@ -528,7 +566,11 @@ Common reasons:
 - network/DNS failure
 - rate limit or API response issue
 
-### 10. Paths fail in Linux
+### 10. HTML report exports but PDF does not
+
+If the HTML report is created successfully but PDF generation fails on Windows, WeasyPrint system dependencies are likely missing. Open the HTML report in your browser and use Print → Save as PDF.
+
+### 11. Paths fail in Linux
 
 Use Linux-style paths in the GUI, not Windows paths.
 
@@ -542,8 +584,8 @@ Use Linux-style paths in the GUI, not Windows paths.
 ## Notes
 
 - API analysis currently applies to Windows PE executables and DLLs through import/API-chain analysis
-- dynamic analysis in RingForge Analyzer v1.0 is intended as a practical triage layer, not a full sandbox replacement
-- future work may include tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
+- dynamic analysis in RingForge Analyzer v1.1 is intended as a practical triage layer, not a full sandbox replacement
+- future work may include a dedicated API Analysis window, tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
 
 ## License
 
