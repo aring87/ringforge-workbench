@@ -26,13 +26,16 @@ import sys
 import threading
 import time
 import webbrowser
+import shutil
 from datetime import datetime
 from html import escape
 import urllib.request
 import urllib.error
+import ssl
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -43,6 +46,16 @@ from tkinter import filedialog, messagebox, ttk
 
 from dynamic_analysis.orchestrator import run_dynamic_analysis
 from dynamic_analysis.html_report import write_dynamic_html_report
+
+try:
+    import certifi  # type: ignore
+except Exception:
+    certifi = None
+
+try:
+    import yaml  # type: ignore
+except Exception:
+    yaml = None
 
 
 def app_root() -> Path:
@@ -568,6 +581,418 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.after(150, self._drain_output)
 
 
+SENSITIVE_PARAM_HINTS = {
+    "password", "passwd", "secret", "token", "apikey", "api_key",
+    "access_token", "refresh_token", "authorization", "auth", "session",
+    "cookie", "ssn", "dob", "email", "phone", "creditcard", "card", "cvv",
+}
+
+ADMIN_ROUTE_HINTS = {"admin", "manage", "config", "settings", "internal", "debug", "health", "metrics", "actuator"}
+DESTRUCTIVE_METHODS = {"DELETE", "PATCH", "PUT"}
+AUTH_HINT_KEYS = {"authorization", "x-api-key", "api-key", "apikey", "bearer", "oauth", "token", "jwt", "basic"}
+
+
+def _safe_json_write(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _safe_text_read(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _load_spec_file(path: Path) -> tuple[dict[str, Any], str]:
+    text = _safe_text_read(path)
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return json.loads(text), "json"
+    if suffix in {".yaml", ".yml"}:
+        if yaml is None:
+            raise RuntimeError("PyYAML is not installed")
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}, "yaml"
+    try:
+        return json.loads(text), "json"
+    except Exception:
+        if yaml is None:
+            raise RuntimeError("Unknown spec format and PyYAML is not installed")
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}, "yaml"
+
+
+def _normalize_method(m: str) -> str:
+    return str(m or "").upper().strip()
+
+
+def _looks_sensitive(name: str) -> bool:
+    n = re.sub(r"[^a-z0-9_]+", "", name.lower())
+    return any(h in n for h in SENSITIVE_PARAM_HINTS)
+
+
+def _looks_admin_route(path: str) -> bool:
+    p = path.lower()
+    return any(f"/{h}" in p or p.endswith(f"/{h}") for h in ADMIN_ROUTE_HINTS)
+
+
+def _extract_server_hosts(spec: dict[str, Any]) -> list[str]:
+    hosts: list[str] = []
+    servers = spec.get("servers", [])
+    if isinstance(servers, list):
+        for item in servers:
+            if isinstance(item, dict):
+                url = str(item.get("url", "") or "").strip()
+                if url:
+                    parsed = urlparse(url)
+                    if parsed.netloc:
+                        hosts.append(parsed.netloc.lower())
+    host = spec.get("host")
+    if isinstance(host, str) and host.strip():
+        hosts.append(host.strip().lower())
+    return sorted(set(hosts))
+
+
+def _extract_security_schemes(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    components = spec.get("components", {})
+    if isinstance(components, dict):
+        schemes = components.get("securitySchemes", {})
+        if isinstance(schemes, dict):
+            for name, item in schemes.items():
+                if isinstance(item, dict):
+                    out.append({"name": str(name), "type": str(item.get("type", "") or ""), "scheme": str(item.get("scheme", "") or ""), "in": str(item.get("in", "") or ""), "header_name": str(item.get("name", "") or "")})
+    sec_defs = spec.get("securityDefinitions", {})
+    if isinstance(sec_defs, dict):
+        for name, item in sec_defs.items():
+            if isinstance(item, dict):
+                out.append({"name": str(name), "type": str(item.get("type", "") or ""), "scheme": str(item.get("scheme", "") or ""), "in": str(item.get("in", "") or ""), "header_name": str(item.get("name", "") or "")})
+    return out
+
+
+def _extract_parameters(op: dict[str, Any], path_item: dict[str, Any]) -> list[dict[str, str]]:
+    params: list[dict[str, str]] = []
+    for source in (path_item.get("parameters", []), op.get("parameters", [])):
+        if isinstance(source, list):
+            for p in source:
+                if isinstance(p, dict):
+                    params.append({"name": str(p.get("name", "") or ""), "in": str(p.get("in", "") or "")})
+    request_body = op.get("requestBody")
+    if isinstance(request_body, dict):
+        content = request_body.get("content", {})
+        if isinstance(content, dict):
+            for ctype, body in content.items():
+                if isinstance(body, dict):
+                    schema = body.get("schema", {})
+                    if isinstance(schema, dict):
+                        props = schema.get("properties", {})
+                        if isinstance(props, dict):
+                            for name in props.keys():
+                                params.append({"name": str(name), "in": f"body:{ctype}"})
+    return params
+
+
+def _summarize_auth(security_schemes: list[dict[str, Any]], spec_text: str) -> list[str]:
+    found: list[str] = []
+    for item in security_schemes:
+        t = (item.get("type", "") or "").lower()
+        scheme = (item.get("scheme", "") or "").lower()
+        header_name = (item.get("header_name", "") or "").lower()
+        if t == "apikey":
+            found.append("apiKey")
+        elif t == "http" and scheme == "bearer":
+            found.append("bearer")
+        elif t == "http" and scheme == "basic":
+            found.append("basic")
+        elif t == "oauth2":
+            found.append("oauth2")
+        elif t == "openidconnect":
+            found.append("openidConnect")
+        if header_name and any(k in header_name for k in AUTH_HINT_KEYS):
+            found.append(header_name)
+    text_l = spec_text.lower()
+    for hint in AUTH_HINT_KEYS:
+        if hint in text_l:
+            found.append(hint)
+    return sorted(set(found))
+
+
+def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str, Any]:
+    spec_path = Path(spec_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result: dict[str, Any] = {
+        "returncode": 0, "error": "", "input_file": str(spec_path), "format": "", "spec_type": "", "title": "", "version": "",
+        "servers": [], "auth_summary": [], "security_schemes": [], "endpoints": [], "risk_notes": [],
+        "summary": {"endpoint_count": 0, "get_count": 0, "post_count": 0, "put_count": 0, "patch_count": 0, "delete_count": 0, "admin_like_route_count": 0, "sensitive_param_count": 0, "auth_scheme_count": 0},
+    }
+    try:
+        spec, fmt = _load_spec_file(spec_path)
+        if not isinstance(spec, dict):
+            raise RuntimeError("Spec root is not an object")
+        spec_text = _safe_text_read(spec_path)
+        info = spec.get("info", {}) if isinstance(spec.get("info"), dict) else {}
+        paths = spec.get("paths", {}) if isinstance(spec.get("paths"), dict) else {}
+        result["format"] = fmt
+        result["spec_type"] = "openapi" if ("openapi" in spec or "swagger" in spec) else "unknown"
+        result["title"] = str(info.get("title", "") or "")
+        result["version"] = str(info.get("version", "") or "")
+        result["servers"] = _extract_server_hosts(spec)
+        security_schemes = _extract_security_schemes(spec)
+        result["security_schemes"] = security_schemes
+        result["auth_summary"] = _summarize_auth(security_schemes, spec_text)
+        endpoints: list[dict[str, Any]] = []
+        method_counts = {"GET": 0, "POST": 0, "PUT": 0, "PATCH": 0, "DELETE": 0}
+        admin_like_route_count = 0
+        sensitive_param_count = 0
+        valid_methods = {"get", "post", "put", "patch", "delete", "head", "options"}
+        for route, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
+            if _looks_admin_route(str(route)):
+                admin_like_route_count += 1
+            for method, op in path_item.items():
+                if method.lower() not in valid_methods or not isinstance(op, dict):
+                    continue
+                m = _normalize_method(method)
+                if m in method_counts:
+                    method_counts[m] += 1
+                params = _extract_parameters(op, path_item)
+                sensitive_params = [p for p in params if _looks_sensitive(p.get("name", ""))]
+                sensitive_param_count += len(sensitive_params)
+                endpoints.append({
+                    "path": str(route), "method": m, "operation_id": str(op.get("operationId", "") or ""),
+                    "summary": str(op.get("summary", "") or ""), "description": str(op.get("description", "") or "")[:500],
+                    "admin_like_route": _looks_admin_route(str(route)), "destructive_method": m in DESTRUCTIVE_METHODS,
+                    "parameters": params, "sensitive_parameters": sensitive_params,
+                })
+        result["endpoints"] = endpoints
+        result["summary"] = {
+            "endpoint_count": len(endpoints), "get_count": method_counts["GET"], "post_count": method_counts["POST"], "put_count": method_counts["PUT"],
+            "patch_count": method_counts["PATCH"], "delete_count": method_counts["DELETE"], "admin_like_route_count": admin_like_route_count,
+            "sensitive_param_count": sensitive_param_count, "auth_scheme_count": len(result["auth_summary"]),
+        }
+        risk_notes: list[str] = []
+        if not result["servers"]:
+            risk_notes.append("No server/base URL definitions found in API spec")
+        if method_counts["DELETE"] > 0 or method_counts["PATCH"] > 0:
+            risk_notes.append("Spec exposes destructive or update-oriented methods (DELETE/PATCH)")
+        if admin_like_route_count > 0:
+            risk_notes.append(f"Admin/config/internal-like routes detected ({admin_like_route_count})")
+        if sensitive_param_count > 0:
+            risk_notes.append(f"Sensitive-looking parameters detected ({sensitive_param_count})")
+        if not result["auth_summary"]:
+            risk_notes.append("No obvious authentication scheme detected in spec")
+        result["risk_notes"] = risk_notes
+    except Exception as e:
+        result["returncode"] = 1
+        result["error"] = f"{type(e).__name__}: {e}"
+    _safe_json_write(output_dir / "api_spec_analysis.json", result)
+    return result
+
+
+class SpecAnalysisWindow(tk.Toplevel):
+    def __init__(self, app: "App"):
+        super().__init__(app)
+        self.app = app
+        self.title("Spec Analysis")
+        self.geometry("1220x860")
+        self.minsize(980, 720)
+        self.spec_path_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Idle")
+        self.summary_var = tk.StringVar(value="Load an OpenAPI / Swagger JSON or YAML file.")
+        self.last_spec_dir: Optional[Path] = None
+        self.last_html_report: Optional[Path] = None
+        self.last_json_report: Optional[Path] = None
+        self.last_result: Optional[dict[str, Any]] = None
+        self._build_ui()
+        self.transient(app)
+        self.grab_set()
+
+    def _current_case_name(self) -> str:
+        case_name = self.app.case_var.get().strip() if hasattr(self.app, "case_var") else ""
+        if case_name:
+            return case_name
+        sample = self.app.sample_var.get().strip() if hasattr(self.app, "sample_var") else ""
+        if sample:
+            return Path(sample).stem[:64]
+        return "spec_case"
+
+    def _ensure_spec_dir(self) -> Path:
+        case_root = Path(self.app.case_root_var.get().strip()) if hasattr(self.app, "case_root_var") else (ROOT / "cases")
+        case_root.mkdir(parents=True, exist_ok=True)
+        case_dir = case_root / self._current_case_name()
+        case_dir.mkdir(parents=True, exist_ok=True)
+        spec_dir = case_dir / "spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        self.last_spec_dir = spec_dir
+        return spec_dir
+
+    def _build_ui(self):
+        pad = {"padx": 10, "pady": 8}
+        frm = ttk.Frame(self)
+        frm.pack(fill="both", expand=True, **pad)
+        frm.columnconfigure(1, weight=1)
+        frm.rowconfigure(3, weight=1)
+        ttk.Label(frm, text="Spec file:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.spec_path_var, width=110).grid(row=0, column=1, sticky="we", padx=6)
+        btns = ttk.Frame(frm)
+        btns.grid(row=0, column=2, sticky="e")
+        ttk.Button(btns, text="Browse", command=self._browse_spec).pack(side="left")
+        ttk.Button(btns, text="Parse Spec", command=self._parse_spec).pack(side="left", padx=(8,0))
+        ttk.Button(btns, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(8,0))
+        ttk.Button(btns, text="Open Case Files", command=self._open_case_files).pack(side="left", padx=(8,0))
+
+        summary = ttk.LabelFrame(frm, text="Summary")
+        summary.grid(row=1, column=0, columnspan=3, sticky="we")
+        summary.columnconfigure(0, weight=1)
+        ttk.Label(summary, textvariable=self.summary_var, wraplength=1160, justify="left").grid(row=0, column=0, sticky="w", padx=8, pady=8)
+
+        notes = ttk.LabelFrame(frm, text="Risk Notes")
+        notes.grid(row=2, column=0, columnspan=3, sticky="we")
+        notes.columnconfigure(0, weight=1)
+        self.notes_text = tk.Text(notes, height=4, wrap="word", bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground="#2a4365", highlightcolor="#3d86ff", font=("Consolas", 10))
+        self.notes_text.grid(row=0, column=0, sticky="we", padx=8, pady=8)
+
+        inv = ttk.LabelFrame(frm, text="Endpoint Inventory")
+        inv.grid(row=3, column=0, columnspan=3, sticky="nsew")
+        inv.columnconfigure(0, weight=1)
+        inv.rowconfigure(0, weight=1)
+        cols = ("method", "path", "summary", "auth", "params", "flags")
+        self.tree = ttk.Treeview(inv, columns=cols, show="headings", height=22)
+        headings = {"method":"Method", "path":"Path", "summary":"Summary", "auth":"Auth", "params":"Params", "flags":"Flags"}
+        widths = {"method":90, "path":330, "summary":320, "auth":120, "params":160, "flags":160}
+        for col in cols:
+            self.tree.heading(col, text=headings[col])
+            self.tree.column(col, width=widths[col], anchor="w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ysb = ttk.Scrollbar(inv, orient="vertical", command=self.tree.yview)
+        ysb.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=ysb.set)
+
+        ttk.Label(frm, textvariable=self.status_var).grid(row=4, column=0, columnspan=3, sticky="e", pady=(6,0))
+
+    def _browse_spec(self):
+        start = Path(self.spec_path_var.get()).parent if self.spec_path_var.get().strip() else ROOT
+        chosen = filedialog.askopenfilename(title="Select API spec", initialdir=str(start), filetypes=[("API Specs", "*.json *.yaml *.yml"), ("All Files", "*.*")])
+        if chosen:
+            self.spec_path_var.set(norm_path_str(chosen))
+
+    def _populate_result(self, result: dict[str, Any]):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        summary = result.get("summary", {})
+        title = result.get("title") or Path(result.get("input_file", "spec")).name
+        self.summary_var.set(
+            f"Title: {title} | Version: {result.get('version','')} | Type: {result.get('spec_type','')} | Format: {result.get('format','')} | "
+            f"Endpoints: {summary.get('endpoint_count',0)} | GET: {summary.get('get_count',0)} | POST: {summary.get('post_count',0)} | "
+            f"PUT: {summary.get('put_count',0)} | PATCH: {summary.get('patch_count',0)} | DELETE: {summary.get('delete_count',0)} | "
+            f"Servers: {', '.join(result.get('servers', [])) or 'none'} | Auth: {', '.join(result.get('auth_summary', [])) or 'none'}"
+        )
+        self.notes_text.delete('1.0', 'end')
+        notes = result.get('risk_notes', [])
+        self.notes_text.insert('1.0', '\n'.join(f'- {x}' for x in notes) if notes else 'No risk notes generated.')
+        auth_txt = ', '.join(result.get('auth_summary', [])) or 'none'
+        for ep in result.get('endpoints', []):
+            params = ep.get('parameters', [])
+            flags = []
+            if ep.get('admin_like_route'):
+                flags.append('admin-like')
+            if ep.get('destructive_method'):
+                flags.append('destructive')
+            if ep.get('sensitive_parameters'):
+                flags.append('sensitive-params')
+            self.tree.insert('', 'end', values=(ep.get('method',''), ep.get('path',''), ep.get('summary',''), auth_txt, len(params), ', '.join(flags)))
+
+    def _render_html(self, result: dict[str, Any]) -> str:
+        rows = []
+        auth_txt = ', '.join(result.get('auth_summary', [])) or 'none'
+        for ep in result.get('endpoints', []):
+            flags = []
+            if ep.get('admin_like_route'):
+                flags.append('admin-like')
+            if ep.get('destructive_method'):
+                flags.append('destructive')
+            if ep.get('sensitive_parameters'):
+                flags.append('sensitive-params')
+            rows.append(f"<tr><td>{escape(str(ep.get('method','')))}</td><td>{escape(str(ep.get('path','')))}</td><td>{escape(str(ep.get('summary','')))}</td><td>{escape(auth_txt)}</td><td>{len(ep.get('parameters', []))}</td><td>{escape(', '.join(flags))}</td></tr>")
+        notes_html = ''.join(f"<li>{escape(str(x))}</li>" for x in result.get('risk_notes', [])) or '<li>No risk notes generated.</li>'
+        s = result.get('summary', {})
+        return f"""<!DOCTYPE html>
+<html lang='en'><head><meta charset='utf-8'><title>Spec Analysis Report</title>
+<style>body{{background:#081426;color:#eaf2ff;font-family:Segoe UI,Arial,sans-serif;margin:24px}}h1,h2{{color:#7db3ff}}.card{{background:#0d1b33;border:1px solid #2a4365;border-radius:10px;padding:16px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid #2a4365;padding:8px;text-align:left;vertical-align:top}}th{{background:#13284a}}ul{{margin:0;padding-left:20px}}</style></head><body>
+<h1>Spec Analysis Report</h1>
+<div class='card'><div><strong>Input file:</strong> {escape(str(result.get('input_file','')))}</div><div><strong>Title:</strong> {escape(str(result.get('title','')))}</div><div><strong>Version:</strong> {escape(str(result.get('version','')))}</div><div><strong>Type:</strong> {escape(str(result.get('spec_type','')))}</div><div><strong>Format:</strong> {escape(str(result.get('format','')))}</div><div><strong>Servers:</strong> {escape(', '.join(result.get('servers', [])) or 'none')}</div><div><strong>Auth summary:</strong> {escape(auth_txt)}</div></div>
+<div class='card'><h2>Counts</h2><div>Endpoints: {s.get('endpoint_count',0)} | GET: {s.get('get_count',0)} | POST: {s.get('post_count',0)} | PUT: {s.get('put_count',0)} | PATCH: {s.get('patch_count',0)} | DELETE: {s.get('delete_count',0)}</div><div>Admin-like routes: {s.get('admin_like_route_count',0)} | Sensitive params: {s.get('sensitive_param_count',0)} | Auth schemes: {s.get('auth_scheme_count',0)}</div></div>
+<div class='card'><h2>Risk Notes</h2><ul>{notes_html}</ul></div>
+<div class='card'><h2>Endpoint Inventory</h2><table><tr><th>Method</th><th>Path</th><th>Summary</th><th>Auth</th><th>Params</th><th>Flags</th></tr>{''.join(rows)}</table></div>
+</body></html>"""
+
+    def _save_report_files(self, result: dict[str, Any]) -> tuple[Path, Path]:
+        spec_dir = self._ensure_spec_dir()
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        json_path = spec_dir / f'spec_inventory_{timestamp}.json'
+        html_path = spec_dir / f'spec_inventory_{timestamp}.html'
+        latest_json = spec_dir / 'spec_inventory_latest.json'
+        latest_html = spec_dir / 'spec_inventory_latest.html'
+        _safe_json_write(json_path, result)
+        _safe_json_write(latest_json, result)
+        html_text = self._render_html(result)
+        html_path.write_text(html_text, encoding='utf-8')
+        latest_html.write_text(html_text, encoding='utf-8')
+        src = Path(self.spec_path_var.get().strip())
+        if src.exists():
+            try:
+                shutil.copy2(src, spec_dir / f'original_spec{src.suffix.lower()}')
+            except Exception:
+                pass
+        self.last_json_report = latest_json
+        self.last_html_report = latest_html
+        return latest_json, latest_html
+
+    def _parse_spec(self):
+        spec_path = Path(self.spec_path_var.get().strip())
+        if not spec_path.exists():
+            messagebox.showerror('Spec Analysis', f'Spec file not found:\n{spec_path}', parent=self)
+            return
+        result = analyze_api_spec(spec_path, self._ensure_spec_dir())
+        if result.get('returncode') != 0:
+            messagebox.showerror('Spec Analysis', result.get('error', 'Unknown error'), parent=self)
+            self.status_var.set('Parse failed')
+            return
+        self.last_result = result
+        self._populate_result(result)
+        self._save_report_files(result)
+        self.status_var.set(f"Parsed {result.get('summary', {}).get('endpoint_count', 0)} endpoints")
+
+    def _save_html_report(self):
+        if not self.last_result:
+            messagebox.showinfo('Save HTML Report', 'Parse a spec first so there is a report to save.', parent=self)
+            return
+        _, html_path = self._save_report_files(self.last_result)
+        self.status_var.set(f'Saved HTML report: {html_path.name}')
+        messagebox.showinfo('Save HTML Report', f'Saved spec HTML report:\n{html_path}', parent=self)
+
+    def _open_html_report(self):
+        html_path = self.last_html_report
+        if html_path is None:
+            spec_dir = self._ensure_spec_dir()
+            candidate = spec_dir / 'spec_inventory_latest.html'
+            html_path = candidate if candidate.exists() else None
+        if html_path is None or not html_path.exists():
+            messagebox.showinfo('Open HTML Report', 'No saved spec HTML report was found yet.', parent=self)
+            return
+        webbrowser.open(html_path.resolve().as_uri())
+
+    def _open_case_files(self):
+        spec_dir = self.last_spec_dir
+        if spec_dir is None:
+            candidate = self._ensure_spec_dir()
+            spec_dir = candidate if candidate.exists() else None
+        if spec_dir is None or not spec_dir.exists():
+            messagebox.showinfo('Open Case Files', 'No spec case folder was found yet.', parent=self)
+            return
+        self.app._open_path(spec_dir)
+
+
 class APIAnalysisWindow(tk.Toplevel):
     PRESET_NAMES = [
         "Custom",
@@ -591,6 +1016,7 @@ class APIAnalysisWindow(tk.Toplevel):
         self.method_var = tk.StringVar(value="GET")
         self.url_var = tk.StringVar(value="")
         self.timeout_var = tk.IntVar(value=60)
+        self.verify_ssl_var = tk.BooleanVar(value=True)
         self.file_path_var = tk.StringVar(value="")
         self.file_field_var = tk.StringVar(value="file")
         self.status_var = tk.StringVar(value="Idle")
@@ -622,8 +1048,11 @@ class APIAnalysisWindow(tk.Toplevel):
 
         ttk.Label(frm, text="Method:").grid(row=1, column=0, sticky="w")
         ttk.Combobox(frm, textvariable=self.method_var, values=["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"], state="readonly", width=12).grid(row=1, column=1, sticky="w", padx=6)
-        ttk.Label(frm, text="Timeout (sec):").grid(row=1, column=2, sticky="e")
-        ttk.Spinbox(frm, from_=1, to=300, textvariable=self.timeout_var, width=8).grid(row=1, column=3, sticky="w", padx=6)
+        options_wrap = ttk.Frame(frm)
+        options_wrap.grid(row=1, column=2, columnspan=2, sticky="e")
+        ttk.Checkbutton(options_wrap, text="Verify SSL", variable=self.verify_ssl_var).pack(side="left", padx=(0, 12))
+        ttk.Label(options_wrap, text="Timeout (sec):").pack(side="left")
+        ttk.Spinbox(options_wrap, from_=1, to=300, textvariable=self.timeout_var, width=8, style="TSpinbox").pack(side="left", padx=(6, 0))
 
         ttk.Label(frm, text="URL:").grid(row=2, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.url_var, width=112).grid(row=2, column=1, columnspan=3, sticky="we", padx=6)
@@ -884,6 +1313,27 @@ pre {{ white-space:pre-wrap; word-wrap:break-word; background:#0b1730; border:1p
             return
         webbrowser.open(html_path.resolve().as_uri())
 
+    def _build_ssl_context(self):
+        if not self.verify_ssl_var.get():
+            return ssl._create_unverified_context()
+        try:
+            if certifi is not None:
+                return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            pass
+        return ssl.create_default_context()
+
+    def _format_request_exception(self, err: Exception) -> str:
+        msg = str(err)
+        lowered = msg.lower()
+        if "certificate_verify_failed" in lowered or "unable to get local issuer certificate" in lowered:
+            return (
+                f"{err}\n\n"
+                "Tip: your Python environment could not validate the HTTPS certificate chain. "
+                "Try enabling or disabling 'Verify SSL' in this window depending on your test needs."
+            )
+        return msg
+
     def _build_multipart_body(self, form_data, file_path: Path, file_field: str):
         boundary = "----RingForgeBoundary7MA4YWxkTrZu0gW"
         chunks = []
@@ -948,7 +1398,8 @@ pre {{ white-space:pre-wrap; word-wrap:break-word; background:#0b1730; border:1p
         def worker():
             try:
                 req = urllib.request.Request(url=url, data=body_bytes, headers=headers, method=method)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ssl_context = self._build_ssl_context()
+                with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
                     status_code = getattr(resp, "status", None) or resp.getcode()
                     reason = getattr(resp, "reason", "")
                     resp_headers = dict(resp.getheaders())
@@ -1046,7 +1497,7 @@ pre {{ white-space:pre-wrap; word-wrap:break-word; background:#0b1730; border:1p
                         "status_code": "",
                         "reason": "Request failed",
                         "headers": {},
-                        "body_text": str(e),
+                        "body_text": self._format_request_exception(e),
                     },
                 }
 
@@ -1054,7 +1505,7 @@ pre {{ white-space:pre-wrap; word-wrap:break-word; background:#0b1730; border:1p
                     f"> Preset: {self.preset_var.get().strip()}\n"
                     f"> Method: {method}\n"
                     f"> URL: {url}\n"
-                    f"> Upload file: {file_path_raw or 'none'}\n\nRequest failed:\n{e}"
+                    f"> Upload file: {file_path_raw or 'none'}\n\nRequest failed:\n{self._format_request_exception(e)}"
                 )
                 self.after(0, self._on_request_done)
         self.worker_thread = threading.Thread(target=worker, daemon=True)
@@ -1087,6 +1538,17 @@ class App(tk.Tk):
         disabled_bg = "#102038"
         disabled_fg = "#6f87a8"
 
+        self.option_add("*Menu.background", "#0d1b33")
+        self.option_add("*Menu.foreground", "#eaf2ff")
+        self.option_add("*Menu.activeBackground", "#1f6fff")
+        self.option_add("*Menu.activeForeground", "#ffffff")
+        self.option_add("*Menu.borderWidth", 1)
+        
+        self.option_add("*TCombobox*Listbox.background", "#0d1b33")
+        self.option_add("*TCombobox*Listbox.foreground", "#eaf2ff")
+        self.option_add("*TCombobox*Listbox.selectBackground", "#1f6fff")
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        
         self.configure(bg=bg)
 
         style = ttk.Style(self)
@@ -1163,6 +1625,26 @@ class App(tk.Tk):
             fieldbackground=[("readonly", panel), ("disabled", disabled_bg)],
             foreground=[("readonly", text), ("disabled", disabled_fg)],
             background=[("readonly", panel), ("disabled", disabled_bg)],
+            arrowcolor=[("disabled", disabled_fg)],
+        )
+
+        style.configure(
+            "TSpinbox",
+            fieldbackground=panel,
+            foreground=text,
+            background=panel,
+            arrowcolor=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            relief="flat",
+            padding=2,
+        )
+        style.map(
+            "TSpinbox",
+            fieldbackground=[("disabled", disabled_bg), ("readonly", panel)],
+            foreground=[("disabled", disabled_fg), ("readonly", text)],
+            background=[("disabled", disabled_bg), ("readonly", panel)],
             arrowcolor=[("disabled", disabled_fg)],
         )
 
@@ -1272,6 +1754,7 @@ class App(tk.Tk):
         self.open_html_btn: Optional[ttk.Button] = None
         self.open_pdf_btn: Optional[ttk.Button] = None
         self.dynamic_window: Optional[DynamicAnalysisWindow] = None
+        self.spec_window: Optional[SpecAnalysisWindow] = None
         self.api_window: Optional[APIAnalysisWindow] = None
 
         self.output_q: "queue.Queue[str]" = queue.Queue()
@@ -1305,7 +1788,16 @@ class App(tk.Tk):
 
         ttk.Label(top, text="Preset:").grid(row=1, column=1, sticky="e", padx=(0, 220))
         preset_names = [p.name for p in PRESETS]
-        ttk.OptionMenu(top, self.preset_var, self.preset_var.get(), *preset_names, command=lambda *_: self._on_preset_changed()).grid(row=1, column=2, sticky="e")
+
+        preset_box = ttk.Combobox(
+            top,
+            textvariable=self.preset_var,
+            values=preset_names,
+            state="readonly",
+            width=18,
+        )
+        preset_box.grid(row=1, column=2, sticky="e")
+        preset_box.bind("<<ComboboxSelected>>", self._on_preset_selected)
 
         top.columnconfigure(1, weight=1)
 
@@ -1345,7 +1837,8 @@ class App(tk.Tk):
         ttk.Checkbutton(self.adv_body, text="Enable subfiles triage", variable=self.subfiles_var, command=self._save_cfg).grid(row=0, column=1, sticky="w", padx=(14, 0))
 
         ttk.Label(self.adv_body, text="Subfile limit:").grid(row=0, column=2, sticky="e", padx=(14, 6))
-        ttk.Spinbox(self.adv_body, from_=0, to=999, textvariable=self.subfile_limit_var, width=6, command=self._save_cfg).grid(row=0, column=3, sticky="w")
+        self.subfile_limit_spin = ttk.Spinbox(self.adv_body, from_=0, to=999, textvariable=self.subfile_limit_var, width=6, command=self._save_cfg,)
+        self.subfile_limit_spin.grid(row=0, column=3, sticky="w")
 
         ttk.Checkbutton(self.adv_body, text="Strings lite", variable=self.strings_lite_var, command=self._on_strings_mode_changed).grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Checkbutton(self.adv_body, text="Skip strings", variable=self.no_strings_var, command=self._on_strings_mode_changed).grid(row=1, column=1, sticky="w", pady=(6, 0), padx=(14, 0))
@@ -1375,6 +1868,7 @@ class App(tk.Tk):
         ttk.Button(actions, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Dynamic Analysis...", command=self._open_dynamic_window).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="API Analysis", command=self.open_api_analysis_window).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Spec Analysis", command=self.open_spec_analysis_window).pack(side="left", padx=(10, 0))
 
         ttk.Label(actions, textvariable=self.running_var).pack(side="right")
 
@@ -1466,6 +1960,17 @@ class App(tk.Tk):
         messagebox.showinfo("Open Case Files", f"Case folder not found:\n{case_dir}")
         return None
     
+    def open_spec_analysis_window(self):
+        if self.spec_window is not None and self.spec_window.winfo_exists():
+            self.spec_window.lift()
+            self.spec_window.focus_force()
+            return
+        self.spec_window = SpecAnalysisWindow(self)
+        self.spec_window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda win=self.spec_window: (win.destroy(), setattr(self, "spec_window", None)),
+        )
+
     def open_api_analysis_window(self):
         if self.api_window is not None and self.api_window.winfo_exists():
             self.api_window.lift()
@@ -1642,18 +2147,35 @@ class App(tk.Tk):
     def _on_preset_changed(self):
         self._apply_preset_if_needed()
         self._save_cfg()
+    
+    def _on_preset_selected(self, event=None):
+        self._on_preset_changed()
+        try:
+            event.widget.selection_clear()
+        except Exception:
+            pass
+        self.after(50, lambda: self.focus_set())
 
     def _on_adv_toggle(self):
         self._sync_adv_state()
         self._save_cfg()
 
     def _sync_adv_state(self):
-        state = "normal" if self.adv_enabled_var.get() else "disabled"
+        advanced_on = self.adv_enabled_var.get()
+
         for child in self.adv_body.winfo_children():
             try:
-                child.configure(state=state)
+                # Keep labels visually normal
+                if isinstance(child, ttk.Label):
+                    child.configure(state="normal")
+                # Keep the spinbox dark/readable when advanced settings are off
+                elif child is getattr(self, "subfile_limit_spin", None):
+                    child.configure(state="normal" if advanced_on else "readonly")
+                else:
+                    child.configure(state="normal" if advanced_on else "disabled")
             except tk.TclError:
                 pass
+
         self._update_effective_label()
 
     def _on_strings_mode_changed(self):
