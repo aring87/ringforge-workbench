@@ -26,6 +26,8 @@ import sys
 import threading
 import time
 import webbrowser
+import urllib.request
+import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -280,6 +282,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ttk.Button(actions, text="Open Case Folder", command=self._open_case_folder).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Export HTML/PDF Report", command=self._export_dynamic_report).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Open Latest HTML", command=self._open_latest_dynamic_html).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="API Analysis", command=self.app.open_api_analysis_window).pack(side="left", padx=(10, 0))
         ttk.Label(actions, textvariable=self.status_var).pack(side="right")
 
         outwrap = ttk.LabelFrame(frm, text="Output")
@@ -559,6 +562,178 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.after(150, self._drain_output)
 
 
+class APIAnalysisWindow(tk.Toplevel):
+    def __init__(self, app: "App"):
+        super().__init__(app)
+        self.app = app
+        self.title("API Analysis")
+        self.geometry("980x760")
+        self.minsize(860, 640)
+
+        self.method_var = tk.StringVar(value="GET")
+        self.url_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Idle")
+
+        self.output_q: "queue.Queue[str]" = queue.Queue()
+        self.worker_thread: Optional[threading.Thread] = None
+
+        self._build_ui()
+        self.after(150, self._drain_output)
+
+        self.transient(app)
+        self.grab_set()
+
+    def _build_ui(self):
+        pad = {"padx": 10, "pady": 8}
+
+        frm = ttk.Frame(self)
+        frm.pack(fill="both", expand=True, **pad)
+        frm.columnconfigure(1, weight=1)
+        frm.rowconfigure(4, weight=1)
+
+        ttk.Label(frm, text="Method:").grid(row=0, column=0, sticky="w")
+        method_box = ttk.Combobox(
+            frm,
+            textvariable=self.method_var,
+            values=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+            state="readonly",
+            width=12,
+        )
+        method_box.grid(row=0, column=1, sticky="w", padx=6)
+
+        ttk.Label(frm, text="URL:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.url_var, width=100).grid(row=1, column=1, sticky="we", padx=6, columnspan=2)
+
+        req_wrap = ttk.LabelFrame(frm, text="Request")
+        req_wrap.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        req_wrap.columnconfigure(0, weight=1)
+        req_wrap.columnconfigure(1, weight=1)
+        req_wrap.rowconfigure(1, weight=1)
+
+        ttk.Label(req_wrap, text="Headers (JSON):").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        ttk.Label(req_wrap, text="Body (JSON or raw text):").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 4))
+
+        self.headers_text = tk.Text(req_wrap, wrap="word", height=12, bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff", selectbackground="#1f6fff", selectforeground="white", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground="#2a4365", highlightcolor="#3d86ff")
+        self.headers_text.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
+
+        self.body_text = tk.Text(req_wrap, wrap="word", height=12, bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff", selectbackground="#1f6fff", selectforeground="white", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground="#2a4365", highlightcolor="#3d86ff")
+        self.body_text.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=(0, 8))
+
+        self.headers_text.insert("1.0", '{\n  "User-Agent": "RingForge-Analyzer/1.0"\n}')
+
+        actions = ttk.Frame(frm)
+        actions.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        self.send_btn = ttk.Button(actions, text="Send Request", command=self._start_request)
+        self.send_btn.pack(side="left")
+        ttk.Button(actions, text="Clear", command=self._clear_fields).pack(side="left", padx=(10, 0))
+        ttk.Label(actions, textvariable=self.status_var).pack(side="right")
+
+        out_wrap = ttk.LabelFrame(frm, text="Response")
+        out_wrap.grid(row=4, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        out_wrap.columnconfigure(0, weight=1)
+        out_wrap.rowconfigure(0, weight=1)
+
+        self.output = tk.Text(out_wrap, wrap="none", height=20, bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff", selectbackground="#1f6fff", selectforeground="white", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground="#2a4365", highlightcolor="#3d86ff", font=("Consolas", 10))
+        self.output.grid(row=0, column=0, sticky="nsew")
+
+        ysb = ttk.Scrollbar(out_wrap, orient="vertical", command=self.output.yview)
+        ysb.grid(row=0, column=1, sticky="ns")
+        self.output.configure(yscrollcommand=ysb.set)
+
+    def _clear_fields(self):
+        self.url_var.set("")
+        self.headers_text.delete("1.0", "end")
+        self.body_text.delete("1.0", "end")
+        self.output.delete("1.0", "end")
+        self.headers_text.insert("1.0", '{\n  "User-Agent": "RingForge-Analyzer/1.0"\n}')
+        self.status_var.set("Idle")
+
+    def _start_request(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            return
+
+        url = self.url_var.get().strip()
+        if not url:
+            messagebox.showerror("API Analysis", "Please enter a URL.", parent=self)
+            return
+
+        method = self.method_var.get().strip().upper()
+        headers_raw = self.headers_text.get("1.0", "end").strip()
+        body_raw = self.body_text.get("1.0", "end").strip()
+
+        try:
+            headers = json.loads(headers_raw) if headers_raw else {}
+            if not isinstance(headers, dict):
+                raise ValueError("Headers must be a JSON object.")
+        except Exception as e:
+            messagebox.showerror("API Analysis", f"Invalid headers JSON:\n{e}", parent=self)
+            return
+
+        body_bytes = None
+        if body_raw:
+            try:
+                parsed = json.loads(body_raw)
+                body_bytes = json.dumps(parsed, indent=2).encode("utf-8")
+                headers.setdefault("Content-Type", "application/json")
+            except Exception:
+                body_bytes = body_raw.encode("utf-8")
+
+        self.output.delete("1.0", "end")
+        self.status_var.set("Sending...")
+        self.send_btn.configure(state="disabled")
+
+        def worker():
+            try:
+                req = urllib.request.Request(url=url, data=body_bytes, headers=headers, method=method)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    status_code = getattr(resp, "status", None) or resp.getcode()
+                    reason = getattr(resp, "reason", "")
+                    resp_headers = dict(resp.getheaders())
+                    raw = resp.read()
+                try:
+                    text = raw.decode("utf-8")
+                except Exception:
+                    text = raw.decode("utf-8", errors="replace")
+                parts = [f"HTTP {status_code} {reason}\n", "=== Response Headers ===\n"]
+                for k, v in resp_headers.items():
+                    parts.append(f"{k}: {v}\n")
+                parts.append("\n=== Response Body ===\n")
+                try:
+                    parsed_body = json.loads(text)
+                    parts.append(json.dumps(parsed_body, indent=2))
+                except Exception:
+                    parts.append(text)
+                self.output_q.put("".join(parts))
+                self.after(0, self._on_request_done)
+            except urllib.error.HTTPError as e:
+                try:
+                    err_body = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    err_body = "<unable to decode error body>"
+                self.output_q.put(f"HTTP Error: {e.code} {e.reason}\n\n=== Response Body ===\n{err_body}")
+                self.after(0, self._on_request_done)
+            except Exception as e:
+                self.output_q.put(f"Request failed:\n{e}")
+                self.after(0, self._on_request_done)
+
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
+
+    def _on_request_done(self):
+        self.send_btn.configure(state="normal")
+        self.status_var.set("Idle")
+
+    def _drain_output(self):
+        try:
+            while True:
+                msg = self.output_q.get_nowait()
+                self.output.insert("end", msg + "\n")
+                self.output.see("end")
+        except queue.Empty:
+            pass
+        self.after(150, self._drain_output)
+
+
 class App(tk.Tk):
     def _apply_theme(self):
         bg = "#081426"
@@ -757,6 +932,7 @@ class App(tk.Tk):
         self.open_html_btn: Optional[ttk.Button] = None
         self.open_pdf_btn: Optional[ttk.Button] = None
         self.dynamic_window: Optional[DynamicAnalysisWindow] = None
+        self.api_window: Optional[APIAnalysisWindow] = None
 
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
@@ -855,12 +1031,11 @@ class App(tk.Tk):
         actions.pack(fill="x", **pad)
         self.run_btn = ttk.Button(actions, text="Run Analysis", command=self._start_analysis)
         self.run_btn.pack(side="left")
-        ttk.Button(actions, text="Dynamic Analysis…", command=self._open_dynamic_window).pack(side="left", padx=(10, 0))
-
         ttk.Button(actions, text="Open Case Files", command=self._open_case_files).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Open PDF Report", command=self._open_pdf_report).pack(side="left", padx=(10, 0))
-
+        ttk.Button(actions, text="Dynamic Analysis...", command=self._open_dynamic_window).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="API Analysis", command=self.open_api_analysis_window).pack(side="left", padx=(10, 0))
+        
         ttk.Label(actions, textvariable=self.running_var).pack(side="right")
 
         summary = ttk.LabelFrame(self, text="Result Summary")
@@ -950,6 +1125,18 @@ class App(tk.Tk):
 
         messagebox.showinfo("Open Case Files", f"Case folder not found:\n{case_dir}")
         return None
+    
+    def open_api_analysis_window(self):
+        if self.api_window is not None and self.api_window.winfo_exists():
+            self.api_window.lift()
+            self.api_window.focus_force()
+            return
+
+        self.api_window = APIAnalysisWindow(self)
+        self.api_window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda win=self.api_window: (win.destroy(), setattr(self, "api_window", None)),
+        )
 
     def _open_case_files(self):
         case_dir = self._ensure_case_dir()
