@@ -38,6 +38,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from dynamic_analysis.orchestrator import run_dynamic_analysis
+from dynamic_analysis.html_report import write_dynamic_html_report
 
 
 def app_root() -> Path:
@@ -277,6 +278,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.run_btn = ttk.Button(actions, text="Run Dynamic Analysis", command=self._start_dynamic_analysis)
         self.run_btn.pack(side="left")
         ttk.Button(actions, text="Open Case Folder", command=self._open_case_folder).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Export HTML/PDF Report", command=self._export_dynamic_report).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Open Latest HTML", command=self._open_latest_dynamic_html).pack(side="left", padx=(10, 0))
         ttk.Label(actions, textvariable=self.status_var).pack(side="right")
 
         outwrap = ttk.LabelFrame(frm, text="Output")
@@ -345,6 +348,77 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 subprocess.Popen(["xdg-open", str(case_dir)])
         except Exception as e:
             messagebox.showerror("Open Case Folder", str(e), parent=self)
+
+    def _export_dynamic_report(self):
+        try:
+            case_dir = Path(self.case_dir_var.get().strip())
+            if not case_dir.exists():
+                messagebox.showerror("Export Report", f"Case folder does not exist:\n{case_dir}", parent=self)
+                return
+
+            reports_dir = case_dir / "reports"
+            candidate_paths = [
+                reports_dir / "dynamic_run_summary.json",
+                reports_dir / "run_summary.json",
+                case_dir / "dynamic_run_summary.json",
+                case_dir / "run_summary.json",
+                case_dir / "metadata" / "run_summary.json",
+            ]
+            summary_path = next((p for p in candidate_paths if p.exists()), None)
+            if not summary_path:
+                messagebox.showerror(
+                    "Export Report",
+                    "Summary file not found.\n\nChecked:\n" + "\n".join(str(p) for p in candidate_paths),
+                    parent=self,
+                )
+                return
+
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            output_html = reports_dir / "dynamic_report.html"
+            write_dynamic_html_report(summary_path, output_html)
+
+            pdf_created = False
+            pdf_path = reports_dir / "dynamic_report.pdf"
+            try:
+                from weasyprint import HTML
+                HTML(filename=str(output_html)).write_pdf(str(pdf_path))
+                pdf_created = True
+            except Exception as e:
+                pdf_created = False
+                messagebox.showwarning(
+                    "PDF Export",
+                    "HTML report was created successfully, but PDF export is unavailable on this system.\n\n"
+                    f"WeasyPrint error:\n{e}\n\n"
+                    "You can open the HTML report and print it to PDF from your browser.",
+                    parent=self,
+                )
+
+            webbrowser.open(output_html.resolve().as_uri())
+            if pdf_created:
+                messagebox.showinfo(
+                    "Export Report",
+                    f"HTML and PDF report created:\n\nHTML: {output_html}\nPDF: {pdf_path}",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo(
+                    "Export Report",
+                    f"HTML report created:\n\n{output_html}\n\nPDF was not created. Install weasyprint for PDF export.",
+                    parent=self,
+                )
+        except Exception as e:
+            messagebox.showerror("Export Report", str(e), parent=self)
+
+    def _open_latest_dynamic_html(self):
+        try:
+            case_dir = Path(self.case_dir_var.get().strip())
+            html_path = case_dir / "reports" / "dynamic_report.html"
+            if not html_path.exists():
+                messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
+                return
+            webbrowser.open(html_path.resolve().as_uri())
+        except Exception as e:
+            messagebox.showerror("Open Report", str(e), parent=self)
 
     def _start_dynamic_analysis(self):
         if self.worker_thread and self.worker_thread.is_alive():
