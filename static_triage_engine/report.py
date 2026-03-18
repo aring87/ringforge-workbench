@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
+from dynamic_analysis.report_theme import badge, report_page
 
 
 def _utc() -> str:
@@ -441,164 +442,141 @@ def _api_html(api: dict[str, Any]) -> str:
         <ul>{dll_html}</ul>
       </div>
     """
+def _kv_table(title: str, data: dict[str, Any], badge_html: str = "") -> str:
+    rows = []
+    for k, v in data.items():
+        rows.append(f"<tr><th>{_safe(str(k).replace('_', ' ').title())}</th><td>{_safe(v)}</td></tr>")
+    return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>{_safe(title)}</h2>
+        {badge_html}
+      </div>
+      <table class="kv">
+        {''.join(rows) if rows else "<tr><td class='muted'>None</td></tr>"}
+      </table>
+    </section>
+    """
 
+
+def _list_section(title: str, items: list[str], emphasize: bool = False) -> str:
+    section_class = "card card-alert" if emphasize and items else "card"
+    if not items:
+        body = "<p class='muted'>None</p>"
+    else:
+        body = "<ul>" + "".join(f"<li>{_safe(x)}</li>" for x in items) + "</ul>"
+    return f"""
+    <section class="{section_class}">
+      <div class="section-head">
+        <h2>{_safe(title)}</h2>
+        {badge("Count", len(items))}
+      </div>
+      {body}
+    </section>
+    """
+
+
+def _summary_tiles_static(data: dict[str, Any]) -> str:
+    tiles = [
+        ("Verdict", data.get("verdict", "")),
+        ("Risk Score", data.get("score", 0)),
+        ("Confidence", data.get("confidence", "")),
+        ("Techniques", len(data.get("techniques", []) or [])),
+        ("Capa Matches", data.get("capa_match_count", 0)),
+        ("IOC Domains", data.get("ioc_counts", {}).get("domains", 0)),
+        ("IOC URLs", data.get("ioc_counts", {}).get("urls", 0)),
+        ("IOC IPs", data.get("ioc_counts", {}).get("ips", 0)),
+    ]
+    return '<section class="tile-grid">' + "".join(
+        f"""
+        <div class="tile">
+          <div class="tile-label">{_safe(label)}</div>
+          <div class="tile-value">{_safe(value)}</div>
+        </div>
+        """
+        for label, value in tiles
+    ) + "</section>"
 
 def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     report_html = case_dir / "report.html"
 
-    verdict_class = "benign"
-    if data["verdict"].upper() in ("MALICIOUS",):
-        verdict_class = "malicious"
-    elif data["verdict"].upper() in ("SUSPICIOUS",):
-        verdict_class = "suspicious"
-    elif data["verdict"].upper() in ("LOW_RISK",):
-        verdict_class = "lowrisk"
+    verdict = str(data.get("verdict", "UNKNOWN"))
+    verdict_class = "sev-none"
+    if verdict.upper() in ("MALICIOUS",):
+        verdict_class = "sev-high"
+    elif verdict.upper() in ("SUSPICIOUS",):
+        verdict_class = "sev-med"
+    elif verdict.upper() in ("LOW_RISK",):
+        verdict_class = "sev-low"
 
-    ev_items = []
-    for label, p in data["artifacts"]:
-        ev_items.append(f'<li><a href="{_safe(p.name)}">{_safe(label)}</a></li>')
-    ev_html = "\n".join(ev_items) if ev_items else "<li>No artifacts found.</li>"
+    sample_meta = {
+        "Name": data.get("filename", ""),
+        "Size Bytes": data.get("size_bytes", 0),
+        "SHA256": data.get("sha256", ""),
+        "SHA1": data.get("sha1", ""),
+        "MD5": data.get("md5", ""),
+        "Type (file)": data.get("file_sig", "") or "N/A",
+        "Signed (verified)": (data.get("signing_summary") or {}).get("signed_ok", ""),
+        "Signer": (data.get("signing_summary") or {}).get("subject", ""),
+    }
 
-    susp_html = "".join(f"<li>{_safe(x)}</li>" for x in data["suspicious_reasons"]) or "<li>None</li>"
-    ben_html = "".join(f"<li>{_safe(x)}</li>" for x in data["benign_reasons"]) or "<li>None</li>"
+    capa_meta = {
+        "Technique IDs": len(data.get("techniques", []) or []),
+        "Match Count": data.get("capa_match_count", 0),
+        "Techniques": ", ".join(data.get("techniques", [])[:24]) or "None detected",
+    }
 
-    techs = data["techniques"][:24]
-    tech_html = " ".join(f"<span class='pill'>{_safe(t)}</span>" for t in techs) or "<span class='muted'>None detected</span>"
+    ioc_counts = data.get("ioc_counts", {}) or {}
+    ioc_meta = {
+        "Domains": ioc_counts.get("domains", 0),
+        "URLs": ioc_counts.get("urls", 0),
+        "IPs": ioc_counts.get("ips", 0),
+        "Emails": ioc_counts.get("emails", 0),
+        "Paths": ioc_counts.get("paths", 0),
+        "Registry": ioc_counts.get("registry", 0),
+    }
 
-    c = data["ioc_counts"]
-    file_sig = _safe(data["file_sig"])
-    if file_sig and len(file_sig) > 160:
-        file_sig = file_sig[:160] + "…"
+    api = data.get("api", {}) or {}
+    api_meta = {
+        "Present": api.get("present", False),
+        "Imported DLLs": api.get("dll_count", 0),
+        "Imported APIs": api.get("import_count", 0),
+        "Behavior Categories": api.get("category_count", 0),
+        "High Severity Chains": api.get("high_chain_count", 0),
+        "Return Code": api.get("returncode", 0),
+    }
 
-    signing_line = ""
-    ss = data.get("signing_summary") or {}
-    if ss:
-        signing_line = f"""
-          <div>Signed (verified): <code>{_safe(ss.get("signed_ok"))}</code></div>
-          <div>Signer: <code>{_safe(ss.get("subject",""))}</code></div>
-        """
+    artifact_items = [f"{label} -> {p.name}" for label, p in data.get("artifacts", [])]
+    sub = data.get("subfiles", {}) or {}
+    sub_top = []
+    for r in sub.get("top", []) or []:
+        name = r.get("name") or r.get("filename") or "subfile"
+        sub_top.append(f"{name} | score={r.get('score')} | verdict={r.get('verdict')} | signed={r.get('signed_ok')}")
+    sub_attn = []
+    for r in sub.get("attn", []) or []:
+        name = r.get("name") or r.get("filename") or "subfile"
+        sub_attn.append(f"{name} | score={r.get('score')} | verdict={r.get('verdict')} | signed={r.get('signed_ok')}")
 
-    html_doc = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Static Triage Ticket</title>
-  <style>
-    body {{ margin: 0; padding: 24px; font-family: Arial, sans-serif; background:#ffffff; color:#111; }}
-    .container {{ max-width: 980px; margin: 0 auto; }}
-    .row {{ display: flex; gap: 12px; flex-wrap: wrap; }}
-    .card {{ border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; background: #fff; flex: 1; min-width: 280px; }}
-    .header {{ display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; }}
-    .title {{ font-size: 20px; font-weight: 700; }}
-    .small {{ color:#555; font-size: 12px; }}
-    .banner {{ border-radius: 12px; padding: 14px 16px; color: #fff; margin-bottom: 14px; }}
-    .banner.benign {{ background: #1f8f5f; }}
-    .banner.lowrisk {{ background: #5aa0d6; }}
-    .banner.suspicious {{ background: #c99b2b; }}
-    .banner.malicious {{ background: #d14b4b; }}
-    .kv {{ display:grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 13px; }}
-    .kv div:nth-child(odd) {{ color:#444; }}
-    code {{ background:#f3f4f6; padding:2px 4px; border-radius: 4px; }}
-    ul {{ margin: 8px 0 0 18px; }}
-    .pill {{ display:inline-block; border:1px solid #e5e7eb; border-radius: 999px; padding: 4px 8px; margin: 3px 4px 0 0; font-size: 12px; background: #f9fafb; }}
-    .muted {{ color:#666; }}
-    .actions li {{ margin: 6px 0; }}
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <div class="title">Static Triage Ticket</div>
-      <div class="small">Generated (UTC): {_safe(data["generated_utc"])}</div>
-    </div>
+    subtitle = f"Generated (UTC): {_safe(data.get('generated_utc', ''))}"
+    body_html = f"""
+{_summary_tiles_static(data)}
 
-    <div class="banner {verdict_class}">
-      <div style="font-size:16px; font-weight:700;">Verdict: {_safe(data["verdict"])} &nbsp;|&nbsp; Score: {_safe(data["score"])}/100 &nbsp;|&nbsp; Confidence: {_safe(data["confidence"])}</div>
-      <div style="font-size:12px; opacity:0.95; margin-top:6px;">
-        SHA256: <code>{_safe(data["sha256"])}</code>
-      </div>
-    </div>
+<div class="grid">
+  {_kv_table("Sample Metadata", sample_meta)}
+  {_kv_table("ATT&CK / Behavior (capa)", capa_meta)}
+  {_kv_table("IOC Summary", ioc_meta)}
+  {_kv_table("API Analysis", api_meta, badge("High Chains", api.get("high_chain_count", 0)))}
+</div>
 
-    <div class="row">
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">File</div>
-        <div class="kv">
-          <div>Name</div><div><code>{_safe(data["filename"])}</code></div>
-          <div>Size</div><div><code>{_safe(data["size_bytes"])}</code> bytes</div>
-          <div>Type (file)</div><div><code>{file_sig or "N/A"}</code></div>
-          <div>SHA256</div><div><code>{_safe(data["sha256"])}</code></div>
-          <div>SHA1</div><div><code>{_safe(data["sha1"])}</code></div>
-          <div>MD5</div><div><code>{_safe(data["md5"])}</code></div>
-        </div>
-        <div style="margin-top:10px;">{signing_line}</div>
-      </div>
-
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">ATT&CK / Behavior (capa)</div>
-        <div class="kv">
-          <div>Technique IDs</div><div><code>{len(data["techniques"])}</code></div>
-          <div>Match Count</div><div><code>{_safe(data["capa_match_count"])}</code></div>
-        </div>
-        <div style="margin-top:8px;">{tech_html}</div>
-        <div class="small" style="margin-top:8px;">See <code>capa.json</code> / <code>capa.txt</code> for full details.</div>
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:12px;">
-      {_api_html(data["api"])}
-    </div>
-
-    <div class="row" style="margin-top:12px;">
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">Key Findings (Suspicious)</div>
-        <ul>{susp_html}</ul>
-      </div>
-
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">Context (Benign / Low signal)</div>
-        <ul>{ben_html}</ul>
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:12px;">
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">IOC Summary</div>
-        <div class="kv">
-          <div>Domains</div><div><code>{_safe(c.get("domains",0))}</code></div>
-          <div>URLs</div><div><code>{_safe(c.get("urls",0))}</code></div>
-          <div>IPs</div><div><code>{_safe(c.get("ips",0))}</code></div>
-          <div>Emails</div><div><code>{_safe(c.get("emails",0))}</code></div>
-          <div>Paths</div><div><code>{_safe(c.get("paths",0))}</code></div>
-          <div>Registry</div><div><code>{_safe(c.get("registry",0))}</code></div>
-        </div>
-        <div class="small" style="margin-top:8px;">Full IOC list: <code>iocs.csv</code> / <code>iocs.json</code></div>
-      </div>
-
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">Recommended Actions</div>
-        <ul class="actions">
-          {data["actions_html"]}
-        </ul>
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:12px;">
-      {_subfiles_html(data["subfiles"])}
-    </div>
-
-    <div class="row" style="margin-top:12px;">
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">Evidence / Artifacts</div>
-        <ul>
-          {ev_html}
-        </ul>
-        <div class="small">All paths are relative to the case folder.</div>
-      </div>
-    </div>
-  </div>
-</body>
-</html>
+{_list_section("Key Findings (Suspicious)", data.get("suspicious_reasons", []), emphasize=True)}
+{_list_section("Context (Benign / Low signal)", data.get("benign_reasons", []))}
+{_list_section("Recommended Actions", [re.sub(r'<[^>]+>', '', x) for x in re.findall(r'<li>(.*?)</li>', data.get("actions_html", ""))], emphasize=True)}
+{_list_section("Embedded Payloads - Top Scoring", sub_top, emphasize=True)}
+{_list_section("Embedded Payloads - Attention", sub_attn, emphasize=True)}
+{_list_section("Evidence / Artifacts", artifact_items)}
 """
+
+    html_doc = report_page("Static Triage Ticket", subtitle, verdict, verdict_class, body_html)
     report_html.write_text(html_doc, encoding="utf-8", errors="replace")
     return report_html
 

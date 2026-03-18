@@ -287,7 +287,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
         outwrap.columnconfigure(0, weight=1)
         outwrap.rowconfigure(0, weight=1)
 
-        self.output = tk.Text(outwrap, wrap="word", height=22)
+        self.output = tk.Text(
+            outwrap,
+            wrap="word",
+            height=22,
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
+        )
         self.output.grid(row=0, column=0, sticky="nsew")
         ysb = ttk.Scrollbar(outwrap, orient="vertical", command=self.output.yview)
         ysb.grid(row=0, column=1, sticky="ns")
@@ -546,8 +560,165 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
 
 class App(tk.Tk):
+    def _apply_theme(self):
+        bg = "#081426"
+        panel = "#0d1b33"
+        panel2 = "#13284a"
+        text = "#eaf2ff"
+        muted = "#9bb2d1"
+        accent = "#1f6fff"
+        accent_hover = "#3d86ff"
+        border = "#2a4365"
+        disabled_bg = "#102038"
+        disabled_fg = "#6f87a8"
+
+        self.configure(bg=bg)
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure(".", background=bg, foreground=text)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=text)
+
+        style.configure(
+            "TLabelframe",
+            background=bg,
+            foreground=text,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+        )
+        style.configure(
+            "TLabelframe.Label",
+            background=bg,
+            foreground="#7db3ff",
+        )
+
+        style.configure(
+            "TButton",
+            background=panel2,
+            foreground=text,
+            borderwidth=1,
+            relief="flat",
+            padding=6,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+        )
+        style.map(
+            "TButton",
+            background=[("active", accent_hover), ("pressed", accent), ("disabled", disabled_bg)],
+            foreground=[("disabled", disabled_fg)],
+            bordercolor=[("active", accent_hover), ("pressed", accent), ("disabled", border)],
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground=panel,
+            foreground=text,
+            background=panel,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            insertcolor=text,
+            relief="flat",
+            padding=4,
+        )
+
+        style.configure(
+            "TCombobox",
+            fieldbackground=panel,
+            foreground=text,
+            background=panel,
+            arrowcolor=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            relief="flat",
+            padding=4,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", panel), ("disabled", disabled_bg)],
+            foreground=[("readonly", text), ("disabled", disabled_fg)],
+            background=[("readonly", panel), ("disabled", disabled_bg)],
+            arrowcolor=[("disabled", disabled_fg)],
+        )
+
+        style.configure(
+            "TCheckbutton",
+            background=bg,
+            foreground=text,
+            indicatorbackground=panel,
+            indicatormargin=2,
+        )
+        style.map(
+            "TCheckbutton",
+            foreground=[("disabled", disabled_fg)],
+            background=[("disabled", bg)],
+            indicatorbackground=[("selected", accent), ("disabled", disabled_bg)],
+        )
+
+        style.configure(
+            "TRadiobutton",
+            background=bg,
+            foreground=text,
+            indicatorbackground=panel,
+        )
+        style.map(
+            "TRadiobutton",
+            foreground=[("disabled", disabled_fg)],
+            indicatorbackground=[("selected", accent), ("disabled", disabled_bg)],
+        )
+
+        style.configure(
+            "Treeview",
+            background=panel,
+            fieldbackground=panel,
+            foreground=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=panel2,
+            foreground="#cfe2ff",
+            relief="flat",
+        )
+
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            background=panel2,
+            foreground=text,
+            padding=(10, 6),
+            borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", accent), ("active", "#18345e")],
+            foreground=[("selected", "white")],
+        )
+
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=panel,
+            background=accent,
+            bordercolor=border,
+            lightcolor=accent,
+            darkcolor=accent,
+        )
     def __init__(self):
         super().__init__()
+        self._apply_theme()
+
         self.title("Static Triage GUI (v10)")
         self.geometry("1220x860")
         self.minsize(1050, 760)
@@ -1030,8 +1201,20 @@ class App(tk.Tk):
         w = self.step_widgets.get(step_key)
         if not w:
             return
+
         w["var"].set(max(0, min(100, pct)))
-        w["status"].configure(text=status)
+
+        color_map = {
+            "done": "#22c55e",
+            "running": "#3d86ff",
+            "queued": "#9bb2d1",
+            "n/a": "#6f87a8",
+            "missing tool": "#f59e0b",
+            "failed": "#ef4444",
+            "idle": "#9bb2d1",
+        }
+        fg = color_map.get(status.lower(), "#eaf2ff")
+        w["status"].configure(text=status, foreground=fg)
 
     def _recalc_overall(self):
         completed = 0
@@ -1087,9 +1270,15 @@ class App(tk.Tk):
                 if m:
                     raw = m.group("step")
                     step_key = STEP_NAME_MAP.get(raw, raw)
-                    self.after(0, lambda s=step_key: (self._set_step(s, 100, "error"), self._recalc_overall()))
-                    continue
 
+                    if os.name == "nt" and step_key in ("filetype", "strings"):
+                        fail_label = "n/a"
+                    else:
+                        fail_label = "failed"
+
+                    self.after(0, lambda s=step_key, lbl=fail_label: (self._set_step(s, 100, lbl), self._recalc_overall()))
+                    continue
+                
     def _maybe_detect_case_dir_from_stdout(self, line: str) -> Optional[Path]:
         m = CASE_LINE_RE.match(line)
         if m:
