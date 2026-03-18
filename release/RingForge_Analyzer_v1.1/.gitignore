@@ -1,0 +1,121 @@
+# -------------------------
+# Static Triage Project
+# -------------------------
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+pip-wheel-metadata/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# -------------------------
+# Project runtime artifacts (do NOT commit)
+# -------------------------
+
+# PyInstaller
+/build/
+/dist/
+*.spec
+
+# Optional large tool bundles (install separately)
+tools/ghidra_12.0_PUBLIC/
+tools/capa-rules/
+
+# Malware samples (keep out of git)
+samples/
+
+# Case outputs / reports / extracted payloads (huge + can include samples)
+cases/
+
+# Logs (can include sensitive paths/hashes)
+logs/
+
+# Common generated outputs
+*.log
+*.pdf
+*.html
+
+# If you want to keep a blank logs folder, remove the logs/ lines above and use:
+# logs/*.log
+# logs/*.jsonl
+# logs/*.json
+
+# -------------------------
+# Build / packaging
+# -------------------------
+build/
+dist/
+*.zip
+*.tar
+*.tar.gz
+
+# -------------------------
+# Release/Build Artifacts
+# -------------------------
+Static_Triage_GUI_Release/
+scripts/Static_Triage_GUI_Release/
+dist/
+build/
+*.spec
+scripts/static_triage_gui_v2.py
+scripts/static_triage_gui_v3.py
+scripts/static_triage_gui_v4.py
+scripts/static_triage_gui_v5.py
+scripts/static_triage_gui_v6.py
+scripts/static_triage_gui_v7.py
+scripts/static_triage_gui_v8.py
+scripts/static_triage_gui_v9.py
+
+# local runtime/config
+config.json
+
+# backups
+*.bak
+
+# -------------------------
+# Optional: if you add local config secrets later
+# -------------------------
+*.env
+.env
+config.local.*
+secrets.*
+
+# --------------------------
+# Optional large tool bundles (install separately)
+# --------------------------
+tools/ghidra_12.0_PUBLIC/
+tools/capa-rules/
+tools/Procmon.exe
+tools/Procmon64.exe
+*.pml
+*.pmc
+
+# ---------------------------
+# Local third-party tools
+# ---------------------------
+tools/*.exe
+tools/*.chm
+tools/*.txt
+
+# ----------------------------
+# Keep Procmon configs tracked
+# -----------------------------
+!tools/procmon-configs/
+!tools/procmon-configs/*.pmc
