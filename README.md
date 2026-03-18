@@ -299,6 +299,79 @@ RingForge_Analyzer_v1.1/
   README.md
   LICENSE
 ```
+## Development Roadmap
+
+RingForge Analyzer is being expanded from a static triage utility into a more complete multi-stage software analysis platform. The roadmap below outlines the planned direction for static, dynamic, API, scoring, and reporting capabilities.
+
+### Current Capabilities
+- Static analysis workflow with case-based output
+- Dynamic analysis window and execution workflow
+- API analysis window for manual request testing
+- HTML reporting for static and API analysis
+- Organized case folder structure for saved artifacts and reports
+
+### Near-Term Enhancements
+- Security API presets for common enrichment services
+  - VirusTotal
+  - AbuseIPDB
+  - urlscan
+  - Shodan
+- Raw JSON response saving for API tests
+- Parsed API result summaries for faster triage
+- Improved HTML export formatting for API analysis
+- Auto-fill options using the selected sample, MD5, SHA1, or SHA256
+
+### Unified Scoring and Assessment
+- Separate scoring for each analysis area
+  - Static Analysis Score
+  - Dynamic Analysis Score
+  - API / Intelligence Score
+- Combined weighted maliciousness score across completed modules
+- Confidence rating based on analysis coverage
+- Standardized verdict categories
+  - Likely Benign
+  - Low Suspicion
+  - Suspicious
+  - Malicious Likely
+  - Highly Malicious
+- Combined assessment output in JSON and HTML formats
+
+### Analysis Improvements
+- Stronger static suspiciousness heuristics
+- Expanded dynamic behavior scoring
+- Better IOC enrichment and reputation correlation
+- Improved persistence and execution pattern detection
+- Correlation between static findings, dynamic behavior, and external intelligence
+
+### Reporting Improvements
+- Combined analyst report covering all completed modules
+- Executive-style summary view
+- Key findings and evidence summary sections
+- Analyst notes section
+- Easier export and case-deliverable workflow
+
+### Planned Tooling
+- File and hash lookup presets
+- File upload presets for executables, DLLs, MSIs, and archives
+- IOC-specific enrichment workflows for:
+  - File
+  - Hash
+  - IP
+  - Domain
+  - URL
+- API key validation and connectivity testing
+- Automated chaining between enrichment tools
+
+### Long-Term Goals
+- Local YARA integration
+- Certificate and signature trust analysis
+- Entropy and packer detection improvements
+- Expanded PE metadata scoring
+- Multi-tool intelligence orchestration
+- More advanced malware triage and recommendation engine
+
+## Project Direction
+The long-term goal is to evolve RingForge Analyzer into a unified triage platform that can combine static artifacts, runtime behavior, and external intelligence into a single assessment workflow. This will allow analysts to move from isolated test results to a more complete and defensible maliciousness determination.
 
 This is the most reliable packaging model right now.
 
