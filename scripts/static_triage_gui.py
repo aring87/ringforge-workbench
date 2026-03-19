@@ -273,41 +273,50 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, **pad)
-        frm.columnconfigure(1, weight=1)
-        frm.rowconfigure(6, weight=1)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(2, weight=1)
 
-        ttk.Label(frm, text="Sample:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.sample_var, width=100).grid(row=0, column=1, sticky="we", padx=6)
-        ttk.Button(frm, text="Use Main Sample", command=self._use_main_sample).grid(row=0, column=2, sticky="e")
+        settings = ttk.LabelFrame(frm, text="Dynamic Analysis Settings")
+        settings.grid(row=0, column=0, sticky="nsew")
+        settings.columnconfigure(1, weight=1)
+        
+        ttk.Label(settings, text="Sample:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.sample_var, width=100).grid(row=0, column=1, sticky="we", padx=6)
+        ttk.Button(settings, text="Use Main Sample", style="Side.Action.TButton", command=self._use_main_sample).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=2)
 
-        ttk.Label(frm, text="Dynamic case folder:").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.case_dir_var, width=100).grid(row=1, column=1, sticky="we", padx=6)
-        ttk.Button(frm, text="Browse…", command=self._browse_case_dir).grid(row=1, column=2, sticky="e")
+        ttk.Label(settings, text="Dynamic case folder:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.case_dir_var, width=100).grid(row=1, column=1, sticky="we", padx=6)
+        ttk.Button(settings, text="Browse...", style="Side.Action.TButton", command=self._browse_case_dir).grid(row=1, column=2, sticky="ew", padx=(6, 0), pady=2)
 
-        ttk.Label(frm, text="Timeout (seconds):").grid(row=2, column=0, sticky="w")
-        ttk.Spinbox(frm, from_=5, to=7200, textvariable=self.timeout_var, width=10).grid(row=2, column=1, sticky="w", padx=6)
-        ttk.Checkbutton(frm, text="Enable Procmon Capture", variable=self.procmon_enabled_var).grid(row=2, column=2, sticky="e")
+        ttk.Label(settings, text="Timeout (seconds):").grid(row=2, column=0, sticky="w")
 
-        ttk.Label(frm, text="Procmon path:").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.procmon_path_var, width=100).grid(row=3, column=1, sticky="we", padx=6)
-        ttk.Button(frm, text="Browse…", command=self._browse_procmon).grid(row=3, column=2, sticky="e")
+        timeout_row = ttk.Frame(settings)
+        timeout_row.grid(row=2, column=1, columnspan=2, sticky="w", padx=6)
 
-        ttk.Label(frm, text="Procmon config:").grid(row=4, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.procmon_config_var, width=100).grid(row=4, column=1, sticky="we", padx=6)
-        ttk.Button(frm, text="Browse…", command=self._browse_procmon_config).grid(row=4, column=2, sticky="e")
+        ttk.Spinbox(timeout_row, from_=5, to=7200, textvariable=self.timeout_var, width=10).pack(side="left")
+        ttk.Checkbutton(timeout_row, text="Enable Procmon Capture", variable=self.procmon_enabled_var).pack(side="left", padx=(12, 0))
+
+        ttk.Label(settings, text="Procmon path:").grid(row=3, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.procmon_path_var, width=100).grid(row=3, column=1, sticky="we", padx=6)
+        ttk.Button(settings, text="Browse...", style="Side.Action.TButton", command=self._browse_procmon).grid(row=3, column=2, sticky="ew", padx=(6, 0), pady=2)
+
+        ttk.Label(settings, text="Procmon config:").grid(row=4, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.procmon_config_var, width=100).grid(row=4, column=1, sticky="we", padx=6)
+        ttk.Button(settings, text="Browse...", style="Side.Action.TButton", command=self._browse_procmon_config).grid(row=4, column=2, sticky="ew", padx=(6, 0), pady=2)
 
         actions = ttk.Frame(frm)
-        actions.grid(row=5, column=0, columnspan=3, sticky="we", pady=(6, 0))
-        self.run_btn = ttk.Button(actions, text="Run Dynamic Analysis", command=self._start_dynamic_analysis)
-        self.run_btn.pack(side="left")
-        ttk.Button(actions, text="Open Case Folder", command=self._open_case_folder).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Export HTML/PDF Report", command=self._export_dynamic_report).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Open Latest HTML", command=self._open_latest_dynamic_html).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="API Analysis", command=self.app.open_api_analysis_window).pack(side="left", padx=(10, 0))
-        ttk.Label(actions, textvariable=self.status_var).pack(side="right")
+        actions.grid(row=1, column=0, sticky="we", pady=(10, 2))
+
+        self.run_btn = ttk.Button(actions, text="Run Dynamic Analysis", style="Action.TButton", width=20, command=self._start_dynamic_analysis)
+        self.run_btn.pack(side="left", padx=(0, 6), pady=4)
+
+        ttk.Button(actions, text="Open Case Folder", style="Action.TButton", width=17, command=self._open_case_folder).pack(side="left", padx=6, pady=4)
+        ttk.Button(actions, text="Open Latest Report", style="Action.TButton", width=17, command=self._open_latest_dynamic_html).pack(side="left", padx=6, pady=4)
+
+        ttk.Label(actions, textvariable=self.status_var, anchor="e").pack(side="right", padx=(12, 0), pady=6)
 
         outwrap = ttk.LabelFrame(frm, text="Output")
-        outwrap.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        outwrap.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         outwrap.columnconfigure(0, weight=1)
         outwrap.rowconfigure(0, weight=1)
 
@@ -327,6 +336,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             highlightcolor="#3d86ff",
         )
         self.output.grid(row=0, column=0, sticky="nsew")
+
         ysb = ttk.Scrollbar(outwrap, orient="vertical", command=self.output.yview)
         ysb.grid(row=0, column=1, sticky="ns")
         self.output.configure(yscrollcommand=ysb.set)
@@ -826,12 +836,12 @@ class SpecAnalysisWindow(tk.Toplevel):
     def __init__(self, app: "App"):
         super().__init__(app)
         self.app = app
-        self.title("Spec Analysis")
+        self.title("API Spec Analysis")
         self.geometry("1220x860")
         self.minsize(980, 720)
         self.spec_path_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
-        self.summary_var = tk.StringVar(value="Load an OpenAPI / Swagger JSON or YAML file.")
+        self.summary_var = tk.StringVar(value="Load an OpenAPI / Swagger JSON or YAML file to analyze routes, auth, and API risk indicators.")
         self.last_spec_dir: Optional[Path] = None
         self.last_html_report: Optional[Path] = None
         self.last_json_report: Optional[Path] = None
@@ -861,47 +871,93 @@ class SpecAnalysisWindow(tk.Toplevel):
 
     def _build_ui(self):
         pad = {"padx": 10, "pady": 8}
+
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, **pad)
-        frm.columnconfigure(1, weight=1)
+        frm.columnconfigure(0, weight=1)
         frm.rowconfigure(3, weight=1)
-        ttk.Label(frm, text="Spec file:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.spec_path_var, width=110).grid(row=0, column=1, sticky="we", padx=6)
-        btns = ttk.Frame(frm)
+
+        top = ttk.LabelFrame(frm, text="API Spec Analysis")
+        top.grid(row=0, column=0, sticky="nsew")
+        top.columnconfigure(1, weight=1)
+
+        ttk.Label(top, text="Spec file:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(top, textvariable=self.spec_path_var, width=110).grid(row=0, column=1, sticky="we", padx=6)
+
+        btns = ttk.Frame(top)
         btns.grid(row=0, column=2, sticky="e")
-        ttk.Button(btns, text="Browse", command=self._browse_spec).pack(side="left")
-        ttk.Button(btns, text="Parse Spec", command=self._parse_spec).pack(side="left", padx=(8,0))
-        ttk.Button(btns, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(8,0))
-        ttk.Button(btns, text="Open Case Files", command=self._open_case_files).pack(side="left", padx=(8,0))
+
+        ttk.Button(btns, text="Browse", style="Side.Action.TButton", command=self._browse_spec).pack(side="left", padx=(6, 0), pady=2)
+        ttk.Button(btns, text="Analyze Spec", style="Action.TButton", command=self._parse_spec).pack(side="left", padx=(8, 0), pady=2)
+        ttk.Button(btns, text="Open HTML Report", style="Action.TButton", command=self._open_html_report).pack(side="left", padx=(8, 0), pady=2)
+        ttk.Button(btns, text="Open Case Files", style="Action.TButton", command=self._open_case_files).pack(side="left", padx=(8, 0), pady=2)
+        ttk.Button(btns, text="Manual API Tester", style="Action.TButton", command=self._open_manual_api_tester).pack(side="left", padx=(8, 0), pady=2)
 
         summary = ttk.LabelFrame(frm, text="Summary")
-        summary.grid(row=1, column=0, columnspan=3, sticky="we")
+        summary.grid(row=1, column=0, sticky="we")
         summary.columnconfigure(0, weight=1)
         ttk.Label(summary, textvariable=self.summary_var, wraplength=1160, justify="left").grid(row=0, column=0, sticky="w", padx=8, pady=8)
 
         notes = ttk.LabelFrame(frm, text="Risk Notes")
-        notes.grid(row=2, column=0, columnspan=3, sticky="we")
+        notes.grid(row=2, column=0, sticky="we", pady=(8, 0))
         notes.columnconfigure(0, weight=1)
-        self.notes_text = tk.Text(notes, height=4, wrap="word", bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground="#2a4365", highlightcolor="#3d86ff", font=("Consolas", 10))
+
+        self.notes_text = tk.Text(
+            notes,
+            height=5,
+            wrap="word",
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
+            font=("Consolas", 10),
+        )
         self.notes_text.grid(row=0, column=0, sticky="we", padx=8, pady=8)
 
         inv = ttk.LabelFrame(frm, text="Endpoint Inventory")
-        inv.grid(row=3, column=0, columnspan=3, sticky="nsew")
+        inv.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
         inv.columnconfigure(0, weight=1)
         inv.rowconfigure(0, weight=1)
+
         cols = ("method", "path", "summary", "auth", "params", "flags")
         self.tree = ttk.Treeview(inv, columns=cols, show="headings", height=22)
-        headings = {"method":"Method", "path":"Path", "summary":"Summary", "auth":"Auth", "params":"Params", "flags":"Flags"}
-        widths = {"method":90, "path":330, "summary":320, "auth":120, "params":160, "flags":160}
+
+        headings = {
+            "method": "Method",
+            "path": "Path",
+            "summary": "Summary",
+            "auth": "Auth",
+            "params": "Params",
+            "flags": "Flags",
+        }
+        widths = {
+            "method": 90,
+            "path": 330,
+            "summary": 320,
+            "auth": 120,
+            "params": 120,
+            "flags": 180,
+        }
+
         for col in cols:
             self.tree.heading(col, text=headings[col])
             self.tree.column(col, width=widths[col], anchor="w")
+
         self.tree.grid(row=0, column=0, sticky="nsew")
+
         ysb = ttk.Scrollbar(inv, orient="vertical", command=self.tree.yview)
         ysb.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=ysb.set)
 
-        ttk.Label(frm, textvariable=self.status_var).grid(row=4, column=0, columnspan=3, sticky="e", pady=(6,0))
+        status_row = ttk.Frame(frm)
+        status_row.grid(row=4, column=0, sticky="we", pady=(6, 0))
+        ttk.Label(status_row, textvariable=self.status_var, anchor="e").pack(side="right", padx=(12, 0), pady=2)
 
     def _browse_spec(self):
         start = Path(self.spec_path_var.get()).parent if self.spec_path_var.get().strip() else ROOT
@@ -950,9 +1006,9 @@ class SpecAnalysisWindow(tk.Toplevel):
         notes_html = ''.join(f"<li>{escape(str(x))}</li>" for x in result.get('risk_notes', [])) or '<li>No risk notes generated.</li>'
         s = result.get('summary', {})
         return f"""<!DOCTYPE html>
-<html lang='en'><head><meta charset='utf-8'><title>Spec Analysis Report</title>
+<html lang='en'><head><meta charset='utf-8'><title>API Spec Analysis Report</title>
 <style>body{{background:#081426;color:#eaf2ff;font-family:Segoe UI,Arial,sans-serif;margin:24px}}h1,h2{{color:#7db3ff}}.card{{background:#0d1b33;border:1px solid #2a4365;border-radius:10px;padding:16px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid #2a4365;padding:8px;text-align:left;vertical-align:top}}th{{background:#13284a}}ul{{margin:0;padding-left:20px}}</style></head><body>
-<h1>Spec Analysis Report</h1>
+<h1>API Spec Analysis Report</h1>
 <div class='card'><div><strong>Input file:</strong> {escape(str(result.get('input_file','')))}</div><div><strong>Title:</strong> {escape(str(result.get('title','')))}</div><div><strong>Version:</strong> {escape(str(result.get('version','')))}</div><div><strong>Type:</strong> {escape(str(result.get('spec_type','')))}</div><div><strong>Format:</strong> {escape(str(result.get('format','')))}</div><div><strong>Servers:</strong> {escape(', '.join(result.get('servers', [])) or 'none')}</div><div><strong>Auth summary:</strong> {escape(auth_txt)}</div></div>
 <div class='card'><h2>Counts</h2><div>Endpoints: {s.get('endpoint_count',0)} | GET: {s.get('get_count',0)} | POST: {s.get('post_count',0)} | PUT: {s.get('put_count',0)} | PATCH: {s.get('patch_count',0)} | DELETE: {s.get('delete_count',0)}</div><div>Admin-like routes: {s.get('admin_like_route_count',0)} | Sensitive params: {s.get('sensitive_param_count',0)} | Auth schemes: {s.get('auth_scheme_count',0)}</div></div>
 <div class='card'><h2>Risk Notes</h2><ul>{notes_html}</ul></div>
@@ -1037,6 +1093,9 @@ class SpecAnalysisWindow(tk.Toplevel):
             messagebox.showinfo('Open Case Files', 'No spec case folder was found yet.', parent=self)
             return
         self.app._open_path(spec_dir)
+    
+    def _open_manual_api_tester(self):
+        APIAnalysisWindow(self.app)
 
 
 class APIAnalysisWindow(tk.Toplevel):
@@ -1054,7 +1113,7 @@ class APIAnalysisWindow(tk.Toplevel):
     def __init__(self, app: "App"):
         super().__init__(app)
         self.app = app
-        self.title("API Analysis")
+        self.title("Manual API Tester")
         self.geometry("1120x860")
         self.minsize(940, 720)
 
@@ -1646,6 +1705,97 @@ class App(tk.Tk):
             foreground=[("disabled", disabled_fg)],
             bordercolor=[("active", accent_hover), ("pressed", accent), ("disabled", border)],
         )
+        
+        style.configure(
+            "Action.TButton",
+            background=panel2,
+            foreground=text,
+            borderwidth=1,
+            relief="raised",
+            padding=(16, 10),
+            font=("Segoe UI Semibold", 10),
+            bordercolor=border,
+            lightcolor="#27496d",
+            darkcolor="#10243d",
+            anchor="center",
+        )
+        style.map(
+            "Action.TButton",
+            background=[
+                ("pressed", "#163a63"),
+                ("active", "#1a4677"),
+                ("disabled", disabled_bg),
+            ],
+            foreground=[
+                ("disabled", disabled_fg),
+                ("active", "#ffffff"),
+            ],
+            bordercolor=[
+                ("pressed", "#35597c"),
+                ("active", "#466b91"),
+                ("!disabled", border),
+                ("disabled", border),
+            ],
+            lightcolor=[
+                ("pressed", "#214a7a"),
+                ("active", "#315b89"),
+                ("!disabled", "#27496d"),
+            ],
+            darkcolor=[
+                ("pressed", "#0d2238"),
+                ("active", "#14304f"),
+                ("!disabled", "#10243d"),
+            ],
+            relief=[
+                ("pressed", "sunken"),
+                ("!pressed", "raised"),
+            ],
+        )
+        style.configure(
+            "Side.Action.TButton",
+            background=panel2,
+            foreground=text,
+            borderwidth=1,
+            relief="raised",
+            padding=(10, 3),
+            font=("Segoe UI Semibold", 9),
+            bordercolor=border,
+            lightcolor="#27496d",
+            darkcolor="#10243d",
+            anchor="center",
+        )
+        style.map(
+            "Side.Action.TButton",
+            background=[
+                ("pressed", "#163a63"),
+                ("active", "#1a4677"),
+                ("disabled", disabled_bg),
+            ],
+            foreground=[
+                ("disabled", disabled_fg),
+                ("active", "#ffffff"),
+            ],
+            bordercolor=[
+                ("pressed", "#35597c"),
+                ("active", "#466b91"),
+                ("!disabled", border),
+                ("disabled", border),
+            ],
+            lightcolor=[
+                ("pressed", "#214a7a"),
+                ("active", "#315b89"),
+                ("!disabled", "#27496d"),
+            ],
+            darkcolor=[
+                ("pressed", "#0d2238"),
+                ("active", "#14304f"),
+                ("!disabled", "#10243d"),
+            ],
+            relief=[
+                ("pressed", "sunken"),
+                ("!pressed", "raised"),
+            ],
+        )
 
         style.configure(
             "TEntry",
@@ -1769,8 +1919,10 @@ class App(tk.Tk):
         self._apply_theme()
 
         self.title("Static Triage GUI (v10)")
-        self.geometry("1220x860")
-        self.minsize(1050, 760)
+        self.geometry("1280x980")
+        self.minsize(1180, 900)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
 
         self.cfg = load_config()
 
@@ -1836,14 +1988,14 @@ class App(tk.Tk):
         self.after(100, self._drain_output)
 
     def _build_ui(self):
-        pad = {"padx": 10, "pady": 8}
+        pad = {"padx": 10, "pady": 6}
 
         top = ttk.Frame(self)
         top.pack(fill="x", **pad)
 
         ttk.Label(top, text="Sample:").grid(row=0, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.sample_var, width=105).grid(row=0, column=1, sticky="we", padx=6)
-        ttk.Button(top, text="Browse…", command=self._browse_sample).grid(row=0, column=2, sticky="e")
+        ttk.Button(top, text="Browse...", style="Side.Action.TButton", command=self._browse_sample).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=2)
 
         ttk.Label(top, text="Case name (optional):").grid(row=1, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.case_var, width=50).grid(row=1, column=1, sticky="w", padx=6)
@@ -1868,19 +2020,19 @@ class App(tk.Tk):
 
         ttk.Label(paths, text=r"Case output folder (CASE_ROOT_DIR):").grid(row=0, column=0, sticky="w")
         ttk.Entry(paths, textvariable=self.case_root_var, width=105).grid(row=0, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse…", command=self._browse_case_root).grid(row=0, column=2)
+        ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_case_root).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=2)
 
         ttk.Label(paths, text=r"capa rules folder (…\tools\capa-rules OR …\tools\capa-rules\rules):").grid(row=1, column=0, sticky="w")
         ttk.Entry(paths, textvariable=self.rules_var, width=105).grid(row=1, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse…", command=self._browse_rules).grid(row=1, column=2)
+        ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_rules).grid(row=1, column=2, sticky="ew", padx=(6, 0), pady=2)
 
         ttk.Label(paths, text=r"capa sigs folder (…\tools\capa\sigs):").grid(row=2, column=0, sticky="w")
         ttk.Entry(paths, textvariable=self.sigs_var, width=105).grid(row=2, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse…", command=self._browse_sigs).grid(row=2, column=2)
+        ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_sigs).grid(row=2, column=2, sticky="ew", padx=(6, 0), pady=2)
 
         ttk.Label(paths, text="VirusTotal API key (optional):").grid(row=3, column=0, sticky="w")
         ttk.Entry(paths, textvariable=self.vt_api_key_var, width=105, show="*").grid(row=3, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Clear", command=self._clear_vt_key).grid(row=3, column=2)
+        ttk.Button(paths, text="Clear", style="Side.Action.TButton", command=self._clear_vt_key).grid(row=3, column=2, sticky="ew", padx=(6, 0), pady=2)
 
         ttk.Label(paths, textvariable=self.status_var).grid(row=4, column=1, sticky="w", pady=(6, 0))
         paths.columnconfigure(1, weight=1)
@@ -1921,18 +2073,19 @@ class App(tk.Tk):
         self.steps_frame = ttk.Frame(prog)
         self.steps_frame.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
         self.steps_frame.columnconfigure(1, weight=1)
-
+        
         actions = ttk.Frame(self)
-        actions.pack(fill="x", **pad)
-        self.run_btn = ttk.Button(actions, text="Run Analysis", command=self._start_analysis)
-        self.run_btn.pack(side="left")
-        ttk.Button(actions, text="Open Case Files", command=self._open_case_files).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Open HTML Report", command=self._open_html_report).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Dynamic Analysis...", command=self._open_dynamic_window).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="API Analysis", command=self.open_api_analysis_window).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Spec Analysis", command=self.open_spec_analysis_window).pack(side="left", padx=(10, 0))
+        actions.pack(fill="x", padx=10, pady=(10, 12))
 
-        ttk.Label(actions, textvariable=self.running_var).pack(side="right")
+        self.run_btn = ttk.Button(actions, text="Run Analysis", style="Action.TButton", width=14, command=self._start_analysis)
+        self.run_btn.pack(side="left", padx=(0, 6), pady=1)
+
+        ttk.Button(actions, text="Open Case Files", style="Action.TButton", width=15, command=self._open_case_files).pack(side="left", padx=6, pady=1)
+        ttk.Button(actions, text="Open HTML Report", style="Action.TButton", width=16, command=self._open_html_report).pack(side="left", padx=6, pady=1)
+        ttk.Button(actions, text="Dynamic Analysis...", style="Action.TButton", width=16, command=self.open_dynamic_window).pack(side="left", padx=6, pady=1)
+        ttk.Button(actions, text="API Spec Analysis", style="Action.TButton", width=18, command=self.open_spec_analysis_window).pack(side="left", padx=6, pady=1)
+
+        ttk.Label(actions, textvariable=self.running_var, anchor="e").pack(side="right", padx=(12, 0), pady=3)
 
         summary = ttk.LabelFrame(self, text="Result Summary")
         summary.pack(fill="x", **pad)
@@ -1973,7 +2126,7 @@ class App(tk.Tk):
         out = ttk.LabelFrame(self, text="Output")
         out.pack(fill="both", expand=True, **pad)
 
-        self.output = tk.Text(out, wrap="none", height=16)
+        self.output = tk.Text(out, wrap="none", height=12)
         self.output.pack(fill="both", expand=True, side="left")
         self.output.configure(font=("Consolas", 10))
 
@@ -1984,6 +2137,15 @@ class App(tk.Tk):
         self._sync_adv_state()
         self._update_effective_label()
         
+    def open_dynamic_window(self):
+        DynamicAnalysisWindow(self)
+
+    def open_api_analysis_window(self):
+        APIAnalysisWindow(self)
+
+    def open_spec_analysis_window(self):
+        SpecAnalysisWindow(self)   
+    
     def reload_combined_score_from_disk(self):
         print("DEBUG reload_combined_score_from_disk called")
         print("DEBUG case_dir_detected =", self.case_dir_detected)
