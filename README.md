@@ -14,169 +14,152 @@ The pipeline creates a case folder for each run and produces structured outputs 
 
 ## What’s New in RingForge Analyzer v1.1
 
-RingForge Analyzer v1.1 builds on the v1.0 hybrid static + dynamic workflow and adds a more polished analyst experience for dynamic triage and reporting.
+RingForge Analyzer v1.1 expands the platform beyond basic hybrid static + dynamic triage and introduces a more complete analyst workflow for scoring, runtime review, and API/spec-driven assessment.
 
 ### Highlights
 
 - separate Dynamic Analysis GUI window
+- separate Spec Analysis GUI window
 - Procmon-backed dynamic capture workflow
 - dynamic HTML report export
 - browser-based PDF fallback workflow
 - Procmon configuration file support
 - improved dynamic findings noise reduction
-- improved progress/status wording for optional steps
+- improved progress and status wording for optional steps
+- optional Windows-missing tools now display as `n/a` where appropriate
+- combined Static / Dynamic / Spec scoring
+- individual-only scoring support for Static-only, Dynamic-only, and Spec-only runs
+- main-window score breakdown for Static / Dynamic / Spec
+- case-based combined score generation from saved analysis artifacts
+- Spec Analysis scoring integration for risky API design patterns
 - early UI theming updates aligned to report styling
 
-## Core Features
+## Core Capabilities
 
-### Static file triage
+### Static Analysis
 
-- MD5, SHA1, and SHA256 hashing
-- `file` signature identification
-- strings extraction
+- file hashing
 - PE metadata extraction
 - LIEF metadata extraction
+- optional payload extraction
+- optional file type classification
+- optional strings extraction
+- capa capability analysis
 - IOC extraction
-- capa analysis
+- VirusTotal hash reputation lookup
+- static scoring and verdict support
 
-### Signing validation
+### Dynamic Analysis
 
-- Authenticode verification via `osslsigncode`
-- verified timestamp handling
-- signer subject and issuer extraction
-- signing cache support
-- improved parser handling for valid signed files
+- Procmon-backed runtime collection
+- process creation visibility
+- file write visibility
+- network event visibility
+- suspicious path detection
+- scheduled task diffing
+- service diffing
+- dropped file review
+- dynamic findings summary
+- dynamic HTML reporting
+- dynamic scoring support
 
-### Reputation and scoring
+### Spec Analysis
 
-- VirusTotal hash lookup
-- verdict classification
-- risk scoring with benign-context dampening
-- installer and launcher-aware false-positive reduction
-
-### Executable API analysis
-
-- imported DLL and API extraction
-- API behavior category mapping
-- API behavior chain detection
-- `api_analysis.json` artifact generation
-- report integration
-- light API-chain scoring support
-
-### Dynamic analysis
-
-- Procmon-backed runtime capture
-- Procmon CSV export
-- normalized Procmon JSON parsing
-- interesting-event filtering
-- dropped-file candidate triage
-- scheduled task snapshotting and diffing
-- Windows service snapshotting and diffing
-- analyst-facing findings summaries
-- live GUI status output during dynamic runs
-- dynamic HTML report export
-
-### Reporting
-
-- Markdown report
-- HTML report
-- PDF report when environment supports it
-- browser-based PDF fallback from HTML
-- structured summary and runlog outputs
-- dynamic findings output
-- persistence diff outputs
-
-### Extraction support
-
-- embedded payload extraction
-- recursive extraction support
-- extracted payload manifest
-- optional extracted PE subfile triage
-
-## API Analysis
-
-Executable API import analysis is supported for Windows PE files.
+RingForge Analyzer includes an API specification analysis workflow for OpenAPI/Swagger-style specs.
 
 This feature:
 
-- extracts imported DLLs and API functions
-- groups APIs into behavior categories
-- detects API behavior chains such as:
-  - possible process injection
-  - possible service installation
-  - possible registry persistence
-  - possible memory execution
-- writes results to `api_analysis.json`
-- includes findings in the Markdown and HTML reports
+- parses YAML and JSON API specifications
+- builds endpoint inventory views
+- summarizes methods, paths, parameters, and auth visibility
+- identifies risky design patterns such as:
+  - missing authentication
+  - admin/internal-like routes
+  - destructive methods on sensitive routes
+  - file upload endpoints
+- writes structured spec analysis artifacts to the case folder
+- contributes to the Spec/API score in the main summary
+- supports combined scoring with Static and Dynamic analysis results
 
-API-chain findings can contribute lightly to the final risk score. For trusted benign contexts such as signed clean installers or launchers, API-chain impact is automatically dampened so legitimate software is less likely to be over-scored.
+### API Analysis
 
-## Dynamic Analysis
+- request-based API testing workflow
+- saved response and report output
+- API-specific output review
+- integration path from Spec Analysis into API testing workflows
 
-The project includes an early-stage dynamic-analysis pipeline focused on practical analyst visibility rather than full sandbox emulation.
+## Scoring Model
 
-### Current capabilities
+RingForge Analyzer supports both individual and combined scoring modes.
 
-- build per-sample case folders
-- collect sample metadata and hashes
-- start and stop Procmon capture
-- export Procmon CSV data
-- parse Procmon CSV into structured JSON
-- generate filtered interesting-event output
-- triage dropped-file candidates from suspicious or user-writable paths
-- snapshot and diff scheduled tasks
-- snapshot and diff Windows services
-- generate analyst-facing findings summaries
-- display live phase/status updates in the GUI
-- export polished HTML reports from dynamic summaries
+### Individual scoring
 
-### Recommended workflow
+Each analysis mode can be scored independently:
 
-1. Run inside an isolated Windows 11 VM
-2. Test first with a simple benign executable
-3. Test with a small benign installer
-4. Then test the target installer or sample
-5. Review findings, persistence diffs, dropped files, Procmon summaries, and the HTML report
+- Static-only run → Static score is populated
+- Dynamic-only run → Dynamic score is populated
+- Spec-only run → Spec/API score is populated
 
-### Current limitations
+### Combined scoring
 
-- host-side background activity can create significant noise when run on a personal workstation
-- Procmon filtering is still intentionally conservative
-- dynamic analysis is designed as a practical triage layer, not a full malware sandbox replacement
-- automatic PDF generation on Windows may require additional WeasyPrint system dependencies
+When multiple analysis types are present in the same case, RingForge Analyzer generates a combined score using all available evidence.
 
-## Typical Workflow
+Examples:
 
-### Static workflow
+- Static-only case → Combined score equals Static score
+- Dynamic-only case → Combined score equals Dynamic score
+- Spec-only case → Combined score equals Spec/API score
+- Full case → Combined score reflects Static + Dynamic + Spec/API
 
-1. Select a Windows executable, DLL, installer, or launcher
-2. Create a new case name
-3. Run static triage
-4. Review:
-   - signing results
-   - VirusTotal summary
-   - capa findings
-   - API Analysis
-   - IOC output
-   - final score and verdict
-5. Export or archive the case folder
+### Presence-aware display
 
-### Dynamic workflow
+Analysis categories that were not run are shown as `—` in the GUI instead of `0`, making it easier to distinguish between:
 
-1. Open the Dynamic Analysis window from the GUI
-2. Select a sample path
-3. Select or create a case folder
-4. Set timeout and Procmon options
-5. Run dynamic analysis
-6. Review:
-   - highlights
-   - top written paths
-   - top network processes
-   - scheduled task diffs
-   - service diffs
-   - dropped-file output
-   - final dynamic summary
-7. Export the HTML report and optionally print it to PDF from the browser
+- not run
+- run with low or no scoring contribution
+
+## Reputation and Scoring
+
+RingForge Analyzer now supports:
+
+- VirusTotal hash lookup
+- verdict classification
+- static risk scoring
+- dynamic behavior scoring
+- spec/API risk scoring
+- combined score generation from available case artifacts
+- installer and launcher-aware false-positive reduction
+- presence-aware score display for partial workflows
+
+## GUI Workflow Notes
+
+- Static, Dynamic, and Spec analysis can be run independently
+- combined scoring updates from saved case artifacts
+- not-run sections display as `—`
+- optional helper tools that are unavailable on Windows may display as `n/a`
+- `n/a` is used to distinguish unsupported or unavailable optional tools from true processing failures
+
+## Current v1.1 Position
+
+RingForge Analyzer v1.1 should be considered the scoring and workflow milestone release.
+
+This version establishes:
+
+- individual scoring by analysis type
+- combined scoring across all present artifacts
+- improved case-based workflow behavior
+- dynamic and spec integration into the main summary
+- a stronger analyst-facing GUI workflow for hybrid software assessment
+
+## Planned Next Iteration
+
+The next polish-focused release is planned as **v1.2** and will focus on:
+
+- additional GUI polish
+- layout cleanup
+- workflow refinement
+- further quality-of-life improvements
+- small presentation and usability enhancements
 
 ## Outputs
 
