@@ -4,7 +4,7 @@
 
 RingForge Analyzer is a malware/software analysis toolkit for Windows executables and installers that supports both **static triage** and early-stage **dynamic behavior analysis**. It generates structured case artifacts, IOC output, persistence-diff data, dropped-file triage results, signing results, API behavior analysis, and analyst-facing reports for triage, training, and investigation.
 
-**Current release: v1.1**
+**Current release: v1.2**
 
 ## Overview
 
@@ -12,154 +12,73 @@ RingForge Analyzer is designed to help analysts quickly triage Windows software 
 
 The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, and dynamic findings summaries.
 
-## What’s New in RingForge Analyzer v1.1
+## What’s New in v1.2
 
-RingForge Analyzer v1.1 expands the platform beyond basic hybrid static + dynamic triage and introduces a more complete analyst workflow for scoring, runtime review, and API/spec-driven assessment.
+RingForge Analyzer v1.2 builds on the v1.1 scoring and workflow milestone with a focused GUI polish and usability refinement release. This version improves visual consistency, simplifies the main workflow, and standardizes the experience across the main GUI, Dynamic Analysis, and API Spec Analysis windows.
 
-### Highlights
+### Core Improvements
+- Refined the main GUI layout so the output panel is visible on launch
+- Improved button styling for a cleaner, more professional dark-theme interface
+- Standardized Browse and Clear buttons to better match entry-field layout
+- Tightened action-row spacing and improved right-side status alignment
+- Kept the v1.1 combined and individual scoring model intact across Static, Dynamic, and Spec/API analysis
 
-- separate Dynamic Analysis GUI window
-- separate Spec Analysis GUI window
-- Procmon-backed dynamic capture workflow
-- dynamic HTML report export
-- browser-based PDF fallback workflow
-- Procmon configuration file support
-- improved dynamic findings noise reduction
-- improved progress and status wording for optional steps
-- optional Windows-missing tools now display as `n/a` where appropriate
-- combined Static / Dynamic / Spec scoring
-- individual-only scoring support for Static-only, Dynamic-only, and Spec-only runs
-- main-window score breakdown for Static / Dynamic / Spec
-- case-based combined score generation from saved analysis artifacts
-- Spec Analysis scoring integration for risky API design patterns
-- early UI theming updates aligned to report styling
+### Main GUI Updates
+- Output area is now visible immediately when the application opens
+- Main action row was cleaned up and spaced more consistently
+- API and Spec entry on the primary workflow were simplified into a single **API Spec Analysis** path
+- Buttons were updated for better consistency, sizing, and visual balance
+- Supporting Browse/Clear controls now align better with adjacent input fields
 
-## Core Capabilities
+### Dynamic Analysis Window Updates
+- Reworked to better match the main GUI theme and layout
+- Grouped settings into a cleaner **Dynamic Analysis Settings** section
+- Moved **Enable Procmon Capture** next to timeout controls for a more logical workflow
+- Simplified the action row to the most useful core actions:
+  - Run Dynamic Analysis
+  - Open Case Folder
+  - Open Latest Report
+- Removed the redundant export button from the primary action row
+- Improved right-side Browse button sizing and alignment
+- Preserved live output and case-based scoring refresh behavior
 
-### Static Analysis
+### API Spec Analysis Updates
+- Renamed and positioned as the primary spec-based API workflow
+- Updated layout for clearer structure and better consistency with the rest of the application
+- Organized results into:
+  - Summary
+  - Risk Notes
+  - Endpoint Inventory
+- Improved top action row styling and naming
+- API spec results continue to save into the case `spec` folder and feed the combined scoring workflow
 
-- file hashing
-- PE metadata extraction
-- LIEF metadata extraction
-- optional payload extraction
-- optional file type classification
-- optional strings extraction
-- capa capability analysis
-- IOC extraction
-- VirusTotal hash reputation lookup
-- static scoring and verdict support
+### API Testing Positioning
+- Manual live API request testing remains a separate advanced utility
+- The primary workflow is now centered on **API Spec Analysis**
+- This keeps the main GUI focused while preserving flexibility for deeper API request testing when needed
 
-### Dynamic Analysis
+## Current Version Position
 
-- Procmon-backed runtime collection
-- process creation visibility
-- file write visibility
-- network event visibility
-- suspicious path detection
-- scheduled task diffing
-- service diffing
-- dropped file review
-- dynamic findings summary
-- dynamic HTML reporting
-- dynamic scoring support
+### v1.1
+Scoring and workflow milestone release:
+- Combined scoring across Static, Dynamic, and Spec/API
+- Presence-aware GUI score display
+- Dynamic and Spec case-based score regeneration
+- Progress final-state and optional helper-tool `n/a` handling
 
-### Spec Analysis
-
-RingForge Analyzer includes an API specification analysis workflow for OpenAPI/Swagger-style specs.
-
-This feature:
-
-- parses YAML and JSON API specifications
-- builds endpoint inventory views
-- summarizes methods, paths, parameters, and auth visibility
-- identifies risky design patterns such as:
-  - missing authentication
-  - admin/internal-like routes
-  - destructive methods on sensitive routes
-  - file upload endpoints
-- writes structured spec analysis artifacts to the case folder
-- contributes to the Spec/API score in the main summary
-- supports combined scoring with Static and Dynamic analysis results
-
-### API Analysis
-
-- request-based API testing workflow
-- saved response and report output
-- API-specific output review
-- integration path from Spec Analysis into API testing workflows
-
-## Scoring Model
-
-RingForge Analyzer supports both individual and combined scoring modes.
-
-### Individual scoring
-
-Each analysis mode can be scored independently:
-
-- Static-only run → Static score is populated
-- Dynamic-only run → Dynamic score is populated
-- Spec-only run → Spec/API score is populated
-
-### Combined scoring
-
-When multiple analysis types are present in the same case, RingForge Analyzer generates a combined score using all available evidence.
-
-Examples:
-
-- Static-only case → Combined score equals Static score
-- Dynamic-only case → Combined score equals Dynamic score
-- Spec-only case → Combined score equals Spec/API score
-- Full case → Combined score reflects Static + Dynamic + Spec/API
-
-### Presence-aware display
-
-Analysis categories that were not run are shown as `—` in the GUI instead of `0`, making it easier to distinguish between:
-
-- not run
-- run with low or no scoring contribution
-
-## Reputation and Scoring
-
-RingForge Analyzer now supports:
-
-- VirusTotal hash lookup
-- verdict classification
-- static risk scoring
-- dynamic behavior scoring
-- spec/API risk scoring
-- combined score generation from available case artifacts
-- installer and launcher-aware false-positive reduction
-- presence-aware score display for partial workflows
-
-## GUI Workflow Notes
-
-- Static, Dynamic, and Spec analysis can be run independently
-- combined scoring updates from saved case artifacts
-- not-run sections display as `—`
-- optional helper tools that are unavailable on Windows may display as `n/a`
-- `n/a` is used to distinguish unsupported or unavailable optional tools from true processing failures
-
-## Current v1.1 Position
-
-RingForge Analyzer v1.1 should be considered the scoring and workflow milestone release.
-
-This version establishes:
-
-- individual scoring by analysis type
-- combined scoring across all present artifacts
-- improved case-based workflow behavior
-- dynamic and spec integration into the main summary
-- a stronger analyst-facing GUI workflow for hybrid software assessment
+### v1.2
+GUI polish and usability refinement release:
+- Visual cleanup and consistency improvements
+- Simplified workflow presentation
+- Updated Dynamic Analysis and API Spec Analysis windows
+- Better spacing, button styling, and layout behavior
 
 ## Planned Next Iteration
-
-The next polish-focused release is planned as **v1.2** and will focus on:
-
-- additional GUI polish
-- layout cleanup
-- workflow refinement
-- further quality-of-life improvements
-- small presentation and usability enhancements
+Future work after v1.2 may include:
+- Additional UI refinements and spacing cleanup
+- Optional primary/secondary button hierarchy improvements
+- Expanded report presentation options
+- Continued cleanup of advanced utilities and developer-focused workflows
 
 ## Outputs
 
