@@ -3,9 +3,65 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
+
+
+@dataclass
+class ScoreEvidence:
+    source: str
+    rule: str
+    points: int
+    message: str
+
+
+@dataclass
+class CombinedScore:
+    total_score: int
+    severity: str
+    verdict: str
+    confidence: str
+    subscores: Dict[str, int] = field(default_factory=dict)
+    present: Dict[str, bool] = field(default_factory=dict)
+    evidence: List[ScoreEvidence] = field(default_factory=list)
+    raw_flags: Dict[str, Any] = field(default_factory=dict)
+
+
+HIGH_SIGNAL_TECH_PREFIXES = {
+    "T1055", "T1059", "T1105", "T1547", "T1543", "T1569", "T1021", "T1071",
+    "T1041", "T1003", "T1110", "T1552", "T1218", "T1574", "T1036", "T1566",
+}
+LOW_SIGNAL_TECH_PREFIXES = {"T1027", "T1033", "T1082", "T1083", "T1087", "T1129", "T1497", "T1564.003"}
+TRUST_OVERRIDE_TECH_PREFIXES = {"T1055", "T1003", "T1105", "T1071", "T1041", "T1218", "T1574"}
+
+KNOWN_BENIGN_DOMAIN_SUFFIXES = {
+    "digicert.com", "ocsp.digicert.com", "crl3.digicert.com", "crl4.digicert.com", "cacerts.digicert.com",
+}
+KNOWN_BENIGN_IPS = {"8.8.8.8", "8.8.4.4", "1.1.1.1", "9.9.9.9"}
+
+
+def _safe_load_json(path: Path) -> dict[str, Any]:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def severity_from_score(score: int) -> str:
+    if score >= 80:
+        return "Critical"
+    if score >= 60:
+        return "High"
+    if score >= 35:
+        return "Medium"
+    if score >= 15:
+        return "Low"
+    return "Informational"
 
 
 def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple[str, str]:
@@ -56,356 +112,111 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
     return verdict, confidence
 
 
-HIGH_SIGNAL_TECH_PREFIXES = {
-    "T1055",
-    "T1059",
-    "T1105",
-    "T1547",
-    "T1543",
-    "T1569",
-    "T1021",
-    "T1071",
-    "T1041",
-    "T1003",
-    "T1110",
-    "T1552",
-    "T1218",
-    "T1574",
-    "T1036",
-    "T1566",
-}
+def score_static(
+    summary: dict[str, Any] | None,
+    iocs: dict[str, Any] | None,
+    pe_meta: dict[str, Any] | None,
+    lief_meta: dict[str, Any] | None,
+    api_analysis: dict[str, Any] | None,
+) -> tuple[int, list[ScoreEvidence], dict[str, Any]]:
+    summary = summary or {}
+    iocs = iocs or {}
+    pe_meta = pe_meta or {}
+    lief_meta = lief_meta or {}
+    api_analysis = api_analysis or {}
 
-LOW_SIGNAL_TECH_PREFIXES = {
-    "T1027",
-    "T1033",
-    "T1082",
-    "T1083",
-    "T1087",
-    "T1129",
-    "T1497",
-    "T1564.003",
-}
-
-TRUST_OVERRIDE_TECH_PREFIXES = {
-    "T1055",
-    "T1003",
-    "T1105",
-    "T1071",
-    "T1041",
-    "T1218",
-    "T1574",
-}
-
-KNOWN_BENIGN_DOMAIN_SUFFIXES = {
-    "digicert.com",
-    "ocsp.digicert.com",
-    "crl3.digicert.com",
-    "crl4.digicert.com",
-    "cacerts.digicert.com",
-}
-
-KNOWN_BENIGN_IPS = {
-    "8.8.8.8",
-    "8.8.4.4",
-    "1.1.1.1",
-    "9.9.9.9",
-}
-
-
-def score_risk(
-    summary: dict[str, Any],
-    iocs: dict[str, Any],
-    pe_meta: dict[str, Any],
-    lief_meta: dict[str, Any],
-) -> Tuple[int, list[str], list[str]]:
-    suspicious: list[str] = []
-    benign: list[str] = []
+    evidence: list[ScoreEvidence] = []
+    flags: dict[str, Any] = {}
     score = 0
 
     case_dir = _get_case_dir(summary)
-
-    capa_json_path = case_dir / "capa.json"
-    capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
-    techs = sorted(set(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", capa_blob)))
-    match_count = capa_blob.count('"matches"')
-
     file_info = _pe_string_table(pe_meta)
     company = (file_info.get("CompanyName") or "").strip()
     product = (file_info.get("ProductName") or "").strip()
     desc = (file_info.get("FileDescription") or "").strip()
     original_filename = (file_info.get("OriginalFilename") or "").strip()
-
     looks_like_installer = _looks_like_installer(company, product, desc, summary, case_dir)
-
-    is_subfile = _is_subfile_case(case_dir)
-    parent_case_dir = _get_parent_case_dir_from_subfile(case_dir) if is_subfile else None
-    parent_summary = _safe_load_json(parent_case_dir / "summary.json") if parent_case_dir else None
-    parent_verdict = (parent_summary or {}).get("verdict") if isinstance(parent_summary, dict) else None
-    parent_is_low = parent_verdict in {"BENIGN", "LOW_RISK"}
+    flags["looks_like_installer"] = looks_like_installer
 
     signing = _load_signing(case_dir)
     verify_ok = bool(signing.get("verify_ok"))
     timestamp_verified = bool(signing.get("timestamp_verified"))
     signer_subject = (signing.get("subject") or "").strip()
-    has_signer_subject = bool(signer_subject)
+    trusted_signed = verify_ok and timestamp_verified
 
-    is_trusted_signed = verify_ok and timestamp_verified
-    is_partially_trusted_signed = (timestamp_verified and has_signer_subject) or verify_ok
-
-    vt = summary.get("virustotal", {}) if isinstance(summary.get("virustotal"), dict) else {}
-    vt_found = bool(vt.get("found", False))
-    vt_enabled = bool(vt.get("enabled", False))
-    vt_malicious = int(vt.get("malicious", 0) or 0)
-    vt_suspicious = int(vt.get("suspicious", 0) or 0)
-    vt_harmless = int(vt.get("harmless", 0) or 0)
-    vt_undetected = int(vt.get("undetected", 0) or 0)
-    clean_vt = vt_found and vt_malicious == 0 and vt_suspicious == 0 and (vt_harmless > 0 or vt_undetected > 0)
-
-    api_json = _load_api_analysis(case_dir)
-
-    sample_info = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
-    sample_name = str(
-        sample_info.get("filename")
-        or sample_info.get("name")
-        or sample_info.get("path")
-        or sample_info.get("path_case")
-        or ""
-    ).strip()
-    lower_name = sample_name.lower()
-
-    hashy_name = bool(re.fullmatch(r"[0-9a-f]{24,}\.(exe|dll|scr|com|bat|ps1)?", lower_name))
-    suspicious_ext = lower_name.endswith((".scr", ".com", ".js", ".jse", ".vbs", ".ps1", ".hta"))
-
-    high = [t for t in techs if _prefix_in(t, HIGH_SIGNAL_TECH_PREFIXES)]
-    low = [t for t in techs if _prefix_in(t, LOW_SIGNAL_TECH_PREFIXES)]
-    other = [t for t in techs if t not in set(high) and t not in set(low)]
-    trust_override = any(_prefix_in(t, TRUST_OVERRIDE_TECH_PREFIXES) for t in techs)
-
-    if is_trusted_signed:
-        benign.append(
-            f"Valid Authenticode signature with verified timestamp"
-            f"{f' (Subject={signer_subject})' if signer_subject else ''}"
-        )
-    elif is_partially_trusted_signed:
-        score += 4
-        suspicious.append("File has partial signing trust (signer/timestamp present but full verification not confirmed) (+4)")
+    if trusted_signed:
+        evidence.append(ScoreEvidence("static", "trusted_signature", -8, f"Valid signature verified ({signer_subject or 'subject unavailable'})"))
+        score -= 8
     else:
         score += 12
-        suspicious.append("File is unsigned or signature/timestamp verification failed (+12)")
-
-    meta_penalty_scale = 0.5 if looks_like_installer else 1.0
+        evidence.append(ScoreEvidence("static", "unsigned_or_unverified", 12, "File is unsigned or signing verification failed"))
 
     if not company:
-        add = max(1, int(5 * meta_penalty_scale))
-        score += add
-        suspicious.append(f"Missing CompanyName in version info (+{add})")
-    else:
-        benign.append(f"CompanyName present: {company}")
-
+        score += 5
+        evidence.append(ScoreEvidence("static", "missing_company", 5, "Missing CompanyName in version information"))
     if not product:
-        add = max(1, int(4 * meta_penalty_scale))
-        score += add
-        suspicious.append(f"Missing ProductName in version info (+{add})")
-    else:
-        benign.append(f"ProductName present: {product}")
-
+        score += 4
+        evidence.append(ScoreEvidence("static", "missing_product", 4, "Missing ProductName in version information"))
     if not desc:
-        add = max(1, int(3 * meta_penalty_scale))
-        score += add
-        suspicious.append(f"Missing FileDescription in version info (+{add})")
-
+        score += 3
+        evidence.append(ScoreEvidence("static", "missing_description", 3, "Missing FileDescription in version information"))
     if not original_filename:
-        add = max(1, int(3 * meta_penalty_scale))
-        score += add
-        suspicious.append(f"Missing OriginalFilename in version info (+{add})")
+        score += 3
+        evidence.append(ScoreEvidence("static", "missing_original_filename", 3, "Missing OriginalFilename in version information"))
 
-    if hashy_name:
+    sample_info = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
+    sample_name = str(sample_info.get("filename") or sample_info.get("name") or sample_info.get("path") or sample_info.get("path_case") or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{24,}\.(exe|dll|scr|com|bat|ps1)?", sample_name):
         score += 8
-        suspicious.append("Filename resembles a hash/random artifact name (+8)")
-
-    if suspicious_ext:
+        evidence.append(ScoreEvidence("static", "hash_like_name", 8, "Filename resembles a hash or random artifact"))
+    if sample_name.endswith((".scr", ".com", ".js", ".jse", ".vbs", ".ps1", ".hta")):
         score += 12
-        suspicious.append(f"Suspicious executable/script extension observed: {sample_name} (+12)")
+        evidence.append(ScoreEvidence("static", "suspicious_extension", 12, f"Suspicious script or executable extension: {sample_name}"))
 
-    if techs:
-        if high:
-            add = min(50, 22 + 8 * len(high))
-            score += add
-            suspicious.append(
-                f"High-signal ATT&CK techniques present (count={len(high)}): {', '.join(high[:10])} (+{add})"
-            )
-        else:
-            add = 8 if not looks_like_installer else 3
-            score += add
-            suspicious.append(f"Only low/medium-signal ATT&CK techniques detected (count={len(techs)}) (+{add})")
+    techs = _extract_techniques(summary)
+    high = [t for t in techs if _prefix_in(t, HIGH_SIGNAL_TECH_PREFIXES)]
+    other = [t for t in techs if not _prefix_in(t, LOW_SIGNAL_TECH_PREFIXES)]
+    if high:
+        add = min(28, 16 + 4 * len(high))
+        score += add
+        evidence.append(ScoreEvidence("static", "high_signal_attack", add, f"High-signal ATT&CK techniques present: {', '.join(high[:8])}"))
+    elif techs:
+        add = 6 if looks_like_installer else 10
+        score += add
+        evidence.append(ScoreEvidence("static", "techniques_present", add, f"ATT&CK techniques present: {len(techs)}"))
+    if other and not high:
+        add = min(10, 2 + len(other))
+        score += add
+        evidence.append(ScoreEvidence("static", "additional_techniques", add, f"Additional ATT&CK techniques detected: {len(other)}"))
 
-        if looks_like_installer and low and not high:
-            benign.append(f"Installer/launcher context detected; down-weighting common techniques: {', '.join(low[:8])}")
-
-        if other:
-            if looks_like_installer and not high and not trust_override:
-                add = min(8, 2 + len(other))
-            else:
-                add = min(20, 4 + 2 * len(other))
-            score += add
-            suspicious.append(f"Additional ATT&CK techniques detected (count={len(other)}) (+{add})")
-    else:
-        benign.append("No ATT&CK technique IDs detected in capa output")
-
+    capa_json_path = case_dir / "capa.json"
+    capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
+    match_count = capa_blob.count('"matches"')
     if match_count > 0:
-        if looks_like_installer and not high:
-            density = min(5, 1 + int(match_count / 35))
-        elif is_trusted_signed and not trust_override and not high:
-            density = min(8, 2 + int(match_count / 25))
-        else:
-            density = min(24, 6 + int(match_count / 8))
-        score += density
-        suspicious.append(f"capa match density (match_count≈{match_count}) (+{density})")
-    else:
-        benign.append("No capa matches detected")
+        add = min(12, 2 + int(match_count / 20))
+        score += add
+        evidence.append(ScoreEvidence("static", "capa_density", add, f"capa match density observed: {match_count}"))
 
-    score += _score_api_findings(
-        api_json=api_json,
+    api_add = _score_api_findings_evidence(
+        api_json=api_analysis,
         looks_like_installer=looks_like_installer,
-        is_trusted_signed=is_trusted_signed,
-        is_partially_trusted_signed=is_partially_trusted_signed,
-        clean_vt=clean_vt,
-        trust_override=trust_override,
-        suspicious=suspicious,
-        benign=benign,
     )
+    score += api_add[0]
+    evidence.extend(api_add[1])
 
-    observables = _extract_observables(iocs)
-    filtered_ips = _filter_ips(observables.get("ips", []))
-    filtered_domains = _filter_domains(observables.get("domains", []))
-    filtered_urls = _filter_urls(observables.get("urls", []))
-
-    only_benign_infra = (
-        (len(filtered_domains) == 0 and len(filtered_urls) == 0 and len(filtered_ips) == 0)
-        and _has_only_known_benign_infra(observables)
-    )
-
-    if only_benign_infra:
-        benign.append("Only known-benign certificate/OCSP/CRL infrastructure observed; no IOC risk added")
-    else:
-        ip_count = len(filtered_ips)
-        dom_count = len(filtered_domains)
-        url_count = len(filtered_urls)
-
-        if ip_count > 0:
-            if clean_vt and ip_count <= 1 and not trust_override:
-                add = min(6, 2 + ip_count)
-            else:
-                add = min(22, 10 + 3 * ip_count)
-            score += add
-            suspicious.append(f"Network IP IOCs present (filtered_ips={ip_count}) (+{add})")
-        else:
-            benign.append("No high-confidence network IP IOCs extracted after filtering")
-
-        if dom_count + url_count > 0:
-            if clean_vt and (dom_count + url_count) <= 6 and not trust_override:
-                add = min(4, 1 + dom_count)
-            else:
-                add = min(16, 3 + (2 * dom_count) + min(5, url_count))
-            score += add
-            suspicious.append(f"Domains/URLs present (filtered_domains={dom_count}, filtered_urls={url_count}) (+{add})")
-        elif ip_count == 0:
-            benign.append("No high-confidence network domains/URLs extracted after filtering")
-
-    if vt_enabled:
-        if vt_found:
-            if vt_malicious >= 10:
-                add = min(28, 14 + vt_malicious)
-                score += add
-                suspicious.append(f"VirusTotal malicious detections present (malicious={vt_malicious}) (+{add})")
-            elif vt_malicious >= 3:
-                add = min(18, 8 + vt_malicious)
-                score += add
-                suspicious.append(f"VirusTotal elevated detections present (malicious={vt_malicious}) (+{add})")
-            elif vt_suspicious >= 5:
-                add = min(12, 4 + vt_suspicious)
-                score += add
-                suspicious.append(f"VirusTotal suspicious detections present (suspicious={vt_suspicious}) (+{add})")
-            elif clean_vt:
-                benign.append(
-                    f"VirusTotal shows no malicious/suspicious detections "
-                    f"(harmless={vt_harmless}, undetected={vt_undetected})"
-                )
-        else:
-            benign.append("VirusTotal lookup did not return a matching record")
-
-    lief_blob = json.dumps(lief_meta, ensure_ascii=False) if lief_meta else ""
-    if re.search(r"\bUPX\b", lief_blob, re.I) or re.search(r"\bpacked\b", lief_blob, re.I):
-        score += 10
-        suspicious.append("Packer/compression indicators present (+10)")
-
-    if clean_vt and not high and not trust_override:
-        before = score
-        discount_factor = 0.75
-        if looks_like_installer:
-            discount_factor = 0.65
-        if is_trusted_signed:
-            discount_factor = min(discount_factor, 0.55)
-        elif is_partially_trusted_signed:
-            discount_factor = min(discount_factor, 0.70)
-
-        score = max(0, int(score * discount_factor))
-        benign.append(f"VirusTotal found sample with no malicious/suspicious detections; applying clean-VT discount: {before} -> {score}")
-
-    if is_trusted_signed and not trust_override:
-        before = score
-        score = int(score * 0.75) if high else int(score * 0.55)
-        benign.append(
-            f"Valid Authenticode signature (timestamp verified) detected"
-            f"{f' (Subject={signer_subject})' if signer_subject else ''}; applying trust discount: {before} -> {score}"
-        )
-
-    if looks_like_installer and not trust_override and not high:
-        cap = 59 if clean_vt else 69
-        if score > cap:
-            benign.append(f"Installer/launcher context and no trust-override behavior; capping score at {cap}")
-            score = cap
-
-    if is_subfile and parent_is_low and not trust_override:
-        cap = 60
-        if score > cap:
-            benign.append(f"Parent verdict {parent_verdict} and no high-signal override; capping subfile score at {cap}")
-            score = cap
-
-    score = max(0, min(100, score))
-    if score < 40:
-        benign.append("Low overall heuristic score")
-    elif score < 75:
-        benign.append("Moderate overall heuristic score")
-    else:
-        suspicious.append("High overall heuristic score")
-
-    return score, suspicious, benign
+    score = max(0, min(40, score))
+    return score, evidence, flags
 
 
-def _load_api_analysis(case_dir: Path) -> dict[str, Any]:
-    p = case_dir / "api_analysis.json"
-    return _safe_load_json(p) or {}
-
-
-def _score_api_findings(
+def _score_api_findings_evidence(
     api_json: dict[str, Any],
     looks_like_installer: bool,
-    is_trusted_signed: bool,
-    is_partially_trusted_signed: bool,
-    clean_vt: bool,
-    trust_override: bool,
-    suspicious: list[str],
-    benign: list[str],
-) -> int:
+) -> tuple[int, list[ScoreEvidence]]:
     if not isinstance(api_json, dict) or not api_json:
-        benign.append("No API analysis artifact present")
-        return 0
+        return 0, []
 
     if int(api_json.get("returncode", 0) or 0) != 0:
-        err = str(api_json.get("error", "") or "")
-        suspicious.append(f"API analysis failed or returned incomplete data ({err or 'unknown error'}) (+0)")
-        return 0
+        return 0, [ScoreEvidence("static", "api_analysis_incomplete", 0, "API analysis returned incomplete data")]
 
     chains = api_json.get("chain_findings", [])
     if not isinstance(chains, list):
@@ -416,42 +227,366 @@ def _score_api_findings(
     low = [x for x in chains if isinstance(x, dict) and x.get("severity") == "low"]
 
     if not chains:
-        benign.append("No API behavior chains detected")
-        return 0
+        return 0, []
 
-    raw_add = 0
+    add = 0
     if high:
-        raw_add += min(12, 6 * len(high))
+        add += min(12, 6 * len(high))
     if medium:
-        raw_add += min(6, 2 * len(medium))
+        add += min(6, 2 * len(medium))
     if low:
-        raw_add += min(2, len(low))
+        add += min(2, len(low))
 
-    net_add = raw_add
-    dampening_reasons: list[str] = []
+    if looks_like_installer:
+        add = max(0, add - 2)
 
-    if net_add > 0 and looks_like_installer and clean_vt and not trust_override:
-        net_add = max(0, net_add - 2)
-        dampening_reasons.append("installer/clean-VT context")
+    if add > 0:
+        return add, [ScoreEvidence("static", "api_behavior_chains", add, f"API behavior chains detected (high={len(high)}, medium={len(medium)}, low={len(low)})")]
+    return 0, []
 
-    if net_add > 0 and is_trusted_signed and clean_vt and not trust_override:
-        net_add = max(0, net_add - 2)
-        dampening_reasons.append("trusted signature + clean VT")
-    elif net_add > 0 and is_partially_trusted_signed and clean_vt and not trust_override:
-        net_add = max(0, net_add - 1)
-        dampening_reasons.append("partial signing trust + clean VT")
 
-    counts = f"high={len(high)}, medium={len(medium)}, low={len(low)}"
+def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[ScoreEvidence], dict[str, Any]]:
+    dynamic_result = dynamic_result or {}
+    evidence: list[ScoreEvidence] = []
+    flags: dict[str, Any] = {}
+    score = 0
 
-    if net_add > 0:
-        suspicious.append(f"API behavior chains detected ({counts}); net contribution (+{net_add})")
+    findings = dynamic_result.get("findings", {}) if isinstance(dynamic_result.get("findings"), dict) else {}
+    counts = dynamic_result.get("counts", {}) if isinstance(dynamic_result.get("counts"), dict) else {}
+
+    task_summary = (
+        dynamic_result.get("task_diff_summary", {})
+        if isinstance(dynamic_result.get("task_diff_summary"), dict)
+        else {}
+    )
+    service_summary = (
+        dynamic_result.get("service_diff_summary", {})
+        if isinstance(dynamic_result.get("service_diff_summary"), dict)
+        else {}
+    )
+
+    spawned = int(
+        findings.get("spawned_process_count")
+        or findings.get("spawned_processes")
+        or counts.get("process_creates")
+        or len(dynamic_result.get("spawned_processes", []) or [])
+        or 0
+    )
+
+    file_writes = int(
+        findings.get("file_write_count")
+        or findings.get("file_writes")
+        or counts.get("file_write_events")
+        or 0
+    )
+
+    net_events = int(
+        findings.get("network_event_count")
+        or findings.get("network_events")
+        or counts.get("network_events")
+        or 0
+    )
+
+    suspicious_paths = int(
+        findings.get("suspicious_path_hit_count")
+        or findings.get("suspicious_path_hits")
+        or counts.get("suspicious_path_hits")
+        or len(dynamic_result.get("suspicious_path_hits", []) or [])
+        or 0
+    )
+
+    persistence_hits = int(
+        findings.get("persistence_hit_count")
+        or findings.get("persistence_hits")
+        or counts.get("persistence_hits")
+        or len(dynamic_result.get("persistence_hits", []) or [])
+        or 0
+    )
+
+    suspicious_tasks = int(task_summary.get("suspicious_new_or_modified", 0) or 0)
+    suspicious_services = int(service_summary.get("suspicious_new_or_modified", 0) or 0)
+
+    highlights = (
+        findings.get("highlights")
+        if isinstance(findings.get("highlights"), list)
+        else dynamic_result.get("highlights", [])
+        if isinstance(dynamic_result.get("highlights"), list)
+        else []
+    )
+
+    if spawned >= 3:
+        add = min(8, 2 + spawned)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "spawned_processes", add, f"Spawned processes observed: {spawned}"))
+
+    if file_writes >= 3:
+        add = min(6, 2 + file_writes // 50)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "file_writes", add, f"File writes observed: {file_writes}"))
+
+    if net_events > 0:
+        add = min(8, 3 + min(net_events, 5))
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "network_events", add, f"Network activity observed: {net_events}"))
+
+    if suspicious_paths > 0:
+        add = min(6, 2 + suspicious_paths)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "suspicious_paths", add, f"Suspicious path hits observed: {suspicious_paths}"))
+
+    if persistence_hits > 0:
+        add = min(10, 4 + 2 * persistence_hits)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "persistence_hits", add, f"Persistence-related hits observed: {persistence_hits}"))
+
+    if suspicious_tasks > 0:
+        add = min(12, 6 + 2 * suspicious_tasks)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "task_persistence", add, f"Suspicious scheduled tasks: {suspicious_tasks}"))
+
+    if suspicious_services > 0:
+        add = min(12, 6 + 2 * suspicious_services)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "service_persistence", add, f"Suspicious service changes: {suspicious_services}"))
+
+    if highlights:
+        add = min(6, len(highlights))
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "runtime_highlights", add, f"High-signal runtime highlights recorded: {len(highlights)}"))
+
+    flags.update({
+        "spawned_processes": spawned,
+        "file_writes": file_writes,
+        "network_events": net_events,
+        "suspicious_paths": suspicious_paths,
+        "persistence_hits": persistence_hits,
+        "suspicious_tasks": suspicious_tasks,
+        "suspicious_services": suspicious_services,
+    })
+
+    return max(0, min(30, score)), evidence, flags
+
+
+def score_spec(spec_result: dict[str, Any] | None) -> tuple[int, list[ScoreEvidence], dict[str, Any]]:
+    spec_result = spec_result or {}
+    evidence: list[ScoreEvidence] = []
+    flags: dict[str, Any] = {}
+    score = 0
+
+    summary = spec_result.get("summary", {}) if isinstance(spec_result.get("summary"), dict) else {}
+    endpoints = spec_result.get("endpoints", []) if isinstance(spec_result.get("endpoints"), list) else []
+    risk_notes = spec_result.get("risk_notes", []) if isinstance(spec_result.get("risk_notes"), list) else []
+    servers = spec_result.get("servers", []) if isinstance(spec_result.get("servers"), list) else []
+    auth_summary = spec_result.get("auth_summary", []) if isinstance(spec_result.get("auth_summary"), list) else []
+    security_schemes = spec_result.get("security_schemes", []) if isinstance(spec_result.get("security_schemes"), list) else []
+
+    endpoint_count = int(summary.get("endpoint_count", 0) or spec_result.get("endpoint_count", 0) or 0)
+    auth_scheme_count = int(summary.get("auth_scheme_count", 0) or spec_result.get("auth_scheme_count", 0) or 0)
+    admin_like_route_count = int(summary.get("admin_like_route_count", 0) or spec_result.get("admin_like_route_count", 0) or 0)
+    sensitive_param_count = int(summary.get("sensitive_param_count", 0) or spec_result.get("sensitive_param_count", 0) or 0)
+
+    no_auth = (
+        bool(spec_result.get("no_auth_detected"))
+        or auth_scheme_count == 0
+        or (not auth_summary and not security_schemes)
+    )
+
+    destructive_admin = sum(
+        1 for ep in endpoints
+        if isinstance(ep, dict) and ep.get("admin_like_route") and ep.get("destructive_method")
+    )
+
+    file_uploads = sum(
+        1 for ep in endpoints
+        if isinstance(ep, dict)
+        and any(
+            isinstance(p, dict) and str(p.get("in", "")).lower() == "body:multipart/form-data"
+            for p in (ep.get("parameters") or [])
+        )
+    )
+
+    http_server = (
+        bool(spec_result.get("http_server_detected"))
+        or any(str(s).lower().startswith("http://") for s in servers)
+    )
+
+    sensitive_unauth = sum(
+        1 for ep in endpoints
+        if isinstance(ep, dict)
+        and ep.get("admin_like_route")
+        and auth_scheme_count == 0
+    )
+
+    if no_auth:
+        score += 10
+        evidence.append(ScoreEvidence("spec", "no_auth", 10, "No obvious authentication scheme detected in the API spec"))
+
+    if sensitive_unauth > 0:
+        add = min(8, 4 + 2 * sensitive_unauth)
+        score += add
+        evidence.append(ScoreEvidence("spec", "sensitive_unauth", add, f"Sensitive unauthenticated endpoints: {sensitive_unauth}"))
+
+    if destructive_admin > 0:
+        add = min(6, 3 + 2 * destructive_admin)
+        score += add
+        evidence.append(ScoreEvidence("spec", "destructive_admin", add, f"Admin-like destructive routes: {destructive_admin}"))
+
+    if http_server:
+        score += 6
+        evidence.append(ScoreEvidence("spec", "http_server", 6, "Non-TLS server URL detected in spec"))
+
+    if file_uploads > 0:
+        add = min(4, 2 + file_uploads)
+        score += add
+        evidence.append(ScoreEvidence("spec", "file_uploads", add, f"File upload endpoints detected: {file_uploads}"))
+
+    flags.update({
+        "endpoint_count": endpoint_count,
+        "auth_scheme_count": auth_scheme_count,
+        "admin_like_route_count": admin_like_route_count,
+        "sensitive_param_count": sensitive_param_count,
+    })
+
+    return max(0, min(30, score)), evidence, flags
+
+
+def calculate_combined_score(
+    static_result: dict[str, Any] | None = None,
+    dynamic_result: dict[str, Any] | None = None,
+    spec_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    evidence: list[ScoreEvidence] = []
+    raw_flags: dict[str, Any] = {}
+
+    present = {
+        "static": bool(static_result),
+        "dynamic": bool(dynamic_result),
+        "spec": bool(spec_result),
+    }
+
+    static_score = 0
+    if static_result:
+        static_score, static_ev, static_flags = score_static(
+            static_result.get("summary"),
+            static_result.get("iocs"),
+            static_result.get("pe_meta"),
+            static_result.get("lief_meta"),
+            static_result.get("api_analysis"),
+        )
+        evidence.extend(static_ev)
+        raw_flags["static"] = static_flags
     else:
-        benign.append(f"API behavior chains detected ({counts}); net contribution (+0) after benign-context dampening")
+        raw_flags["static"] = {}
 
-    if dampening_reasons:
-        benign.append(f"API-chain dampening applied: {', '.join(dampening_reasons)}")
+    dynamic_score = 0
+    if dynamic_result:
+        dynamic_score, dynamic_ev, dynamic_flags = score_dynamic(dynamic_result)
+        evidence.extend(dynamic_ev)
+        raw_flags["dynamic"] = dynamic_flags
+    else:
+        raw_flags["dynamic"] = {}
 
-    return net_add
+    spec_score = 0
+    if spec_result:
+        spec_score, spec_ev, spec_flags = score_spec(spec_result)
+        evidence.extend(spec_ev)
+        raw_flags["spec"] = spec_flags
+    else:
+        raw_flags["spec"] = {}
+
+    total = max(0, min(100, static_score + dynamic_score + spec_score))
+    summary_for_verdict = static_result.get("summary", {}) if isinstance(static_result, dict) else {}
+    verdict, confidence = classify_verdict(total, summary_for_verdict)
+    severity = severity_from_score(total)
+
+    combined = CombinedScore(
+        total_score=total,
+        severity=severity,
+        verdict=verdict,
+        confidence=confidence,
+        subscores={"static": static_score, "dynamic": dynamic_score, "spec": spec_score},
+        present=present,
+        evidence=evidence,
+        raw_flags=raw_flags,
+    )
+    return asdict(combined)
+
+
+def combined_score_from_case_dir(
+    case_dir: str | Path,
+    dynamic_result: dict[str, Any] | None = None,
+    spec_result: dict[str, Any] | None = None,
+    write_output: bool = True,
+) -> dict[str, Any]:
+    case_dir = Path(case_dir)
+
+    static_result = {
+        "summary": _safe_load_json(case_dir / "summary.json"),
+        "iocs": _safe_load_json(case_dir / "iocs.json"),
+        "pe_meta": _safe_load_json(case_dir / "pe_metadata.json"),
+        "lief_meta": _safe_load_json(case_dir / "lief_metadata.json"),
+        "api_analysis": _safe_load_json(case_dir / "api_analysis.json"),
+    }
+
+    if not any(static_result.values()):
+        static_result = None
+
+    if dynamic_result is None:
+        dynamic_result = (
+            _safe_load_json(case_dir / "dynamic_findings.json")
+            or _safe_load_json(case_dir / "reports" / "dynamic_findings.json")
+        )
+
+    if spec_result is None:
+        spec_result = (
+            _safe_load_json(case_dir / "spec" / "api_spec_analysis.json")
+            or _safe_load_json(case_dir / "api_spec_analysis.json")
+        )
+
+    combined = calculate_combined_score(
+        static_result=static_result,
+        dynamic_result=dynamic_result,
+        spec_result=spec_result,
+    )
+
+    if write_output:
+        (case_dir / "combined_score.json").write_text(
+            json.dumps(combined, indent=2),
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    return combined
+
+
+def score_risk(
+    summary: dict[str, Any],
+    iocs: dict[str, Any],
+    pe_meta: dict[str, Any],
+    lief_meta: dict[str, Any],
+) -> Tuple[int, list[str], list[str]]:
+    static_score, evidence, _ = score_static(summary, iocs, pe_meta, lief_meta, None)
+    suspicious = [e.message for e in evidence if e.points > 0]
+    benign = [e.message for e in evidence if e.points <= 0]
+    if static_score < 40:
+        benign.append("Low overall heuristic score")
+    elif static_score < 75:
+        benign.append("Moderate overall heuristic score")
+    else:
+        suspicious.append("High overall heuristic score")
+    return static_score, suspicious, benign
+
+
+def _extract_techniques(summary: dict[str, Any]) -> list[str]:
+    case_dir = _get_case_dir(summary)
+    capa_json_path = case_dir / "capa.json"
+    capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
+    return sorted(set(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", capa_blob)))
+
+
+def _load_api_analysis(case_dir: Path) -> dict[str, Any]:
+    p = case_dir / "api_analysis.json"
+    return _safe_load_json(p) or {}
 
 
 def _prefix_in(t: str, prefixes: set[str]) -> bool:
@@ -506,16 +641,6 @@ def _get_parent_case_dir_from_subfile(case_dir: Path) -> Path | None:
     if idx == 0:
         return None
     return Path(*parts[:idx])
-
-
-def _safe_load_json(p: Path) -> dict[str, Any] | None:
-    try:
-        if p.exists():
-            x = json.loads(p.read_text(encoding="utf-8", errors="replace"))
-            return x if isinstance(x, dict) else None
-    except Exception:
-        return None
-    return None
 
 
 def _load_signing(case_dir: Path) -> dict[str, Any]:

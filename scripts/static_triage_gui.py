@@ -46,6 +46,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from dynamic_analysis.orchestrator import run_dynamic_analysis
 from dynamic_analysis.html_report import write_dynamic_html_report
+from static_triage_engine.scoring import combined_score_from_case_dir, calculate_combined_score
 
 try:
     import certifi  # type: ignore
@@ -244,9 +245,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.minsize(840, 620)
 
         cfg = app.cfg
-        default_case = str(DEFAULT_CASE_ROOT / "dynamic_case")
+        default_case_name = app.case_var.get().strip() or Path(app.sample_var.get().strip() or "sample").stem or "dynamic_case"
+        default_case_path = app.case_dir_detected or (DEFAULT_CASE_ROOT / default_case_name)
         self.sample_var = tk.StringVar(value=app.sample_var.get().strip())
-        self.case_dir_var = tk.StringVar(value=cfg.get("dynamic_case_dir", default_case))
+        self.case_dir_var = tk.StringVar(value=cfg.get("dynamic_case_dir", str(default_case_path)))
         self.timeout_var = tk.IntVar(value=int(cfg.get("dynamic_timeout_seconds", 30)))
         self.procmon_enabled_var = tk.BooleanVar(value=bool(cfg.get("dynamic_procmon_enabled", True)))
         self.procmon_path_var = tk.StringVar(value=cfg.get("dynamic_procmon_path", str(ROOT / "tools" / "Procmon64.exe")))
@@ -339,6 +341,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _use_main_sample(self):
         self.sample_var.set(self.app.sample_var.get().strip())
+        if getattr(self.app, "case_dir_detected", None):
+            self.case_dir_var.set(str(Path(self.app.case_dir_detected)))
+        else:
+            case_name = self.app.case_var.get().strip() or Path(self.app.sample_var.get().strip() or "sample").stem or "dynamic_case"
+            self.case_dir_var.set(str(Path(self.app.case_root_var.get().strip()) / case_name))
+        self._save_cfg()
 
     def _browse_case_dir(self):
         start = Path(self.case_dir_var.get()) if self.case_dir_var.get().strip() else DEFAULT_CASE_ROOT
@@ -553,17 +561,42 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.worker_thread.start()
         
     def _on_done(self, summary: Dict):
+        self.app.latest_dynamic_result = summary if isinstance(summary, dict) else {}
+
         self.run_btn.configure(state="normal")
         self.status_var.set("Idle")
-        exit_code = summary.get("exit_code")
-        if exit_code == 0:
-            messagebox.showinfo("Completed", "Dynamic analysis completed successfully.", parent=self)
-        else:
-            messagebox.showwarning(
-                "Completed",
-                f"Dynamic analysis completed. Sample exited with code {exit_code}.",
-                parent=self,
-            )
+
+        def finalize_refresh():
+            case_dir = None
+
+            if getattr(self.app, "case_dir_detected", None):
+                case_dir = Path(self.app.case_dir_detected)
+            else:
+                case_dir = Path(self.case_dir_var.get().strip())
+
+            if case_dir and case_dir.exists():
+                self.app.case_dir_detected = case_dir
+                combined_score_from_case_dir(
+                    case_dir,
+                    dynamic_result=None,
+                    spec_result=None,
+                    write_output=True,
+                )
+                self.app.refresh_combined_score(case_dir)
+            else:
+                self.app.refresh_combined_score()
+
+            exit_code = summary.get("exit_code")
+            if exit_code == 0:
+                messagebox.showinfo("Completed", "Dynamic analysis completed successfully.", parent=self)
+            else:
+                messagebox.showwarning(
+                    "Completed",
+                    f"Dynamic analysis completed. Sample exited with code {exit_code}.",
+                    parent=self,
+                )
+
+        self.after(300, finalize_refresh)
 
     def _on_error(self, err: str):
         self.run_btn.configure(state="normal")
@@ -574,7 +607,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         try:
             while True:
                 line = self.output_q.get_nowait()
-                self.output.insert("end", line + "\n")
+                self.output.insert("end", line)
                 self.output.see("end")
         except queue.Empty:
             pass
@@ -959,8 +992,21 @@ class SpecAnalysisWindow(tk.Toplevel):
             self.status_var.set('Parse failed')
             return
         self.last_result = result
+        self.app.latest_spec_result = result if isinstance(result, dict) else {}
         self._populate_result(result)
         self._save_report_files(result)
+        case_root = Path(self.app.case_root_var.get().strip()) if hasattr(self.app, "case_root_var") else DEFAULT_CASE_ROOT
+        case_dir = case_root / self._current_case_name()
+        self.app.case_dir_detected = case_dir
+
+        combined_score_from_case_dir(
+            case_dir,
+            dynamic_result=None,
+            spec_result=None,
+            write_output=True,
+        )
+        self.app.refresh_combined_score(case_dir)
+
         self.status_var.set(f"Parsed {result.get('summary', {}).get('endpoint_count', 0)} endpoints")
 
     def _save_html_report(self):
@@ -1027,7 +1073,13 @@ class APIAnalysisWindow(tk.Toplevel):
 
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
+        self.log_tail_thread: Optional[threading.Thread] = None
+        self.stop_tail = threading.Event()
+        self.current_log_path: Optional[Path] = None
 
+        self.case_dir_detected: Optional[Path] = None
+        self.step_widgets: Dict[str, Dict[str, object]] = {}
+        
         self._build_ui()
         self._apply_preset(initial=True)
         self.after(150, self._drain_output)
@@ -1745,6 +1797,11 @@ class App(tk.Tk):
         self.score_var = tk.StringVar(value="—")
         self.verdict_var = tk.StringVar(value="—")
         self.confidence_var = tk.StringVar(value="—")
+        self.combined_score_var = tk.StringVar(value="—")
+        self.combined_severity_var = tk.StringVar(value="—")
+        self.static_subscore_var = tk.StringVar(value="—")
+        self.dynamic_subscore_var = tk.StringVar(value="—")
+        self.spec_subscore_var = tk.StringVar(value="—")
         self.vt_status_var = tk.StringVar(value="VirusTotal: disabled")
         self.vt_name_var = tk.StringVar(value="VT Name: —")
         self.vt_counts_var = tk.StringVar(value="Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
@@ -1756,11 +1813,16 @@ class App(tk.Tk):
         self.dynamic_window: Optional[DynamicAnalysisWindow] = None
         self.spec_window: Optional[SpecAnalysisWindow] = None
         self.api_window: Optional[APIAnalysisWindow] = None
+        self.latest_static_result: dict[str, Any] = {}
+        self.latest_dynamic_result: dict[str, Any] = {}
+        self.latest_spec_result: dict[str, Any] = {}
+        self.latest_combined_score: Optional[dict[str, Any]] = None
 
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
         self.log_tail_thread: Optional[threading.Thread] = None
         self.stop_tail = threading.Event()
+        self.current_log_path: Optional[Path] = None
 
         self.case_dir_detected: Optional[Path] = None
         self.step_widgets: Dict[str, Dict[str, object]] = {}
@@ -1874,21 +1936,39 @@ class App(tk.Tk):
 
         summary = ttk.LabelFrame(self, text="Result Summary")
         summary.pack(fill="x", **pad)
-        summary.columnconfigure(1, weight=1)
-        summary.columnconfigure(3, weight=1)
 
-        ttk.Label(summary, text="Score:").grid(row=0, column=0, sticky="w")
-        ttk.Label(summary, textvariable=self.score_var).grid(row=0, column=1, sticky="w", padx=(6, 24))
+        for col in range(8):
+            summary.columnconfigure(col, weight=1)
+
+        ttk.Label(summary, text="Static Score:").grid(row=0, column=0, sticky="w")
+        ttk.Label(summary, textvariable=self.score_var).grid(row=0, column=1, sticky="w", padx=(6, 18))
+
         ttk.Label(summary, text="Verdict:").grid(row=0, column=2, sticky="w")
-        ttk.Label(summary, textvariable=self.verdict_var).grid(row=0, column=3, sticky="w", padx=(6, 24))
-        ttk.Label(summary, text="Confidence:").grid(row=0, column=4, sticky="w")
-        ttk.Label(summary, textvariable=self.confidence_var).grid(row=0, column=5, sticky="w", padx=(6, 0))
+        ttk.Label(summary, textvariable=self.verdict_var).grid(row=0, column=3, sticky="w", padx=(6, 18))
 
-        ttk.Label(summary, textvariable=self.vt_status_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.vt_name_var).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.vt_counts_var).grid(row=1, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(summary, text="Confidence:").grid(row=0, column=4, sticky="w")
+        ttk.Label(summary, textvariable=self.confidence_var).grid(row=0, column=5, sticky="w", padx=(6, 18))
+
+        ttk.Label(summary, text="Severity:").grid(row=0, column=6, sticky="w")
+        ttk.Label(summary, textvariable=self.combined_severity_var).grid(row=0, column=7, sticky="w", padx=(6, 0))
+
+        ttk.Label(summary, text="Combined Score:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.combined_score_var).grid(row=1, column=1, sticky="w", padx=(6, 18), pady=(6, 0))
+
+        ttk.Label(summary, text="Static:").grid(row=1, column=2, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.static_subscore_var).grid(row=1, column=3, sticky="w", padx=(6, 18), pady=(6, 0))
+
+        ttk.Label(summary, text="Dynamic:").grid(row=1, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.dynamic_subscore_var).grid(row=1, column=5, sticky="w", padx=(6, 18), pady=(6, 0))
+
+        ttk.Label(summary, text="Spec/API:").grid(row=1, column=6, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.spec_subscore_var).grid(row=1, column=7, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        ttk.Label(summary, textvariable=self.vt_status_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.vt_name_var).grid(row=2, column=2, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(summary, textvariable=self.vt_counts_var).grid(row=2, column=5, columnspan=2, sticky="w", pady=(6, 0))
         self.vt_open_btn = ttk.Button(summary, text="Open VirusTotal", command=self._open_virustotal, state="disabled")
-        self.vt_open_btn.grid(row=1, column=5, sticky="e", pady=(6, 0))
+        self.vt_open_btn.grid(row=2, column=7, sticky="e", pady=(6, 0))
 
         out = ttk.LabelFrame(self, text="Output")
         out.pack(fill="both", expand=True, **pad)
@@ -1903,17 +1983,89 @@ class App(tk.Tk):
 
         self._sync_adv_state()
         self._update_effective_label()
+        
+    def reload_combined_score_from_disk(self):
+        print("DEBUG reload_combined_score_from_disk called")
+        print("DEBUG case_dir_detected =", self.case_dir_detected)
+
+        if not self.case_dir_detected:
+            return
+
+        self.refresh_combined_score(Path(self.case_dir_detected))
+
+        print("DEBUG combined_score_var =", self.combined_score_var.get())
+        print("DEBUG static_subscore_var =", self.static_subscore_var.get())
+        print("DEBUG dynamic_subscore_var =", self.dynamic_subscore_var.get())
+        print("DEBUG spec_subscore_var =", self.spec_subscore_var.get())
+
+        self.update_idletasks()
 
 
     def _reset_result_summary(self):
         self.score_var.set("—")
         self.verdict_var.set("—")
         self.confidence_var.set("—")
+        self.combined_score_var.set("—")
+        self.combined_severity_var.set("—")
+        self.static_subscore_var.set("—")
+        self.dynamic_subscore_var.set("—")
+        self.spec_subscore_var.set("—")
         self.vt_status_var.set("VirusTotal: disabled")
         self.vt_name_var.set("VT Name: —")
         self.vt_counts_var.set("Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
         self.vt_link = ""
         self.vt_open_btn.configure(state="disabled")
+
+    def refresh_combined_score(self, case_dir: Optional[Path] = None):
+        combined = None
+        try:
+            if case_dir:
+                case_dir = Path(case_dir)
+
+            if case_dir and case_dir.exists():
+                combined = combined_score_from_case_dir(
+                    case_dir,
+                    dynamic_result=None,
+                    spec_result=None,
+                    write_output=True,
+                )
+            else:
+                static_result = self.latest_static_result or None
+                dynamic_result = self.latest_dynamic_result or None
+                spec_result = self.latest_spec_result or None
+
+                combined = calculate_combined_score(
+                    static_result=static_result,
+                    dynamic_result=dynamic_result,
+                    spec_result=spec_result,
+                )
+
+        except Exception as e:
+            print(f"DEBUG refresh_combined_score failed: {e}")
+            combined = None
+
+        if not combined:
+            self.combined_score_var.set("—")
+            self.combined_severity_var.set("—")
+            self.static_subscore_var.set("—")
+            self.dynamic_subscore_var.set("—")
+            self.spec_subscore_var.set("—")
+            self.latest_combined_score = None
+            return
+
+        self.latest_combined_score = combined
+
+        self.combined_score_var.set(str(combined.get("total_score", "—")))
+        self.combined_severity_var.set(str(combined.get("severity", "—")))
+
+        subs = combined.get("subscores", {}) if isinstance(combined.get("subscores"), dict) else {}
+        present = combined.get("present", {}) if isinstance(combined.get("present"), dict) else {}
+
+        self.static_subscore_var.set(str(subs.get("static", 0)) if present.get("static") else "—")
+        self.dynamic_subscore_var.set(str(subs.get("dynamic", 0)) if present.get("dynamic") else "—")
+        self.spec_subscore_var.set(str(subs.get("spec", 0)) if present.get("spec") else "—")
+
+        self.update_idletasks()
 
     def _clear_vt_key(self):
         self.vt_api_key_var.set("")
@@ -2090,6 +2242,15 @@ class App(tk.Tk):
 
         self.vt_link = permalink
         self.vt_open_btn.configure(state=("normal" if permalink else "disabled"))
+
+        self.latest_static_result = {
+            "summary": summary,
+            "iocs": json.loads((case_dir / "iocs.json").read_text(encoding="utf-8", errors="replace")) if (case_dir / "iocs.json").exists() else {},
+            "pe_meta": json.loads((case_dir / "pe_metadata.json").read_text(encoding="utf-8", errors="replace")) if (case_dir / "pe_metadata.json").exists() else {},
+            "lief_meta": json.loads((case_dir / "lief_metadata.json").read_text(encoding="utf-8", errors="replace")) if (case_dir / "lief_metadata.json").exists() else {},
+            "api_analysis": json.loads((case_dir / "api_analysis.json").read_text(encoding="utf-8", errors="replace")) if (case_dir / "api_analysis.json").exists() else {},
+        }
+        self.refresh_combined_score(case_dir)
 
     def _save_cfg(self):
         self.cfg["sample_path"] = self.sample_var.get().strip()
@@ -2285,20 +2446,37 @@ class App(tk.Tk):
 
     def _recalc_overall(self):
         completed = 0
+        resolved_statuses = {"done", "failed", "error", "skipped", "n/a"}
+
         for step_key in STEP_DISPLAY_ORDER:
-            st = self.step_widgets[step_key]["status"].cget("text")
-            if st in ("done", "error", "skipped"):
+            st = self.step_widgets[step_key]["status"].cget("text").strip().lower()
+            if st in resolved_statuses:
                 completed += 1
+
         pct = int(round((completed / max(1, len(STEP_DISPLAY_ORDER))) * 100))
         self.overall_var.set(pct)
         self.overall_text.configure(text=f"{pct}%")
 
     def _start_log_tail(self, case_dir: Path):
-        self.stop_tail.set()
-        self.stop_tail.clear()
         log_path = case_dir / "analysis.log"
+
+        if self.current_log_path == log_path and self.log_tail_thread and self.log_tail_thread.is_alive():
+            return
+
+        self.stop_tail.set()
+
+        if self.log_tail_thread and self.log_tail_thread.is_alive():
+            self.log_tail_thread.join(timeout=1.0)
+
+        self.stop_tail.clear()
+        self.current_log_path = log_path
+
         self.output_q.put(f"[info] Progress: tailing {log_path}")
-        self.log_tail_thread = threading.Thread(target=self._tail_analysis_log, args=(log_path,), daemon=True)
+        self.log_tail_thread = threading.Thread(
+            target=self._tail_analysis_log,
+            args=(log_path,),
+            daemon=True,
+        )
         self.log_tail_thread.start()
 
     def _tail_analysis_log(self, log_path: Path):
@@ -2325,27 +2503,39 @@ class App(tk.Tk):
                     step_key = STEP_NAME_MAP.get(raw, raw)
                     self.after(0, lambda s=step_key: (self._set_step(s, 15, "running"), self._recalc_overall()))
                     continue
-
+                
                 m = STEP_DONE_RE.search(line)
                 if m:
                     raw = m.group("step")
                     step_key = STEP_NAME_MAP.get(raw, raw)
                     self.after(0, lambda s=step_key: (self._set_step(s, 100, "done"), self._recalc_overall()))
                     continue
-
+                
                 m = STEP_FAIL_RE.search(line)
                 if m:
                     raw = m.group("step")
                     step_key = STEP_NAME_MAP.get(raw, raw)
+                    line_lower = line.lower()
 
-                    if os.name == "nt" and step_key in ("filetype", "strings"):
+                    optional_na_steps = {"extract", "file", "filetype", "strings", "capa"}
+
+                    if (
+                        os.name == "nt"
+                        and step_key in optional_na_steps
+                        and (
+                            "winerror 2" in line_lower
+                            or "cannot find the file specified" in line_lower
+                            or "rc=127" in line_lower
+                            or "tool not found" in line_lower
+                        )
+                    ):
                         fail_label = "n/a"
                     else:
                         fail_label = "failed"
 
                     self.after(0, lambda s=step_key, lbl=fail_label: (self._set_step(s, 100, lbl), self._recalc_overall()))
                     continue
-                
+                                
     def _maybe_detect_case_dir_from_stdout(self, line: str) -> Optional[Path]:
         m = CASE_LINE_RE.match(line)
         if m:
@@ -2437,6 +2627,7 @@ class App(tk.Tk):
 
     def _on_done(self, rc: int):
         self.stop_tail.set()
+        self.current_log_path = None
 
         if rc == 0:
             if self.case_dir_detected:
@@ -2479,7 +2670,8 @@ class App(tk.Tk):
                     if cd is not None:
                         self.case_dir_detected = cd
                         self.output.insert("end", f"[info] Detected case_dir: {cd}\n")
-                        self._start_log_tail(cd)
+                        if self.current_log_path != (cd / "analysis.log"):
+                            self._start_log_tail(cd)
                         self._update_result_summary_from_case(cd)
                 
                 # Report generation completion from stdout (works even if analysis.log doesn't include report lines)
@@ -2493,7 +2685,7 @@ class App(tk.Tk):
                     if val.lower() != "none":
                         self._set_step("report", 100, "done")
                         self._recalc_overall()
-                self.output.insert("end", line + "\n")
+                self.output.insert("end", line)
                 self.output.see("end")
                 if line.startswith("[done]") and self.case_dir_detected:
                     self._update_result_summary_from_case(self.case_dir_detected)

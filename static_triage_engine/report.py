@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import html
@@ -7,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from dynamic_analysis.report_theme import badge, report_page
+from .scoring import combined_score_from_case_dir
 
 
 def _utc() -> str:
@@ -17,16 +19,15 @@ def _read_text(p: Path, limit: int = 250_000) -> str:
     if not p.exists():
         return ""
     s = p.read_text(encoding="utf-8", errors="replace")
-    if len(s) <= limit:
-        return s
-    return s[:limit] + "\n\n[...truncated...]\n"
+    return s if len(s) <= limit else s[:limit] + "\n\n[...truncated...]\n"
 
 
 def _read_json(p: Path) -> Dict[str, Any]:
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -49,8 +50,7 @@ def _extract_attack_techniques_from_capa(capa_json_path: Path) -> Tuple[List[str
         return ([], 0)
     blob = capa_json_path.read_text(encoding="utf-8", errors="replace")
     techs = sorted(set(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", blob)))
-    match_count = blob.count('"matches"')
-    return (techs, match_count)
+    return (techs, blob.count('"matches"'))
 
 
 def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
@@ -74,31 +74,26 @@ def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
         return out
 
     obs = iocs.get("observables", {}) if isinstance(iocs.get("observables"), dict) else {}
-    out = {}
-    out["domains"] = len(obs.get("domains", []) or []) if isinstance(obs.get("domains"), list) else 0
-    out["urls"] = len(obs.get("urls", []) or []) if isinstance(obs.get("urls"), list) else 0
-    out["ips"] = len(obs.get("ips", []) or []) if isinstance(obs.get("ips"), list) else 0
-    out["emails"] = len(obs.get("emails", []) or []) if isinstance(obs.get("emails"), list) else 0
-    out["paths"] = len(obs.get("paths", []) or []) if isinstance(obs.get("paths"), list) else 0
-    out["registry"] = len(obs.get("registry_keys", []) or []) if isinstance(obs.get("registry_keys"), list) else 0
-    return out
+    return {
+        "domains": len(obs.get("domains", []) or []) if isinstance(obs.get("domains"), list) else 0,
+        "urls": len(obs.get("urls", []) or []) if isinstance(obs.get("urls"), list) else 0,
+        "ips": len(obs.get("ips", []) or []) if isinstance(obs.get("ips"), list) else 0,
+        "emails": len(obs.get("emails", []) or []) if isinstance(obs.get("emails"), list) else 0,
+        "paths": len(obs.get("paths", []) or []) if isinstance(obs.get("paths"), list) else 0,
+        "registry": len(obs.get("registry_keys", []) or []) if isinstance(obs.get("registry_keys"), list) else 0,
+    }
 
 
 def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str], List[str]]:
     rb = summary.get("reason_breakdown")
     if isinstance(rb, dict):
-        susp = rb.get("suspicious", [])
-        ben = rb.get("benign", [])
-        if not isinstance(susp, list):
-            susp = []
-        if not isinstance(ben, list):
-            ben = []
+        susp = rb.get("suspicious", []) if isinstance(rb.get("suspicious"), list) else []
+        ben = rb.get("benign", []) if isinstance(rb.get("benign"), list) else []
         return ([str(x) for x in susp][:max_items], [str(x) for x in ben][:max_items])
 
     reasons = summary.get("reasons")
     if isinstance(reasons, list):
-        s_out: List[str] = []
-        b_out: List[str] = []
+        s_out, b_out = [], []
         for x in reasons:
             sx = str(x)
             if sx.upper().startswith("SUSPICIOUS:"):
@@ -108,12 +103,8 @@ def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str]
         return (s_out[:max_items], b_out[:max_items])
 
     if isinstance(reasons, dict):
-        suspicious = reasons.get("suspicious", [])
-        benign = reasons.get("benign", [])
-        if not isinstance(suspicious, list):
-            suspicious = []
-        if not isinstance(benign, list):
-            benign = []
+        suspicious = reasons.get("suspicious", []) if isinstance(reasons.get("suspicious"), list) else []
+        benign = reasons.get("benign", []) if isinstance(reasons.get("benign"), list) else []
         return ([str(x) for x in suspicious][:max_items], [str(x) for x in benign][:max_items])
 
     return ([], [])
@@ -125,6 +116,8 @@ def _artifact_links(case_dir: Path) -> List[Tuple[str, Path]]:
         ("report.html", case_dir / "report.html"),
         ("report.pdf", case_dir / "report.pdf"),
         ("summary.json", case_dir / "summary.json"),
+        ("combined_score.json", case_dir / "combined_score.json"),
+        ("api_spec_analysis.json", case_dir / "spec" / "api_spec_analysis.json"),
         ("runlog.json", case_dir / "runlog.json"),
         ("analysis.log", case_dir / "analysis.log"),
         ("signing.json", case_dir / "signing.json"),
@@ -144,27 +137,17 @@ def _artifact_links(case_dir: Path) -> List[Tuple[str, Path]]:
 
 def _subfiles_block(summary: dict[str, Any]) -> dict[str, Any]:
     sr = summary.get("subfiles_rollup") if isinstance(summary.get("subfiles_rollup"), dict) else {}
-    top = sr.get("top_scoring_subfiles", [])
-    attn = sr.get("attention_subfiles", [])
-    crit = sr.get("criteria", {})
-    if not isinstance(top, list):
-        top = []
-    if not isinstance(attn, list):
-        attn = []
-    if not isinstance(crit, dict):
-        crit = {}
+    top = sr.get("top_scoring_subfiles", []) if isinstance(sr.get("top_scoring_subfiles"), list) else []
+    attn = sr.get("attention_subfiles", []) if isinstance(sr.get("attention_subfiles"), list) else []
+    crit = sr.get("criteria", {}) if isinstance(sr.get("criteria"), dict) else {}
     return {"top": top[:5], "attn": attn[:10], "crit": crit}
 
 
 def _api_block(case_dir: Path) -> dict[str, Any]:
     api = _read_json(case_dir / "api_analysis.json")
-    if not isinstance(api, dict):
-        api = {}
-
     summary = api.get("summary") if isinstance(api.get("summary"), dict) else {}
     category_hits = api.get("category_hits") if isinstance(api.get("category_hits"), dict) else {}
     chain_findings = api.get("chain_findings") if isinstance(api.get("chain_findings"), list) else []
-    all_imports = api.get("all_imports") if isinstance(api.get("all_imports"), list) else []
     imports_by_dll = api.get("imports_by_dll") if isinstance(api.get("imports_by_dll"), dict) else {}
 
     high = [x for x in chain_findings if isinstance(x, dict) and x.get("severity") == "high"]
@@ -194,8 +177,35 @@ def _api_block(case_dir: Path) -> dict[str, Any]:
         "medium_chains": med[:8],
         "top_categories": top_categories[:8],
         "top_dlls": dll_preview[:8],
-        "all_imports_preview": [str(x) for x in all_imports[:40]],
     }
+
+
+def _spec_block(case_dir: Path) -> dict[str, Any]:
+    spec = _read_json(case_dir / "spec" / "api_spec_analysis.json")
+    if not spec:
+        spec = _read_json(case_dir / "api_spec_analysis.json")
+    scoring = spec.get("scoring", {}) if isinstance(spec.get("scoring"), dict) else {}
+    summary = spec.get("summary", {}) if isinstance(spec.get("summary"), dict) else {}
+    return {
+        "present": bool(spec),
+        "title": str(spec.get("title", "") or ""),
+        "version": str(spec.get("version", "") or ""),
+        "servers": spec.get("servers", []) if isinstance(spec.get("servers"), list) else [],
+        "auth_summary": spec.get("auth_summary", []) if isinstance(spec.get("auth_summary"), list) else [],
+        "risk_notes": spec.get("risk_notes", []) if isinstance(spec.get("risk_notes"), list) else [],
+        "summary": summary,
+        "scoring": scoring,
+    }
+
+
+def _combined_block(case_dir: Path) -> dict[str, Any]:
+    combined = _read_json(case_dir / "combined_score.json")
+    if not combined:
+        try:
+            combined = combined_score_from_case_dir(case_dir, write_output=True)
+        except Exception:
+            combined = {}
+    return combined
 
 
 def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
@@ -204,11 +214,15 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     lines.append("# Static Triage Ticket")
     lines.append(f"**Generated (UTC):** {_utc()}")
     lines.append("")
-
     lines.append("## Verdict")
-    lines.append(f"- **Verdict:** **{data['verdict']}**")
-    lines.append(f"- **Risk Score:** `{data['score']}/100`")
+    lines.append(f"- **Static Verdict:** **{data['verdict']}**")
+    lines.append(f"- **Static Risk Score:** `{data['score']}/100`")
     lines.append(f"- **Confidence:** `{data['confidence']}`")
+    combined = data.get("combined", {}) or {}
+    if combined:
+        lines.append(f"- **Combined Score:** `{combined.get('total_score', 0)}/100`")
+        lines.append(f"- **Combined Severity:** `{combined.get('severity', 'Informational')}`")
+        lines.append(f"- **Subscores:** static=`{combined.get('subscores', {}).get('static', 0)}` | dynamic=`{combined.get('subscores', {}).get('dynamic', 0)}` | spec=`{combined.get('subscores', {}).get('spec', 0)}`")
     lines.append("")
 
     lines.append("## File")
@@ -234,35 +248,37 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
         lines.append("- No high-signal suspicious reasons recorded.")
     lines.append("")
 
-    lines.append("## API Analysis")
+    if combined.get("evidence"):
+        lines.append("## Combined Scoring Evidence")
+        for item in combined.get("evidence", [])[:12]:
+            if isinstance(item, dict):
+                lines.append(f"- **{item.get('source','unknown')}** `{item.get('rule','')}` `{item.get('points',0):+}` — {item.get('message','')}")
+        lines.append("")
+
+    lines.append("## API Import Analysis")
     api = data["api"]
     if api["present"] and api["returncode"] == 0:
         lines.append(f"- **Imported DLLs:** `{api['dll_count']}`")
         lines.append(f"- **Imported APIs:** `{api['import_count']}`")
         lines.append(f"- **Behavior Categories Hit:** `{api['category_count']}`")
         lines.append(f"- **High Severity API Chains:** `{api['high_chain_count']}`")
-        if api["top_categories"]:
-            lines.append("")
-            lines.append("### API Categories")
-            for cat, count, funcs in api["top_categories"]:
-                lines.append(f"- **{cat}** (`{count}`): {', '.join(f'`{x}`' for x in funcs)}")
-        if api["high_chains"] or api["medium_chains"]:
-            lines.append("")
-            lines.append("### API Behavior Chains")
-            for item in api["high_chains"] + api["medium_chains"]:
-                name = item.get("name", "")
-                sev = item.get("severity", "")
-                hits = item.get("matched_apis", []) if isinstance(item.get("matched_apis"), list) else []
-                lines.append(f"- **{name}** (`{sev}`): {', '.join(f'`{x}`' for x in hits[:12])}")
-        if api["top_dlls"]:
-            lines.append("")
-            lines.append("### Top Imported DLLs")
-            for dll, count, funcs in api["top_dlls"]:
-                lines.append(f"- **{dll}** (`{count}` imports): {', '.join(f'`{x}`' for x in funcs)}")
-    elif api["present"]:
-        lines.append(f"- API analysis returned an error: `{api['error']}`")
     else:
-        lines.append("- API analysis artifact not present.")
+        lines.append("- API analysis artifact not present or returned an error.")
+    lines.append("")
+
+    spec = data["spec"]
+    lines.append("## API Spec Risk Analysis")
+    if spec["present"]:
+        lines.append(f"- **Spec:** `{spec['title']}` `{spec['version']}`")
+        lines.append(f"- **Servers:** {', '.join(f'`{x}`' for x in spec['servers']) if spec['servers'] else '`none`'}")
+        lines.append(f"- **Auth:** {', '.join(f'`{x}`' for x in spec['auth_summary']) if spec['auth_summary'] else '`none`'}")
+        lines.append(f"- **Sensitive unauthenticated endpoints:** `{spec['scoring'].get('sensitive_unauthenticated_endpoints', 0)}`")
+        lines.append(f"- **File upload endpoints:** `{spec['scoring'].get('file_upload_endpoints', 0)}`")
+        if spec["risk_notes"]:
+            for note in spec["risk_notes"]:
+                lines.append(f"- {note}")
+    else:
+        lines.append("- Spec analysis artifact not present.")
     lines.append("")
 
     lines.append("## ATT&CK / Behavior Density (capa)")
@@ -270,66 +286,15 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     lines.append(f"- **Match Count (heuristic):** `{data['capa_match_count']}`")
     if data["techniques"]:
         lines.append(f"- **Techniques:** {', '.join(f'`{t}`' for t in data['techniques'][:20])}")
-        if len(data["techniques"]) > 20:
-            lines.append("- (…truncated; see capa.json/capa.txt for full)")
     else:
         lines.append("- No technique IDs detected in capa output.")
     lines.append("")
 
     lines.append("## IOC Summary")
     c = data["ioc_counts"]
-    lines.append(
-        f"- Domains: `{c.get('domains',0)}` | URLs: `{c.get('urls',0)}` | IPs: `{c.get('ips',0)}` | Emails: `{c.get('emails',0)}`"
-    )
+    lines.append(f"- Domains: `{c.get('domains',0)}` | URLs: `{c.get('urls',0)}` | IPs: `{c.get('ips',0)}` | Emails: `{c.get('emails',0)}`")
     lines.append(f"- Paths: `{c.get('paths',0)}` | Registry: `{c.get('registry',0)}`")
-    lines.append("- Full IOC list: `iocs.csv` / `iocs.json`")
     lines.append("")
-
-    sub = data["subfiles"]
-    lines.append("## Embedded Payloads")
-    if sub["top"]:
-        lines.append("### Top Scoring Embedded Payloads (Top 5)")
-        for r in sub["top"]:
-            name = r.get("name") or r.get("filename") or "subfile"
-            score = r.get("score")
-            verdict = r.get("verdict", "")
-            signed_ok = r.get("signed_ok")
-            signer = r.get("signer", "")
-            lines.append(f"- `{name}` — score `{score}` — `{verdict}` — Signed: `{signed_ok}`" + (f" — Signer: `{signer}`" if signer else ""))
-    else:
-        lines.append("- No subfile triage results recorded.")
-    lines.append("")
-    lines.append("### Attention (if any)")
-    crit = sub["crit"] or {}
-    lines.append(f"- Criteria: score >= `{crit.get('score_ge',60)}` OR unsigned/unverified OR high-signal override")
-    if sub["attn"]:
-        for r in sub["attn"]:
-            name = r.get("name") or r.get("filename") or "subfile"
-            score = r.get("score")
-            verdict = r.get("verdict", "")
-            signed_ok = r.get("signed_ok")
-            lines.append(f"- `{name}` — score `{score}` — `{verdict}` — Signed: `{signed_ok}`")
-    else:
-        lines.append("- None")
-    lines.append("")
-
-    lines.append("## Recommended Actions")
-    if data["score"] >= 85:
-        lines.append("- **Containment:** Isolate affected endpoint(s) and block SHA256 where applicable.")
-        lines.append("- **Hunt:** Search for these hashes and any extracted IOCs across EDR/SIEM.")
-        lines.append("- **Detonation (controlled):** If permitted, run in an isolated sandbox to confirm runtime behavior.")
-    elif data["score"] >= 60:
-        lines.append("- **Triage:** Validate signature/Publisher, compare against known-good installer, and review capa/API findings.")
-        lines.append("- **Hunt:** Search for IOCs and hash occurrences in logs.")
-    else:
-        lines.append("- **Review:** Likely low risk; verify provenance (source) and signature if required.")
-    lines.append("")
-
-    lines.append("## Evidence / Artifacts")
-    for label, p in data["artifacts"]:
-        lines.append(f"- `{label}` -> `{p.name}`")
-    lines.append("")
-
     report_md.write_text("\n".join(lines), encoding="utf-8", errors="replace")
     return report_md
 
@@ -345,7 +310,7 @@ def _actions_html(score: int) -> str:
     elif score >= 60:
         items = [
             "<li><b>Triage:</b> Validate signature/publisher and compare against known-good.</li>",
-            "<li><b>Review:</b> Inspect capa techniques, API chains, and suspicious reasons.</li>",
+            "<li><b>Review:</b> Inspect capa techniques, API chains, spec findings, and suspicious reasons.</li>",
             "<li><b>Hunt:</b> Search IOCs and hash across telemetry.</li>",
         ]
     else:
@@ -356,96 +321,8 @@ def _actions_html(score: int) -> str:
     return "\n".join(items)
 
 
-def _subfiles_html(sub: dict[str, Any]) -> str:
-    top = sub.get("top", [])
-    attn = sub.get("attn", [])
-    crit = sub.get("crit", {}) or {}
-    score_ge = crit.get("score_ge", 60)
-
-    def row(r: dict[str, Any]) -> str:
-        name = _safe(r.get("name") or r.get("filename") or "subfile")
-        score = _safe(r.get("score"))
-        verdict = _safe(r.get("verdict", ""))
-        signed_ok = _safe(r.get("signed_ok"))
-        signer = _safe(r.get("signer", ""))
-        extra = f"<div class='small muted'>Signer: <code>{signer}</code></div>" if signer else ""
-        return f"<li><b><code>{name}</code></b> — score <code>{score}</code> — <code>{verdict}</code> — Signed: <code>{signed_ok}</code>{extra}</li>"
-
-    top_html = "".join(row(r) for r in top) or "<li>None</li>"
-    attn_html = "".join(row(r) for r in attn) or "<li>None</li>"
-
-    return f"""
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">Embedded Payloads</div>
-        <div class="small muted">Attention criteria: score &ge; <code>{_safe(score_ge)}</code> OR unsigned/unverified OR high-signal override</div>
-        <div style="margin-top:10px; font-weight:700;">Top Scoring (Top 5)</div>
-        <ul>{top_html}</ul>
-        <div style="margin-top:10px; font-weight:700;">Attention</div>
-        <ul>{attn_html}</ul>
-      </div>
-    """
-
-
-def _api_html(api: dict[str, Any]) -> str:
-    if not api.get("present"):
-        return """
-        <div class="card">
-          <div style="font-weight:700; margin-bottom:8px;">API Analysis</div>
-          <div class="small muted">API analysis artifact not present.</div>
-        </div>
-        """
-
-    if api.get("returncode", 0) != 0:
-        return f"""
-        <div class="card">
-          <div style="font-weight:700; margin-bottom:8px;">API Analysis</div>
-          <div class="small muted">API analysis returned an error.</div>
-          <div><code>{_safe(api.get("error",""))}</code></div>
-        </div>
-        """
-
-    cat_html = ""
-    for cat, count, funcs in api.get("top_categories", []):
-        cat_html += f"<li><b>{_safe(cat)}</b> — <code>{_safe(count)}</code> hits — {', '.join(f'<code>{_safe(x)}</code>' for x in funcs)}</li>"
-    if not cat_html:
-        cat_html = "<li>None</li>"
-
-    chain_items = []
-    for item in api.get("high_chains", []) + api.get("medium_chains", []):
-        name = _safe(item.get("name", ""))
-        sev = _safe(item.get("severity", ""))
-        hits = item.get("matched_apis", []) if isinstance(item.get("matched_apis"), list) else []
-        hit_html = ", ".join(f"<code>{_safe(x)}</code>" for x in hits[:12])
-        chain_items.append(f"<li><b>{name}</b> — <code>{sev}</code> — {hit_html}</li>")
-    chain_html = "".join(chain_items) or "<li>None</li>"
-
-    dll_items = []
-    for dll, count, funcs in api.get("top_dlls", []):
-        func_html = ", ".join(f"<code>{_safe(x)}</code>" for x in funcs)
-        dll_items.append(f"<li><b>{_safe(dll)}</b> — <code>{_safe(count)}</code> imports — {func_html}</li>")
-    dll_html = "".join(dll_items) or "<li>None</li>"
-
-    return f"""
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">API Analysis</div>
-        <div class="kv">
-          <div>Imported DLLs</div><div><code>{_safe(api.get("dll_count",0))}</code></div>
-          <div>Imported APIs</div><div><code>{_safe(api.get("import_count",0))}</code></div>
-          <div>Behavior Categories</div><div><code>{_safe(api.get("category_count",0))}</code></div>
-          <div>High Severity Chains</div><div><code>{_safe(api.get("high_chain_count",0))}</code></div>
-        </div>
-        <div style="margin-top:10px; font-weight:700;">Top Categories</div>
-        <ul>{cat_html}</ul>
-        <div style="margin-top:10px; font-weight:700;">Behavior Chains</div>
-        <ul>{chain_html}</ul>
-        <div style="margin-top:10px; font-weight:700;">Top Imported DLLs</div>
-        <ul>{dll_html}</ul>
-      </div>
-    """
 def _kv_table(title: str, data: dict[str, Any], badge_html: str = "") -> str:
-    rows = []
-    for k, v in data.items():
-        rows.append(f"<tr><th>{_safe(str(k).replace('_', ' ').title())}</th><td>{_safe(v)}</td></tr>")
+    rows = [f"<tr><th>{_safe(str(k).replace('_', ' ').title())}</th><td>{_safe(v)}</td></tr>" for k, v in data.items()]
     return f"""
     <section class="card">
       <div class="section-head">
@@ -461,10 +338,7 @@ def _kv_table(title: str, data: dict[str, Any], badge_html: str = "") -> str:
 
 def _list_section(title: str, items: list[str], emphasize: bool = False) -> str:
     section_class = "card card-alert" if emphasize and items else "card"
-    if not items:
-        body = "<p class='muted'>None</p>"
-    else:
-        body = "<ul>" + "".join(f"<li>{_safe(x)}</li>" for x in items) + "</ul>"
+    body = "<p class='muted'>None</p>" if not items else "<ul>" + "".join(f"<li>{_safe(x)}</li>" for x in items) + "</ul>"
     return f"""
     <section class="{section_class}">
       <div class="section-head">
@@ -476,39 +350,27 @@ def _list_section(title: str, items: list[str], emphasize: bool = False) -> str:
     """
 
 
-def _summary_tiles_static(data: dict[str, Any]) -> str:
+def _summary_tiles(data: dict[str, Any]) -> str:
+    combined = data.get("combined", {}) or {}
     tiles = [
-        ("Verdict", data.get("verdict", "")),
-        ("Risk Score", data.get("score", 0)),
-        ("Confidence", data.get("confidence", "")),
+        ("Static Verdict", data.get("verdict", "")),
+        ("Static Score", data.get("score", 0)),
+        ("Combined Score", combined.get("total_score", 0)),
+        ("Combined Severity", combined.get("severity", "Informational")),
+        ("Spec Score", combined.get("subscores", {}).get("spec", 0)),
+        ("Dynamic Score", combined.get("subscores", {}).get("dynamic", 0)),
         ("Techniques", len(data.get("techniques", []) or [])),
-        ("Capa Matches", data.get("capa_match_count", 0)),
-        ("IOC Domains", data.get("ioc_counts", {}).get("domains", 0)),
         ("IOC URLs", data.get("ioc_counts", {}).get("urls", 0)),
-        ("IOC IPs", data.get("ioc_counts", {}).get("ips", 0)),
     ]
     return '<section class="tile-grid">' + "".join(
-        f"""
-        <div class="tile">
-          <div class="tile-label">{_safe(label)}</div>
-          <div class="tile-value">{_safe(value)}</div>
-        </div>
-        """
+        f"""<div class="tile"><div class="tile-label">{_safe(label)}</div><div class="tile-value">{_safe(value)}</div></div>"""
         for label, value in tiles
     ) + "</section>"
 
+
 def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     report_html = case_dir / "report.html"
-
-    verdict = str(data.get("verdict", "UNKNOWN"))
-    verdict_class = "sev-none"
-    if verdict.upper() in ("MALICIOUS",):
-        verdict_class = "sev-high"
-    elif verdict.upper() in ("SUSPICIOUS",):
-        verdict_class = "sev-med"
-    elif verdict.upper() in ("LOW_RISK",):
-        verdict_class = "sev-low"
-
+    combined = data.get("combined", {}) or {}
     sample_meta = {
         "Name": data.get("filename", ""),
         "Size Bytes": data.get("size_bytes", 0),
@@ -519,62 +381,51 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Signed (verified)": (data.get("signing_summary") or {}).get("signed_ok", ""),
         "Signer": (data.get("signing_summary") or {}).get("subject", ""),
     }
-
-    capa_meta = {
-        "Technique IDs": len(data.get("techniques", []) or []),
-        "Match Count": data.get("capa_match_count", 0),
-        "Techniques": ", ".join(data.get("techniques", [])[:24]) or "None detected",
+    combined_meta = {
+        "Total Score": combined.get("total_score", 0),
+        "Severity": combined.get("severity", "Informational"),
+        "Verdict": combined.get("verdict", ""),
+        "Confidence": combined.get("confidence", ""),
+        "Static": combined.get("subscores", {}).get("static", 0),
+        "Dynamic": combined.get("subscores", {}).get("dynamic", 0),
+        "Spec": combined.get("subscores", {}).get("spec", 0),
     }
-
-    ioc_counts = data.get("ioc_counts", {}) or {}
-    ioc_meta = {
-        "Domains": ioc_counts.get("domains", 0),
-        "URLs": ioc_counts.get("urls", 0),
-        "IPs": ioc_counts.get("ips", 0),
-        "Emails": ioc_counts.get("emails", 0),
-        "Paths": ioc_counts.get("paths", 0),
-        "Registry": ioc_counts.get("registry", 0),
+    spec = data.get("spec", {}) or {}
+    spec_meta = {
+        "Present": spec.get("present", False),
+        "Title": spec.get("title", ""),
+        "Version": spec.get("version", ""),
+        "Servers": ", ".join(spec.get("servers", []) or []) or "none",
+        "Auth": ", ".join(spec.get("auth_summary", []) or []) or "none",
+        "Sensitive unauth": spec.get("scoring", {}).get("sensitive_unauthenticated_endpoints", 0),
+        "File uploads": spec.get("scoring", {}).get("file_upload_endpoints", 0),
     }
-
-    api = data.get("api", {}) or {}
-    api_meta = {
-        "Present": api.get("present", False),
-        "Imported DLLs": api.get("dll_count", 0),
-        "Imported APIs": api.get("import_count", 0),
-        "Behavior Categories": api.get("category_count", 0),
-        "High Severity Chains": api.get("high_chain_count", 0),
-        "Return Code": api.get("returncode", 0),
-    }
-
-    artifact_items = [f"{label} -> {p.name}" for label, p in data.get("artifacts", [])]
-    sub = data.get("subfiles", {}) or {}
-    sub_top = []
-    for r in sub.get("top", []) or []:
-        name = r.get("name") or r.get("filename") or "subfile"
-        sub_top.append(f"{name} | score={r.get('score')} | verdict={r.get('verdict')} | signed={r.get('signed_ok')}")
-    sub_attn = []
-    for r in sub.get("attn", []) or []:
-        name = r.get("name") or r.get("filename") or "subfile"
-        sub_attn.append(f"{name} | score={r.get('score')} | verdict={r.get('verdict')} | signed={r.get('signed_ok')}")
-
+    evidence = [
+        f"{item.get('source','unknown')} | {item.get('rule','')} | {item.get('points',0):+} | {item.get('message','')}"
+        for item in combined.get("evidence", []) if isinstance(item, dict)
+    ]
     subtitle = f"Generated (UTC): {_safe(data.get('generated_utc', ''))}"
     body_html = f"""
-{_summary_tiles_static(data)}
-
+{_summary_tiles(data)}
 <div class="grid">
   {_kv_table("Sample Metadata", sample_meta)}
-  {_kv_table("ATT&CK / Behavior (capa)", capa_meta)}
-  {_kv_table("IOC Summary", ioc_meta)}
-  {_kv_table("API Analysis", api_meta, badge("High Chains", api.get("high_chain_count", 0)))}
+  {_kv_table("Combined Scoring", combined_meta, badge("Total", combined.get("total_score", 0)))}
+  {_kv_table("Spec Risk Analysis", spec_meta, badge("Spec Score", combined.get("subscores", {}).get("spec", 0)))}
 </div>
-
+{_list_section("Combined Evidence", evidence, emphasize=True)}
+{_list_section("Spec Risk Notes", spec.get("risk_notes", []), emphasize=True)}
 {_list_section("Key Findings (Suspicious)", data.get("suspicious_reasons", []), emphasize=True)}
 {_list_section("Context (Benign / Low signal)", data.get("benign_reasons", []))}
 {_list_section("Recommended Actions", [re.sub(r'<[^>]+>', '', x) for x in re.findall(r'<li>(.*?)</li>', data.get("actions_html", ""))], emphasize=True)}
-{_list_section("Embedded Payloads - Top Scoring", sub_top, emphasize=True)}
-{_list_section("Embedded Payloads - Attention", sub_attn, emphasize=True)}
-{_list_section("Evidence / Artifacts", artifact_items)}
 """
+    verdict = str(data.get("verdict", "UNKNOWN"))
+    verdict_class = "sev-none"
+    if verdict.upper() == "MALICIOUS":
+        verdict_class = "sev-high"
+    elif verdict.upper() == "SUSPICIOUS":
+        verdict_class = "sev-med"
+    elif verdict.upper() == "LOW_RISK":
+        verdict_class = "sev-low"
 
     html_doc = report_page("Static Triage Ticket", subtitle, verdict, verdict_class, body_html)
     report_html.write_text(html_doc, encoding="utf-8", errors="replace")
@@ -585,7 +436,7 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     summary = _read_json(case_dir / "summary.json")
     iocs_j = _read_json(case_dir / "iocs.json")
 
-    sample = summary.get("sample", {}) if isinstance(summary.get("sample", {}), dict) else {}
+    sample = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
     filename = str(sample.get("filename", ""))
     size_bytes = int(sample.get("size_bytes", 0) or 0)
     sha256 = str(sample.get("sha256", ""))
@@ -602,14 +453,11 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     counts = _ioc_counts(iocs_j)
     artifacts = _artifact_links(case_dir)
     api = _api_block(case_dir)
+    spec = _spec_block(case_dir)
+    combined = _combined_block(case_dir)
 
     signing = summary.get("signing") if isinstance(summary.get("signing"), dict) else {}
-    signing_summary = {}
-    if signing:
-        signing_summary = {
-            "signed_ok": bool(signing.get("verify_ok")) and bool(signing.get("timestamp_verified")),
-            "subject": signing.get("subject", "") or "",
-        }
+    signing_summary = {"signed_ok": bool(signing.get("verify_ok")) and bool(signing.get("timestamp_verified")), "subject": signing.get("subject", "") or ""} if signing else {}
 
     data = {
         "generated_utc": _utc(),
@@ -628,10 +476,12 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
         "benign_reasons": ben,
         "ioc_counts": counts,
         "artifacts": artifacts,
-        "actions_html": _actions_html(score),
+        "actions_html": _actions_html(combined.get("total_score", score)),
         "subfiles": _subfiles_block(summary),
         "signing_summary": signing_summary,
         "api": api,
+        "spec": spec,
+        "combined": combined,
     }
 
     report_md = _write_md(case_dir, data)
@@ -645,8 +495,4 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     except Exception:
         report_pdf = None
 
-    return {
-        "report_md": str(report_md),
-        "report_html": str(report_html),
-        "report_pdf": str(report_pdf) if report_pdf else None,
-    }
+    return {"report_md": str(report_md), "report_html": str(report_html), "report_pdf": str(report_pdf) if report_pdf else None}
