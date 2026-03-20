@@ -1,10 +1,13 @@
-# RingForge Analyzer — Static and Dynamic Software Analysis Platform
+# RingForge Workbench — Static and Dynamic Software Analysis Platform
 
 **Static insight. Dynamic visibility.**
 
-RingForge Analyzer is a malware/software analysis toolkit for Windows executables and installers that supports both **static triage** and early-stage **dynamic behavior analysis**. It generates structured case artifacts, IOC output, persistence-diff data, dropped-file triage results, signing results, API behavior analysis, and analyst-facing reports for triage, training, and investigation.
+**RingForge Workbench** is a unified software triage platform designed for static, dynamic, and behavioral analysis, scoring, and reporting.
 
-**Current release: v1.2**
+The project brings together multiple analysis methods into a single workflow to support efficient triage, structured outputs, and future expansion into a broader software analysis workbench.
+
+## Current Release
+**Version:** v1.2
 
 ## Overview
 
