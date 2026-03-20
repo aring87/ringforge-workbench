@@ -15,6 +15,16 @@ RingForge Analyzer is designed to help analysts quickly triage Windows software 
 
 The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, and dynamic findings summaries.
 
+## v1.2 - RingForge Workbench Rebrand
+
+This release rebrands the project from its previous static-only naming to **RingForge Workbench** to better reflect the platform’s broader direction.
+
+### Changes
+- Renamed project branding to **RingForge Workbench**
+- Updated repository, README, and release naming
+- Aligned product identity with static, dynamic, and behavioral analysis capabilities
+- Established a broader platform identity for future growth
+
 ## What’s New in v1.2
 
 RingForge Analyzer v1.2 builds on the v1.1 scoring and workflow milestone with a focused GUI polish and usability refinement release. This version improves visual consistency, simplifies the main workflow, and standardizes the experience across the main GUI, Dynamic Analysis, and API Spec Analysis windows.
