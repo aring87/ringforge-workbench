@@ -1,4 +1,4 @@
-﻿# RingForge Workbench â€” Static and Dynamic Software Analysis Platform
+﻿# RingForge Workbench is a Static and Dynamic Software Analysis Platform
 
 **Static insight. Dynamic visibility.**
 
