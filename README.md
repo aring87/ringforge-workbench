@@ -1,4 +1,4 @@
-# RingForge Workbench — Static and Dynamic Software Analysis Platform
+﻿# RingForge Workbench â€” Static and Dynamic Software Analysis Platform
 
 **Static insight. Dynamic visibility.**
 
@@ -11,13 +11,13 @@ The project brings together multiple analysis methods into a single workflow to 
 
 ## Overview
 
-RingForge Analyzer is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, and controlled dynamic runtime behavior collection into a single workflow.
+RingForge Workbench is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, and controlled dynamic runtime behavior collection into a single workflow.
 
 The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, and dynamic findings summaries.
 
 ## v1.2 - RingForge Workbench Rebrand
 
-This release rebrands the project from its previous static-only naming to **RingForge Workbench** to better reflect the platform’s broader direction.
+This release rebrands the project from its previous static-only naming to **RingForge Workbench** to better reflect the platformâ€™s broader direction.
 
 ### Changes
 - Renamed project branding to **RingForge Workbench**
@@ -25,9 +25,9 @@ This release rebrands the project from its previous static-only naming to **Ring
 - Aligned product identity with static, dynamic, and behavioral analysis capabilities
 - Established a broader platform identity for future growth
 
-## What’s New in v1.2
+## Whatâ€™s New in v1.2
 
-RingForge Analyzer v1.2 builds on the v1.1 scoring and workflow milestone with a focused GUI polish and usability refinement release. This version improves visual consistency, simplifies the main workflow, and standardizes the experience across the main GUI, Dynamic Analysis, and API Spec Analysis windows.
+RingForge Workbench v1.2 builds on the v1.1 scoring and workflow milestone with a focused GUI polish and usability refinement release. This version improves visual consistency, simplifies the main workflow, and standardizes the experience across the main GUI, Dynamic Analysis, and API Spec Analysis windows.
 
 ### Core Improvements
 - Refined the main GUI layout so the output panel is visible on launch
@@ -123,7 +123,7 @@ cases/<case>/
   virustotal.json
 ```
 
-On some environments, `report.pdf` may not be generated. In that case, open `report.html` and use your browser’s Print to PDF option.
+On some environments, `report.pdf` may not be generated. In that case, open `report.html` and use your browserâ€™s Print to PDF option.
 
 ### Dynamic case artifacts
 
@@ -158,22 +158,22 @@ cases/<case_name>/
 
 ### Artifact purpose
 
-- `run_config.json` — execution settings used for the run
-- `sample_info.json` — sample hashes, size, and metadata
-- `run_summary.json` — final summarized run output
-- `parsed_events.json` — normalized Procmon event data
-- `interesting_events.json` — reduced high-value Procmon events
-- `task_diffs.json` — before/after scheduled task changes
-- `service_diffs.json` — before/after Windows service changes
-- `dropped_files.json` — candidate dropped-file details
-- `dynamic_findings.json` — analyst-facing highlights and summaries
-- `dynamic_report.html` — themed analyst-facing HTML report
-- `dynamic_report.pdf` — PDF report when PDF backend is available
+- `run_config.json` â€” execution settings used for the run
+- `sample_info.json` â€” sample hashes, size, and metadata
+- `run_summary.json` â€” final summarized run output
+- `parsed_events.json` â€” normalized Procmon event data
+- `interesting_events.json` â€” reduced high-value Procmon events
+- `task_diffs.json` â€” before/after scheduled task changes
+- `service_diffs.json` â€” before/after Windows service changes
+- `dropped_files.json` â€” candidate dropped-file details
+- `dynamic_findings.json` â€” analyst-facing highlights and summaries
+- `dynamic_report.html` â€” themed analyst-facing HTML report
+- `dynamic_report.pdf` â€” PDF report when PDF backend is available
 
 ## Repo Layout
 
 ```text
-RingForge-Analyzer/
+ringforge-workbench/
   docs/
   scripts/
   static_triage_engine/
@@ -206,8 +206,8 @@ RingForge-Analyzer/
 ## Recommended Release Folder Layout
 
 ```text
-RingForge_Analyzer_v1.1/
-  RingForgeAnalyzer.exe
+RingForge_Workbench_v1.2/
+  RingForgeWorkbench.exe
   scripts/
   static_triage_engine/
   dynamic_analysis/
@@ -216,7 +216,7 @@ RingForge_Analyzer_v1.1/
 ```
 ## Development Roadmap
 
-RingForge Analyzer is being expanded from a static triage utility into a more complete multi-stage software analysis platform. The roadmap below outlines the planned direction for static, dynamic, API, scoring, and reporting capabilities.
+RingForge Workbench is being expanded from a static triage utility into a more complete multi-stage software analysis platform. The roadmap below outlines the planned direction for static, dynamic, API, scoring, and reporting capabilities.
 
 ### Current Capabilities
 - Static analysis workflow with case-based output
@@ -286,7 +286,7 @@ RingForge Analyzer is being expanded from a static triage utility into a more co
 - More advanced malware triage and recommendation engine
 
 ## Project Direction
-The long-term goal is to evolve RingForge Analyzer into a unified triage platform that can combine static artifacts, runtime behavior, and external intelligence into a single assessment workflow. This will allow analysts to move from isolated test results to a more complete and defensible maliciousness determination.
+The long-term goal is to evolve RingForge Workbench into a unified triage platform that can combine static artifacts, runtime behavior, and external intelligence into a single assessment workflow. This will allow analysts to move from isolated test results to a more complete and defensible maliciousness determination.
 
 This is the most reliable packaging model right now.
 
@@ -364,7 +364,7 @@ If WeasyPrint dependencies are unavailable on Windows, HTML export still works a
 ## Linux Setup Example
 
 ```bash
-cd ~/analysis/RingForge-Analyzer
+cd ~/analysis/ringforge-workbench
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -386,7 +386,7 @@ python .\scripts\static_triage_gui_v10.py
 ### Linux
 
 ```bash
-cd ~/analysis/RingForge-Analyzer
+cd ~/analysis/ringforge-workbench
 source .venv/bin/activate
 python scripts/static_triage_gui_v10.py
 ```
@@ -421,14 +421,14 @@ Example analysis run:
 python scripts/static_triage.py "/path/to/sample.exe"
 ```
 
-## Packaging RingForge Analyzer v1.1
+## Packaging RingForge Workbench v1.1
 
 ### Build
 
 Example PyInstaller build:
 
 ```bash
-pyinstaller --onedir --windowed --name RingForgeAnalyzer --paths . --collect-submodules dynamic_analysis scripts/static_triage_gui_v10.py
+pyinstaller --onedir --windowed --name RingForgeWorkbench --paths . --collect-submodules dynamic_analysis scripts/static_triage_gui_v10.py
 ```
 
 ### Release folder
@@ -447,10 +447,10 @@ Create the release folder and copy:
 
 ```powershell
 cd release
-Compress-Archive -Path .\RingForge_Analyzer_v1.1 -DestinationPath .\RingForge_Analyzer_v1.1.zip -Force
+Compress-Archive -Path .\RingForge_Workbench_v1.2 -DestinationPath .\RingForge_Workbench_v1.2.zip -Force
 ```
 
-## Release Notes – RingForge Analyzer v1.1
+## Release Notes â€“ RingForge Workbench v1.1
 
 ### Added
 
@@ -556,7 +556,7 @@ Common reasons:
 
 ### 10. HTML report exports but PDF does not
 
-If the HTML report is created successfully but PDF generation fails on Windows, WeasyPrint system dependencies are likely missing. Open the HTML report in your browser and use Print → Save as PDF.
+If the HTML report is created successfully but PDF generation fails on Windows, WeasyPrint system dependencies are likely missing. Open the HTML report in your browser and use Print â†’ Save as PDF.
 
 ### 11. Paths fail in Linux
 
@@ -572,9 +572,10 @@ Use Linux-style paths in the GUI, not Windows paths.
 ## Notes
 
 - API analysis currently applies to Windows PE executables and DLLs through import/API-chain analysis
-- dynamic analysis in RingForge Analyzer v1.1 is intended as a practical triage layer, not a full sandbox replacement
+- dynamic analysis in RingForge Workbench v1.2 is intended as a practical triage layer, not a full sandbox replacement
 - future work may include a dedicated API Analysis window, tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
 
 ## License
 
 See `LICENSE`.
+

@@ -1,5 +1,5 @@
-"""
-Static Triage GUI (v10) — Fix progress parsing for timestamped analysis.log lines
+﻿"""
+Static Triage GUI (v10) â€” Fix progress parsing for timestamped analysis.log lines
 
 Your analysis.log lines look like:
   2026-03-05T23:57:18Z STEP_START md5
@@ -511,7 +511,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n\n")
         self.output.see("end")
 
-        self.status_var.set("Running dynamic…")
+        self.status_var.set("Running dynamicâ€¦")
         self.run_btn.configure(state="disabled")
 
         def worker():
@@ -1170,7 +1170,7 @@ class APIAnalysisWindow(tk.Toplevel):
 
         ttk.Label(frm, text="Upload file:").grid(row=3, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.file_path_var, width=92).grid(row=3, column=1, sticky="we", padx=6)
-        ttk.Button(frm, text="Browse…", command=self._browse_upload_file).grid(row=3, column=2, sticky="w")
+        ttk.Button(frm, text="Browseâ€¦", command=self._browse_upload_file).grid(row=3, column=2, sticky="w")
         field_wrap = ttk.Frame(frm)
         field_wrap.grid(row=3, column=3, sticky="w")
         ttk.Label(field_wrap, text="Field:").pack(side="left")
@@ -1215,7 +1215,7 @@ class APIAnalysisWindow(tk.Toplevel):
         self.output.configure(yscrollcommand=ysb.set)
 
     def _default_headers(self) -> dict:
-        return {"User-Agent": "RingForge-Analyzer/1.0"}
+        return {"User-Agent": "RingForge-Workbench/1.2"}
 
     def _app_vt_key(self) -> str:
         return self.app.vt_api_key_var.get().strip() if hasattr(self.app, "vt_api_key_var") else ""
@@ -1946,16 +1946,16 @@ class App(tk.Tk):
         self.status_var = tk.StringVar(value="")
         self.running_var = tk.StringVar(value="Idle")
 
-        self.score_var = tk.StringVar(value="—")
-        self.verdict_var = tk.StringVar(value="—")
-        self.confidence_var = tk.StringVar(value="—")
-        self.combined_score_var = tk.StringVar(value="—")
-        self.combined_severity_var = tk.StringVar(value="—")
-        self.static_subscore_var = tk.StringVar(value="—")
-        self.dynamic_subscore_var = tk.StringVar(value="—")
-        self.spec_subscore_var = tk.StringVar(value="—")
+        self.score_var = tk.StringVar(value="â€”")
+        self.verdict_var = tk.StringVar(value="â€”")
+        self.confidence_var = tk.StringVar(value="â€”")
+        self.combined_score_var = tk.StringVar(value="â€”")
+        self.combined_severity_var = tk.StringVar(value="â€”")
+        self.static_subscore_var = tk.StringVar(value="â€”")
+        self.dynamic_subscore_var = tk.StringVar(value="â€”")
+        self.spec_subscore_var = tk.StringVar(value="â€”")
         self.vt_status_var = tk.StringVar(value="VirusTotal: disabled")
-        self.vt_name_var = tk.StringVar(value="VT Name: —")
+        self.vt_name_var = tk.StringVar(value="VT Name: â€”")
         self.vt_counts_var = tk.StringVar(value="Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
         self.vt_link: str = ""
 
@@ -2022,11 +2022,11 @@ class App(tk.Tk):
         ttk.Entry(paths, textvariable=self.case_root_var, width=105).grid(row=0, column=1, sticky="we", padx=6)
         ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_case_root).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=2)
 
-        ttk.Label(paths, text=r"capa rules folder (…\tools\capa-rules OR …\tools\capa-rules\rules):").grid(row=1, column=0, sticky="w")
+        ttk.Label(paths, text=r"capa rules folder (â€¦\tools\capa-rules OR â€¦\tools\capa-rules\rules):").grid(row=1, column=0, sticky="w")
         ttk.Entry(paths, textvariable=self.rules_var, width=105).grid(row=1, column=1, sticky="we", padx=6)
         ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_rules).grid(row=1, column=2, sticky="ew", padx=(6, 0), pady=2)
 
-        ttk.Label(paths, text=r"capa sigs folder (…\tools\capa\sigs):").grid(row=2, column=0, sticky="w")
+        ttk.Label(paths, text=r"capa sigs folder (â€¦\tools\capa\sigs):").grid(row=2, column=0, sticky="w")
         ttk.Entry(paths, textvariable=self.sigs_var, width=105).grid(row=2, column=1, sticky="we", padx=6)
         ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_sigs).grid(row=2, column=2, sticky="ew", padx=(6, 0), pady=2)
 
@@ -2164,16 +2164,16 @@ class App(tk.Tk):
 
 
     def _reset_result_summary(self):
-        self.score_var.set("—")
-        self.verdict_var.set("—")
-        self.confidence_var.set("—")
-        self.combined_score_var.set("—")
-        self.combined_severity_var.set("—")
-        self.static_subscore_var.set("—")
-        self.dynamic_subscore_var.set("—")
-        self.spec_subscore_var.set("—")
+        self.score_var.set("â€”")
+        self.verdict_var.set("â€”")
+        self.confidence_var.set("â€”")
+        self.combined_score_var.set("â€”")
+        self.combined_severity_var.set("â€”")
+        self.static_subscore_var.set("â€”")
+        self.dynamic_subscore_var.set("â€”")
+        self.spec_subscore_var.set("â€”")
         self.vt_status_var.set("VirusTotal: disabled")
-        self.vt_name_var.set("VT Name: —")
+        self.vt_name_var.set("VT Name: â€”")
         self.vt_counts_var.set("Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
         self.vt_link = ""
         self.vt_open_btn.configure(state="disabled")
@@ -2207,25 +2207,25 @@ class App(tk.Tk):
             combined = None
 
         if not combined:
-            self.combined_score_var.set("—")
-            self.combined_severity_var.set("—")
-            self.static_subscore_var.set("—")
-            self.dynamic_subscore_var.set("—")
-            self.spec_subscore_var.set("—")
+            self.combined_score_var.set("â€”")
+            self.combined_severity_var.set("â€”")
+            self.static_subscore_var.set("â€”")
+            self.dynamic_subscore_var.set("â€”")
+            self.spec_subscore_var.set("â€”")
             self.latest_combined_score = None
             return
 
         self.latest_combined_score = combined
 
-        self.combined_score_var.set(str(combined.get("total_score", "—")))
-        self.combined_severity_var.set(str(combined.get("severity", "—")))
+        self.combined_score_var.set(str(combined.get("total_score", "â€”")))
+        self.combined_severity_var.set(str(combined.get("severity", "â€”")))
 
         subs = combined.get("subscores", {}) if isinstance(combined.get("subscores"), dict) else {}
         present = combined.get("present", {}) if isinstance(combined.get("present"), dict) else {}
 
-        self.static_subscore_var.set(str(subs.get("static", 0)) if present.get("static") else "—")
-        self.dynamic_subscore_var.set(str(subs.get("dynamic", 0)) if present.get("dynamic") else "—")
-        self.spec_subscore_var.set(str(subs.get("spec", 0)) if present.get("spec") else "—")
+        self.static_subscore_var.set(str(subs.get("static", 0)) if present.get("static") else "â€”")
+        self.dynamic_subscore_var.set(str(subs.get("dynamic", 0)) if present.get("dynamic") else "â€”")
+        self.spec_subscore_var.set(str(subs.get("spec", 0)) if present.get("spec") else "â€”")
 
         self.update_idletasks()
 
@@ -2371,9 +2371,9 @@ class App(tk.Tk):
             if isinstance(maybe_vt, dict):
                 vt = maybe_vt
 
-        self.score_var.set(str(summary.get("risk_score", "—")))
-        self.verdict_var.set(str(summary.get("verdict", "—")))
-        self.confidence_var.set(str(summary.get("confidence", "—")))
+        self.score_var.set(str(summary.get("risk_score", "â€”")))
+        self.verdict_var.set(str(summary.get("verdict", "â€”")))
+        self.confidence_var.set(str(summary.get("confidence", "â€”")))
 
         enabled = bool(vt.get("enabled", False))
         found = bool(vt.get("found", False))
@@ -2397,7 +2397,7 @@ class App(tk.Tk):
         else:
             self.vt_status_var.set("VirusTotal: no result")
 
-        self.vt_name_var.set(f"VT Name: {meaningful_name or '—'}")
+        self.vt_name_var.set(f"VT Name: {meaningful_name or 'â€”'}")
         self.vt_counts_var.set(
             f"Counts: mal={mal} | susp={susp} | harmless={harmless} | undetected={undetected}"
         )
@@ -2771,7 +2771,7 @@ class App(tk.Tk):
         self._start_log_tail(case_root / case)
 
         self.run_btn.configure(state="disabled")
-        self.running_var.set("Running…")
+        self.running_var.set("Runningâ€¦")
 
         def worker():
             rc = 1
@@ -2862,3 +2862,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
