@@ -1,12 +1,13 @@
 # RingForge Workbench is a Static and Dynamic Software Analysis Platform
 
-**Static insight. Dynamic visibility.**
+Static insight. Dynamic visibility.
 
-**RingForge Workbench** is a unified software triage platform designed for static, dynamic, and behavioral analysis, scoring, and reporting.
+RingForge Workbench is a unified software triage platform designed for static, dynamic, and behavioral analysis, scoring, and reporting.
 
 The project brings together multiple analysis methods into a single workflow to support efficient triage, structured outputs, and future expansion into a broader software analysis workbench.
 
 ## Current Release
+
 **Version:** v1.3
 
 ## Overview
@@ -17,9 +18,9 @@ The platform creates case-based output for each workflow and produces structured
 
 ## What’s New in v1.3
 
-Version 1.3 focuses on major GUI polish, a fully upgraded API Spec Analysis workflow, improved report organization, and cleaner parser behavior across OpenAPI and Swagger specifications. This release turns API Spec Analysis into a practical, polished feature with structured reporting, endpoint inventory, authentication visibility, and better output management.
+RingForge Workbench v1.3 builds on the v1.2 polish milestone by turning API Spec Analysis into a practical, polished, and testable workflow. This release improves specification parsing, report quality, output organization, and overall usability while preserving the platform’s existing static, dynamic, and combined scoring foundation.
 
-### Highlights
+### v1.3 Highlights
 
 - Added a redesigned API Spec Analysis workspace
 - Improved support for OpenAPI 3.x and Swagger 2.0 specifications
@@ -29,120 +30,59 @@ Version 1.3 focuses on major GUI polish, a fully upgraded API Spec Analysis work
 - Improved per-endpoint authentication reporting
 - Improved report naming using the analyzed specification name
 - Added spec-specific latest report handling
-- Continued overall GUI polish and branding cleanup across RingForge Workbench
+- Continued GUI polish and workspace consistency improvements
 
 ### v1.3 Changelog
 
-- Added redesigned API Spec Analysis workspace
 - Added overview metrics and improved endpoint inventory layout
-- Added polished HTML reporting for spec analysis
-- Improved OpenAPI 3 and Swagger 2 support
-- Improved authentication normalization and per-endpoint auth reporting
+- Improved API Spec Analysis dashboard structure and usability
+- Improved OpenAPI 3.x and Swagger 2.0 parsing support
+- Added endpoint inventory reporting with method, path, summary, auth, parameter count, and flags
+- Added polished HTML reporting for API spec analysis
+- Improved authentication normalization and endpoint-level auth visibility
 - Improved report naming using specification file names
-- Added spec-specific latest report handling
-- Continued GUI polish and branding refinement across RingForge Workbench
+- Added spec-specific latest-report handling for easier reopening of the correct report
+- Continued GUI refinement and workflow presentation cleanup across RingForge Workbench
 
 ## v1.2 - RingForge Workbench Rebrand
 
-Version 1.2 marked the transition from **RingForge Analyzer** to **RingForge Workbench**.
+Version 1.2 marked the transition from the project’s earlier analyzer-focused identity into **RingForge Workbench**.
 
-This release focused on project identity, presentation, and overall platform direction rather than major new analysis features. The goal of v1.2 was to establish a cleaner product name, improve consistency across the repository, and prepare the foundation for future feature expansion.
+This release focused on branding, presentation, GUI polish, and overall platform direction rather than major new feature expansion. It established a cleaner project identity and prepared the foundation for the more mature API Spec Analysis and reporting improvements delivered in **v1.3**.
 
-### v1.2 Highlights
+### v1.2 Changes
 
-- Rebranded the project from **RingForge Analyzer** to **RingForge Workbench**
-- Updated naming across the repository, README, and release materials
-- Continued overall GUI polish and presentation cleanup
-- Established the foundation for the expanded analysis and reporting improvements introduced in **v1.3**
-
-### Why v1.2 Mattered
-
-v1.2 was the transition point that repositioned the project as a broader workbench-style platform instead of a narrowly named analyzer. It set the stage for the more mature API Spec Analysis workflow, improved reporting, and structured workspace refinements delivered in **v1.3**.
-
-### Changes
-- Renamed project branding to **RingForge Workbench**
+- Rebranded the project as **RingForge Workbench**
 - Updated repository, README, and release naming
-- Aligned product identity with static, dynamic, and behavioral analysis capabilities
-- Established a broader platform identity for future growth
-
-### Core Improvements
-- Added a redesigned **API Spec Analysis** workspace
-- Added improved **OpenAPI 3.x** and **Swagger 2.0** support
-- Added structured **endpoint inventory** reporting
-- Added polished **HTML report generation** for spec analysis
-- Improved **authentication parsing and normalization**
-- Improved **per-endpoint authentication visibility**
-- Improved **report naming** using the analyzed spec filename
-- Added **spec-specific latest report handling**
-- Continued overall GUI polish and workspace consistency
-
-### API Spec Analysis Workspace
-- Reworked the API Spec Analysis window into a cleaner dashboard layout
-- Added Overview metrics for:
-  - Format
-  - Version
-  - Endpoint count
-  - Authentication summary
-- Added a split-pane workspace with:
-  - Summary
-  - Risk Notes
-  - Getting Started guidance
-  - Endpoint Inventory
-- Improved default window sizing and layout balance
-- Improved scrollbar handling, column layout, and table presentation
-
-### API Spec Parsing and Reporting
-- Confirmed working support for:
-  - OpenAPI 3.x YAML and JSON
-  - Swagger 2.0 YAML and JSON
-- Added endpoint inventory reporting with:
-  - method
-  - path
-  - summary
-  - auth
-  - parameter count
-  - flags
-- Added HTML report generation for API spec analysis
-- Improved report filenames to include the analyzed spec name and timestamp
-- Added spec-specific “latest” report handling for easier reopening of the correct report
-- Preserved generic latest-report behavior for compatibility with existing report-open workflows
-
-### Authentication Parsing Improvements
-- Normalized authentication scheme names for cleaner reporting
-- Removed duplicate auth labels caused by mixed naming variants
-- Improved endpoint-level auth visibility so endpoints display their effective auth instead of inheriting the full global auth summary
-- Cleaned output for:
-  - public / unauthenticated endpoints
-  - bearer auth
-  - api-key auth
-  - basic auth
-- Improved Swagger 2.0 auth handling consistency
-
-### GUI and UX Improvements
-- Continued cleanup of the main RingForge Workbench interface
-- Improved branding and workspace presentation
-- Improved results layout and readability
-- Improved output and report access flow
-- Improved API Spec Analysis button layout, table behavior, and report-opening experience
+- Improved visual consistency and overall presentation
+- Continued GUI polish and usability refinement
+- Established a broader workbench-style platform identity for future growth
 
 ## Current Version Position
 
 ### v1.1
+
 Scoring and workflow milestone release:
-- Combined scoring across Static, Dynamic, and Spec/API
+
+- Combined scoring across Static, Dynamic, and Spec/API workflows
 - Presence-aware GUI score display
 - Dynamic and Spec case-based score regeneration
 - Progress final-state and optional helper-tool `n/a` handling
 
 ### v1.2
-GUI polish and usability refinement release:
+
+GUI polish and platform identity release:
+
+- Rebrand to RingForge Workbench
 - Visual cleanup and consistency improvements
 - Simplified workflow presentation
-- Updated Dynamic Analysis and API Spec Analysis windows
 - Better spacing, button styling, and layout behavior
+- Foundation for broader platform growth
 
 ### v1.3
+
 API Spec Analysis feature maturity release:
+
 - Polished API Spec Analysis workspace
 - OpenAPI and Swagger spec parsing improvements
 - Endpoint inventory and HTML spec reporting
@@ -151,13 +91,14 @@ API Spec Analysis feature maturity release:
 - Additional GUI refinement and workspace consistency improvements
 
 ## Planned Next Iteration
+
 Future work after v1.3 may include:
+
 - cumulative API spec scoring across multiple test runs
 - final multi-test assessment summaries
 - expanded API spec risk scoring and weighting
 - additional report presentation options
 - continued cleanup of advanced utilities and developer-focused workflows
-
 ## Outputs
 
 ### Static case outputs
