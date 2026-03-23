@@ -1,5 +1,13 @@
 # RingForge Workbench is a Static and Dynamic Software Analysis Platform
 
+[![Release](https://img.shields.io/badge/release-v1.3-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
+[![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
+[![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic-orange)](https://github.com/aring87/ringforge-workbench)
+[![Status](https://img.shields.io/badge/status-active%20development-brightgreen)](https://github.com/aring87/ringforge-workbench)
+
+Static insight. Dynamic visibility.
+
 Static insight. Dynamic visibility.
 
 RingForge Workbench is a unified software triage platform designed for static, dynamic, and behavioral analysis, scoring, and reporting.
