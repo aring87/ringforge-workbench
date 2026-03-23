@@ -15,6 +15,10 @@ RingForge Workbench is designed to help analysts quickly triage Windows software
 
 The platform creates case-based output for each workflow and produces structured artifacts such as JSON analysis files, IOC exports, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, dynamic findings summaries, and API spec inventory reports.
 
+## What’s New in v1.3
+
+RingForge Workbench v1.3 builds on the v1.2 GUI polish milestone by turning **API Spec Analysis** into a practical, polished, and testable analysis workflow. This release improves the API spec parsing experience, reporting quality, output organization, and overall usability while preserving the existing static, dynamic, and combined scoring foundations.
+
 ## v1.2 - RingForge Workbench Rebrand
 
 This release rebranded the project from its earlier static-only naming to **RingForge Workbench** to better reflect the platform’s broader direction.
@@ -24,10 +28,6 @@ This release rebranded the project from its earlier static-only naming to **Ring
 - Updated repository, README, and release naming
 - Aligned product identity with static, dynamic, and behavioral analysis capabilities
 - Established a broader platform identity for future growth
-
-## What’s New in v1.3
-
-RingForge Workbench v1.3 builds on the v1.2 GUI polish milestone by turning **API Spec Analysis** into a practical, polished, and testable analysis workflow. This release improves the API spec parsing experience, reporting quality, output organization, and overall usability while preserving the existing static, dynamic, and combined scoring foundations.
 
 ### Core Improvements
 - Added a redesigned **API Spec Analysis** workspace
