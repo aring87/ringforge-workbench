@@ -17,24 +17,47 @@ The platform creates case-based output for each workflow and produces structured
 
 ## What’s New in v1.3
 
-RingForge Workbench v1.3 builds on the v1.2 GUI polish milestone by turning **API Spec Analysis** into a practical, polished, and testable analysis workflow. This release improves the API spec parsing experience, reporting quality, output organization, and overall usability while preserving the existing static, dynamic, and combined scoring foundations.
+Version 1.3 focuses on major GUI polish, a fully upgraded API Spec Analysis workflow, improved report organization, and cleaner parser behavior across OpenAPI and Swagger specifications. This release turns API Spec Analysis into a practical, polished feature with structured reporting, endpoint inventory, authentication visibility, and better output management.
+
+### Highlights
+
+- Added a redesigned API Spec Analysis workspace
+- Improved support for OpenAPI 3.x and Swagger 2.0 specifications
+- Added structured endpoint inventory reporting
+- Added polished HTML report generation for spec analysis
+- Improved authentication parsing and normalization
+- Improved per-endpoint authentication reporting
+- Improved report naming using the analyzed specification name
+- Added spec-specific latest report handling
+- Continued overall GUI polish and branding cleanup across RingForge Workbench
+
+### v1.3 Changelog
+
+- Added redesigned API Spec Analysis workspace
+- Added overview metrics and improved endpoint inventory layout
+- Added polished HTML reporting for spec analysis
+- Improved OpenAPI 3 and Swagger 2 support
+- Improved authentication normalization and per-endpoint auth reporting
+- Improved report naming using specification file names
+- Added spec-specific latest report handling
+- Continued GUI polish and branding refinement across RingForge Workbench
 
 ## v1.2 - RingForge Workbench Rebrand
 
-Version 1.2 marked the project transition from **RingForge Analyzer** to **RingForge Workbench**.
+Version 1.2 marked the transition from **RingForge Analyzer** to **RingForge Workbench**.
 
-This release focused on identity, presentation, and platform direction rather than major new analysis capability. The goal of v1.2 was to establish a cleaner product name, improve overall polish, and set the foundation for future feature growth.
+This release focused on project identity, presentation, and overall platform direction rather than major new analysis features. The goal of v1.2 was to establish a cleaner product name, improve consistency across the repository, and prepare the foundation for future feature expansion.
 
 ### v1.2 Highlights
 
 - Rebranded the project from **RingForge Analyzer** to **RingForge Workbench**
-- Updated naming across the repository, documentation, and release materials
-- Continued GUI polish and workflow refinement
-- Prepared the platform for the expanded analysis improvements delivered in **v1.3**
+- Updated naming across the repository, README, and release materials
+- Continued overall GUI polish and presentation cleanup
+- Established the foundation for the expanded analysis and reporting improvements introduced in **v1.3**
 
 ### Why v1.2 Mattered
 
-v1.2 was the transition point that turned the project into a broader workbench-style platform instead of a narrowly named analyzer. It created the foundation for the more mature API Spec Analysis improvements, reporting enhancements, and workspace refinements that followed in **v1.3**.
+v1.2 was the transition point that repositioned the project as a broader workbench-style platform instead of a narrowly named analyzer. It set the stage for the more mature API Spec Analysis workflow, improved reporting, and structured workspace refinements delivered in **v1.3**.
 
 ### Changes
 - Renamed project branding to **RingForge Workbench**
