@@ -21,7 +21,20 @@ RingForge Workbench v1.3 builds on the v1.2 GUI polish milestone by turning **AP
 
 ## v1.2 - RingForge Workbench Rebrand
 
-This release rebranded the project from its earlier static-only naming to **RingForge Workbench** to better reflect the platform’s broader direction.
+Version 1.2 marked the project transition from **RingForge Analyzer** to **RingForge Workbench**.
+
+This release focused on identity, presentation, and platform direction rather than major new analysis capability. The goal of v1.2 was to establish a cleaner product name, improve overall polish, and set the foundation for future feature growth.
+
+### v1.2 Highlights
+
+- Rebranded the project from **RingForge Analyzer** to **RingForge Workbench**
+- Updated naming across the repository, documentation, and release materials
+- Continued GUI polish and workflow refinement
+- Prepared the platform for the expanded analysis improvements delivered in **v1.3**
+
+### Why v1.2 Mattered
+
+v1.2 was the transition point that turned the project into a broader workbench-style platform instead of a narrowly named analyzer. It created the foundation for the more mature API Spec Analysis improvements, reporting enhancements, and workspace refinements that followed in **v1.3**.
 
 ### Changes
 - Renamed project branding to **RingForge Workbench**
