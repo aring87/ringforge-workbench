@@ -1,4 +1,4 @@
-﻿# RingForge Workbench â€” Static and Dynamic Software Analysis Platform
+# RingForge Workbench is a Static and Dynamic Software Analysis Platform
 
 **Static insight. Dynamic visibility.**
 
@@ -7,17 +7,17 @@
 The project brings together multiple analysis methods into a single workflow to support efficient triage, structured outputs, and future expansion into a broader software analysis workbench.
 
 ## Current Release
-**Version:** v1.2
+**Version:** v1.3
 
 ## Overview
 
-RingForge Workbench is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, and controlled dynamic runtime behavior collection into a single workflow.
+RingForge Workbench is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, controlled dynamic runtime behavior collection, and API specification analysis into a single workflow.
 
-The pipeline creates a case folder for each run and produces structured outputs such as JSON artifacts, CSV IOC files, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, and dynamic findings summaries.
+The platform creates case-based output for each workflow and produces structured artifacts such as JSON analysis files, IOC exports, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, dynamic findings summaries, and API spec inventory reports.
 
 ## v1.2 - RingForge Workbench Rebrand
 
-This release rebrands the project from its previous static-only naming to **RingForge Workbench** to better reflect the platformâ€™s broader direction.
+This release rebranded the project from its earlier static-only naming to **RingForge Workbench** to better reflect the platform’s broader direction.
 
 ### Changes
 - Renamed project branding to **RingForge Workbench**
@@ -25,50 +25,69 @@ This release rebrands the project from its previous static-only naming to **Ring
 - Aligned product identity with static, dynamic, and behavioral analysis capabilities
 - Established a broader platform identity for future growth
 
-## Whatâ€™s New in v1.2
+## What’s New in v1.3
 
-RingForge Workbench v1.2 builds on the v1.1 scoring and workflow milestone with a focused GUI polish and usability refinement release. This version improves visual consistency, simplifies the main workflow, and standardizes the experience across the main GUI, Dynamic Analysis, and API Spec Analysis windows.
+RingForge Workbench v1.3 builds on the v1.2 GUI polish milestone by turning **API Spec Analysis** into a practical, polished, and testable analysis workflow. This release improves the API spec parsing experience, reporting quality, output organization, and overall usability while preserving the existing static, dynamic, and combined scoring foundations.
 
 ### Core Improvements
-- Refined the main GUI layout so the output panel is visible on launch
-- Improved button styling for a cleaner, more professional dark-theme interface
-- Standardized Browse and Clear buttons to better match entry-field layout
-- Tightened action-row spacing and improved right-side status alignment
-- Kept the v1.1 combined and individual scoring model intact across Static, Dynamic, and Spec/API analysis
+- Added a redesigned **API Spec Analysis** workspace
+- Added improved **OpenAPI 3.x** and **Swagger 2.0** support
+- Added structured **endpoint inventory** reporting
+- Added polished **HTML report generation** for spec analysis
+- Improved **authentication parsing and normalization**
+- Improved **per-endpoint authentication visibility**
+- Improved **report naming** using the analyzed spec filename
+- Added **spec-specific latest report handling**
+- Continued overall GUI polish and workspace consistency
 
-### Main GUI Updates
-- Output area is now visible immediately when the application opens
-- Main action row was cleaned up and spaced more consistently
-- API and Spec entry on the primary workflow were simplified into a single **API Spec Analysis** path
-- Buttons were updated for better consistency, sizing, and visual balance
-- Supporting Browse/Clear controls now align better with adjacent input fields
-
-### Dynamic Analysis Window Updates
-- Reworked to better match the main GUI theme and layout
-- Grouped settings into a cleaner **Dynamic Analysis Settings** section
-- Moved **Enable Procmon Capture** next to timeout controls for a more logical workflow
-- Simplified the action row to the most useful core actions:
-  - Run Dynamic Analysis
-  - Open Case Folder
-  - Open Latest Report
-- Removed the redundant export button from the primary action row
-- Improved right-side Browse button sizing and alignment
-- Preserved live output and case-based scoring refresh behavior
-
-### API Spec Analysis Updates
-- Renamed and positioned as the primary spec-based API workflow
-- Updated layout for clearer structure and better consistency with the rest of the application
-- Organized results into:
+### API Spec Analysis Workspace
+- Reworked the API Spec Analysis window into a cleaner dashboard layout
+- Added Overview metrics for:
+  - Format
+  - Version
+  - Endpoint count
+  - Authentication summary
+- Added a split-pane workspace with:
   - Summary
   - Risk Notes
+  - Getting Started guidance
   - Endpoint Inventory
-- Improved top action row styling and naming
-- API spec results continue to save into the case `spec` folder and feed the combined scoring workflow
+- Improved default window sizing and layout balance
+- Improved scrollbar handling, column layout, and table presentation
 
-### API Testing Positioning
-- Manual live API request testing remains a separate advanced utility
-- The primary workflow is now centered on **API Spec Analysis**
-- This keeps the main GUI focused while preserving flexibility for deeper API request testing when needed
+### API Spec Parsing and Reporting
+- Confirmed working support for:
+  - OpenAPI 3.x YAML and JSON
+  - Swagger 2.0 YAML and JSON
+- Added endpoint inventory reporting with:
+  - method
+  - path
+  - summary
+  - auth
+  - parameter count
+  - flags
+- Added HTML report generation for API spec analysis
+- Improved report filenames to include the analyzed spec name and timestamp
+- Added spec-specific “latest” report handling for easier reopening of the correct report
+- Preserved generic latest-report behavior for compatibility with existing report-open workflows
+
+### Authentication Parsing Improvements
+- Normalized authentication scheme names for cleaner reporting
+- Removed duplicate auth labels caused by mixed naming variants
+- Improved endpoint-level auth visibility so endpoints display their effective auth instead of inheriting the full global auth summary
+- Cleaned output for:
+  - public / unauthenticated endpoints
+  - bearer auth
+  - api-key auth
+  - basic auth
+- Improved Swagger 2.0 auth handling consistency
+
+### GUI and UX Improvements
+- Continued cleanup of the main RingForge Workbench interface
+- Improved branding and workspace presentation
+- Improved results layout and readability
+- Improved output and report access flow
+- Improved API Spec Analysis button layout, table behavior, and report-opening experience
 
 ## Current Version Position
 
@@ -86,12 +105,22 @@ GUI polish and usability refinement release:
 - Updated Dynamic Analysis and API Spec Analysis windows
 - Better spacing, button styling, and layout behavior
 
+### v1.3
+API Spec Analysis feature maturity release:
+- Polished API Spec Analysis workspace
+- OpenAPI and Swagger spec parsing improvements
+- Endpoint inventory and HTML spec reporting
+- Auth normalization and per-endpoint auth reporting
+- Improved report naming and report-open behavior
+- Additional GUI refinement and workspace consistency improvements
+
 ## Planned Next Iteration
-Future work after v1.2 may include:
-- Additional UI refinements and spacing cleanup
-- Optional primary/secondary button hierarchy improvements
-- Expanded report presentation options
-- Continued cleanup of advanced utilities and developer-focused workflows
+Future work after v1.3 may include:
+- cumulative API spec scoring across multiple test runs
+- final multi-test assessment summaries
+- expanded API spec risk scoring and weighting
+- additional report presentation options
+- continued cleanup of advanced utilities and developer-focused workflows
 
 ## Outputs
 
@@ -123,7 +152,7 @@ cases/<case>/
   virustotal.json
 ```
 
-On some environments, `report.pdf` may not be generated. In that case, open `report.html` and use your browserâ€™s Print to PDF option.
+On some environments, `report.pdf` may not be generated. In that case, open `report.html` and use your browser’s Print to PDF option.
 
 ### Dynamic case artifacts
 
@@ -156,19 +185,39 @@ cases/<case_name>/
     dynamic_report.pdf
 ```
 
+### API Spec case artifacts
+
+An API Spec Analysis run can produce a structure like:
+
+```text
+cases/<case_name>/
+  spec/
+    spec_inventory_<spec_name>_<timestamp>.json
+    spec_inventory_<spec_name>_<timestamp>.html
+    spec_inventory_latest_<spec_name>.json
+    spec_inventory_latest_<spec_name>.html
+    spec_inventory_latest.json
+    spec_inventory_latest.html
+    original_<spec_name>.yaml
+```
+
 ### Artifact purpose
 
-- `run_config.json` â€” execution settings used for the run
-- `sample_info.json` â€” sample hashes, size, and metadata
-- `run_summary.json` â€” final summarized run output
-- `parsed_events.json` â€” normalized Procmon event data
-- `interesting_events.json` â€” reduced high-value Procmon events
-- `task_diffs.json` â€” before/after scheduled task changes
-- `service_diffs.json` â€” before/after Windows service changes
-- `dropped_files.json` â€” candidate dropped-file details
-- `dynamic_findings.json` â€” analyst-facing highlights and summaries
-- `dynamic_report.html` â€” themed analyst-facing HTML report
-- `dynamic_report.pdf` â€” PDF report when PDF backend is available
+- `run_config.json` — execution settings used for the run
+- `sample_info.json` — sample hashes, size, and metadata
+- `run_summary.json` — final summarized run output
+- `parsed_events.json` — normalized Procmon event data
+- `interesting_events.json` — reduced high-value Procmon events
+- `task_diffs.json` — before/after scheduled task changes
+- `service_diffs.json` — before/after Windows service changes
+- `dropped_files.json` — candidate dropped-file details
+- `dynamic_findings.json` — analyst-facing highlights and summaries
+- `dynamic_report.html` — themed analyst-facing HTML report
+- `dynamic_report.pdf` — PDF report when PDF backend is available
+- `spec_inventory_<spec_name>_<timestamp>.json` — saved API spec analysis result for a specific run
+- `spec_inventory_<spec_name>_<timestamp>.html` — analyst-facing HTML report for a specific spec run
+- `spec_inventory_latest_<spec_name>.html` — latest named report for the currently analyzed spec
+- `spec_inventory_latest.html` — generic latest spec report for compatibility and quick-open workflows
 
 ## Repo Layout
 
@@ -206,7 +255,7 @@ ringforge-workbench/
 ## Recommended Release Folder Layout
 
 ```text
-RingForge_Workbench_v1.2/
+RingForge_Workbench_v1.3/
   RingForgeWorkbench.exe
   scripts/
   static_triage_engine/
@@ -214,6 +263,7 @@ RingForge_Workbench_v1.2/
   README.md
   LICENSE
 ```
+
 ## Development Roadmap
 
 RingForge Workbench is being expanded from a static triage utility into a more complete multi-stage software analysis platform. The roadmap below outlines the planned direction for static, dynamic, API, scoring, and reporting capabilities.
@@ -222,7 +272,8 @@ RingForge Workbench is being expanded from a static triage utility into a more c
 - Static analysis workflow with case-based output
 - Dynamic analysis window and execution workflow
 - API analysis window for manual request testing
-- HTML reporting for static and API analysis
+- API Spec Analysis workflow for OpenAPI / Swagger definitions
+- HTML reporting for static, dynamic, and API spec analysis
 - Organized case folder structure for saved artifacts and reports
 
 ### Near-Term Enhancements
@@ -235,12 +286,14 @@ RingForge Workbench is being expanded from a static triage utility into a more c
 - Parsed API result summaries for faster triage
 - Improved HTML export formatting for API analysis
 - Auto-fill options using the selected sample, MD5, SHA1, or SHA256
+- Multi-test API spec scoring and final summary workflows
 
 ### Unified Scoring and Assessment
 - Separate scoring for each analysis area
   - Static Analysis Score
   - Dynamic Analysis Score
   - API / Intelligence Score
+  - API Spec Analysis Score
 - Combined weighted maliciousness score across completed modules
 - Confidence rating based on analysis coverage
 - Standardized verdict categories
@@ -256,7 +309,7 @@ RingForge Workbench is being expanded from a static triage utility into a more c
 - Expanded dynamic behavior scoring
 - Better IOC enrichment and reputation correlation
 - Improved persistence and execution pattern detection
-- Correlation between static findings, dynamic behavior, and external intelligence
+- Correlation between static findings, dynamic behavior, external intelligence, and API spec risk indicators
 
 ### Reporting Improvements
 - Combined analyst report covering all completed modules
@@ -286,7 +339,7 @@ RingForge Workbench is being expanded from a static triage utility into a more c
 - More advanced malware triage and recommendation engine
 
 ## Project Direction
-The long-term goal is to evolve RingForge Workbench into a unified triage platform that can combine static artifacts, runtime behavior, and external intelligence into a single assessment workflow. This will allow analysts to move from isolated test results to a more complete and defensible maliciousness determination.
+The long-term goal is to evolve RingForge Workbench into a unified triage platform that can combine static artifacts, runtime behavior, API specifications, and external intelligence into a single assessment workflow. This will allow analysts to move from isolated test results to a more complete and defensible maliciousness determination.
 
 This is the most reliable packaging model right now.
 
@@ -306,6 +359,7 @@ Typical dependencies include:
 - `pyyaml`
 - `pyinstaller`
 - `weasyprint` (optional for direct PDF generation)
+- `pillow` (if using image-backed branding)
 - any packages listed in `requirements.txt`
 
 ### Linux / WSL tools
@@ -380,7 +434,7 @@ bash scripts/bootstrap_capa_rules.sh
 ```powershell
 cd D:\ring_forge_analyzer
 .\.venv\Scripts\Activate.ps1
-python .\scripts\static_triage_gui_v10.py
+python .\scripts\static_triage_gui.py
 ```
 
 ### Linux
@@ -388,7 +442,7 @@ python .\scripts\static_triage_gui_v10.py
 ```bash
 cd ~/analysis/ringforge-workbench
 source .venv/bin/activate
-python scripts/static_triage_gui_v10.py
+python scripts/static_triage_gui.py
 ```
 
 ### Dynamic Analysis window
@@ -407,6 +461,18 @@ The GUI includes a separate Dynamic Analysis window with:
 - HTML report export
 - browser-based PDF fallback
 
+### API Spec Analysis window
+
+The GUI includes a separate API Spec Analysis window with:
+
+- spec file selection
+- Overview metrics
+- Summary and Risk Notes panels
+- Endpoint Inventory table
+- HTML report generation
+- Open Case Files and report-open actions
+- OpenAPI 3.x and Swagger 2.0 support
+
 ## Running the CLI
 
 Example help command:
@@ -421,14 +487,14 @@ Example analysis run:
 python scripts/static_triage.py "/path/to/sample.exe"
 ```
 
-## Packaging RingForge Workbench v1.1
+## Packaging RingForge Workbench v1.3
 
 ### Build
 
 Example PyInstaller build:
 
 ```bash
-pyinstaller --onedir --windowed --name RingForgeWorkbench --paths . --collect-submodules dynamic_analysis scripts/static_triage_gui_v10.py
+pyinstaller --onedir --windowed --name RingForgeWorkbench --paths . --collect-submodules dynamic_analysis scripts/static_triage_gui.py
 ```
 
 ### Release folder
@@ -447,32 +513,32 @@ Create the release folder and copy:
 
 ```powershell
 cd release
-Compress-Archive -Path .\RingForge_Workbench_v1.2 -DestinationPath .\RingForge_Workbench_v1.2.zip -Force
+Compress-Archive -Path .\RingForge_Workbench_v1.3 -DestinationPath .\RingForge_Workbench_v1.3.zip -Force
 ```
 
-## Release Notes â€“ RingForge Workbench v1.1
+## Release Notes – RingForge Workbench v1.3
 
 ### Added
-
-- dynamic HTML report export
-- browser-open workflow for reviewing dynamic reports
-- browser-based PDF fallback workflow
-- Procmon configuration file support
-- shared dark/blue HTML report theme foundation
-- improved dynamic GUI controls for report actions
+- redesigned API Spec Analysis workspace
+- Overview metrics for spec parsing
+- endpoint inventory reporting
+- HTML report generation for API spec analysis
+- OpenAPI 3.x and Swagger 2.0 validation coverage
+- spec-specific latest report naming and access behavior
 
 ### Improved
-
-- dynamic findings noise reduction on non-isolated hosts
-- cleaner dynamic findings presentation
-- better handling for optional or non-applicable analysis steps
-- initial GUI theming work aligned to report styling
+- authentication normalization and per-endpoint auth reporting
+- API spec HTML report readability
+- GUI layout, spacing, branding, and consistency
+- report naming using analyzed spec filenames
+- report-open behavior for spec-specific latest reports
 
 ### Fixed
-
-- report export path resolution for dynamic runs
-- issues caused by duplicate or broken Dynamic Analysis helper methods
-- improved report button integration inside the Dynamic Analysis window
+- API Spec Analysis window layout and rendering issues
+- endpoint inventory spacing and scrollbar behavior
+- incorrect global-auth display on public endpoints
+- duplicate auth naming variants in spec analysis results
+- Swagger 2.0 type labeling
 
 ## Troubleshooting
 
@@ -556,9 +622,18 @@ Common reasons:
 
 ### 10. HTML report exports but PDF does not
 
-If the HTML report is created successfully but PDF generation fails on Windows, WeasyPrint system dependencies are likely missing. Open the HTML report in your browser and use Print â†’ Save as PDF.
+If the HTML report is created successfully but PDF generation fails on Windows, WeasyPrint system dependencies are likely missing. Open the HTML report in your browser and use Print → Save as PDF.
 
-### 11. Paths fail in Linux
+### 11. API Spec Analysis rejects a file
+
+API Spec Analysis only supports:
+- `.json`
+- `.yaml`
+- `.yml`
+
+Make sure the selected file is an OpenAPI or Swagger definition in one of those formats.
+
+### 12. Paths fail in Linux
 
 Use Linux-style paths in the GUI, not Windows paths.
 
@@ -568,14 +643,15 @@ Use Linux-style paths in the GUI, not Windows paths.
 - do not run unknown samples on a personal daily-use host
 - Procmon-backed execution and persistence snapshotting can generate significant host noise on non-isolated systems
 - legitimate software can still contain powerful APIs, installer behaviors, or autorun-related logic; scoring and findings should always be reviewed in context
+- API spec analysis can highlight risky routes, methods, and auth patterns, but findings still require analyst review in context
 
 ## Notes
 
 - API analysis currently applies to Windows PE executables and DLLs through import/API-chain analysis
-- dynamic analysis in RingForge Workbench v1.2 is intended as a practical triage layer, not a full sandbox replacement
-- future work may include a dedicated API Analysis window, tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
+- API Spec Analysis currently supports OpenAPI and Swagger definition files in JSON or YAML form
+- dynamic analysis in RingForge Workbench v1.3 is intended as a practical triage layer, not a full sandbox replacement
+- future work may include cumulative spec scoring, final multi-test summaries, tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
 
 ## License
 
 See `LICENSE`.
-
