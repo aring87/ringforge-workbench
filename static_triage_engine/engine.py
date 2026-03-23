@@ -26,6 +26,7 @@ from .steps import (
     step_pe_metadata,
     step_lief_metadata,
     step_iocs,
+    step_yara
 )
 from .extract import (
     extract_payloads,
@@ -527,8 +528,18 @@ def run_case(
         runlog["strings"] = _run_step("strings", lambda: step_strings(sample_case, case_dir, lite=strings_lite))
 
     runlog["api_analysis"] = _run_step("api_analysis", lambda: analyze_apis(sample_case, case_dir))
+    runlog["yara"] = _run_step("yara", lambda: step_yara(sample_case, case_dir, cfg))
     runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir, cfg))
     runlog["iocs"] = _run_step("iocs", lambda: step_iocs(case_dir))
+    
+    yara_result = _load_json(case_dir / "yara_results.json")
+    summary["yara"] = {
+        "matched": bool(yara_result.get("matched", False)),
+        "match_count": int(yara_result.get("match_count", 0) or 0),
+        "rule_file_count": int(yara_result.get("rule_file_count", 0) or 0),
+        "top_rules": [m.get("rule", "") for m in (yara_result.get("matches", []) or [])[:10]],
+        "error": yara_result.get("error", "") or "",
+    }
 
     sub_rollup: dict[str, Any] = {
         "enabled": bool(triage_extracted_pes),
@@ -696,7 +707,7 @@ def run_case(
 
     try:
         ledger_append(
-            cfg.ledger_path,
+            cfg.ledger_file,
             {
                 "timestamp_utc": utc_now_iso(),
                 "case_name": case_name,

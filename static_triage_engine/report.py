@@ -179,6 +179,25 @@ def _api_block(case_dir: Path) -> dict[str, Any]:
         "top_dlls": dll_preview[:8],
     }
 
+def _yara_block(case_dir: Path) -> dict[str, Any]:
+    yara_j = _read_json(case_dir / "yara_results.json")
+    matches = yara_j.get("matches", []) if isinstance(yara_j.get("matches"), list) else []
+
+    top_rules: list[str] = []
+    for m in matches[:10]:
+        if isinstance(m, dict):
+            top_rules.append(str(m.get("rule", "") or ""))
+
+    return {
+        "present": bool(yara_j),
+        "matched": bool(yara_j.get("matched", False)),
+        "match_count": int(yara_j.get("match_count", 0) or 0),
+        "rule_file_count": int(yara_j.get("rule_file_count", 0) or 0),
+        "rules_dir": str(yara_j.get("rules_dir", "") or ""),
+        "error": str(yara_j.get("error", "") or ""),
+        "top_rules": [x for x in top_rules if x],
+    }
+
 
 def _spec_block(case_dir: Path) -> dict[str, Any]:
     spec = _read_json(case_dir / "spec" / "api_spec_analysis.json")
@@ -265,7 +284,23 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     else:
         lines.append("- API analysis artifact not present or returned an error.")
     lines.append("")
-
+    
+    lines.append("## YARA Results")
+    yara = data["yara"]
+    if yara["present"]:
+        lines.append(f"- **Matched:** `{'Yes' if yara['matched'] else 'No'}`")
+        lines.append(f"- **Match Count:** `{yara['match_count']}`")
+        lines.append(f"- **Rules Scanned:** `{yara['rule_file_count']}`")
+        if yara["top_rules"]:
+            lines.append("- **Top Matched Rules:**")
+            for rule in yara["top_rules"]:
+                lines.append(f"  - `{rule}`")
+        if yara["error"]:
+            lines.append(f"- **Error:** `{yara['error']}`")
+    else:
+        lines.append("- YARA results artifact not present.")
+    lines.append("")
+    
     spec = data["spec"]
     lines.append("## API Spec Risk Analysis")
     if spec["present"]:
@@ -390,6 +425,16 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Dynamic": combined.get("subscores", {}).get("dynamic", 0),
         "Spec": combined.get("subscores", {}).get("spec", 0),
     }
+    yara = data.get("yara", {}) or {}
+    yara_meta = {
+        "Present": yara.get("present", False),
+        "Matched": yara.get("matched", False),
+        "Match Count": yara.get("match_count", 0),
+        "Rules Scanned": yara.get("rule_file_count", 0),
+        "Rules Dir": yara.get("rules_dir", "") or "N/A",
+        "Error": yara.get("error", "") or "",
+    }
+    yara_rules = [str(x) for x in (yara.get("top_rules", []) or [])]
     spec = data.get("spec", {}) or {}
     spec_meta = {
         "Present": spec.get("present", False),
@@ -411,7 +456,9 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
   {_kv_table("Sample Metadata", sample_meta)}
   {_kv_table("Combined Scoring", combined_meta, badge("Total", combined.get("total_score", 0)))}
   {_kv_table("Spec Risk Analysis", spec_meta, badge("Spec Score", combined.get("subscores", {}).get("spec", 0)))}
+  {_kv_table("YARA Results", yara_meta, badge("Matches", yara.get("match_count", 0)))}
 </div>
+{_list_section("YARA Matched Rules", yara_rules, emphasize=True) if yara_rules else ""}
 {_list_section("Combined Evidence", evidence, emphasize=True)}
 {_list_section("Spec Risk Notes", spec.get("risk_notes", []), emphasize=True)}
 {_list_section("Key Findings (Suspicious)", data.get("suspicious_reasons", []), emphasize=True)}
@@ -455,6 +502,7 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     api = _api_block(case_dir)
     spec = _spec_block(case_dir)
     combined = _combined_block(case_dir)
+    yara = _yara_block(case_dir)
 
     signing = summary.get("signing") if isinstance(summary.get("signing"), dict) else {}
     signing_summary = {"signed_ok": bool(signing.get("verify_ok")) and bool(signing.get("timestamp_verified")), "subject": signing.get("subject", "") or ""} if signing else {}
@@ -480,6 +528,7 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
         "subfiles": _subfiles_block(summary),
         "signing_summary": signing_summary,
         "api": api,
+        "yara": yara,
         "spec": spec,
         "combined": combined,
     }

@@ -75,13 +75,13 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
     verdict = "BENIGN"
     confidence = "Low confidence"
 
-    if score >= 90:
+    if score >= 70:
         verdict = "MALICIOUS"
         confidence = "High confidence"
-    elif score >= 75:
+    elif score >= 40:
         verdict = "SUSPICIOUS"
         confidence = "Moderate confidence"
-    elif score >= 40:
+    elif score >= 15:
         verdict = "LOW_RISK"
         confidence = "Low confidence"
 
@@ -94,9 +94,11 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
             verdict = "MALICIOUS"
             confidence = "High confidence" if (vt_mal >= 15 or score >= 90) else "Moderate confidence"
         elif medium_vt_suspicious and verdict != "MALICIOUS":
-            if score >= 75:
-                verdict = "SUSPICIOUS"
+            if score >= 70:
+                verdict = "MALICIOUS"
             elif score >= 40:
+                verdict = "SUSPICIOUS"
+            elif score >= 15:
                 verdict = "LOW_RISK"
             else:
                 verdict = "SUSPICIOUS"
@@ -124,12 +126,13 @@ def score_static(
     pe_meta = pe_meta or {}
     lief_meta = lief_meta or {}
     api_analysis = api_analysis or {}
-
+    
     evidence: list[ScoreEvidence] = []
     flags: dict[str, Any] = {}
     score = 0
 
     case_dir = _get_case_dir(summary)
+    yara_results = _safe_load_json(case_dir / "yara_results.json")
     file_info = _pe_string_table(pe_meta)
     company = (file_info.get("CompanyName") or "").strip()
     product = (file_info.get("ProductName") or "").strip()
@@ -203,10 +206,14 @@ def score_static(
     )
     score += api_add[0]
     evidence.extend(api_add[1])
+    
+    yara_add = _score_yara_evidence(yara_results)
+    score += yara_add[0]
+    evidence.extend(yara_add[1])
+    flags.update(yara_add[2])
 
     score = max(0, min(40, score))
     return score, evidence, flags
-
 
 def _score_api_findings_evidence(
     api_json: dict[str, Any],
@@ -216,18 +223,22 @@ def _score_api_findings_evidence(
         return 0, []
 
     if int(api_json.get("returncode", 0) or 0) != 0:
-        return 0, [ScoreEvidence("static", "api_analysis_incomplete", 0, "API analysis returned incomplete data")]
+        err = str(api_json.get("error", "") or "").strip()
+        msg = "API analysis returned incomplete data"
+        if err:
+            msg += f": {err}"
+        return 0, [ScoreEvidence("static", "api_analysis_incomplete", 0, msg)]
 
     chains = api_json.get("chain_findings", [])
     if not isinstance(chains, list):
         chains = []
 
-    high = [x for x in chains if isinstance(x, dict) and x.get("severity") == "high"]
-    medium = [x for x in chains if isinstance(x, dict) and x.get("severity") == "medium"]
-    low = [x for x in chains if isinstance(x, dict) and x.get("severity") == "low"]
-
     if not chains:
         return 0, []
+
+    high = [x for x in chains if isinstance(x, dict) and str(x.get("severity", "")).lower() == "high"]
+    medium = [x for x in chains if isinstance(x, dict) and str(x.get("severity", "")).lower() == "medium"]
+    low = [x for x in chains if isinstance(x, dict) and str(x.get("severity", "")).lower() == "low"]
 
     add = 0
     if high:
@@ -240,9 +251,101 @@ def _score_api_findings_evidence(
     if looks_like_installer:
         add = max(0, add - 2)
 
+    counts = f"high={len(high)}, medium={len(medium)}, low={len(low)}"
+
     if add > 0:
-        return add, [ScoreEvidence("static", "api_behavior_chains", add, f"API behavior chains detected (high={len(high)}, medium={len(medium)}, low={len(low)})")]
-    return 0, []
+        return add, [
+            ScoreEvidence(
+                "static",
+                "api_behavior_chains",
+                add,
+                f"API behavior chains detected ({counts})",
+            )
+        ]
+
+    return 0, [
+        ScoreEvidence(
+            "static",
+            "api_behavior_chains",
+            0,
+            f"API behavior chains detected ({counts}); no net score after dampening",
+        )
+    ]
+
+def _score_yara_evidence(yara_results: dict[str, Any]) -> tuple[int, list[ScoreEvidence], dict[str, Any]]:
+    if not isinstance(yara_results, dict) or not yara_results:
+        return 0, [], {}
+
+    evidence: list[ScoreEvidence] = []
+    flags: dict[str, Any] = {}
+
+    matched = bool(yara_results.get("matched", False))
+    match_count = int(yara_results.get("match_count", 0) or 0)
+    rule_file_count = int(yara_results.get("rule_file_count", 0) or 0)
+    matches = yara_results.get("matches", []) if isinstance(yara_results.get("matches"), list) else []
+
+    flags["yara_present"] = bool(yara_results)
+    flags["yara_matched"] = matched
+    flags["yara_match_count"] = match_count
+    flags["yara_rule_file_count"] = rule_file_count
+
+    if yara_results.get("error"):
+        flags["yara_error"] = str(yara_results.get("error"))
+        return 0, [ScoreEvidence("static", "yara_incomplete", 0, f"YARA scan incomplete: {yara_results.get('error')}")], flags
+
+    if not matched or match_count == 0:
+        return 0, [], flags
+
+    rule_names: list[str] = []
+    high_signal = 0
+    medium_signal = 0
+    low_signal = 0
+
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+
+        rule = str(match.get("rule", "") or "").strip()
+        meta = match.get("meta", {}) if isinstance(match.get("meta"), dict) else {}
+        tags = [str(x).lower() for x in (match.get("tags", []) or []) if isinstance(x, (str, int, float))]
+
+        if rule:
+            rule_names.append(rule)
+
+        severity = str(meta.get("severity", "") or "").strip().lower()
+        text = " ".join([rule.lower(), severity] + tags)
+
+        if severity in {"critical", "high"} or any(x in text for x in ["malware", "loader", "trojan", "ransom", "backdoor", "stealer", "rat"]):
+            high_signal += 1
+        elif severity in {"medium", "suspicious"} or any(x in text for x in ["suspicious", "powershell", "script", "persistence", "inject", "shellcode"]):
+            medium_signal += 1
+        elif any(x in text for x in ["packer", "packed", "obfusc", "upx"]):
+            low_signal += 1
+        else:
+            low_signal += 1
+
+    add = 0
+    if high_signal:
+        add += min(12, 6 * high_signal)
+    if medium_signal:
+        add += min(8, 3 * medium_signal)
+    if low_signal:
+        add += min(4, low_signal)
+
+    add = min(15, add)
+
+    if add > 0:
+        top_rules = ", ".join(rule_names[:5]) if rule_names else f"{match_count} rule(s)"
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "yara_matches",
+                add,
+                f"YARA matched {match_count} rule(s): {top_rules}",
+            )
+        )
+
+    return add, evidence, flags
 
 
 def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[ScoreEvidence], dict[str, Any]]:

@@ -68,6 +68,8 @@ class TriageConfig:
     capa_sigs: Path = field(init=False)
 
     ledger_file: Path = field(init=False)
+    
+    yara_rules_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
         base = self.base_dir
@@ -75,6 +77,9 @@ class TriageConfig:
         tools_dir = _tools_dir_default(base)
         cases_dir = _cases_dir_default(base)
         logs_dir = _logs_dir_default(base)
+        yr = os.getenv("YARA_RULES_DIR")
+        yara_rules_dir = Path(yr).expanduser() if yr else (tools_dir / "yara" / "rules")
+        object.__setattr__(self, "yara_rules_dir", yara_rules_dir)
 
         # Optional direct overrides:
         # CAPA_RULES_DIR may be either ...\capa-rules OR ...\capa-rules\rules (normalized later)

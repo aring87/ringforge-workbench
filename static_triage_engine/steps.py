@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
+from .yara_scan import run_yara_scan, save_yara_results
 
 from .config import TriageConfig
 
@@ -64,6 +65,8 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, timeout: int = 900) -> dict
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         return {
@@ -173,8 +176,7 @@ def step_strings(sample: Path, case_dir: Path, lite: bool = False) -> dict[str, 
     res["output_file"] = str(out)
     res["lite"] = bool(lite)
     return res
-
-
+    
 def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]:
     ensure_capa_paths(cfg)
     capa_json = case_dir / "capa.json"
@@ -208,6 +210,35 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]
         "capa_txt": str(capa_txt),
         "text_pass": {"returncode": text_res.get("returncode"), "duration_sec": text_res.get("duration_sec")},
     }
+
+
+def step_yara(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]:
+    out = case_dir / "yara_results.json"
+
+    rules_dir = getattr(cfg, "yara_rules_dir", None)
+    if not rules_dir:
+        rules_dir = Path("tools") / "yara" / "rules"
+    else:
+        rules_dir = Path(rules_dir)
+
+    try:
+        result = run_yara_scan(sample, rules_dir)
+        save_yara_results(out, result)
+
+        return {
+            "returncode": 0 if not result.get("error") else 2,
+            "output_file": str(out),
+            "matched": bool(result.get("matched", False)),
+            "match_count": int(result.get("match_count", 0) or 0),
+            "rule_file_count": int(result.get("rule_file_count", 0) or 0),
+            "error": result.get("error"),
+        }
+    except Exception as e:
+        return {
+            "returncode": 2,
+            "output_file": str(out),
+            "stderr": str(e),
+        }
 
 
 def _best_effort_imphash(sample: Path) -> str | None:

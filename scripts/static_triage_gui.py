@@ -1,5 +1,5 @@
-﻿"""
-Static Triage GUI (v10) â€” Fix progress parsing for timestamped analysis.log lines
+"""
+Static Triage GUI (v10) - Fix progress parsing for timestamped analysis.log lines
 
 Your analysis.log lines look like:
   2026-03-05T23:57:18Z STEP_START md5
@@ -32,6 +32,7 @@ from html import escape
 import urllib.request
 import urllib.error
 import ssl
+from PIL import Image, ImageTk
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from pathlib import Path
@@ -411,62 +412,75 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 return
 
             reports_dir = case_dir / "reports"
-            candidate_paths = [
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            summary_candidates = [
                 reports_dir / "dynamic_run_summary.json",
                 reports_dir / "run_summary.json",
                 case_dir / "dynamic_run_summary.json",
                 case_dir / "run_summary.json",
                 case_dir / "metadata" / "run_summary.json",
             ]
-            summary_path = next((p for p in candidate_paths if p.exists()), None)
-            if not summary_path:
-                messagebox.showerror(
-                    "Export Report",
-                    "Summary file not found.\n\nChecked:\n" + "\n".join(str(p) for p in candidate_paths),
-                    parent=self,
-                )
+            findings_candidates = [
+                reports_dir / "dynamic_findings.json",
+                case_dir / "dynamic_findings.json",
+            ]
+
+            summary_path = next((p for p in summary_candidates if p.exists()), None)
+            findings_path = next((p for p in findings_candidates if p.exists()), None)
+            output_html = reports_dir / "dynamic_report.html"
+
+            if summary_path:
+                write_dynamic_html_report(summary_path, output_html)
+            elif findings_path:
+                data = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
+
+                def esc(x):
+                    return html.escape(str(x if x is not None else ""))
+
+                highlights = data.get("highlights", []) or []
+                counts = data.get("counts", {}) or {}
+                sample = data.get("sample", {}) or {}
+                html_doc = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Dynamic Report</title>
+<style>
+body {{ font-family: Segoe UI, Arial, sans-serif; background: #0b1220; color: #e5eefc; margin: 0; padding: 24px; }}
+.card {{ background: #101a2f; border: 1px solid #223455; border-radius: 14px; padding: 18px; margin-bottom: 16px; }}
+h1, h2 {{ margin-top: 0; color: #9cc4ff; }}
+table {{ width: 100%; border-collapse: collapse; }}
+th, td {{ border-bottom: 1px solid #223455; text-align: left; padding: 8px; vertical-align: top; }}
+ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
+</style></head><body>
+<div class="card"><h1>Dynamic Analysis Report</h1><p class="muted">Case: {esc(case_dir.name)}</p><p><b>Sample:</b> {esc(sample.get("sample_name", ""))}</p><p><b>Path:</b> {esc(sample.get("sample_path", ""))}</p><p><b>SHA256:</b> {esc(sample.get("sha256", ""))}</p></div>
+<div class="card"><h2>Highlights</h2>{"<ul>" + "".join(f"<li>{esc(x)}</li>" for x in highlights) + "</ul>" if highlights else "<p class='muted'>None</p>"}</div>
+<div class="card"><h2>Findings Counts</h2><table>
+<tr><th>Interesting Events</th><td>{esc(counts.get("interesting_events", 0))}</td></tr>
+<tr><th>Process Creates</th><td>{esc(counts.get("process_creates", 0))}</td></tr>
+<tr><th>Network Events</th><td>{esc(counts.get("network_events", 0))}</td></tr>
+<tr><th>File Write Events</th><td>{esc(counts.get("file_write_events", 0))}</td></tr>
+<tr><th>Suspicious Path Hits</th><td>{esc(counts.get("suspicious_path_hits", 0))}</td></tr>
+<tr><th>Persistence Hits</th><td>{esc(counts.get("persistence_hits", 0))}</td></tr>
+</table></div>
+</body></html>"""
+                output_html.write_text(html_doc, encoding="utf-8", errors="replace")
+            else:
+                checked = [str(p) for p in summary_candidates + findings_candidates]
+                messagebox.showerror("Export Report", "No dynamic source file found.\n\nChecked:\n" + "\n".join(checked), parent=self)
                 return
 
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            output_html = reports_dir / "dynamic_report.html"
-            write_dynamic_html_report(summary_path, output_html)
-
-            pdf_created = False
-            pdf_path = reports_dir / "dynamic_report.pdf"
-            try:
-                from weasyprint import HTML
-                HTML(filename=str(output_html)).write_pdf(str(pdf_path))
-                pdf_created = True
-            except Exception as e:
-                pdf_created = False
-                messagebox.showwarning(
-                    "PDF Export",
-                    "HTML report was created successfully, but PDF export is unavailable on this system.\n\n"
-                    f"WeasyPrint error:\n{e}\n\n"
-                    "You can open the HTML report and print it to PDF from your browser.",
-                    parent=self,
-                )
-
             webbrowser.open(output_html.resolve().as_uri())
-            if pdf_created:
-                messagebox.showinfo(
-                    "Export Report",
-                    f"HTML and PDF report created:\n\nHTML: {output_html}\nPDF: {pdf_path}",
-                    parent=self,
-                )
-            else:
-                messagebox.showinfo(
-                    "Export Report",
-                    f"HTML report created:\n\n{output_html}\n\nPDF was not created. Install weasyprint for PDF export.",
-                    parent=self,
-                )
         except Exception as e:
             messagebox.showerror("Export Report", str(e), parent=self)
 
     def _open_latest_dynamic_html(self):
         try:
             case_dir = Path(self.case_dir_var.get().strip())
+            if not case_dir.exists():
+                messagebox.showerror("Open Report", f"Case folder does not exist:\n{case_dir}", parent=self)
+                return
             html_path = case_dir / "reports" / "dynamic_report.html"
+            if not html_path.exists():
+                self._export_dynamic_report()
             if not html_path.exists():
                 messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
                 return
@@ -511,7 +525,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n\n")
         self.output.see("end")
 
-        self.status_var.set("Running dynamicâ€¦")
+        self.status_var.set("Running dynamic...")
         self.run_btn.configure(state="disabled")
 
         def worker():
@@ -733,14 +747,47 @@ def _extract_parameters(op: dict[str, Any], path_item: dict[str, Any]) -> list[d
     return params
 
 
+def _canonical_auth_name(name: str) -> str:
+    n = str(name or "").strip().lower().replace("_", "-").replace(" ", "").replace("/", "-")
+
+    if n in {
+        "apikey", "api-key", "apikeyauth", "x-api-key", "xapikey", "api-key-auth"
+    }:
+        return "api-key"
+
+    if n in {
+        "bearer", "jwt", "bearerauth", "bearer-auth"
+    }:
+        return "bearer"
+
+    if n in {
+        "basic", "basicauth", "basic-auth"
+    }:
+        return "basic"
+
+    if n in {"oauth", "oauth2"}:
+        return "oauth2"
+
+    if n in {"openidconnect", "openid-connect"}:
+        return "openid-connect"
+
+    if not n:
+        return "none"
+
+    return n
+
+
 def _summarize_auth(security_schemes: list[dict[str, Any]], spec_text: str) -> list[str]:
     found: list[str] = []
+
     for item in security_schemes:
         t = (item.get("type", "") or "").lower()
         scheme = (item.get("scheme", "") or "").lower()
         header_name = (item.get("header_name", "") or "").lower()
+        scheme_name = (item.get("name", "") or "").lower()
+
         if t == "apikey":
-            found.append("apiKey")
+            found.append("api-key")
         elif t == "http" and scheme == "bearer":
             found.append("bearer")
         elif t == "http" and scheme == "basic":
@@ -748,14 +795,47 @@ def _summarize_auth(security_schemes: list[dict[str, Any]], spec_text: str) -> l
         elif t == "oauth2":
             found.append("oauth2")
         elif t == "openidconnect":
-            found.append("openidConnect")
-        if header_name and any(k in header_name for k in AUTH_HINT_KEYS):
-            found.append(header_name)
-    text_l = spec_text.lower()
-    for hint in AUTH_HINT_KEYS:
-        if hint in text_l:
-            found.append(hint)
-    return sorted(set(found))
+            found.append("openid-connect")
+
+        if header_name in {"x-api-key", "api-key", "apikey"}:
+            found.append("api-key")
+        if scheme_name:
+            found.append(_canonical_auth_name(scheme_name))
+
+    # only use loose text hints when no explicit schemes were found
+    if not found:
+        text_l = spec_text.lower()
+        for hint in AUTH_HINT_KEYS:
+            if hint in text_l:
+                found.append(_canonical_auth_name(hint))
+
+    out: list[str] = []
+    for item in found:
+        canon = _canonical_auth_name(item)
+        if canon != "none" and canon not in out:
+            out.append(canon)
+    return out
+    
+def _security_requirement_names(sec: Any) -> list[str]:
+    names: list[str] = []
+    if isinstance(sec, list):
+        for item in sec:
+            if isinstance(item, dict):
+                for key in item.keys():
+                    canon = _canonical_auth_name(str(key))
+                    if canon != "none" and canon not in names:
+                        names.append(canon)
+    return names
+
+
+def _effective_endpoint_auth(op: dict[str, Any], spec: dict[str, Any]) -> list[str]:
+    # endpoint-specific security overrides global security
+    if "security" in op:
+        names = _security_requirement_names(op.get("security"))
+        return names if names else []
+
+    names = _security_requirement_names(spec.get("security"))
+    return names
 
 
 def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str, Any]:
@@ -775,7 +855,12 @@ def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str,
         info = spec.get("info", {}) if isinstance(spec.get("info"), dict) else {}
         paths = spec.get("paths", {}) if isinstance(spec.get("paths"), dict) else {}
         result["format"] = fmt
-        result["spec_type"] = "openapi" if ("openapi" in spec or "swagger" in spec) else "unknown"
+        if "openapi" in spec:
+            result["spec_type"] = "openapi"
+        elif "swagger" in spec:
+            result["spec_type"] = "swagger2"
+        else:
+            result["spec_type"] = "unknown"
         result["title"] = str(info.get("title", "") or "")
         result["version"] = str(info.get("version", "") or "")
         result["servers"] = _extract_server_hosts(spec)
@@ -801,11 +886,18 @@ def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str,
                 params = _extract_parameters(op, path_item)
                 sensitive_params = [p for p in params if _looks_sensitive(p.get("name", ""))]
                 sensitive_param_count += len(sensitive_params)
+                endpoint_auth = _effective_endpoint_auth(op, spec)
                 endpoints.append({
-                    "path": str(route), "method": m, "operation_id": str(op.get("operationId", "") or ""),
-                    "summary": str(op.get("summary", "") or ""), "description": str(op.get("description", "") or "")[:500],
-                    "admin_like_route": _looks_admin_route(str(route)), "destructive_method": m in DESTRUCTIVE_METHODS,
-                    "parameters": params, "sensitive_parameters": sensitive_params,
+                    "path": str(route),
+                    "method": m,
+                    "operation_id": str(op.get("operationId", "") or ""),
+                    "summary": str(op.get("summary", "") or ""),
+                    "description": str(op.get("description", "") or "")[:500],
+                    "admin_like_route": _looks_admin_route(str(route)),
+                    "destructive_method": m in DESTRUCTIVE_METHODS,
+                    "parameters": params,
+                    "sensitive_parameters": sensitive_params,
+                    "auth_summary": endpoint_auth,
                 })
         result["endpoints"] = endpoints
         result["summary"] = {
@@ -837,11 +929,11 @@ class SpecAnalysisWindow(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("API Spec Analysis")
-        self.geometry("1220x860")
-        self.minsize(980, 720)
+        self.geometry("1850x980")
+        self.minsize(1650, 900)
         self.spec_path_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
-        self.summary_var = tk.StringVar(value="Load an OpenAPI / Swagger JSON or YAML file to analyze routes, auth, and API risk indicators.")
+        self.summary_var = tk.StringVar(value="Load an OpenAPI or Swagger spec to analyze endpoints, authentication, and API risk indicators.")
         self.last_spec_dir: Optional[Path] = None
         self.last_html_report: Optional[Path] = None
         self.last_json_report: Optional[Path] = None
@@ -870,41 +962,116 @@ class SpecAnalysisWindow(tk.Toplevel):
         return spec_dir
 
     def _build_ui(self):
-        pad = {"padx": 10, "pady": 8}
+        pad = {"padx": 12, "pady": 10}
 
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, **pad)
         frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(3, weight=1)
+        frm.rowconfigure(2, weight=1)
 
+        # ---------- Top command bar ----------
         top = ttk.LabelFrame(frm, text="API Spec Analysis")
-        top.grid(row=0, column=0, sticky="nsew")
+        top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
 
-        ttk.Label(top, text="Spec file:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.spec_path_var, width=110).grid(row=0, column=1, sticky="we", padx=6)
+        ttk.Label(top, text="API Spec:").grid(row=0, column=0, sticky="w", padx=(8, 0), pady=10)
+
+        ttk.Entry(top, textvariable=self.spec_path_var, width=100).grid(
+            row=0, column=1, sticky="ew", padx=8, pady=10
+        )
 
         btns = ttk.Frame(top)
-        btns.grid(row=0, column=2, sticky="e")
+        btns.grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
 
-        ttk.Button(btns, text="Browse", style="Side.Action.TButton", command=self._browse_spec).pack(side="left", padx=(6, 0), pady=2)
-        ttk.Button(btns, text="Analyze Spec", style="Action.TButton", command=self._parse_spec).pack(side="left", padx=(8, 0), pady=2)
-        ttk.Button(btns, text="Open HTML Report", style="Action.TButton", command=self._open_html_report).pack(side="left", padx=(8, 0), pady=2)
-        ttk.Button(btns, text="Open Case Files", style="Action.TButton", command=self._open_case_files).pack(side="left", padx=(8, 0), pady=2)
-        ttk.Button(btns, text="Manual API Tester", style="Action.TButton", command=self._open_manual_api_tester).pack(side="left", padx=(8, 0), pady=2)
+        ttk.Button(
+            btns,
+            text="Browse",
+            style="Side.Action.TButton",
+            command=self._browse_spec,
+        ).pack(side="left", padx=(0, 8))
 
-        summary = ttk.LabelFrame(frm, text="Summary")
-        summary.grid(row=1, column=0, sticky="we")
+        ttk.Button(
+            btns,
+            text="Analyze Spec",
+            style="Action.TButton",
+            command=self._parse_spec,
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            btns,
+            text="Open HTML Report",
+            style="Action.TButton",
+            command=self._open_html_report,
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            btns,
+            text="Open Case Files",
+            style="Action.TButton",
+            command=self._open_case_files,
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            btns,
+            text="Manual API Tester",
+            style="Action.TButton",
+            command=self._open_manual_api_tester,
+        ).pack(side="left")
+
+        # ---------- Quick metrics strip ----------
+        metrics = ttk.LabelFrame(frm, text="Overview")
+        metrics.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for i in range(4):
+            metrics.columnconfigure(i, weight=1)
+
+        self.spec_format_var = tk.StringVar(value="-")
+        self.spec_version_var = tk.StringVar(value="-")
+        self.spec_endpoint_count_var = tk.StringVar(value="-")
+        self.spec_auth_var = tk.StringVar(value="-")
+
+        def metric_cell(parent, col, title, var):
+            box = ttk.Frame(parent)
+            box.grid(row=0, column=col, sticky="ew", padx=10, pady=10)
+            ttk.Label(box, text=title, style="SectionHeader.TLabel").pack(anchor="w")
+            ttk.Label(box, textvariable=var, style="SummaryValue.TLabel").pack(anchor="w", pady=(4, 0))
+
+        metric_cell(metrics, 0, "Format", self.spec_format_var)
+        metric_cell(metrics, 1, "Version", self.spec_version_var)
+        metric_cell(metrics, 2, "Endpoints", self.spec_endpoint_count_var)
+        metric_cell(metrics, 3, "Auth", self.spec_auth_var)
+
+        # ---------- Main workspace ----------
+        body = ttk.Frame(frm)
+        body.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        body.columnconfigure(0, weight=0, minsize=500)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        # Left pane
+        left = ttk.Frame(body)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(2, weight=1)
+
+        summary = ttk.LabelFrame(left, text="Summary")
+        summary.grid(row=0, column=0, sticky="ew")
         summary.columnconfigure(0, weight=1)
-        ttk.Label(summary, textvariable=self.summary_var, wraplength=1160, justify="left").grid(row=0, column=0, sticky="w", padx=8, pady=8)
 
-        notes = ttk.LabelFrame(frm, text="Risk Notes")
-        notes.grid(row=2, column=0, sticky="we", pady=(8, 0))
+        self.summary_label = ttk.Label(
+            summary,
+            textvariable=self.summary_var,
+            wraplength=360,
+            justify="left",
+        )
+        self.summary_label.grid(row=0, column=0, sticky="w", padx=10, pady=10)
+
+        notes = ttk.LabelFrame(left, text="Risk Notes")
+        notes.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         notes.columnconfigure(0, weight=1)
 
         self.notes_text = tk.Text(
             notes,
-            height=5,
+            height=10,
             wrap="word",
             bg="#0d1b33",
             fg="#eaf2ff",
@@ -918,15 +1085,46 @@ class SpecAnalysisWindow(tk.Toplevel):
             highlightcolor="#3d86ff",
             font=("Consolas", 10),
         )
-        self.notes_text.grid(row=0, column=0, sticky="we", padx=8, pady=8)
+        self.notes_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
-        inv = ttk.LabelFrame(frm, text="Endpoint Inventory")
-        inv.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
-        inv.columnconfigure(0, weight=1)
-        inv.rowconfigure(0, weight=1)
+        empty = ttk.LabelFrame(left, text="Getting Started")
+        empty.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        empty.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            empty,
+            text="API Spec Analysis",
+            style="SectionHeader.TLabel",
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 4))
+
+        ttk.Label(
+            empty,
+            text="Load an OpenAPI or Swagger definition to build endpoint inventory, summarize authentication, generate risk notes, and create an HTML report.",
+            wraplength=360,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", padx=10)
+
+        ttk.Label(
+            empty,
+            text="Supported formats: JSON, YAML, YML"
+        ).grid(row=2, column=0, sticky="w", padx=10, pady=(8, 10))
+
+        # Right pane
+        right = ttk.LabelFrame(body, text="Endpoint Inventory")
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        right.rowconfigure(1, weight=0)
+
+        # table wrapper
+        table_wrap = ttk.Frame(right)
+        table_wrap.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        table_wrap.columnconfigure(0, weight=1)
+        table_wrap.columnconfigure(1, weight=0)
+        table_wrap.rowconfigure(0, weight=1)
 
         cols = ("method", "path", "summary", "auth", "params", "flags")
-        self.tree = ttk.Treeview(inv, columns=cols, show="headings", height=22)
+        self.tree = ttk.Treeview(table_wrap, columns=cols, show="headings", height=22)
 
         headings = {
             "method": "Method",
@@ -936,111 +1134,258 @@ class SpecAnalysisWindow(tk.Toplevel):
             "params": "Params",
             "flags": "Flags",
         }
+
         widths = {
-            "method": 90,
-            "path": 330,
-            "summary": 320,
-            "auth": 120,
-            "params": 120,
-            "flags": 180,
+            "method": 100,
+            "path": 180,
+            "summary": 360,
+            "auth": 220,
+            "params": 90,
+            "flags": 150,
         }
 
         for col in cols:
-            self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], anchor="w")
+            self.tree.heading(col, text=headings[col], anchor="w")
+            self.tree.column(
+                col,
+                width=widths[col],
+                minwidth=widths[col],
+                anchor="w",
+                stretch=(col == "summary"),
+            )
 
         self.tree.grid(row=0, column=0, sticky="nsew")
 
-        ysb = ttk.Scrollbar(inv, orient="vertical", command=self.tree.yview)
-        ysb.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=ysb.set)
+        ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
+        ysb.grid(row=0, column=1, sticky="ns", padx=(0, 6))
 
+        xsb = ttk.Scrollbar(right, orient="horizontal", command=self.tree.xview)
+        xsb.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
+
+        self.tree.configure(
+            yscrollcommand=ysb.set,
+            xscrollcommand=xsb.set,
+        )
+
+        # ---------- Status row ----------
         status_row = ttk.Frame(frm)
-        status_row.grid(row=4, column=0, sticky="we", pady=(6, 0))
-        ttk.Label(status_row, textvariable=self.status_var, anchor="e").pack(side="right", padx=(12, 0), pady=2)
+        status_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(status_row, textvariable=self.status_var).pack(side="right", padx=(12, 0), pady=2)
 
     def _browse_spec(self):
         start = Path(self.spec_path_var.get()).parent if self.spec_path_var.get().strip() else ROOT
         chosen = filedialog.askopenfilename(title="Select API spec", initialdir=str(start), filetypes=[("API Specs", "*.json *.yaml *.yml"), ("All Files", "*.*")])
         if chosen:
             self.spec_path_var.set(norm_path_str(chosen))
+    
+    def _normalize_auth_name(self, name: str) -> str:
+        n = (name or "").strip().lower().replace("_", "-")
+
+        if n in {"apikey", "api-key", "x-api-key", "api key"}:
+            return "api-key"
+        if n in {"bearer", "jwt", "bearerauth"}:
+            return "bearer"
+        if n in {"basic", "basicauth"}:
+            return "basic"
+        if n in {"oauth2", "oauth"}:
+            return "oauth2"
+        if n in {"none", ""}:
+            return "none"
+
+        return n
+
+
+    def _format_endpoint_auth(self, ep: dict[str, Any]) -> str:
+        raw = ep.get("auth_summary") or ep.get("auth") or []
+        if isinstance(raw, str):
+            raw = [raw]
+
+        normalized = []
+        for item in raw:
+            val = self._normalize_auth_name(str(item))
+            if val and val != "none" and val not in normalized:
+                normalized.append(val)
+
+        return ", ".join(normalized) if normalized else "none"
 
     def _populate_result(self, result: dict[str, Any]):
         for item in self.tree.get_children():
             self.tree.delete(item)
+
         summary = result.get("summary", {})
         title = result.get("title") or Path(result.get("input_file", "spec")).name
+
+        raw_auth_summary = result.get("auth_summary", [])
+        normalized_auth_summary = []
+        for item in raw_auth_summary:
+            canon = _canonical_auth_name(str(item))
+            if canon != "none" and canon not in normalized_auth_summary:
+                normalized_auth_summary.append(canon)
+
+        self.spec_format_var.set(result.get("format", "") or "-")
+        self.spec_version_var.set(result.get("version", "") or "-")
+        self.spec_endpoint_count_var.set(str(summary.get("endpoint_count", 0)))
+        self.spec_auth_var.set(", ".join(normalized_auth_summary) if normalized_auth_summary else "none")
+
         self.summary_var.set(
-            f"Title: {title} | Version: {result.get('version','')} | Type: {result.get('spec_type','')} | Format: {result.get('format','')} | "
-            f"Endpoints: {summary.get('endpoint_count',0)} | GET: {summary.get('get_count',0)} | POST: {summary.get('post_count',0)} | "
-            f"PUT: {summary.get('put_count',0)} | PATCH: {summary.get('patch_count',0)} | DELETE: {summary.get('delete_count',0)} | "
-            f"Servers: {', '.join(result.get('servers', [])) or 'none'} | Auth: {', '.join(result.get('auth_summary', [])) or 'none'}"
+            f"Title: {title}\n"
+            f"Format: {result.get('format', '-')}\n"
+            f"Type: {result.get('spec_type', '-')}\n"
+            f"Servers: {', '.join(result.get('servers', [])) or 'none'}\n"
+            f"Methods: GET {summary.get('get_count',0)} | POST {summary.get('post_count',0)} | "
+            f"PUT {summary.get('put_count',0)} | PATCH {summary.get('patch_count',0)} | "
+            f"DELETE {summary.get('delete_count',0)}"
         )
-        self.notes_text.delete('1.0', 'end')
-        notes = result.get('risk_notes', [])
-        self.notes_text.insert('1.0', '\n'.join(f'- {x}' for x in notes) if notes else 'No risk notes generated.')
-        auth_txt = ', '.join(result.get('auth_summary', [])) or 'none'
-        for ep in result.get('endpoints', []):
-            params = ep.get('parameters', [])
+
+        self.notes_text.delete("1.0", "end")
+        notes = result.get("risk_notes", [])
+        self.notes_text.insert(
+            "1.0",
+            "\n".join(f"- {x}" for x in notes) if notes else "No risk notes generated."
+        )
+
+        for ep in result.get("endpoints", []):
+            params = ep.get("parameters", [])
             flags = []
-            if ep.get('admin_like_route'):
-                flags.append('admin-like')
-            if ep.get('destructive_method'):
-                flags.append('destructive')
-            if ep.get('sensitive_parameters'):
-                flags.append('sensitive-params')
-            self.tree.insert('', 'end', values=(ep.get('method',''), ep.get('path',''), ep.get('summary',''), auth_txt, len(params), ', '.join(flags)))
+
+            if ep.get("admin_like_route"):
+                flags.append("admin-like")
+            if ep.get("destructive_method"):
+                flags.append("destructive")
+            if ep.get("sensitive_parameters"):
+                flags.append("sensitive-params")
+
+            ep_auth = ep.get("auth_summary", []) or []
+            if isinstance(ep_auth, str):
+                ep_auth = [ep_auth]
+
+            normalized_ep_auth = []
+            for item in ep_auth:
+                canon = _canonical_auth_name(str(item))
+                if canon != "none" and canon not in normalized_ep_auth:
+                    normalized_ep_auth.append(canon)
+
+            auth_txt = ", ".join(normalized_ep_auth) if normalized_ep_auth else "none"
+
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    ep.get("method", ""),
+                    ep.get("path", ""),
+                    ep.get("summary", ""),
+                    auth_txt,
+                    len(params),
+                    ", ".join(flags),
+                ),
+            )
 
     def _render_html(self, result: dict[str, Any]) -> str:
         rows = []
-        auth_txt = ', '.join(result.get('auth_summary', [])) or 'none'
-        for ep in result.get('endpoints', []):
+
+        raw_auth_summary = result.get("auth_summary", [])
+        normalized_auth_summary = []
+        for item in raw_auth_summary:
+            canon = _canonical_auth_name(str(item))
+            if canon != "none" and canon not in normalized_auth_summary:
+                normalized_auth_summary.append(canon)
+
+        auth_txt = ", ".join(normalized_auth_summary) if normalized_auth_summary else "none"
+
+        for ep in result.get("endpoints", []):
             flags = []
-            if ep.get('admin_like_route'):
-                flags.append('admin-like')
-            if ep.get('destructive_method'):
-                flags.append('destructive')
-            if ep.get('sensitive_parameters'):
-                flags.append('sensitive-params')
-            rows.append(f"<tr><td>{escape(str(ep.get('method','')))}</td><td>{escape(str(ep.get('path','')))}</td><td>{escape(str(ep.get('summary','')))}</td><td>{escape(auth_txt)}</td><td>{len(ep.get('parameters', []))}</td><td>{escape(', '.join(flags))}</td></tr>")
+            if ep.get("admin_like_route"):
+                flags.append("admin-like")
+            if ep.get("destructive_method"):
+                flags.append("destructive")
+            if ep.get("sensitive_parameters"):
+                flags.append("sensitive-params")
+
+            ep_auth = ep.get("auth_summary", []) or []
+            if isinstance(ep_auth, str):
+                ep_auth = [ep_auth]
+
+            normalized_ep_auth = []
+            for item in ep_auth:
+                canon = _canonical_auth_name(str(item))
+                if canon != "none" and canon not in normalized_ep_auth:
+                    normalized_ep_auth.append(canon)
+
+            endpoint_auth_txt = ", ".join(normalized_ep_auth) if normalized_ep_auth else "none"
+
+            rows.append(
+                f"<tr>"
+                f"<td>{escape(str(ep.get('method','')))}</td>"
+                f"<td>{escape(str(ep.get('path','')))}</td>"
+                f"<td>{escape(str(ep.get('summary','')))}</td>"
+                f"<td>{escape(endpoint_auth_txt)}</td>"
+                f"<td>{len(ep.get('parameters', []))}</td>"
+                f"<td>{escape(', '.join(flags))}</td>"
+                f"</tr>"
+            )
+
         notes_html = ''.join(f"<li>{escape(str(x))}</li>" for x in result.get('risk_notes', [])) or '<li>No risk notes generated.</li>'
         s = result.get('summary', {})
+
         return f"""<!DOCTYPE html>
-<html lang='en'><head><meta charset='utf-8'><title>API Spec Analysis Report</title>
-<style>body{{background:#081426;color:#eaf2ff;font-family:Segoe UI,Arial,sans-serif;margin:24px}}h1,h2{{color:#7db3ff}}.card{{background:#0d1b33;border:1px solid #2a4365;border-radius:10px;padding:16px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid #2a4365;padding:8px;text-align:left;vertical-align:top}}th{{background:#13284a}}ul{{margin:0;padding-left:20px}}</style></head><body>
-<h1>API Spec Analysis Report</h1>
-<div class='card'><div><strong>Input file:</strong> {escape(str(result.get('input_file','')))}</div><div><strong>Title:</strong> {escape(str(result.get('title','')))}</div><div><strong>Version:</strong> {escape(str(result.get('version','')))}</div><div><strong>Type:</strong> {escape(str(result.get('spec_type','')))}</div><div><strong>Format:</strong> {escape(str(result.get('format','')))}</div><div><strong>Servers:</strong> {escape(', '.join(result.get('servers', [])) or 'none')}</div><div><strong>Auth summary:</strong> {escape(auth_txt)}</div></div>
-<div class='card'><h2>Counts</h2><div>Endpoints: {s.get('endpoint_count',0)} | GET: {s.get('get_count',0)} | POST: {s.get('post_count',0)} | PUT: {s.get('put_count',0)} | PATCH: {s.get('patch_count',0)} | DELETE: {s.get('delete_count',0)}</div><div>Admin-like routes: {s.get('admin_like_route_count',0)} | Sensitive params: {s.get('sensitive_param_count',0)} | Auth schemes: {s.get('auth_scheme_count',0)}</div></div>
-<div class='card'><h2>Risk Notes</h2><ul>{notes_html}</ul></div>
-<div class='card'><h2>Endpoint Inventory</h2><table><tr><th>Method</th><th>Path</th><th>Summary</th><th>Auth</th><th>Params</th><th>Flags</th></tr>{''.join(rows)}</table></div>
-</body></html>"""
+    <html lang='en'><head><meta charset='utf-8'><title>API Spec Analysis Report</title>
+    <style>body{{background:#081426;color:#eaf2ff;font-family:Segoe UI,Arial,sans-serif;margin:24px}}h1,h2{{color:#7db3ff}}.card{{background:#0d1b33;border:1px solid #2a4365;border-radius:10px;padding:16px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid #2a4365;padding:8px;text-align:left;vertical-align:top}}th{{background:#13284a}}ul{{margin:0;padding-left:20px}}</style></head><body>
+    <h1>API Spec Analysis Report</h1>
+    <div class='card'><div><strong>Input file:</strong> {escape(str(result.get('input_file','')))}</div><div><strong>Title:</strong> {escape(str(result.get('title','')))}</div><div><strong>Version:</strong> {escape(str(result.get('version','')))}</div><div><strong>Type:</strong> {escape(str(result.get('spec_type','')))}</div><div><strong>Format:</strong> {escape(str(result.get('format','')))}</div><div><strong>Servers:</strong> {escape(', '.join(result.get('servers', [])) or 'none')}</div><div><strong>Auth summary:</strong> {escape(auth_txt)}</div></div>
+    <div class='card'><h2>Counts</h2><div>Endpoints: {s.get('endpoint_count',0)} | GET: {s.get('get_count',0)} | POST: {s.get('post_count',0)} | PUT: {s.get('put_count',0)} | PATCH: {s.get('patch_count',0)} | DELETE: {s.get('delete_count',0)}</div><div>Admin-like routes: {s.get('admin_like_route_count',0)} | Sensitive params: {s.get('sensitive_param_count',0)} | Auth schemes: {s.get('auth_scheme_count',0)}</div></div>
+    <div class='card'><h2>Risk Notes</h2><ul>{notes_html}</ul></div>
+    <div class='card'><h2>Endpoint Inventory</h2><table><tr><th>Method</th><th>Path</th><th>Summary</th><th>Auth</th><th>Params</th><th>Flags</th></tr>{''.join(rows)}</table></div>
+    </body></html>"""
 
     def _save_report_files(self, result: dict[str, Any]) -> tuple[Path, Path]:
         spec_dir = self._ensure_spec_dir()
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        json_path = spec_dir / f'spec_inventory_{timestamp}.json'
-        html_path = spec_dir / f'spec_inventory_{timestamp}.html'
-        latest_json = spec_dir / 'spec_inventory_latest.json'
-        latest_html = spec_dir / 'spec_inventory_latest.html'
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        src = Path(self.spec_path_var.get().strip())
+        spec_name = src.stem if src.exists() else "spec"
+        safe_spec_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in spec_name)
+        safe_spec_name = safe_spec_name.strip("_") or "spec"
+
+        json_path = spec_dir / f"spec_inventory_{safe_spec_name}_{timestamp}.json"
+        html_path = spec_dir / f"spec_inventory_{safe_spec_name}_{timestamp}.html"
+
+        latest_json = spec_dir / f"spec_inventory_latest_{safe_spec_name}.json"
+        latest_html = spec_dir / f"spec_inventory_latest_{safe_spec_name}.html"
+
+        generic_latest_json = spec_dir / "spec_inventory_latest.json"
+        generic_latest_html = spec_dir / "spec_inventory_latest.html"
+
         _safe_json_write(json_path, result)
         _safe_json_write(latest_json, result)
+        _safe_json_write(generic_latest_json, result)
+
         html_text = self._render_html(result)
-        html_path.write_text(html_text, encoding='utf-8')
-        latest_html.write_text(html_text, encoding='utf-8')
-        src = Path(self.spec_path_var.get().strip())
+        html_path.write_text(html_text, encoding="utf-8")
+        latest_html.write_text(html_text, encoding="utf-8")
+        generic_latest_html.write_text(html_text, encoding="utf-8")
+
         if src.exists():
             try:
-                shutil.copy2(src, spec_dir / f'original_spec{src.suffix.lower()}')
+                shutil.copy2(src, spec_dir / f"original_{safe_spec_name}{src.suffix.lower()}")
             except Exception:
                 pass
+
+        # point buttons to the most recent named report for this spec
         self.last_json_report = latest_json
         self.last_html_report = latest_html
+
         return latest_json, latest_html
 
     def _parse_spec(self):
         spec_path = Path(self.spec_path_var.get().strip())
-        if not spec_path.exists():
-            messagebox.showerror('Spec Analysis', f'Spec file not found:\n{spec_path}', parent=self)
+        if spec_path.suffix.lower() not in {".json", ".yaml", ".yml"}:
+            messagebox.showerror(
+                "Spec Analysis",
+                "API Spec Analysis only accepts .json, .yaml, or .yml files.",
+                parent=self,
+            )
+            self.status_var.set("Invalid spec file type")
             return
         result = analyze_api_spec(spec_path, self._ensure_spec_dir())
         if result.get('returncode') != 0:
@@ -1071,18 +1416,42 @@ class SpecAnalysisWindow(tk.Toplevel):
             return
         _, html_path = self._save_report_files(self.last_result)
         self.status_var.set(f'Saved HTML report: {html_path.name}')
-        messagebox.showinfo('Save HTML Report', f'Saved spec HTML report:\n{html_path}', parent=self)
+        messagebox.showinfo('Save HTML Report', f'Saved spec HTML report:{html_path}', parent=self)
 
     def _open_html_report(self):
-        html_path = self.last_html_report
-        if html_path is None:
+        report_path = None
+
+        # first choice: the last report generated in this window
+        if getattr(self, "last_html_report", None):
+            candidate = Path(self.last_html_report)
+            if candidate.exists():
+                report_path = candidate
+
+        # second choice: derive the spec-specific latest report from the current spec path
+        if report_path is None:
             spec_dir = self._ensure_spec_dir()
-            candidate = spec_dir / 'spec_inventory_latest.html'
-            html_path = candidate if candidate.exists() else None
-        if html_path is None or not html_path.exists():
-            messagebox.showinfo('Open HTML Report', 'No saved spec HTML report was found yet.', parent=self)
-            return
-        webbrowser.open(html_path.resolve().as_uri())
+            src = Path(self.spec_path_var.get().strip())
+            if src.exists():
+                spec_name = src.stem
+                safe_spec_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in spec_name)
+                safe_spec_name = safe_spec_name.strip("_") or "spec"
+
+                candidate = spec_dir / f"spec_inventory_latest_{safe_spec_name}.html"
+                if candidate.exists():
+                    report_path = candidate
+
+        # fallback: generic latest
+        if report_path is None:
+            spec_dir = self._ensure_spec_dir()
+            candidate = spec_dir / "spec_inventory_latest.html"
+            if candidate.exists():
+                report_path = candidate
+
+        if report_path and report_path.exists():
+            webbrowser.open(report_path.resolve().as_uri())
+            self.status_var.set(f"Opened HTML report: {report_path.name}")
+        else:
+            messagebox.showinfo("Open HTML Report", "No saved HTML report found yet.", parent=self)
 
     def _open_case_files(self):
         spec_dir = self.last_spec_dir
@@ -1093,7 +1462,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             messagebox.showinfo('Open Case Files', 'No spec case folder was found yet.', parent=self)
             return
         self.app._open_path(spec_dir)
-    
+
     def _open_manual_api_tester(self):
         APIAnalysisWindow(self.app)
 
@@ -1114,8 +1483,8 @@ class APIAnalysisWindow(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("Manual API Tester")
-        self.geometry("1120x860")
-        self.minsize(940, 720)
+        self.geometry("1400x980")
+        self.minsize(1200, 820)
 
         self.preset_var = tk.StringVar(value="HTTPBin GET Test")
         self.method_var = tk.StringVar(value="GET")
@@ -1170,7 +1539,7 @@ class APIAnalysisWindow(tk.Toplevel):
 
         ttk.Label(frm, text="Upload file:").grid(row=3, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.file_path_var, width=92).grid(row=3, column=1, sticky="we", padx=6)
-        ttk.Button(frm, text="Browseâ€¦", command=self._browse_upload_file).grid(row=3, column=2, sticky="w")
+        ttk.Button(frm, text="Browse...", command=self._browse_upload_file).grid(row=3, column=2, sticky="w")
         field_wrap = ttk.Frame(frm)
         field_wrap.grid(row=3, column=3, sticky="w")
         ttk.Label(field_wrap, text="Field:").pack(side="left")
@@ -1671,6 +2040,27 @@ class App(tk.Tk):
         style.configure(".", background=bg, foreground=text)
         style.configure("TFrame", background=bg)
         style.configure("TLabel", background=bg, foreground=text)
+        
+        style.configure(
+            "SummaryValue.TLabel",
+            font=("Segoe UI", 14, "bold"),
+            foreground="#f8fbff",
+            background="#001833",
+        )
+
+        style.configure(
+            "SummaryAccent.TLabel",
+            font=("Segoe UI", 11, "bold"),
+            foreground="#7fb3ff",
+            background="#001833",
+        )
+
+        style.configure(
+            "SectionHeader.TLabel",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#9fc5ff",
+            background="#001833",
+        )
 
         style.configure(
             "TLabelframe",
@@ -1887,9 +2277,57 @@ class App(tk.Tk):
         )
         style.configure(
             "Treeview.Heading",
-            background=panel2,
-            foreground="#cfe2ff",
+            background="#13284a",
+            foreground="#eaf2ff",
+            bordercolor="#2a4365",
+            lightcolor="#2a4365",
+            darkcolor="#2a4365",
             relief="flat",
+            padding=(14, 8),
+            font=("Segoe UI", 10, "bold"),
+        )
+
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#13284a"), ("pressed", "#1f6fff")],
+            foreground=[("active", "#eaf2ff"), ("pressed", "#ffffff")],
+            relief=[("pressed", "flat"), ("active", "flat")],
+        )
+        
+        style.configure(
+            "Treeview",
+            background="#0d1b33",
+            fieldbackground="#0d1b33",
+            foreground="#eaf2ff",
+            rowheight=28,
+            bordercolor="#2a4365",
+            lightcolor="#2a4365",
+            darkcolor="#2a4365",
+        )
+
+        style.map(
+            "Treeview",
+            background=[("selected", "#1f6fff")],
+            foreground=[("selected", "#ffffff")],
+        )
+
+        style.configure(
+            "Treeview.Heading",
+            background="#13284a",
+            foreground="#eaf2ff",
+            bordercolor="#365a88",
+            lightcolor="#365a88",
+            darkcolor="#365a88",
+            relief="raised",
+            padding=(12, 8),
+            font=("Segoe UI", 10, "bold"),
+        )
+
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#13284a"), ("pressed", "#1f6fff")],
+            foreground=[("active", "#eaf2ff"), ("pressed", "#ffffff")],
+            relief=[("active", "raised"), ("pressed", "sunken")],
         )
 
         style.configure("TNotebook", background=bg, borderwidth=0)
@@ -1946,18 +2384,19 @@ class App(tk.Tk):
         self.status_var = tk.StringVar(value="")
         self.running_var = tk.StringVar(value="Idle")
 
-        self.score_var = tk.StringVar(value="â€”")
-        self.verdict_var = tk.StringVar(value="â€”")
-        self.confidence_var = tk.StringVar(value="â€”")
-        self.combined_score_var = tk.StringVar(value="â€”")
-        self.combined_severity_var = tk.StringVar(value="â€”")
-        self.static_subscore_var = tk.StringVar(value="â€”")
-        self.dynamic_subscore_var = tk.StringVar(value="â€”")
-        self.spec_subscore_var = tk.StringVar(value="â€”")
+        self.score_var = tk.StringVar(value="-")
+        self.verdict_var = tk.StringVar(value="-")
+        self.confidence_var = tk.StringVar(value="-")
+        self.combined_score_var = tk.StringVar(value="-")
+        self.combined_severity_var = tk.StringVar(value="-")
+        self.static_subscore_var = tk.StringVar(value="-")
+        self.dynamic_subscore_var = tk.StringVar(value="-")
+        self.spec_subscore_var = tk.StringVar(value="-")
         self.vt_status_var = tk.StringVar(value="VirusTotal: disabled")
-        self.vt_name_var = tk.StringVar(value="VT Name: â€”")
+        self.vt_name_var = tk.StringVar(value="VT Name: -")
         self.vt_counts_var = tk.StringVar(value="Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
         self.vt_link: str = ""
+        self.brand_logo_img = None
 
         self.open_case_btn: Optional[ttk.Button] = None
         self.open_html_btn: Optional[ttk.Button] = None
@@ -1988,147 +2427,485 @@ class App(tk.Tk):
         self.after(100, self._drain_output)
 
     def _build_ui(self):
-        pad = {"padx": 10, "pady": 6}
+        outer = {"padx": 12, "pady": 8}
 
-        top = ttk.Frame(self)
-        top.pack(fill="x", **pad)
+        # ---------- Header ----------
+        header = ttk.Frame(self)
+        header.pack(fill="x", **outer)
+        header.columnconfigure(1, weight=1)
+        header.columnconfigure(3, weight=0)
 
-        ttk.Label(top, text="Sample:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.sample_var, width=105).grid(row=0, column=1, sticky="we", padx=6)
-        ttk.Button(top, text="Browse...", style="Side.Action.TButton", command=self._browse_sample).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=2)
+        ttk.Label(header, text="Sample:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(header, textvariable=self.sample_var, width=90).grid(
+            row=0, column=1, sticky="ew", padx=(8, 8)
+        )
+        ttk.Button(
+            header,
+            text="Browse...",
+            style="Side.Action.TButton",
+            command=self._browse_sample,
+        ).grid(row=0, column=2, sticky="ew")
 
-        ttk.Label(top, text="Case name (optional):").grid(row=1, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.case_var, width=50).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(header, text="Case name:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(header, textvariable=self.case_var, width=32).grid(
+            row=1, column=1, sticky="w", padx=(8, 8), pady=(8, 0)
+        )
 
-        ttk.Label(top, text="Preset:").grid(row=1, column=1, sticky="e", padx=(0, 220))
+        ttk.Label(header, text="Preset:").grid(row=1, column=2, sticky="e", padx=(12, 6), pady=(8, 0))
         preset_names = [p.name for p in PRESETS]
-
         preset_box = ttk.Combobox(
-            top,
+            header,
             textvariable=self.preset_var,
             values=preset_names,
             state="readonly",
             width=18,
         )
-        preset_box.grid(row=1, column=2, sticky="e")
+        preset_box.grid(row=1, column=3, sticky="w", pady=(8, 0))
         preset_box.bind("<<ComboboxSelected>>", self._on_preset_selected)
 
-        top.columnconfigure(1, weight=1)
+        # ---------- Main 2-column body ----------
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=False, **outer)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
 
-        paths = ttk.LabelFrame(self, text="Paths")
-        paths.pack(fill="x", **pad)
+        left_col = ttk.Frame(body)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left_col.columnconfigure(0, weight=1)
+        left_col.rowconfigure(1, weight=1)
 
-        ttk.Label(paths, text=r"Case output folder (CASE_ROOT_DIR):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(paths, textvariable=self.case_root_var, width=105).grid(row=0, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_case_root).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=2)
+        right_col = ttk.Frame(body)
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right_col.columnconfigure(0, weight=1)
 
-        ttk.Label(paths, text=r"capa rules folder (â€¦\tools\capa-rules OR â€¦\tools\capa-rules\rules):").grid(row=1, column=0, sticky="w")
-        ttk.Entry(paths, textvariable=self.rules_var, width=105).grid(row=1, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_rules).grid(row=1, column=2, sticky="ew", padx=(6, 0), pady=2)
+        # ---------- Configuration ----------
+        config = ttk.LabelFrame(left_col, text="Configuration")
+        config.grid(row=0, column=0, sticky="ew")
+        config.columnconfigure(0, weight=1)
+        
+        # ---------- Brand panel ----------
+        brand = ttk.LabelFrame(left_col, text="RingForge")
+        brand.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        brand.columnconfigure(0, weight=1)
+        brand.rowconfigure(0, weight=1)
 
-        ttk.Label(paths, text=r"capa sigs folder (â€¦\tools\capa\sigs):").grid(row=2, column=0, sticky="w")
-        ttk.Entry(paths, textvariable=self.sigs_var, width=105).grid(row=2, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse...", style="Side.Action.TButton", command=self._browse_sigs).grid(row=2, column=2, sticky="ew", padx=(6, 0), pady=2)
+        brand_inner = tk.Frame(
+            brand,
+            bg="#001833",
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+        )
+        brand_inner.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        brand_inner.columnconfigure(1, weight=1)
 
-        ttk.Label(paths, text="VirusTotal API key (optional):").grid(row=3, column=0, sticky="w")
-        ttk.Entry(paths, textvariable=self.vt_api_key_var, width=105, show="*").grid(row=3, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Clear", style="Side.Action.TButton", command=self._clear_vt_key).grid(row=3, column=2, sticky="ew", padx=(6, 0), pady=2)
+        logo_path = ROOT / "assets" / "anvil.png"
 
-        ttk.Label(paths, textvariable=self.status_var).grid(row=4, column=1, sticky="w", pady=(6, 0))
+        if logo_path.exists():
+            logo_img = Image.open(logo_path).convert("RGBA")
+            logo_img = logo_img.resize((220, 220), Image.LANCZOS)
+            self.brand_logo_img = ImageTk.PhotoImage(logo_img)
+
+            logo_label = tk.Label(
+                brand_inner,
+                image=self.brand_logo_img,
+                bg="#001833",
+                bd=0,
+                highlightthickness=0,
+            )
+            logo_label.grid(row=0, column=0, rowspan=6, sticky="w", padx=(18, 24), pady=18)
+        else:
+            logo_label = tk.Label(
+                brand_inner,
+                text="[assets/anvil.png not found]",
+                bg="#001833",
+                fg="#7fb3ff",
+                font=("Segoe UI", 11, "bold"),
+            )
+            logo_label.grid(row=0, column=0, rowspan=6, sticky="w", padx=(18, 24), pady=18)
+
+        tk.Label(
+            brand_inner,
+            text="RingForge",
+            bg="#001833",
+            fg="#f8fbff",
+            font=("Segoe UI", 24, "bold"),
+            anchor="w",
+        ).grid(row=0, column=1, sticky="sw", pady=(28, 0))
+
+        tk.Label(
+            brand_inner,
+            text="Workbench",
+            bg="#001833",
+            fg="#7fb3ff",
+            font=("Segoe UI", 20, "bold"),
+            anchor="w",
+        ).grid(row=1, column=1, sticky="nw")
+
+        tk.Frame(
+            brand_inner,
+            bg="#1f6fff",
+            height=2,
+            width=220,
+        ).grid(row=2, column=1, sticky="w", pady=(8, 12))
+
+        tk.Label(
+            brand_inner,
+            text="Static, Dynamic & Spec Analysis Platform",
+            bg="#001833",
+            fg="#c7dbff",
+            font=("Segoe UI", 11),
+            anchor="w",
+        ).grid(row=3, column=1, sticky="w")
+
+        tk.Label(
+            brand_inner,
+            text="Triage  •  Scoring  •  Reporting  •  Review",
+            bg="#001833",
+            fg="#86a9df",
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).grid(row=4, column=1, sticky="w", pady=(6, 0))
+
+        tk.Label(
+            brand_inner,
+            text="v1.2",
+            bg="#001833",
+            fg="#5f86c5",
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+        ).grid(row=5, column=1, sticky="w", pady=(14, 18))
+
+        # Paths subsection
+        paths = ttk.LabelFrame(config, text="Paths")
+        paths.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         paths.columnconfigure(1, weight=1)
 
-        adv = ttk.LabelFrame(self, text="Advanced Settings")
-        adv.pack(fill="x", **pad)
+        ttk.Label(paths, text="Case output folder:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(paths, textvariable=self.case_root_var, width=72).grid(
+            row=0, column=1, sticky="ew", padx=(8, 8)
+        )
+        ttk.Button(
+            paths,
+            text="Browse...",
+            style="Side.Action.TButton",
+            command=self._browse_case_root,
+        ).grid(row=0, column=2, sticky="ew")
 
-        ttk.Checkbutton(adv, text="Override preset with advanced settings", variable=self.adv_enabled_var, command=self._on_adv_toggle).grid(row=0, column=0, sticky="w")
+        ttk.Label(paths, text="capa rules folder:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(paths, textvariable=self.rules_var, width=72).grid(
+            row=1, column=1, sticky="ew", padx=(8, 8), pady=(8, 0)
+        )
+        ttk.Button(
+            paths,
+            text="Browse...",
+            style="Side.Action.TButton",
+            command=self._browse_rules,
+        ).grid(row=1, column=2, sticky="ew", pady=(8, 0))
+
+        ttk.Label(paths, text="capa sigs folder:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(paths, textvariable=self.sigs_var, width=72).grid(
+            row=2, column=1, sticky="ew", padx=(8, 8), pady=(8, 0)
+        )
+        ttk.Button(
+            paths,
+            text="Browse...",
+            style="Side.Action.TButton",
+            command=self._browse_sigs,
+        ).grid(row=2, column=2, sticky="ew", pady=(8, 0))
+
+        ttk.Label(paths, text="VirusTotal API key:").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(paths, textvariable=self.vt_api_key_var, width=72, show="*").grid(
+            row=3, column=1, sticky="ew", padx=(8, 8), pady=(8, 0)
+        )
+        ttk.Button(
+            paths,
+            text="Clear",
+            style="Side.Action.TButton",
+            command=self._clear_vt_key,
+        ).grid(row=3, column=2, sticky="ew", pady=(8, 0))
+
+        # Advanced subsection
+        adv = ttk.LabelFrame(config, text="Advanced Settings")
+        adv.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        adv.columnconfigure(0, weight=1)
+
+        ttk.Checkbutton(
+            adv,
+            text="Override preset with advanced settings",
+            variable=self.adv_enabled_var,
+            command=self._on_adv_toggle,
+        ).grid(row=0, column=0, sticky="w")
 
         self.adv_body = ttk.Frame(adv)
-        self.adv_body.grid(row=1, column=0, sticky="we", pady=(6, 0))
-        adv.columnconfigure(0, weight=1)
+        self.adv_body.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.adv_body.columnconfigure(3, weight=1)
 
-        ttk.Checkbutton(self.adv_body, text="Enable extraction", variable=self.extract_var, command=self._save_cfg).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(self.adv_body, text="Enable subfiles triage", variable=self.subfiles_var, command=self._save_cfg).grid(row=0, column=1, sticky="w", padx=(14, 0))
+        ttk.Checkbutton(
+            self.adv_body,
+            text="Enable extraction",
+            variable=self.extract_var,
+            command=self._save_cfg,
+        ).grid(row=0, column=0, sticky="w")
 
-        ttk.Label(self.adv_body, text="Subfile limit:").grid(row=0, column=2, sticky="e", padx=(14, 6))
-        self.subfile_limit_spin = ttk.Spinbox(self.adv_body, from_=0, to=999, textvariable=self.subfile_limit_var, width=6, command=self._save_cfg,)
+        ttk.Checkbutton(
+            self.adv_body,
+            text="Enable subfiles triage",
+            variable=self.subfiles_var,
+            command=self._save_cfg,
+        ).grid(row=0, column=1, sticky="w", padx=(14, 0))
+
+        ttk.Label(self.adv_body, text="Subfile limit:").grid(
+            row=0, column=2, sticky="e", padx=(14, 6)
+        )
+        self.subfile_limit_spin = ttk.Spinbox(
+            self.adv_body,
+            from_=0,
+            to=999,
+            textvariable=self.subfile_limit_var,
+            width=6,
+            command=self._save_cfg,
+        )
         self.subfile_limit_spin.grid(row=0, column=3, sticky="w")
 
-        ttk.Checkbutton(self.adv_body, text="Strings lite", variable=self.strings_lite_var, command=self._on_strings_mode_changed).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(self.adv_body, text="Skip strings", variable=self.no_strings_var, command=self._on_strings_mode_changed).grid(row=1, column=1, sticky="w", pady=(6, 0), padx=(14, 0))
+        ttk.Checkbutton(
+            self.adv_body,
+            text="Strings lite",
+            variable=self.strings_lite_var,
+            command=self._on_strings_mode_changed,
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        ttk.Checkbutton(
+            self.adv_body,
+            text="Skip strings",
+            variable=self.no_strings_var,
+            command=self._on_strings_mode_changed,
+        ).grid(row=1, column=1, sticky="w", padx=(14, 0), pady=(8, 0))
 
         self.effective_label = ttk.Label(adv, text="")
-        self.effective_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.effective_label.grid(row=2, column=0, sticky="w", pady=(10, 0))
 
-        prog = ttk.LabelFrame(self, text="Progress")
-        prog.pack(fill="x", **pad)
-
-        self.overall_var = tk.IntVar(value=0)
-        self.overall_bar = ttk.Progressbar(prog, orient="horizontal", mode="determinate", maximum=100, variable=self.overall_var)
-        self.overall_bar.grid(row=0, column=0, sticky="we")
-        self.overall_text = ttk.Label(prog, text="0%")
-        self.overall_text.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        # ---------- Right column: Progress ----------
+        prog = ttk.LabelFrame(right_col, text="Progress")
+        prog.grid(row=0, column=0, sticky="ew")
         prog.columnconfigure(0, weight=1)
 
+        self.overall_var = tk.IntVar(value=0)
+        self.overall_bar = ttk.Progressbar(
+            prog,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            variable=self.overall_var,
+        )
+        self.overall_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+
+        self.overall_text = ttk.Label(prog, text="0%")
+        self.overall_text.grid(row=0, column=1, sticky="w", padx=(10, 10), pady=(10, 0))
+
         self.steps_frame = ttk.Frame(prog)
-        self.steps_frame.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        self.steps_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 10))
         self.steps_frame.columnconfigure(1, weight=1)
         
+        # ---------- Results ----------
+        self.combined_verdict_var = tk.StringVar(value="-")
+        self.combined_confidence_var = tk.StringVar(value="-")
+
+        results = ttk.LabelFrame(right_col, text="Results")
+        results.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        results.columnconfigure(0, weight=1)
+
+        # Combined headline section
+        combined_wrap = ttk.Frame(results)
+        combined_wrap.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        combined_wrap.columnconfigure(1, weight=1)
+        combined_wrap.columnconfigure(3, weight=1)
+
+        ttk.Label(combined_wrap, text="Combined Score:").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            combined_wrap,
+            textvariable=self.combined_score_var,
+            style="SummaryValue.TLabel",
+        ).grid(row=0, column=1, sticky="w", padx=(8, 20))
+
+        ttk.Label(combined_wrap, text="Severity:").grid(row=0, column=2, sticky="w")
+        ttk.Label(
+            combined_wrap,
+            textvariable=self.combined_severity_var,
+            style="SummaryAccent.TLabel",
+        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
+
+        ttk.Label(combined_wrap, text="Verdict:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(combined_wrap, textvariable=self.combined_verdict_var).grid(
+            row=1, column=1, sticky="w", padx=(8, 20), pady=(8, 0)
+        )
+
+        ttk.Label(combined_wrap, text="Confidence:").grid(row=1, column=2, sticky="w", pady=(8, 0))
+        ttk.Label(combined_wrap, textvariable=self.combined_confidence_var).grid(
+            row=1, column=3, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+
+        # Divider
+        ttk.Separator(results, orient="horizontal").grid(
+            row=1, column=0, sticky="ew", padx=12, pady=(0, 8)
+        )
+
+        # Lower two-column summary area
+        lower = ttk.Frame(results)
+        lower.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        lower.columnconfigure(0, weight=1)
+        lower.columnconfigure(1, weight=1)
+
+        # Left side: Static + Subscores
+        left_metrics = ttk.Frame(lower)
+        left_metrics.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_metrics.columnconfigure(1, weight=1)
+
+        ttk.Label(left_metrics, text="Static", style="SectionHeader.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        )
+
+        ttk.Label(left_metrics, text="Score:").grid(row=1, column=0, sticky="w")
+        ttk.Label(left_metrics, textvariable=self.score_var).grid(
+            row=1, column=1, sticky="w", padx=(8, 0)
+        )
+
+        ttk.Label(left_metrics, text="Verdict:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(left_metrics, textvariable=self.verdict_var).grid(
+            row=2, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+        )
+
+        ttk.Label(left_metrics, text="Confidence:").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(left_metrics, textvariable=self.confidence_var).grid(
+            row=3, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+        )
+
+        ttk.Separator(left_metrics, orient="horizontal").grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(10, 8)
+        )
+
+        ttk.Label(left_metrics, text="Subscores", style="SectionHeader.TLabel").grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        )
+
+        ttk.Label(left_metrics, text="Static:").grid(row=6, column=0, sticky="w")
+        ttk.Label(left_metrics, textvariable=self.static_subscore_var).grid(
+            row=6, column=1, sticky="w", padx=(8, 0)
+        )
+
+        ttk.Label(left_metrics, text="Dynamic:").grid(row=7, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(left_metrics, textvariable=self.dynamic_subscore_var).grid(
+        row=7, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+        )
+
+        ttk.Label(left_metrics, text="Spec/API:").grid(row=8, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(left_metrics, textvariable=self.spec_subscore_var).grid(
+            row=8, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+        )
+
+        # Right side: VirusTotal
+        right_metrics = ttk.Frame(lower)
+        right_metrics.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_metrics.columnconfigure(0, weight=1)
+
+        ttk.Label(right_metrics, text="VirusTotal", style="SectionHeader.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 6)
+        )
+
+        ttk.Label(right_metrics, textvariable=self.vt_status_var, wraplength=280, justify="left").grid(
+            row=1, column=0, sticky="w"
+        )
+        ttk.Label(right_metrics, textvariable=self.vt_name_var, wraplength=280, justify="left").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Label(right_metrics, textvariable=self.vt_counts_var, wraplength=280, justify="left").grid(
+            row=3, column=0, sticky="w", pady=(6, 0)
+        )
+
+        self.vt_open_btn = ttk.Button(
+            right_metrics,
+            text="Open VirusTotal",
+            command=self._open_virustotal,
+            state="disabled",
+            style="Action.TButton",
+        )
+        self.vt_open_btn.grid(row=4, column=0, sticky="e", pady=(12, 0))
+
+            
+        # ---------- Command bar ----------
         actions = ttk.Frame(self)
-        actions.pack(fill="x", padx=10, pady=(10, 12))
+        actions.pack(fill="x", **outer)
 
-        self.run_btn = ttk.Button(actions, text="Run Analysis", style="Action.TButton", width=14, command=self._start_analysis)
-        self.run_btn.pack(side="left", padx=(0, 6), pady=1)
+        buttons_row = ttk.Frame(actions)
+        buttons_row.pack(fill="x")
 
-        ttk.Button(actions, text="Open Case Files", style="Action.TButton", width=15, command=self._open_case_files).pack(side="left", padx=6, pady=1)
-        ttk.Button(actions, text="Open HTML Report", style="Action.TButton", width=16, command=self._open_html_report).pack(side="left", padx=6, pady=1)
-        ttk.Button(actions, text="Dynamic Analysis...", style="Action.TButton", width=16, command=self.open_dynamic_window).pack(side="left", padx=6, pady=1)
-        ttk.Button(actions, text="API Spec Analysis", style="Action.TButton", width=18, command=self.open_spec_analysis_window).pack(side="left", padx=6, pady=1)
+        self.run_btn = ttk.Button(
+            buttons_row,
+            text="Run Analysis",
+            style="Action.TButton",
+            width=18,
+            command=self._start_analysis,
+        )
+        self.run_btn.pack(side="left", padx=(0, 10))
 
-        ttk.Label(actions, textvariable=self.running_var, anchor="e").pack(side="right", padx=(12, 0), pady=3)
+        ttk.Button(
+            buttons_row,
+            text="Open Case",
+            style="Action.TButton",
+            width=14,
+            command=self._open_case_files,
+        ).pack(side="left", padx=(0, 8))
 
-        summary = ttk.LabelFrame(self, text="Result Summary")
-        summary.pack(fill="x", **pad)
+        ttk.Button(
+            buttons_row,
+            text="Open Report",
+            style="Action.TButton",
+            width=14,
+            command=self._open_html_report,
+        ).pack(side="left", padx=(0, 8))
 
-        for col in range(8):
-            summary.columnconfigure(col, weight=1)
+        ttk.Button(
+            buttons_row,
+            text="Dynamic Analysis",
+            style="Action.TButton",
+            width=16,
+            command=self.open_dynamic_window,
+        ).pack(side="left", padx=(0, 8))
 
-        ttk.Label(summary, text="Static Score:").grid(row=0, column=0, sticky="w")
-        ttk.Label(summary, textvariable=self.score_var).grid(row=0, column=1, sticky="w", padx=(6, 18))
+        ttk.Button(
+            buttons_row,
+            text="API Spec Analysis",
+            style="Action.TButton",
+            width=16,
+            command=self.open_spec_analysis_window,
+        ).pack(side="left", padx=(0, 8))
 
-        ttk.Label(summary, text="Verdict:").grid(row=0, column=2, sticky="w")
-        ttk.Label(summary, textvariable=self.verdict_var).grid(row=0, column=3, sticky="w", padx=(6, 18))
+        status_row = ttk.Frame(actions)
+        status_row.pack(fill="x", pady=(6, 0))
 
-        ttk.Label(summary, text="Confidence:").grid(row=0, column=4, sticky="w")
-        ttk.Label(summary, textvariable=self.confidence_var).grid(row=0, column=5, sticky="w", padx=(6, 18))
+        ttk.Label(status_row, textvariable=self.status_var).pack(side="left")
+        ttk.Label(status_row, textvariable=self.running_var, anchor="e").pack(side="right")
 
-        ttk.Label(summary, text="Severity:").grid(row=0, column=6, sticky="w")
-        ttk.Label(summary, textvariable=self.combined_severity_var).grid(row=0, column=7, sticky="w", padx=(6, 0))
-
-        ttk.Label(summary, text="Combined Score:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.combined_score_var).grid(row=1, column=1, sticky="w", padx=(6, 18), pady=(6, 0))
-
-        ttk.Label(summary, text="Static:").grid(row=1, column=2, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.static_subscore_var).grid(row=1, column=3, sticky="w", padx=(6, 18), pady=(6, 0))
-
-        ttk.Label(summary, text="Dynamic:").grid(row=1, column=4, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.dynamic_subscore_var).grid(row=1, column=5, sticky="w", padx=(6, 18), pady=(6, 0))
-
-        ttk.Label(summary, text="Spec/API:").grid(row=1, column=6, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.spec_subscore_var).grid(row=1, column=7, sticky="w", padx=(6, 0), pady=(6, 0))
-
-        ttk.Label(summary, textvariable=self.vt_status_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.vt_name_var).grid(row=2, column=2, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Label(summary, textvariable=self.vt_counts_var).grid(row=2, column=5, columnspan=2, sticky="w", pady=(6, 0))
-        self.vt_open_btn = ttk.Button(summary, text="Open VirusTotal", command=self._open_virustotal, state="disabled")
-        self.vt_open_btn.grid(row=2, column=7, sticky="e", pady=(6, 0))
-
+        # ---------- Output ----------
         out = ttk.LabelFrame(self, text="Output")
-        out.pack(fill="both", expand=True, **pad)
+        out.pack(fill="both", expand=True, **outer)
 
-        self.output = tk.Text(out, wrap="none", height=12)
+        self.output = tk.Text(
+            out,
+            wrap="none",
+            height=12,
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
+            font=("Consolas", 10),
+        )
         self.output.pack(fill="both", expand=True, side="left")
-        self.output.configure(font=("Consolas", 10))
 
         yscroll = ttk.Scrollbar(out, orient="vertical", command=self.output.yview)
         yscroll.pack(side="right", fill="y")
@@ -2164,16 +2941,18 @@ class App(tk.Tk):
 
 
     def _reset_result_summary(self):
-        self.score_var.set("â€”")
-        self.verdict_var.set("â€”")
-        self.confidence_var.set("â€”")
-        self.combined_score_var.set("â€”")
-        self.combined_severity_var.set("â€”")
-        self.static_subscore_var.set("â€”")
-        self.dynamic_subscore_var.set("â€”")
-        self.spec_subscore_var.set("â€”")
+        self.score_var.set("-")
+        self.verdict_var.set("-")
+        self.confidence_var.set("-")
+        self.combined_score_var.set("-")
+        self.combined_severity_var.set("-")
+        self.static_subscore_var.set("-")
+        self.dynamic_subscore_var.set("-")
+        self.spec_subscore_var.set("-")
+        self.combined_verdict_var.set("-")
+        self.combined_confidence_var.set("-")
         self.vt_status_var.set("VirusTotal: disabled")
-        self.vt_name_var.set("VT Name: â€”")
+        self.vt_name_var.set("VT Name: -")
         self.vt_counts_var.set("Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
         self.vt_link = ""
         self.vt_open_btn.configure(state="disabled")
@@ -2207,25 +2986,28 @@ class App(tk.Tk):
             combined = None
 
         if not combined:
-            self.combined_score_var.set("â€”")
-            self.combined_severity_var.set("â€”")
-            self.static_subscore_var.set("â€”")
-            self.dynamic_subscore_var.set("â€”")
-            self.spec_subscore_var.set("â€”")
+            self.combined_score_var.set("-")
+            self.combined_severity_var.set("-")
+            self.static_subscore_var.set("-")
+            self.dynamic_subscore_var.set("-")
+            self.spec_subscore_var.set("-")
+            self.combined_verdict_var.set("-")
+            self.combined_confidence_var.set("-")
             self.latest_combined_score = None
             return
 
         self.latest_combined_score = combined
-
-        self.combined_score_var.set(str(combined.get("total_score", "â€”")))
-        self.combined_severity_var.set(str(combined.get("severity", "â€”")))
+        self.combined_verdict_var.set(str(combined.get("verdict", "-")))
+        self.combined_confidence_var.set(str(combined.get("confidence", "-")))
+        self.combined_score_var.set(str(combined.get("total_score", "-")))
+        self.combined_severity_var.set(str(combined.get("severity", "-")))
 
         subs = combined.get("subscores", {}) if isinstance(combined.get("subscores"), dict) else {}
         present = combined.get("present", {}) if isinstance(combined.get("present"), dict) else {}
 
-        self.static_subscore_var.set(str(subs.get("static", 0)) if present.get("static") else "â€”")
-        self.dynamic_subscore_var.set(str(subs.get("dynamic", 0)) if present.get("dynamic") else "â€”")
-        self.spec_subscore_var.set(str(subs.get("spec", 0)) if present.get("spec") else "â€”")
+        self.static_subscore_var.set(str(subs.get("static", 0)) if present.get("static") else "-")
+        self.dynamic_subscore_var.set(str(subs.get("dynamic", 0)) if present.get("dynamic") else "-")
+        self.spec_subscore_var.set(str(subs.get("spec", 0)) if present.get("spec") else "-")
 
         self.update_idletasks()
 
@@ -2371,9 +3153,9 @@ class App(tk.Tk):
             if isinstance(maybe_vt, dict):
                 vt = maybe_vt
 
-        self.score_var.set(str(summary.get("risk_score", "â€”")))
-        self.verdict_var.set(str(summary.get("verdict", "â€”")))
-        self.confidence_var.set(str(summary.get("confidence", "â€”")))
+        self.score_var.set(str(summary.get("risk_score", "-")))
+        self.verdict_var.set(str(summary.get("verdict", "-")))
+        self.confidence_var.set(str(summary.get("confidence", "-")))
 
         enabled = bool(vt.get("enabled", False))
         found = bool(vt.get("found", False))
@@ -2397,7 +3179,7 @@ class App(tk.Tk):
         else:
             self.vt_status_var.set("VirusTotal: no result")
 
-        self.vt_name_var.set(f"VT Name: {meaningful_name or 'â€”'}")
+        self.vt_name_var.set(f"VT Name: {meaningful_name or '-'}")
         self.vt_counts_var.set(
             f"Counts: mal={mal} | susp={susp} | harmless={harmless} | undetected={undetected}"
         )
@@ -2771,7 +3553,7 @@ class App(tk.Tk):
         self._start_log_tail(case_root / case)
 
         self.run_btn.configure(state="disabled")
-        self.running_var.set("Runningâ€¦")
+        self.running_var.set("Running...")
 
         def worker():
             rc = 1
