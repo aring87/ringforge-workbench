@@ -34,13 +34,15 @@ import urllib.error
 import ssl
 from PIL import Image, ImageTk
 from urllib.parse import urlparse
-from dataclasses import dataclass
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from static_triage_engine.api_spec_analysis import analyze_api_spec as engine_analyze_api_spec
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -838,6 +840,7 @@ def _effective_endpoint_auth(op: dict[str, Any], spec: dict[str, Any]) -> list[s
     return names
 
 
+# Legacy in-GUI spec analyzer kept for compatibility; SpecAnalysisWindow now calls the backend analyzer.
 def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str, Any]:
     spec_path = Path(spec_path)
     output_dir = Path(output_dir)
@@ -929,7 +932,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("API Spec Analysis")
-        self.geometry("1850x980")
+        self.geometry("2030x1100")
         self.minsize(1650, 900)
         self.spec_path_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
@@ -1051,7 +1054,13 @@ class SpecAnalysisWindow(tk.Toplevel):
         left = ttk.Frame(body)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
+
+        # Give the left-side content real vertical space
+        left.rowconfigure(0, weight=0)  # Summary
+        left.rowconfigure(1, weight=1)  # Risk Notes
+        left.rowconfigure(2, weight=1)  # Top Risky Endpoints
+        left.rowconfigure(3, weight=1)  # Recommended Tests
+        left.rowconfigure(4, weight=0)  # Getting Started
 
         summary = ttk.LabelFrame(left, text="Summary")
         summary.grid(row=0, column=0, sticky="ew")
@@ -1087,8 +1096,54 @@ class SpecAnalysisWindow(tk.Toplevel):
         )
         self.notes_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
+        top_risky = ttk.LabelFrame(left, text="Top Risky Endpoints")
+        top_risky.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        top_risky.columnconfigure(0, weight=1)
+        top_risky.rowconfigure(0, weight=1)
+
+        self.top_risky_text = tk.Text(
+            top_risky,
+            height=12,
+            wrap="word",
+            bg="#071b34",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f61ff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
+            font=("Consolas", 10),
+        )
+        self.top_risky_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        
+        recommended = ttk.LabelFrame(left, text="Recommended Tests")
+        recommended.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        recommended.columnconfigure(0, weight=1)
+        recommended.rowconfigure(0, weight=1)
+
+        self.recommended_tests_text = tk.Text(
+            recommended,
+            height=10,
+            wrap="word",
+            bg="#071b34",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f61ff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
+            font=("Consolas", 10),
+        )
+        self.recommended_tests_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+
         empty = ttk.LabelFrame(left, text="Getting Started")
-        empty.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        empty.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
         empty.columnconfigure(0, weight=1)
 
         ttk.Label(
@@ -1123,7 +1178,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         table_wrap.columnconfigure(1, weight=0)
         table_wrap.rowconfigure(0, weight=1)
 
-        cols = ("method", "path", "summary", "auth", "params", "flags")
+        cols = ("method", "path", "summary", "auth", "auth_source", "risk_level", "params", "flags")
         self.tree = ttk.Treeview(table_wrap, columns=cols, show="headings", height=22)
 
         headings = {
@@ -1131,17 +1186,21 @@ class SpecAnalysisWindow(tk.Toplevel):
             "path": "Path",
             "summary": "Summary",
             "auth": "Auth",
+            "auth_source": "Auth_Source",
+            "risk_level": "Risk",
             "params": "Params",
             "flags": "Flags",
         }
 
         widths = {
             "method": 100,
-            "path": 180,
+            "path": 250,
             "summary": 360,
             "auth": 220,
+            "auth_source": 110,
+            "risk_level": 80,
             "params": 90,
-            "flags": 150,
+            "flags": 220,
         }
 
         for col in cols:
@@ -1238,11 +1297,84 @@ class SpecAnalysisWindow(tk.Toplevel):
         )
 
         self.notes_text.delete("1.0", "end")
-        notes = result.get("risk_notes", [])
-        self.notes_text.insert(
-            "1.0",
-            "\n".join(f"- {x}" for x in notes) if notes else "No risk notes generated."
-        )
+
+        notes = result.get("risk_notes", []) or []
+        parser_warnings = result.get("parser_warnings", []) or []
+        unresolved_refs = result.get("unresolved_refs", []) or []
+
+        sections = []
+
+        if notes:
+            sections.append("Risk Notes\n" + "\n".join(f"- {x}" for x in notes))
+        else:
+            sections.append("Risk Notes\n- No risk notes generated.")
+
+        if parser_warnings:
+            sections.append("Parser Warnings\n" + "\n".join(f"- {x}" for x in parser_warnings))
+
+        if unresolved_refs:
+            preview = unresolved_refs[:10]
+            sections.append(
+                "Unresolved Refs\n"
+                + "\n".join(f"- {x}" for x in preview)
+                + (f"\n- ... and {len(unresolved_refs) - len(preview)} more" if len(unresolved_refs) > 10 else "")
+            )
+
+        self.notes_text.delete("1.0", "end")
+        self.notes_text.insert("1.0", "\n\n".join(sections))
+        
+        if hasattr(self, "top_risky_text"):
+            self.top_risky_text.delete("1.0", "end")
+            top_risky = result.get("top_risky_endpoints", []) or []
+
+            if not top_risky:
+                endpoints = result.get("endpoints", []) or []
+                top_risky = sorted(
+                    [ep for ep in endpoints if ep.get("risk_level") == "high" or int(ep.get("risk_score", 0)) > 0],
+                    key=lambda ep: (-int(ep.get("risk_score", 0)), str(ep.get("path", "")), str(ep.get("method", "")))
+                )[:10]
+
+            if top_risky:
+                lines = []
+                for item in top_risky[:10]:
+                    method = item.get("method", "")
+                    path = item.get("path", "")
+                    level = item.get("risk_level", "")
+                    score = item.get("risk_score", 0)
+                    reasons = item.get("risk_reasons", []) or []
+                    if isinstance(reasons, str):
+                        reasons = [reasons]
+
+                    lines.append(f"{method} {path} [{level} | score={score}]")
+                    for reason in reasons[:4]:
+                        lines.append(f"  - {reason}")
+                    lines.append("")
+
+                self.top_risky_text.insert("1.0", "\n".join(lines).strip())
+            else:
+                self.top_risky_text.insert("1.0", "No high-risk endpoints identified.")
+                
+        if hasattr(self, "recommended_tests_text"):
+            self.recommended_tests_text.delete("1.0", "end")
+            recs = result.get("recommended_tests", []) or []
+
+            if recs:
+                lines = []
+                for item in recs[:10]:
+                    method = item.get("method", "")
+                    path = item.get("path", "")
+                    level = item.get("risk_level", "")
+                    score = item.get("risk_score", 0)
+                    tests = item.get("tests", []) or []
+                    if isinstance(tests, str):
+                        tests = [tests]
+                    lines.append(f"{method} {path} [{level} | score={score}]")
+                    for test in tests[:5]:
+                        lines.append(f"  - {test}")
+                    lines.append("")
+                self.recommended_tests_text.insert("1.0", "\n".join(lines).strip())
+            else:
+                self.recommended_tests_text.insert("1.0", "No recommended tests generated.")
 
         for ep in result.get("endpoints", []):
             params = ep.get("parameters", [])
@@ -1255,7 +1387,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             if ep.get("sensitive_parameters"):
                 flags.append("sensitive-params")
 
-            ep_auth = ep.get("auth_summary", []) or []
+            ep_auth = ep.get("auth_schemes_applied", []) or []
             if isinstance(ep_auth, str):
                 ep_auth = [ep_auth]
 
@@ -1265,7 +1397,16 @@ class SpecAnalysisWindow(tk.Toplevel):
                 if canon != "none" and canon not in normalized_ep_auth:
                     normalized_ep_auth.append(canon)
 
-            auth_txt = ", ".join(normalized_ep_auth) if normalized_ep_auth else "none"
+            if normalized_ep_auth:
+                auth_txt = ", ".join(normalized_ep_auth)
+            elif ep.get("auth_required"):
+                auth_txt = "required"
+            else:
+                auth_txt = "none"
+                
+            auth_source_txt = str(ep.get("auth_source", "") or "")
+            if auth_source_txt == "explicit_none":
+                auth_source_txt = "public"
 
             self.tree.insert(
                 "",
@@ -1275,24 +1416,81 @@ class SpecAnalysisWindow(tk.Toplevel):
                     ep.get("path", ""),
                     ep.get("summary", ""),
                     auth_txt,
+                    auth_source_txt,
+                    ep.get("risk_level", ""),
                     len(params),
                     ", ".join(flags),
                 ),
             )
 
     def _render_html(self, result: dict[str, Any]) -> str:
+        from html import escape
+
+        summary = result.get("summary", {}) or {}
+        title = result.get("title") or Path(result.get("input_file", "spec")).name
+        version = result.get("version") or "-"
+        spec_type = result.get("spec_type") or "-"
+        fmt = result.get("format") or "-"
+        confidence = result.get("confidence") or "-"
+        servers = result.get("servers", []) or []
+        auth_summary = result.get("auth_summary", []) or []
+        endpoints = result.get("endpoints", []) or []
+        risk_notes = result.get("risk_notes", []) or []
+        parser_warnings = result.get("parser_warnings", []) or []
+        unresolved_refs = result.get("unresolved_refs", []) or []
+        top_risky = result.get("top_risky_endpoints", []) or []
+        recommended_tests = result.get("recommended_tests", []) or []
+
+        auth_txt = ", ".join(str(x) for x in auth_summary) if auth_summary else "none"
+        servers_txt = ", ".join(str(x) for x in servers) if servers else "none"
+
+        risk_notes_html = "".join(f"<li>{escape(str(x))}</li>" for x in risk_notes) or "<li>None</li>"
+        parser_warnings_html = "".join(f"<li>{escape(str(x))}</li>" for x in parser_warnings) or "<li>None</li>"
+        unresolved_refs_html = "".join(f"<li>{escape(str(x))}</li>" for x in unresolved_refs[:20]) or "<li>None</li>"
+
+        top_risky_html = ""
+        for item in top_risky:
+            method = escape(str(item.get("method", "")))
+            path = escape(str(item.get("path", "")))
+            level = escape(str(item.get("risk_level", "")))
+            score = escape(str(item.get("risk_score", 0)))
+            reasons = item.get("risk_reasons", []) or []
+            if isinstance(reasons, str):
+                reasons = [reasons]
+            reasons_html = "".join(f"<li>{escape(str(r))}</li>" for r in reasons[:6]) or "<li>No reasons captured.</li>"
+            top_risky_html += f"""
+            <div class="endpoint-card">
+                <div class="endpoint-title">{method} {path}</div>
+                <div class="muted">Risk: {level} | Score: {score}</div>
+                <ul>{reasons_html}</ul>
+            </div>
+            """
+        if not top_risky_html:
+            top_risky_html = "<p class='muted'>No high-risk endpoints identified.</p>"
+
+        recommended_html = ""
+        for item in recommended_tests:
+            method = escape(str(item.get("method", "")))
+            path = escape(str(item.get("path", "")))
+            level = escape(str(item.get("risk_level", "")))
+            score = escape(str(item.get("risk_score", 0)))
+            tests = item.get("tests", []) or []
+            if isinstance(tests, str):
+                tests = [tests]
+            tests_html = "".join(f"<li>{escape(str(t))}</li>" for t in tests[:8]) or "<li>No tests generated.</li>"
+            recommended_html += f"""
+            <div class="endpoint-card">
+                <div class="endpoint-title">{method} {path}</div>
+                <div class="muted">Risk: {level} | Score: {score}</div>
+                <ul>{tests_html}</ul>
+            </div>
+            """
+        if not recommended_html:
+            recommended_html = "<p class='muted'>No recommended tests generated.</p>"
+
         rows = []
-
-        raw_auth_summary = result.get("auth_summary", [])
-        normalized_auth_summary = []
-        for item in raw_auth_summary:
-            canon = _canonical_auth_name(str(item))
-            if canon != "none" and canon not in normalized_auth_summary:
-                normalized_auth_summary.append(canon)
-
-        auth_txt = ", ".join(normalized_auth_summary) if normalized_auth_summary else "none"
-
-        for ep in result.get("endpoints", []):
+        for ep in endpoints:
+            params = ep.get("parameters", []) or []
             flags = []
             if ep.get("admin_like_route"):
                 flags.append("admin-like")
@@ -1300,42 +1498,184 @@ class SpecAnalysisWindow(tk.Toplevel):
                 flags.append("destructive")
             if ep.get("sensitive_parameters"):
                 flags.append("sensitive-params")
+            if ep.get("file_upload"):
+                flags.append("upload")
 
-            ep_auth = ep.get("auth_summary", []) or []
+            ep_auth = ep.get("auth_schemes_applied", []) or []
             if isinstance(ep_auth, str):
                 ep_auth = [ep_auth]
+            auth_txt_ep = ", ".join(str(x) for x in ep_auth) if ep_auth else ("required" if ep.get("auth_required") else "none")
 
-            normalized_ep_auth = []
-            for item in ep_auth:
-                canon = _canonical_auth_name(str(item))
-                if canon != "none" and canon not in normalized_ep_auth:
-                    normalized_ep_auth.append(canon)
-
-            endpoint_auth_txt = ", ".join(normalized_ep_auth) if normalized_ep_auth else "none"
+            auth_source_txt = str(ep.get("auth_source", "") or "")
+            if auth_source_txt == "explicit_none":
+                auth_source_txt = "public"
 
             rows.append(
-                f"<tr>"
-                f"<td>{escape(str(ep.get('method','')))}</td>"
-                f"<td>{escape(str(ep.get('path','')))}</td>"
-                f"<td>{escape(str(ep.get('summary','')))}</td>"
-                f"<td>{escape(endpoint_auth_txt)}</td>"
-                f"<td>{len(ep.get('parameters', []))}</td>"
+                "<tr>"
+                f"<td>{escape(str(ep.get('method', '')))}</td>"
+                f"<td>{escape(str(ep.get('path', '')))}</td>"
+                f"<td>{escape(str(ep.get('summary', '')))}</td>"
+                f"<td>{escape(auth_txt_ep)}</td>"
+                f"<td>{escape(auth_source_txt)}</td>"
+                f"<td>{escape(str(ep.get('risk_level', '')))}</td>"
+                f"<td>{len(params)}</td>"
                 f"<td>{escape(', '.join(flags))}</td>"
-                f"</tr>"
+                "</tr>"
             )
 
-        notes_html = ''.join(f"<li>{escape(str(x))}</li>" for x in result.get('risk_notes', [])) or '<li>No risk notes generated.</li>'
-        s = result.get('summary', {})
-
         return f"""<!DOCTYPE html>
-    <html lang='en'><head><meta charset='utf-8'><title>API Spec Analysis Report</title>
-    <style>body{{background:#081426;color:#eaf2ff;font-family:Segoe UI,Arial,sans-serif;margin:24px}}h1,h2{{color:#7db3ff}}.card{{background:#0d1b33;border:1px solid #2a4365;border-radius:10px;padding:16px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid #2a4365;padding:8px;text-align:left;vertical-align:top}}th{{background:#13284a}}ul{{margin:0;padding-left:20px}}</style></head><body>
-    <h1>API Spec Analysis Report</h1>
-    <div class='card'><div><strong>Input file:</strong> {escape(str(result.get('input_file','')))}</div><div><strong>Title:</strong> {escape(str(result.get('title','')))}</div><div><strong>Version:</strong> {escape(str(result.get('version','')))}</div><div><strong>Type:</strong> {escape(str(result.get('spec_type','')))}</div><div><strong>Format:</strong> {escape(str(result.get('format','')))}</div><div><strong>Servers:</strong> {escape(', '.join(result.get('servers', [])) or 'none')}</div><div><strong>Auth summary:</strong> {escape(auth_txt)}</div></div>
-    <div class='card'><h2>Counts</h2><div>Endpoints: {s.get('endpoint_count',0)} | GET: {s.get('get_count',0)} | POST: {s.get('post_count',0)} | PUT: {s.get('put_count',0)} | PATCH: {s.get('patch_count',0)} | DELETE: {s.get('delete_count',0)}</div><div>Admin-like routes: {s.get('admin_like_route_count',0)} | Sensitive params: {s.get('sensitive_param_count',0)} | Auth schemes: {s.get('auth_scheme_count',0)}</div></div>
-    <div class='card'><h2>Risk Notes</h2><ul>{notes_html}</ul></div>
-    <div class='card'><h2>Endpoint Inventory</h2><table><tr><th>Method</th><th>Path</th><th>Summary</th><th>Auth</th><th>Params</th><th>Flags</th></tr>{''.join(rows)}</table></div>
-    </body></html>"""
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>API Spec Analysis - {escape(str(title))}</title>
+    <style>
+    body {{
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #071b34;
+        color: #eaf2ff;
+    }}
+    .container {{
+        max-width: 1600px;
+        margin: 0 auto;
+        padding: 24px;
+    }}
+    h1 {{
+        margin: 0 0 8px 0;
+        font-size: 28px;
+    }}
+    h2 {{
+        margin: 0 0 10px 0;
+        font-size: 18px;
+    }}
+    .muted {{
+        color: #b7c9e8;
+        font-size: 13px;
+    }}
+    .grid {{
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin: 18px 0;
+    }}
+    .card {{
+        background: #0c2344;
+        border: 1px solid #2a4365;
+        border-radius: 10px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }}
+    .two-col {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+    }}
+    .endpoint-card {{
+        background: #0a1d39;
+        border: 1px solid #2a4365;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+    }}
+    .endpoint-title {{
+        font-weight: bold;
+        margin-bottom: 4px;
+    }}
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+        font-size: 13px;
+    }}
+    th, td {{
+        border: 1px solid #2a4365;
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+    }}
+    th {{
+        background: #17345f;
+    }}
+    ul {{
+        margin: 8px 0 0 18px;
+    }}
+    .footer {{
+        margin-top: 20px;
+        color: #b7c9e8;
+        font-size: 12px;
+    }}
+    </style>
+    </head>
+    <body>
+    <div class="container">
+        <h1>API Spec Analysis</h1>
+        <div class="muted">{escape(str(title))}</div>
+
+        <div class="grid">
+            <div class="card"><h2>Format</h2><div>{escape(fmt)}</div></div>
+            <div class="card"><h2>Version</h2><div>{escape(version)}</div></div>
+            <div class="card"><h2>Endpoints</h2><div>{summary.get("endpoint_count", 0)}</div></div>
+            <div class="card"><h2>Auth</h2><div>{escape(auth_txt)}</div></div>
+        </div>
+
+        <div class="card">
+            <h2>Summary</h2>
+            <div><strong>Type:</strong> {escape(spec_type)}</div>
+            <div><strong>Confidence:</strong> {escape(str(confidence))}</div>
+            <div><strong>Servers:</strong> {escape(servers_txt)}</div>
+            <div><strong>Top Risky Endpoints:</strong> {summary.get("top_risky_endpoint_count", 0)}</div>
+            <div><strong>Unresolved Refs:</strong> {result.get("unresolved_refs_count", 0)}</div>
+            <div><strong>Methods:</strong> GET {summary.get("get_count",0)} | POST {summary.get("post_count",0)} | PUT {summary.get("put_count",0)} | PATCH {summary.get("patch_count",0)} | DELETE {summary.get("delete_count",0)}</div>
+        </div>
+
+        <div class="two-col">
+            <div class="card">
+                <h2>Risk Notes</h2>
+                <ul>{risk_notes_html}</ul>
+            </div>
+            <div class="card">
+                <h2>Parser Warnings</h2>
+                <ul>{parser_warnings_html}</ul>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Unresolved Refs</h2>
+            <ul>{unresolved_refs_html}</ul>
+        </div>
+
+        <div class="two-col">
+            <div class="card">
+                <h2>Top Risky Endpoints</h2>
+                {top_risky_html}
+            </div>
+            <div class="card">
+                <h2>Recommended Tests</h2>
+                {recommended_html}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Endpoint Inventory</h2>
+            <table>
+                <tr>
+                    <th>Method</th>
+                    <th>Path</th>
+                    <th>Summary</th>
+                    <th>Auth</th>
+                    <th>Auth Source</th>
+                    <th>Risk</th>
+                    <th>Params</th>
+                    <th>Flags</th>
+                </tr>
+                {''.join(rows)}
+            </table>
+        </div>
+
+        <div class="footer">Generated by RingForge Workbench</div>
+    </div>
+    </body>
+    </html>"""
 
     def _save_report_files(self, result: dict[str, Any]) -> tuple[Path, Path]:
         spec_dir = self._ensure_spec_dir()
@@ -1387,7 +1727,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             )
             self.status_var.set("Invalid spec file type")
             return
-        result = analyze_api_spec(spec_path, self._ensure_spec_dir())
+        result = engine_analyze_api_spec(spec_path, self._ensure_spec_dir())
         if result.get('returncode') != 0:
             messagebox.showerror('Spec Analysis', result.get('error', 'Unknown error'), parent=self)
             self.status_var.set('Parse failed')

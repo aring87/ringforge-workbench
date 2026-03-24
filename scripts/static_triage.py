@@ -46,6 +46,8 @@ def main() -> None:
     ap.add_argument("--subfile-limit", type=int, default=25, help="Max extracted PE payloads to triage (default: 25)")
     ap.add_argument("--no-strings", action="store_true", help="Skip strings extraction (faster, less IOC visibility)")
     ap.add_argument("--strings-lite", action="store_true", help="Faster, truncated strings output (still enables IOCs)")
+    ap.add_argument("--capa-timeout", type=int, default=1800, help="Timeout in seconds for capa analysis (default: 1800)")
+    ap.add_argument("--capa-max-size-mb", type=int, default=100, help="Skip capa when file size exceeds this many MB (default: 100)")
 
     args = ap.parse_args()
 
@@ -58,6 +60,8 @@ def main() -> None:
         subfile_limit=int(args.subfile_limit),
         skip_strings=bool(args.no_strings),
         strings_lite=bool(args.strings_lite),
+        capa_timeout=max(60, int(args.capa_timeout)),
+        capa_max_size_mb=max(1, int(args.capa_max_size_mb)),
     )
 
     print(f"[+] Case: {r['case_dir']}")

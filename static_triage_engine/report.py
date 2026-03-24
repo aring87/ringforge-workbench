@@ -254,9 +254,16 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
         lines.append(f"- **Type (file):** `{data['file_sig']}`")
     if data.get("signing_summary"):
         ss = data["signing_summary"]
-        lines.append(f"- **Signed (verified):** `{ss.get('signed_ok')}`")
+        lines.append(f"- **Signature present:** `{ss.get('signature_present')}`")
+        lines.append(f"- **Verified:** `{ss.get('verified')}`")
+        if ss.get("verification_status"):
+            lines.append(f"- **Verification status:** `{ss.get('verification_status')}`")
         if ss.get("subject"):
             lines.append(f"- **Signer:** `{ss.get('subject')}`")
+        if ss.get("tool"):
+            lines.append(f"- **Signing tool:** `{ss.get('tool')}`")
+        if ss.get("error"):
+            lines.append(f"- **Signing note:** `{ss.get('error')}`")
     lines.append("")
 
     lines.append("## Key Findings")
@@ -413,7 +420,9 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "SHA1": data.get("sha1", ""),
         "MD5": data.get("md5", ""),
         "Type (file)": data.get("file_sig", "") or "N/A",
-        "Signed (verified)": (data.get("signing_summary") or {}).get("signed_ok", ""),
+        "Signature Present": (data.get("signing_summary") or {}).get("signature_present", ""),
+        "Verified": (data.get("signing_summary") or {}).get("verified", ""),
+        "Verification Status": (data.get("signing_summary") or {}).get("verification_status", ""),
         "Signer": (data.get("signing_summary") or {}).get("subject", ""),
     }
     combined_meta = {
@@ -505,7 +514,18 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     yara = _yara_block(case_dir)
 
     signing = summary.get("signing") if isinstance(summary.get("signing"), dict) else {}
-    signing_summary = {"signed_ok": bool(signing.get("verify_ok")) and bool(signing.get("timestamp_verified")), "subject": signing.get("subject", "") or ""} if signing else {}
+    signing_summary = (
+        {
+            "signature_present": bool(signing.get("signature_present")) or bool(signing.get("subject")) or bool(signing.get("verify_ok")),
+            "verified": bool(signing.get("verify_ok")),
+            "verification_status": signing.get("verification_status", "") or ("verified" if signing.get("verify_ok") else ("signed_unverified" if (signing.get("signature_present") or signing.get("subject")) else "unsigned")),
+            "subject": signing.get("subject", "") or "",
+            "tool": signing.get("tool", "") or "",
+            "error": signing.get("error", "") or "",
+        }
+        if signing
+        else {}
+    )
 
     data = {
         "generated_utc": _utc(),

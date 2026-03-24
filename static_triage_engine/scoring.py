@@ -417,28 +417,20 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         else []
     )
 
-    if spawned >= 3:
-        add = min(8, 2 + spawned)
-        score += add
-        evidence.append(ScoreEvidence("dynamic", "spawned_processes", add, f"Spawned processes observed: {spawned}"))
+    high_signal_highlights = [
+        str(h) for h in highlights
+        if isinstance(h, str)
+        and any(term in str(h).lower() for term in (
+            "persistence", "scheduled task", "service", "autorun", "run key",
+            "temp", "startup", "appdata", "powershell", "cmd.exe", "wscript",
+            "mshta", "rundll32", "regsvr32", "encoded", "download", "inject",
+            "credential", "lsass", "beacon", "c2", "unsigned"
+        ))
+    ]
 
-    if file_writes >= 3:
-        add = min(6, 2 + file_writes // 50)
-        score += add
-        evidence.append(ScoreEvidence("dynamic", "file_writes", add, f"File writes observed: {file_writes}"))
-
-    if net_events > 0:
-        add = min(8, 3 + min(net_events, 5))
-        score += add
-        evidence.append(ScoreEvidence("dynamic", "network_events", add, f"Network activity observed: {net_events}"))
-
-    if suspicious_paths > 0:
-        add = min(6, 2 + suspicious_paths)
-        score += add
-        evidence.append(ScoreEvidence("dynamic", "suspicious_paths", add, f"Suspicious path hits observed: {suspicious_paths}"))
-
+    # Strong signals first.
     if persistence_hits > 0:
-        add = min(10, 4 + 2 * persistence_hits)
+        add = min(12, 6 + 3 * persistence_hits)
         score += add
         evidence.append(ScoreEvidence("dynamic", "persistence_hits", add, f"Persistence-related hits observed: {persistence_hits}"))
 
@@ -452,10 +444,38 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         score += add
         evidence.append(ScoreEvidence("dynamic", "service_persistence", add, f"Suspicious service changes: {suspicious_services}"))
 
-    if highlights:
-        add = min(6, len(highlights))
+    if suspicious_paths > 0:
+        add = min(8, 3 + suspicious_paths)
         score += add
-        evidence.append(ScoreEvidence("dynamic", "runtime_highlights", add, f"High-signal runtime highlights recorded: {len(highlights)}"))
+        evidence.append(ScoreEvidence("dynamic", "suspicious_paths", add, f"Suspicious path hits observed: {suspicious_paths}"))
+
+    # Soft signals are intentionally lighter so clean apps don't accumulate too many points.
+    if spawned >= 6:
+        add = min(4, 1 + max(0, (spawned - 6) // 4))
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "spawned_processes", add, f"Spawned processes observed: {spawned}"))
+
+    if file_writes >= 10:
+        add = min(3, 1 + file_writes // 100)
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "file_writes", add, f"File writes observed: {file_writes}"))
+
+    # Network activity is noisy for benign GUI apps. Only score it on volume alone at much higher thresholds;
+    # low-count network behavior should be handled by other higher-signal indicators (suspicious paths,
+    # persistence, high-signal highlights, LOLBins, etc.).
+    if net_events >= 100:
+        add = 1
+        if net_events >= 250:
+            add = 2
+        if net_events >= 500:
+            add = 3
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "network_events", add, f"Network activity observed: {net_events}"))
+
+    if high_signal_highlights:
+        add = min(4, len(high_signal_highlights))
+        score += add
+        evidence.append(ScoreEvidence("dynamic", "runtime_highlights", add, f"High-signal runtime highlights recorded: {len(high_signal_highlights)}"))
 
     flags.update({
         "spawned_processes": spawned,
@@ -465,6 +485,8 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         "persistence_hits": persistence_hits,
         "suspicious_tasks": suspicious_tasks,
         "suspicious_services": suspicious_services,
+        "high_signal_highlights": len(high_signal_highlights),
+        "highlight_count": len(highlights),
     })
 
     return max(0, min(30, score)), evidence, flags

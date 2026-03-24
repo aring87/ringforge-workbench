@@ -218,6 +218,128 @@ def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
     }
 
 
+
+
+def _signature_present_from_subject(subject: str) -> bool:
+    return bool((subject or "").strip())
+
+
+def _verify_authenticode_powershell(
+    file_path: str | Path,
+    timeout_sec: int = 60,
+) -> dict[str, Any]:
+    p = Path(file_path)
+
+    result: dict[str, Any] = {
+        "attempted": True,
+        "tool": "powershell:Get-AuthenticodeSignature",
+        "path": str(p),
+        "sha256": "",
+        "signature_present": False,
+        "verify_ok": False,
+        "timestamp_verified": False,
+        "verification_status": "unknown",
+        "subject": "",
+        "issuer": "",
+        "signing_time_utc": "",
+        "timestamp_time_utc": "",
+        "raw": "",
+        "error": "",
+    }
+
+    if not p.exists():
+        result["attempted"] = False
+        result["error"] = "file does not exist"
+        return result
+
+    try:
+        sha256 = _sha256_file(p)
+        result["sha256"] = sha256
+    except Exception as e:
+        result["attempted"] = False
+        result["error"] = f"sha256 failed: {type(e).__name__}: {e}"
+        return result
+
+    ps = shutil.which("powershell") or shutil.which("powershell.exe")
+    if not ps:
+        result["attempted"] = False
+        result["error"] = "powershell not found in PATH"
+        return result
+
+    try:
+        path_escaped = str(p).replace("'", "''")
+        ps_script = (
+            "$s = Get-AuthenticodeSignature -FilePath "
+            f"'{path_escaped}' ; "
+            "$o = [ordered]@{"
+            "Status = [string]$s.Status; "
+            "StatusMessage = [string]$s.StatusMessage; "
+            "Path = [string]$s.Path; "
+            "SignerSubject = if ($s.SignerCertificate) { [string]$s.SignerCertificate.Subject } else { '' }; "
+            "SignerIssuer = if ($s.SignerCertificate) { [string]$s.SignerCertificate.Issuer } else { '' }; "
+            "TimeStamperSubject = if ($s.TimeStamperCertificate) { [string]$s.TimeStamperCertificate.Subject } else { '' }; "
+            "TimeStamperIssuer = if ($s.TimeStamperCertificate) { [string]$s.TimeStamperCertificate.Issuer } else { '' }"
+            "}; $o | ConvertTo-Json -Compress"
+        )
+        cp = subprocess.run(
+            [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+        raw = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")
+        result["raw"] = raw[:120000]
+
+        payload = {}
+        stdout = (cp.stdout or "").strip()
+        if stdout:
+            try:
+                payload = json.loads(stdout)
+            except Exception:
+                payload = {}
+
+        status = str(payload.get("Status") or "").strip()
+        status_message = str(payload.get("StatusMessage") or "").strip()
+        subject = str(payload.get("SignerSubject") or "").strip()
+        issuer = str(payload.get("SignerIssuer") or "").strip()
+        ts_subject = str(payload.get("TimeStamperSubject") or "").strip()
+
+        signature_present = _signature_present_from_subject(subject) or status.lower() not in {"notsigned", ""}
+        verify_ok = status.lower() == "valid"
+        timestamp_verified = bool(ts_subject)
+
+        verification_status = "unknown"
+        if verify_ok:
+            verification_status = "verified"
+        elif signature_present:
+            verification_status = "signed_unverified"
+        elif status.lower() == "notsigned":
+            verification_status = "unsigned"
+        elif status:
+            verification_status = "verification_error"
+
+        result["signature_present"] = signature_present
+        result["verify_ok"] = verify_ok
+        result["timestamp_verified"] = timestamp_verified
+        result["verification_status"] = verification_status
+        result["subject"] = subject
+        result["issuer"] = issuer
+        if status_message and not verify_ok and verification_status != "unsigned":
+            result["error"] = status_message
+
+        if cp.returncode != 0 and not stdout and not result["error"]:
+            result["error"] = f"powershell exited with code {cp.returncode}"
+
+        return result
+
+    except subprocess.TimeoutExpired:
+        result["error"] = f"timeout after {timeout_sec}s"
+        result["verification_status"] = "verification_error"
+        return result
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {e}"
+        result["verification_status"] = "verification_error"
+        return result
 def verify_authenticode_cached(
     file_path: str | Path,
     cache: dict[str, Any],
@@ -227,11 +349,13 @@ def verify_authenticode_cached(
 
     result: dict[str, Any] = {
         "attempted": True,
-        "tool": "osslsigncode",
+        "tool": "",
         "path": str(p),
         "sha256": "",
+        "signature_present": False,
         "verify_ok": False,
         "timestamp_verified": False,
+        "verification_status": "unknown",
         "subject": "",
         "issuer": "",
         "signing_time_utc": "",
@@ -259,27 +383,92 @@ def verify_authenticode_cached(
             out = dict(cached)
             out["path"] = str(p)
             out["sha256"] = sha256
-
-            raw_cached = str(out.get("raw", "") or "")
-            if raw_cached:
-                reparsed = _parse_osslsigncode_output(raw_cached)
-                out["verify_ok"] = bool(reparsed.get("verify_ok"))
-                out["timestamp_verified"] = bool(reparsed.get("timestamp_verified"))
-                out["subject"] = reparsed.get("subject", out.get("subject", "") or "") or ""
-                out["issuer"] = reparsed.get("issuer", out.get("issuer", "") or "") or ""
-                out["signing_time_utc"] = reparsed.get("signing_time_utc", out.get("signing_time_utc", "") or "") or ""
-                out["timestamp_time_utc"] = reparsed.get("timestamp_time_utc", out.get("timestamp_time_utc", "") or "") or ""
-                out["parse_evidence"] = reparsed.get("parse_evidence", out.get("parse_evidence", {}) or {})
-                cache[sha256] = out
-                return out
-
+            out.setdefault("signature_present", _signature_present_from_subject(str(out.get("subject", "") or "")) or bool(out.get("verify_ok")))
+            out.setdefault("verification_status", "verified" if out.get("verify_ok") else ("signed_unverified" if out.get("signature_present") else "unsigned"))
             return out
+
+    verifiers: list[Callable[[], dict[str, Any]]] = []
+    if os.name == "nt":
+        verifiers.append(lambda: _verify_authenticode_powershell(p, timeout_sec=timeout_sec))
+    verifiers.append(lambda: _verify_authenticode_osslsigncode(p, timeout_sec=timeout_sec))
+
+    best: dict[str, Any] | None = None
+    errors: list[str] = []
+
+    for verifier in verifiers:
+        current = verifier()
+        current["path"] = str(p)
+        current["sha256"] = sha256
+        current.setdefault("signature_present", _signature_present_from_subject(str(current.get("subject", "") or "")) or bool(current.get("verify_ok")))
+        current.setdefault(
+            "verification_status",
+            "verified" if current.get("verify_ok") else ("signed_unverified" if current.get("signature_present") else ("unsigned" if not current.get("error") else "verification_error")),
+        )
+
+        if current.get("verify_ok"):
+            cache[sha256] = current
+            return current
+
+        if current.get("signature_present") and best is None:
+            best = current
+
+        err = str(current.get("error") or "").strip()
+        if err:
+            errors.append(f"{current.get('tool')}: {err}")
+
+        if best is None:
+            best = current
+
+    final = dict(best or result)
+    final["path"] = str(p)
+    final["sha256"] = sha256
+    if errors and not final.get("error"):
+        final["error"] = " | ".join(errors[:3])
+    cache[sha256] = final
+    return final
+
+
+def _verify_authenticode_osslsigncode(
+    file_path: str | Path,
+    timeout_sec: int = 60,
+) -> dict[str, Any]:
+    p = Path(file_path)
+
+    result: dict[str, Any] = {
+        "attempted": True,
+        "tool": "osslsigncode",
+        "path": str(p),
+        "sha256": "",
+        "signature_present": False,
+        "verify_ok": False,
+        "timestamp_verified": False,
+        "verification_status": "unknown",
+        "subject": "",
+        "issuer": "",
+        "signing_time_utc": "",
+        "timestamp_time_utc": "",
+        "raw": "",
+        "error": "",
+    }
+
+    if not p.exists():
+        result["attempted"] = False
+        result["error"] = "file does not exist"
+        return result
+
+    try:
+        sha256 = _sha256_file(p)
+        result["sha256"] = sha256
+    except Exception as e:
+        result["attempted"] = False
+        result["error"] = f"sha256 failed: {type(e).__name__}: {e}"
+        return result
 
     exe = shutil.which("osslsigncode")
     if not exe:
         result["attempted"] = False
         result["error"] = "osslsigncode not found in PATH"
-        cache[sha256] = result
+        result["verification_status"] = "verification_error"
         return result
 
     try:
@@ -301,20 +490,27 @@ def verify_authenticode_cached(
         result["signing_time_utc"] = parsed.get("signing_time_utc", "") or ""
         result["timestamp_time_utc"] = parsed.get("timestamp_time_utc", "") or ""
         result["parse_evidence"] = parsed.get("parse_evidence", {})
+        result["signature_present"] = _signature_present_from_subject(result["subject"]) or bool(result["verify_ok"])
+
+        if result["verify_ok"]:
+            result["verification_status"] = "verified"
+        elif result["signature_present"]:
+            result["verification_status"] = "signed_unverified"
+        else:
+            result["verification_status"] = "unsigned"
 
         if cp.returncode != 0 and not result["verify_ok"]:
             result["error"] = f"osslsigncode verify returned {cp.returncode}"
 
-        cache[sha256] = result
         return result
 
     except subprocess.TimeoutExpired:
         result["error"] = f"timeout after {timeout_sec}s"
-        cache[sha256] = result
+        result["verification_status"] = "verification_error"
         return result
     except Exception as e:
         result["error"] = f"{type(e).__name__}: {e}"
-        cache[sha256] = result
+        result["verification_status"] = "verification_error"
         return result
 
 
@@ -388,6 +584,8 @@ def run_case(
     recursive_rounds: int = 3,
     skip_strings: bool = False,
     strings_lite: bool = False,
+    capa_timeout: int = 1800,
+    capa_max_size_mb: int = 100,
 ) -> dict[str, Any]:
     cfg = config or TriageConfig()
     total_start = time.time()
@@ -413,10 +611,14 @@ def run_case(
 
     signing_top = write_signing_json(case_dir, sample_case, signing_cache)
     signing_summary = {
+        "signature_present": bool(signing_top.get("signature_present")),
         "verify_ok": bool(signing_top.get("verify_ok")),
         "timestamp_verified": bool(signing_top.get("timestamp_verified")),
+        "verification_status": signing_top.get("verification_status", "") or "",
         "subject": signing_top.get("subject", "") or "",
         "issuer": signing_top.get("issuer", "") or "",
+        "tool": signing_top.get("tool", "") or "",
+        "error": signing_top.get("error", "") or "",
     }
 
     def _run_hash_step(algo: str) -> str:
@@ -529,7 +731,7 @@ def run_case(
 
     runlog["api_analysis"] = _run_step("api_analysis", lambda: analyze_apis(sample_case, case_dir))
     runlog["yara"] = _run_step("yara", lambda: step_yara(sample_case, case_dir, cfg))
-    runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir, cfg))
+    runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir, cfg, capa_timeout=capa_timeout, max_size_mb=capa_max_size_mb))
     runlog["iocs"] = _run_step("iocs", lambda: step_iocs(case_dir))
     
     yara_result = _load_json(case_dir / "yara_results.json")
@@ -574,7 +776,7 @@ def run_case(
                 sub_sample = t
 
             signing_sf = write_signing_json(sub_dir, sub_sample, signing_cache)
-            signed_ok = bool(signing_sf.get("verify_ok")) and bool(signing_sf.get("timestamp_verified"))
+            signed_ok = bool(signing_sf.get("verify_ok"))
 
             sub_runlog: dict[str, Any] = {}
             sub_summary: dict[str, Any] = {
@@ -588,10 +790,14 @@ def run_case(
                 },
                 "tools": {},
                 "signing": {
+                    "signature_present": bool(signing_sf.get("signature_present")),
                     "verify_ok": bool(signing_sf.get("verify_ok")),
                     "timestamp_verified": bool(signing_sf.get("timestamp_verified")),
+                    "verification_status": signing_sf.get("verification_status", "") or "",
                     "subject": signing_sf.get("subject", "") or "",
                     "issuer": signing_sf.get("issuer", "") or "",
+                    "tool": signing_sf.get("tool", "") or "",
+                    "error": signing_sf.get("error", "") or "",
                 },
                 "flags": {},
                 "virustotal": {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import ipaddress
 import json
 import re
@@ -150,6 +152,45 @@ def step_file(sample: Path, case_dir: Path) -> dict[str, Any]:
     return res
 
 
+
+
+def _resolve_yara_rules_dir(cfg: TriageConfig) -> Path | None:
+    candidates: list[Path] = []
+    env_dir = os.getenv("YARA_RULES_DIR", "").strip()
+    cfg_dir = getattr(cfg, "yara_rules_dir", None)
+    root = Path(__file__).resolve().parents[1]
+
+    if env_dir:
+        candidates.append(Path(env_dir).expanduser())
+    if cfg_dir:
+        candidates.append(Path(cfg_dir).expanduser())
+
+    candidates.extend(
+        [
+            root / "tools" / "yara" / "rules",
+            Path.cwd() / "tools" / "yara" / "rules",
+            root / "tools" / "yara_rules",
+            Path.cwd() / "tools" / "yara_rules",
+        ]
+    )
+
+    for candidate in candidates:
+        try:
+            if candidate.is_dir() and any(candidate.rglob("*.yar")) or any(candidate.rglob("*.yara")):
+                return candidate
+        except Exception:
+            pass
+        try:
+            if candidate.is_dir() and any(candidate.iterdir()):
+                return candidate
+        except Exception:
+            pass
+    return None
+
+
+def _format_mb(num_bytes: int) -> float:
+    return round(num_bytes / (1024 * 1024), 2)
+
 def _truncate_lines(path: Path, max_lines: int) -> None:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -177,13 +218,33 @@ def step_strings(sample: Path, case_dir: Path, lite: bool = False) -> dict[str, 
     res["lite"] = bool(lite)
     return res
     
-def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]:
-    ensure_capa_paths(cfg)
+def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int = 1800, max_size_mb: int = 100) -> dict[str, Any]:
+    sample_size = sample.stat().st_size if sample.exists() else 0
+    size_limit_bytes = max(1, int(max_size_mb)) * 1024 * 1024
     capa_json = case_dir / "capa.json"
     capa_txt = case_dir / "capa.txt"
 
+    if sample_size > size_limit_bytes:
+        reason = (
+            f"Skipped capa: file size {_format_mb(sample_size)} MB exceeds limit of "
+            f"{int(max_size_mb)} MB."
+        )
+        return {
+            "returncode": 0,
+            "skipped": True,
+            "reason": reason,
+            "sample_size_bytes": sample_size,
+            "sample_size_mb": _format_mb(sample_size),
+            "max_size_mb": int(max_size_mb),
+            "capa_json": str(capa_json),
+            "capa_txt": str(capa_txt),
+        }
+
+    ensure_capa_paths(cfg)
+    capa_timeout = max(60, int(capa_timeout))
+
     cmd_json = ["capa", "-r", str(cfg.capa_rules), "-s", str(cfg.capa_sigs), "-j", str(sample)]
-    json_res = run_cmd(cmd_json, cwd=case_dir, timeout=1800)
+    json_res = run_cmd(cmd_json, cwd=case_dir, timeout=capa_timeout)
 
     if json_res.get("returncode") == 0 and (json_res.get("stdout") or "").strip():
         try:
@@ -200,7 +261,7 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]
         return {**json_res, "capa_json": str(capa_json), "capa_txt": str(capa_txt)}
 
     cmd_text = ["capa", "-r", str(cfg.capa_rules), "-s", str(cfg.capa_sigs), str(sample)]
-    text_res = run_cmd(cmd_text, cwd=case_dir, timeout=1800)
+    text_res = run_cmd(cmd_text, cwd=case_dir, timeout=capa_timeout)
     if (text_res.get("stdout") or "").strip():
         safe_write(capa_txt, text_res["stdout"])
 
@@ -208,6 +269,9 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]
         **json_res,
         "capa_json": str(capa_json),
         "capa_txt": str(capa_txt),
+        "sample_size_bytes": sample_size,
+        "sample_size_mb": _format_mb(sample_size),
+        "max_size_mb": int(max_size_mb),
         "text_pass": {"returncode": text_res.get("returncode"), "duration_sec": text_res.get("duration_sec")},
     }
 
@@ -215,14 +279,25 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]
 def step_yara(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]:
     out = case_dir / "yara_results.json"
 
-    rules_dir = getattr(cfg, "yara_rules_dir", None)
-    if not rules_dir:
-        rules_dir = Path("tools") / "yara" / "rules"
-    else:
-        rules_dir = Path(rules_dir)
+    rules_dir = _resolve_yara_rules_dir(cfg)
+    if rules_dir is None:
+        result = {
+            "matched": False,
+            "match_count": 0,
+            "rule_file_count": 0,
+            "matches": [],
+            "error": "YARA rules directory not found. Set YARA_RULES_DIR or place rules under tools/yara/rules.",
+        }
+        save_yara_results(out, result)
+        return {
+            "returncode": 2,
+            "output_file": str(out),
+            "stderr": result["error"],
+        }
 
     try:
         result = run_yara_scan(sample, rules_dir)
+        result["rules_dir"] = str(rules_dir)
         save_yara_results(out, result)
 
         return {
@@ -231,12 +306,14 @@ def step_yara(sample: Path, case_dir: Path, cfg: TriageConfig) -> dict[str, Any]
             "matched": bool(result.get("matched", False)),
             "match_count": int(result.get("match_count", 0) or 0),
             "rule_file_count": int(result.get("rule_file_count", 0) or 0),
+            "rules_dir": str(rules_dir),
             "error": result.get("error"),
         }
     except Exception as e:
         return {
             "returncode": 2,
             "output_file": str(out),
+            "rules_dir": str(rules_dir),
             "stderr": str(e),
         }
 

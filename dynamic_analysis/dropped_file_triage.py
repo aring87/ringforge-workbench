@@ -40,6 +40,16 @@ EXCLUDED_PATH_PREFIXES = [
     r"c:\windows\installer\\",
     r"c:\program files\\",
     r"c:\program files (x86)\\",
+    r"c:\programdata\microsoft\windows defender\\",
+]
+
+ANALYZER_NOISE_MARKERS = [
+    r"\\cases\\",
+    r"\\procmon\\",
+    r"\\reports\\",
+    r"\\metadata\\",
+    r"\\persistence\\",
+    r"\\files\\",
 ]
 
 ALLOWED_EVENT_CATEGORIES = {
@@ -68,7 +78,9 @@ def path_is_in_suspicious_location(path_value: str) -> bool:
 
 def path_is_excluded(path_value: str) -> bool:
     p = path_value.lower()
-    return any(p.startswith(prefix) for prefix in EXCLUDED_PATH_PREFIXES)
+    if any(p.startswith(prefix) for prefix in EXCLUDED_PATH_PREFIXES):
+        return True
+    return any(marker in p for marker in ANALYZER_NOISE_MARKERS)
 
 
 def classify_path(path_value: str) -> str:

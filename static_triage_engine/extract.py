@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,28 @@ from .steps import run_cmd
 
 PE_EXTS = {".exe", ".dll", ".sys", ".ocx", ".scr", ".cpl"}
 ARCHIVE_EXTS = {".zip", ".7z", ".rar", ".cab", ".msi"}
+
+
+def find_7z() -> str | None:
+    candidates = [
+        shutil.which("7z"),
+        shutil.which("7z.exe"),
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+        os.path.expandvars(r"%ProgramFiles%\7-Zip\7z.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\7-Zip\7z.exe"),
+    ]
+    seen: set[str] = set()
+    for path in candidates:
+        if not path:
+            continue
+        norm = os.path.normpath(path)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if os.path.isfile(norm):
+            return norm
+    return None
 
 
 def _looks_like_inno(path: Path) -> bool:
@@ -47,8 +70,9 @@ def extract_payloads(sample_path: Path, out_dir: Path) -> dict[str, Any]:
             }
 
         # Fallback to 7z if innoextract failed/empty
-        if shutil.which("7z") is not None:
-            cmd2 = ["7z", "x", "-y", f"-o{str(out_dir)}", str(sample_path)]
+        seven_zip = find_7z()
+        if seven_zip is not None:
+            cmd2 = [seven_zip, "x", "-y", f"-o{str(out_dir)}", str(sample_path)]
             res2 = run_cmd(cmd2, cwd=out_dir, timeout=1800)
 
             extracted_files2 = [p for p in out_dir.rglob("*") if p.is_file()]
@@ -92,13 +116,14 @@ def extract_payloads(sample_path: Path, out_dir: Path) -> dict[str, Any]:
         }
 
     # Default: 7z
-    if shutil.which("7z") is None:
+    seven_zip = find_7z()
+    if seven_zip is None:
         return {
             "attempted": False,
             "success": False,
             "extractor": "7z",
             "extracted_dir": str(out_dir),
-            "notes": "7z not found. Install with: sudo apt-get install -y p7zip-full",
+            "notes": "7z not found. Add 7-Zip to PATH or install it in the default Program Files path.",
             "extracted_files": [],
             "extracted_pes": [],
             "returncode": 127,
@@ -108,7 +133,7 @@ def extract_payloads(sample_path: Path, out_dir: Path) -> dict[str, Any]:
             "duration_sec": 0.0,
         }
 
-    cmd = ["7z", "x", "-y", f"-o{str(out_dir)}", str(sample_path)]
+    cmd = [seven_zip, "x", "-y", f"-o{str(out_dir)}", str(sample_path)]
     res = run_cmd(cmd, cwd=out_dir, timeout=1800)
 
     extracted_files = [p for p in out_dir.rglob("*") if p.is_file()]
@@ -138,7 +163,8 @@ def recursive_extract(out_dir: Path, max_rounds: int = 3) -> dict[str, Any]:
     notes: list[str] = []
     extracted_more = 0
 
-    if shutil.which("7z") is None:
+    seven_zip = find_7z()
+    if seven_zip is None:
         notes.append("7z not found; cannot recursively extract")
         return {"rounds": 0, "extracted_more": 0, "notes": notes}
 
@@ -164,7 +190,7 @@ def recursive_extract(out_dir: Path, max_rounds: int = 3) -> dict[str, Any]:
             dest.mkdir(parents=True, exist_ok=True)
 
             if a.suffix.lower() == ".cab" or a.name.lower().endswith(".cab"):
-                res7 = run_cmd(["7z", "x", "-y", f"-o{str(dest)}", str(a)], cwd=dest, timeout=1800)
+                res7 = run_cmd([seven_zip, "x", "-y", f"-o{str(dest)}", str(a)], cwd=dest, timeout=1800)
                 files7 = [p for p in dest.rglob("*") if p.is_file()]
                 if res7.get("returncode") == 0 and files7:
                     extracted_more += len(files7)
@@ -185,7 +211,7 @@ def recursive_extract(out_dir: Path, max_rounds: int = 3) -> dict[str, Any]:
                     notes.append(f"Round {round_idx}: cabextract not installed; CAB extraction incomplete for {a.name}.")
                 continue
 
-            res = run_cmd(["7z", "x", "-y", f"-o{str(dest)}", str(a)], cwd=dest, timeout=1800)
+            res = run_cmd([seven_zip, "x", "-y", f"-o{str(dest)}", str(a)], cwd=dest, timeout=1800)
             files_now = [p for p in dest.rglob("*") if p.is_file()]
             if res.get("returncode") == 0 and files_now:
                 extracted_more += len(files_now)
