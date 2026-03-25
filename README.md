@@ -8,8 +8,6 @@
 
 Static insight. Dynamic visibility.
 
-Static insight. Dynamic visibility.
-
 RingForge Workbench is a unified software triage platform designed for static, dynamic, and behavioral analysis, scoring, and reporting.
 
 The project brings together multiple analysis methods into a single workflow to support efficient triage, structured outputs, and future expansion into a broader software analysis workbench.
