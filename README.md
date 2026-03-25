@@ -1,20 +1,20 @@
 # RingForge Workbench is a Static and Dynamic Software Analysis Platform
 
-[![Release](https://img.shields.io/badge/release-v1.3-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.4-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
-[![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic-orange)](https://github.com/aring87/ringforge-workbench)
+[![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20spec-orange)](https://github.com/aring87/ringforge-workbench)
 [![Status](https://img.shields.io/badge/status-active%20development-brightgreen)](https://github.com/aring87/ringforge-workbench)
 
 Static insight. Dynamic visibility.
 
-RingForge Workbench is a unified software triage platform designed for static, dynamic, and behavioral analysis, scoring, and reporting.
+RingForge Workbench is a unified software triage platform designed for static, dynamic, behavioral, and API specification analysis, scoring, and reporting.
 
-The project brings together multiple analysis methods into a single workflow to support efficient triage, structured outputs, and future expansion into a broader software analysis workbench.
+The project brings together multiple analysis methods into a single workflow to support efficient triage, structured outputs, cleaner analyst review, and continued expansion into a broader software assessment workbench.
 
 ## Current Release
 
-**Version:** v1.3
+**Version:** v1.4
 
 ## Overview
 
@@ -22,9 +22,69 @@ RingForge Workbench is designed to help analysts quickly triage Windows software
 
 The platform creates case-based output for each workflow and produces structured artifacts such as JSON analysis files, IOC exports, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, dynamic findings summaries, and API spec inventory reports.
 
-## What’s New in v1.3
+## What’s New in v1.4
 
-RingForge Workbench v1.3 builds on the v1.2 polish milestone by turning API Spec Analysis into a practical, polished, and testable workflow. This release improves specification parsing, report quality, output organization, and overall usability while preserving the platform’s existing static, dynamic, and combined scoring foundation.
+RingForge Workbench v1.4 focuses on analysis quality, false-positive reduction, stronger trust-signal handling, and a major hardening of the API Spec Analysis experience. This release improves static confidence, dynamic signal quality, endpoint and auth visibility for API specs, GUI polish, and exported HTML reporting.
+
+### v1.4 Highlights
+
+- Reduced noisy dynamic-analysis scoring for benign applications
+- Improved digital signature detection and verification handling
+- Added configurable capa timeout support
+- Added configurable capa large-file skip behavior for very large binaries
+- Improved 7-Zip discovery and extraction handling on Windows
+- Fixed YARA rules integration and reporting
+- Strengthened API Spec Analysis with richer endpoint risk context
+- Added top risky endpoints and recommended testing guidance
+- Improved auth inheritance, auth source display, and endpoint risk visibility
+- Improved API Spec Analysis GUI layout and HTML reporting
+- Continued overall workflow polish across RingForge Workbench
+
+### v1.4 Changelog
+
+#### Static Analysis
+- Improved Authenticode signature handling and reduced false unsigned results
+- Improved signature reporting and verification accuracy
+- Added configurable capa timeout support
+- Added configurable capa max-size skip behavior for very large binaries
+- Improved handling of large benign software that previously caused long capa timeouts
+- Improved 7-Zip resolution on Windows by supporting common install locations
+- Fixed YARA path/rules handling and verified rule execution in reports
+- Continued static reporting and scoring refinement
+
+#### Dynamic Analysis
+- Reduced noisy dynamic verdicting for benign applications
+- Improved filtering of analyzer-generated artifacts from dynamic findings
+- Reduced Defender-related and environmental noise in dynamic scoring
+- Lowered weight of generic runtime activity such as normal process and network volume
+- Improved emphasis on stronger signals such as persistence and higher-risk behavior
+- Improved dynamic scoring so benign baseline applications no longer over-score unnecessarily
+- Improved dynamic report readability and result quality for large GUI applications
+
+#### API Spec Analysis
+- Improved endpoint inventory and spec parsing workflow
+- Added richer endpoint risk scoring and endpoint-level risk context
+- Improved auth handling, including inherited/global auth behavior
+- Added auth source visibility in the UI
+- Added risk level visibility in the endpoint inventory
+- Added top risky endpoints section
+- Added recommended tests section for analyst follow-up
+- Improved handling of risky, broken, and partially incomplete API specs
+- Improved display of public versus authenticated endpoints
+- Improved API Spec Analysis GUI layout and usability
+- Improved HTML reporting for spec analysis to match GUI enhancements
+- Improved analyst-facing context for insecure servers, risky routes, destructive methods, uploads, and sensitive parameters
+
+#### GUI / Reporting
+- Improved API Spec Analysis window layout and presentation
+- Added better use of available screen space for spec-analysis review
+- Improved endpoint inventory readability
+- Improved report structure and exported HTML polish
+- Continued refinement of RingForge branding, workflow clarity, and review usability
+
+## v1.3 - API Spec Analysis Maturity Release
+
+Version 1.3 turned API Spec Analysis into a practical, polished, and testable workflow. It improved specification parsing, report quality, output organization, and overall usability while preserving the platform’s static, dynamic, and combined scoring foundation.
 
 ### v1.3 Highlights
 
@@ -54,7 +114,7 @@ RingForge Workbench v1.3 builds on the v1.2 polish milestone by turning API Spec
 
 Version 1.2 marked the transition from the project’s earlier analyzer-focused identity into **RingForge Workbench**.
 
-This release focused on branding, presentation, GUI polish, and overall platform direction rather than major new feature expansion. It established a cleaner project identity and prepared the foundation for the more mature API Spec Analysis and reporting improvements delivered in **v1.3**.
+This release focused on branding, presentation, GUI polish, and overall platform direction rather than major new feature expansion. It established a cleaner project identity and prepared the foundation for the more mature API Spec Analysis and reporting improvements delivered in **v1.3** and expanded further in **v1.4**.
 
 ### v1.2 Changes
 
@@ -96,15 +156,30 @@ API Spec Analysis feature maturity release:
 - Improved report naming and report-open behavior
 - Additional GUI refinement and workspace consistency improvements
 
+### v1.4
+
+Analysis quality and false-positive reduction release:
+
+- Dynamic scoring tuned to reduce environmental and benign-runtime noise
+- Signature verification handling improved for valid signed software
+- Capa timeout and large-file skip support added for heavy binaries
+- YARA integration and report visibility improved
+- API Spec Analysis hardened with richer endpoint risk context
+- Top risky endpoints and recommended tests added
+- Auth inheritance, auth source, and endpoint risk display improved
+- API Spec Analysis GUI and HTML reporting significantly polished
+
 ## Planned Next Iteration
 
-Future work after v1.3 may include:
+Future work after v1.4 may include:
 
 - cumulative API spec scoring across multiple test runs
 - final multi-test assessment summaries
 - expanded API spec risk scoring and weighting
 - additional report presentation options
 - continued cleanup of advanced utilities and developer-focused workflows
+- richer combined reporting across static, dynamic, and spec-based results
+
 ## Outputs
 
 ### Static case outputs
@@ -238,7 +313,7 @@ ringforge-workbench/
 ## Recommended Release Folder Layout
 
 ```text
-RingForge_Workbench_v1.3/
+RingForge_Workbench_v1.4/
   RingForgeWorkbench.exe
   scripts/
   static_triage_engine/
@@ -322,6 +397,7 @@ RingForge Workbench is being expanded from a static triage utility into a more c
 - More advanced malware triage and recommendation engine
 
 ## Project Direction
+
 The long-term goal is to evolve RingForge Workbench into a unified triage platform that can combine static artifacts, runtime behavior, API specifications, and external intelligence into a single assessment workflow. This will allow analysts to move from isolated test results to a more complete and defensible maliciousness determination.
 
 This is the most reliable packaging model right now.
@@ -382,7 +458,8 @@ You should also have:
 ## Windows Setup Example
 
 ```powershell
-cd D:\ring_forge_analyzer
+cd D:
+ing_forge_analyzer
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -415,7 +492,8 @@ bash scripts/bootstrap_capa_rules.sh
 ### Windows
 
 ```powershell
-cd D:\ring_forge_analyzer
+cd D:
+ing_forge_analyzer
 .\.venv\Scripts\Activate.ps1
 python .\scripts\static_triage_gui.py
 ```
@@ -451,6 +529,8 @@ The GUI includes a separate API Spec Analysis window with:
 - spec file selection
 - Overview metrics
 - Summary and Risk Notes panels
+- Top Risky Endpoints section
+- Recommended Tests section
 - Endpoint Inventory table
 - HTML report generation
 - Open Case Files and report-open actions
@@ -470,7 +550,7 @@ Example analysis run:
 python scripts/static_triage.py "/path/to/sample.exe"
 ```
 
-## Packaging RingForge Workbench v1.3
+## Packaging RingForge Workbench v1.4
 
 ### Build
 
@@ -496,32 +576,39 @@ Create the release folder and copy:
 
 ```powershell
 cd release
-Compress-Archive -Path .\RingForge_Workbench_v1.3 -DestinationPath .\RingForge_Workbench_v1.3.zip -Force
+Compress-Archive -Path .\RingForge_Workbench_v1.4 -DestinationPath .\RingForge_Workbench_v1.4.zip -Force
 ```
 
-## Release Notes – RingForge Workbench v1.3
+## Release Notes – RingForge Workbench v1.4
 
 ### Added
-- redesigned API Spec Analysis workspace
-- Overview metrics for spec parsing
-- endpoint inventory reporting
-- HTML report generation for API spec analysis
-- OpenAPI 3.x and Swagger 2.0 validation coverage
-- spec-specific latest report naming and access behavior
+- configurable capa timeout support
+- configurable capa max-size skip behavior for very large binaries
+- top risky endpoints for API spec analysis
+- recommended test guidance for API spec analysis
+- auth source visibility in API spec analysis
+- risk level visibility in API spec endpoint inventory
+- richer HTML reporting for API spec analysis
+- unresolved ref awareness and parser-warning handling for spec-analysis workflows
 
 ### Improved
-- authentication normalization and per-endpoint auth reporting
-- API spec HTML report readability
-- GUI layout, spacing, branding, and consistency
-- report naming using analyzed spec filenames
-- report-open behavior for spec-specific latest reports
+- digital signature verification and signed-file reporting
+- dynamic scoring quality for benign applications
+- filtering of analyzer-generated and environmental dynamic-analysis noise
+- API spec auth inheritance and auth visibility
+- API spec UI layout and analyst readability
+- API spec HTML report structure and presentation
+- YARA rules integration and report visibility
+- 7-Zip discovery and Windows extraction handling
+- GUI layout, spacing, branding, and consistency across RingForge Workbench
 
 ### Fixed
-- API Spec Analysis window layout and rendering issues
-- endpoint inventory spacing and scrollbar behavior
-- incorrect global-auth display on public endpoints
-- duplicate auth naming variants in spec analysis results
-- Swagger 2.0 type labeling
+- false unsigned results for valid signed software
+- noisy dynamic verdicting caused by benign process and network activity
+- long capa delays for very large benign binaries
+- API Spec Analysis health-route false positives
+- endpoint auth display issues in API Spec Analysis
+- API Spec Analysis latest-report usability and output clarity
 
 ## Troubleshooting
 
@@ -579,13 +666,15 @@ Check:
 - the process has sufficient rights to query scheduled tasks and services
 - temporary JSON output can be written successfully
 
-### 7. capa fails
+### 7. capa fails or is skipped
 
 Check:
 
 - `tools/capa-rules` exists
 - `tools/capa/sigs` exists
 - capa is installed in the active virtual environment
+
+For very large binaries, RingForge Workbench may intentionally skip capa based on the configured size threshold.
 
 ### 8. LIEF fails
 
@@ -626,13 +715,13 @@ Use Linux-style paths in the GUI, not Windows paths.
 - do not run unknown samples on a personal daily-use host
 - Procmon-backed execution and persistence snapshotting can generate significant host noise on non-isolated systems
 - legitimate software can still contain powerful APIs, installer behaviors, or autorun-related logic; scoring and findings should always be reviewed in context
-- API spec analysis can highlight risky routes, methods, and auth patterns, but findings still require analyst review in context
+- API spec analysis can highlight risky routes, methods, auth patterns, and follow-up test ideas, but findings still require analyst review in context
 
 ## Notes
 
 - API analysis currently applies to Windows PE executables and DLLs through import/API-chain analysis
 - API Spec Analysis currently supports OpenAPI and Swagger definition files in JSON or YAML form
-- dynamic analysis in RingForge Workbench v1.3 is intended as a practical triage layer, not a full sandbox replacement
+- dynamic analysis in RingForge Workbench v1.4 is intended as a practical triage layer, not a full sandbox replacement
 - future work may include cumulative spec scoring, final multi-test summaries, tighter Procmon filtering, cleaner VM-first tuning, installer-monitor expansion, and broader behavior correlation
 
 ## License
