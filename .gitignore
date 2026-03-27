@@ -43,6 +43,9 @@ samples/
 
 # Case outputs / reports / extracted payloads (huge + can include samples)
 cases/
+build/
+dist/
+reports/
 
 # Logs (can include sensitive paths/hashes)
 logs/
