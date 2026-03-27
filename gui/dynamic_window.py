@@ -16,6 +16,7 @@ from dynamic_analysis.html_report import write_dynamic_html_report
 from dynamic_analysis.orchestrator import run_dynamic_analysis
 from static_triage_engine.scoring import combined_score_from_case_dir
 
+
 class DynamicAnalysisWindow(tk.Toplevel):
     def __init__(self, app: "App"):
         super().__init__(app)
@@ -129,7 +130,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_procmon_enabled"] = bool(self.procmon_enabled_var.get())
         self.app.cfg["dynamic_procmon_path"] = self.procmon_path_var.get().strip()
         self.app.cfg["dynamic_procmon_config_path"] = self.procmon_config_var.get().strip()
-        self.app.save_cfg()
+
+        project_root = Path(__file__).resolve().parents[1]
+        config_path = project_root / "config.json"
+        config_path.write_text(json.dumps(self.app.cfg, indent=2), encoding="utf-8")
 
     def _use_main_sample(self):
         self.sample_var.set(self.app.sample_var.get().strip())
