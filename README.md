@@ -14,13 +14,55 @@ The project brings together multiple analysis methods into a single workflow to 
 
 ## Current Release
 
-**Version:** v1.4
+**Version:** v1.5
 
 ## Overview
 
 RingForge Workbench is designed to help analysts quickly triage Windows software samples such as EXE, DLL, installer, launcher, and related package files. It combines metadata extraction, strings analysis, capa behavior analysis, IOC extraction, signing validation, VirusTotal reputation, executable API import analysis, controlled dynamic runtime behavior collection, and API specification analysis into a single workflow.
 
 The platform creates case-based output for each workflow and produces structured artifacts such as JSON analysis files, IOC exports, Markdown and HTML reports, PDF reports when supported, Procmon-derived runtime artifacts, persistence diffs, dynamic findings summaries, and API spec inventory reports.
+
+## Whats New in v1.5
+
+RingForge Workbench v1.5 focuses on internal cleanup, GUI modularization, and maintainability improvements following the feature growth completed in v1.4. This release does not change the core mission of the platform, but it significantly improves the structure of the codebase so future features, fixes, and testing workflows can be added more safely and cleanly.
+
+Version 1.5 begins the transition away from a large monolithic GUI file by splitting major interface components into dedicated modules. The API Analysis window, Dynamic Analysis window, Spec Analysis window, and application styling logic were separated into their own files under a new gui package. This makes the project easier to maintain, easier to troubleshoot, and safer to extend without introducing unrelated regressions.
+
+In addition to the structural cleanup, v1.5 includes dependency and launch-path fixes required to support modular imports when the application is started from the existing scripts/static_triage_gui.py entry point. During refactoring, runtime issues affecting configuration save behavior and the Dynamic Analysis launch flow were identified and corrected, restoring full window functionality while preserving the existing user experience.
+
+v1.5 Highlights
+Began modular GUI refactor for improved maintainability
+Moved API Analysis window into gui/api_window.py
+Moved Dynamic Analysis window into gui/dynamic_window.py
+Moved Spec Analysis window into gui/spec_window.py
+Moved theme and ttk styling logic into gui/styles.py
+Added gui package structure for cleaner separation of responsibilities
+Improved compatibility for modular imports when launching from scripts/static_triage_gui.py
+Removed several window dependencies on old global GUI constants and helpers
+Fixed dynamic configuration save behavior after window modularization
+Restored proper Run Dynamic Analysis button behavior after refactor
+Preserved existing app behavior while reducing GUI file complexity
+Established a cleaner foundation for future movement of shared helpers and main app logic
+v1.5 Changelog
+Added new gui package structure
+Refactored APIAnalysisWindow into its own module
+Refactored DynamicAnalysisWindow into its own module
+Refactored SpecAnalysisWindow into its own module
+Refactored theme application logic into gui/styles.py
+Added project-root import path handling for modular GUI loading
+Reworked moved windows to use more self-contained path and config handling
+Removed several direct dependencies on ROOT, DEFAULT_CASE_ROOT, and other main-file-only helpers
+Fixed post-refactor dynamic analysis execution issue caused by config save handling
+Improved maintainability and reduced risk for future GUI enhancements
+Why v1.5 matters
+
+While v1.4 expanded functionality and polished workflows, v1.5 strengthens the foundation of the project itself. This release is about making RingForge Workbench easier to evolve. By separating major GUI components into focused modules, future improvements such as additional windows, shared helper libraries, better launcher separation, and cleaner testing paths can be implemented with less risk and less code duplication.
+
+Next planned direction
+Move shared GUI helper functions into gui/gui_utils.py
+Move the main App class into gui/main_app.py
+Reduce scripts/static_triage_gui.py to a thin launcher
+Continue improving maintainability without disrupting stable workflows
 
 ## What’s New in v1.4
 
