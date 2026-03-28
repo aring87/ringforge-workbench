@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
+from dynamic_analysis.report_theme import report_page
 
 class APIAnalysisWindow(tk.Toplevel):
     def __init__(self, app: "App"):
@@ -209,15 +210,20 @@ class APIAnalysisWindow(tk.Toplevel):
 
         options_wrap = ttk.Frame(frm)
         options_wrap.grid(row=1, column=2, columnspan=2, sticky="e")
-        ttk.Checkbutton(options_wrap, text="Verify SSL", variable=self.verify_ssl_var).pack(side="left", padx=(0, 12))
-        ttk.Label(options_wrap, text="Timeout (sec):").pack(side="left")
+        ttk.Checkbutton(
+            options_wrap,
+            text="Verify SSL",
+            variable=self.verify_ssl_var,
+            style="Dark.TCheckbutton",
+        ).pack(side="left", padx=(0, 12))
+
         ttk.Spinbox(
             options_wrap,
             from_=1,
             to=300,
             textvariable=self.timeout_var,
             width=8,
-            style="TSpinbox",
+            style="Dark.TSpinbox",
         ).pack(side="left", padx=(6, 0))
 
         ttk.Label(frm, text="URL:").grid(row=2, column=0, sticky="w")
@@ -730,90 +736,116 @@ class APIAnalysisWindow(tk.Toplevel):
         json_path = report_dir / f"manual_api_report_{ts}.json"
 
         payload = self.last_response_payload
-        req = payload.get("request", {})
-        resp = payload.get("response", {})
-        headers = resp.get("headers", {})
-        body_text = resp.get("display_body") or resp.get("body_text", "")
+        req = payload.get("request", {}) if isinstance(payload.get("request"), dict) else {}
+        resp = payload.get("response", {}) if isinstance(payload.get("response"), dict) else {}
+        headers = resp.get("headers", {}) if isinstance(resp.get("headers"), dict) else {}
+        body_text = resp.get("display_body") or resp.get("body_text", "") or ""
+        
+        pretty_body = body_text
+        try:
+            pretty_body = json.dumps(json.loads(body_text), indent=2)
+        except Exception:
+            pretty_body = body_text
+            
+        status_code = str(resp.get("status_code", "") or "")
+        reason = str(resp.get("reason", "") or "")
+        saved_at = str(payload.get("saved_at", "") or "")
+        preset = str(payload.get("preset", "") or "")
+        method = str(req.get("method", "") or "")
+        url = str(req.get("url", "") or "")
+        upload_file = str(req.get("upload_file", "") or "none")
+        file_field = str(req.get("file_field", "") or "file")
+
+        content_type = str(headers.get("Content-Type", "Unknown") or "Unknown")
+        size_bytes = len(str(body_text).encode("utf-8", errors="replace"))
+        header_count = len(headers)
 
         def esc(x):
             return html.escape(str(x))
 
-        headers_html = "<br>".join(f"<strong>{esc(k)}:</strong> {esc(v)}" for k, v in headers.items()) or "<em>No headers</em>"
+        def severity_class_for_status(code_text: str) -> str:
+            try:
+                code = int(code_text)
+            except Exception:
+                return "verdict sev-med"
+            if 200 <= code <= 299:
+                return "verdict sev-none"
+            if 300 <= code <= 399:
+                return "verdict sev-low"
+            if 400 <= code <= 499:
+                return "verdict sev-med"
+            return "verdict sev-high"
 
-        html_doc = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Manual API Report</title>
-<style>
-body {{
-    background:#08111f;
-    color:#eaf2ff;
-    font-family:Segoe UI, Arial, sans-serif;
-    margin:0;
-    padding:0;
-}}
-.wrap {{
-    max-width:2000px;
-    margin:24px auto;
-    padding:0 14px;
-}}
-.card {{
-    background:#102041;
-    border:1px solid #1e3a6a;
-    border-radius:10px;
-    padding:14px;
-    margin-bottom:12px;
-}}
-h1,h2 {{
-    color:#9ac2ff;
-}}
-pre {{
-    white-space:pre-wrap;
-    word-break:break-word;
-    background:#0b1730;
-    border:1px solid #284774;
-    padding:12px;
-    border-radius:8px;
-    overflow:auto;
-}}
-.meta {{
-    color:#aab8d6;
-}}
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>Manual API Report</h1>
+        verdict = f"{status_code} {reason}".strip() or "REQUEST FAILED"
+        verdict_class = severity_class_for_status(status_code)
 
-<div class="card">
-<h2>Request</h2>
-<p><strong>Preset:</strong> {esc(payload.get("preset", ""))}<br>
-<strong>Method:</strong> {esc(req.get("method", ""))}<br>
-<strong>URL:</strong> {esc(req.get("url", ""))}<br>
-<strong>Upload file:</strong> {esc(req.get("upload_file", ""))}<br>
-<strong>File field:</strong> {esc(req.get("file_field", ""))}</p>
-</div>
+        headers_html = "".join(
+            f"<li><strong>{esc(k)}:</strong> {esc(v)}</li>"
+            for k, v in headers.items()
+        ) or "<li>None</li>"
 
-<div class="card">
-<h2>Response</h2>
-<p><strong>Status:</strong> {esc(resp.get("status_code", ""))} {esc(resp.get("reason", ""))}<br>
-<span class="meta">{esc(payload.get("saved_at", ""))}</span></p>
-</div>
+        body_html = f"""
+        <section class="tile-grid">
+          <div class="tile"><div class="tile-label">Method</div><div class="tile-value">{esc(method)}</div></div>
+          <div class="tile"><div class="tile-label">Status</div><div class="tile-value">{esc(status_code or '-')}</div></div>
+          <div class="tile"><div class="tile-label">Content Type</div><div class="tile-value" style="font-size:18px;">{esc(content_type)}</div></div>
+          <div class="tile"><div class="tile-label">Headers</div><div class="tile-value">{header_count}</div></div>
+          <div class="tile"><div class="tile-label">Body Size</div><div class="tile-value">{size_bytes}</div></div>
+          <div class="tile"><div class="tile-label">Preset</div><div class="tile-value" style="font-size:18px;">{esc(preset or '-')}</div></div>
+        </section>
 
-<div class="card">
-<h2>Response Headers</h2>
-<p>{headers_html}</p>
-</div>
+        <div class="grid">
+          <section class="card">
+            <div class="section-head">
+              <h2>Request</h2>
+            </div>
+            <table class="kv">
+              <tr><th>Preset</th><td>{esc(preset)}</td></tr>
+              <tr><th>Method</th><td>{esc(method)}</td></tr>
+              <tr><th>URL</th><td>{esc(url)}</td></tr>
+              <tr><th>Upload File</th><td>{esc(upload_file)}</td></tr>
+              <tr><th>File Field</th><td>{esc(file_field)}</td></tr>
+            </table>
+          </section>
 
-<div class="card">
-<h2>Response Body</h2>
-<pre>{esc(body_text)}</pre>
-</div>
-</div>
-</body>
-</html>
-"""
+          <section class="card">
+            <div class="section-head">
+              <h2>Response</h2>
+            </div>
+            <table class="kv">
+              <tr><th>Status</th><td>{esc(verdict)}</td></tr>
+              <tr><th>Saved At</th><td>{esc(saved_at)}</td></tr>
+              <tr><th>Content Type</th><td>{esc(content_type)}</td></tr>
+              <tr><th>Body Size</th><td>{size_bytes} bytes</td></tr>
+            </table>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>Response Headers</h2>
+          </div>
+          <ul>{headers_html}</ul>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>Response Body</h2>
+          </div>
+          <div class="table-wrap">
+            <pre style="white-space:pre-wrap;word-break:break-word;background:#0b1220;border:1px solid #1f2937;padding:14px;border-radius:12px;overflow:auto;">{esc(pretty_body)}</pre>
+          </div>
+        </section>
+        """
+
+        html_doc = report_page(
+            title="Manual API Report",
+            subtitle=esc(url or "Manual API Tester"),
+            verdict=verdict,
+            verdict_class=verdict_class,
+            body_html=body_html,
+        )
+
         html_path.write_text(html_doc, encoding="utf-8")
         json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

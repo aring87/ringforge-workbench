@@ -123,6 +123,7 @@ def build_configuration_section(app, parent):
         text="Override preset with advanced settings",
         variable=app.adv_enabled_var,
         command=app._on_adv_toggle,
+        style="Dark.TCheckbutton",
     ).grid(row=0, column=0, sticky="w")
 
     app.adv_body = ttk.Frame(adv)
@@ -134,6 +135,7 @@ def build_configuration_section(app, parent):
         text="Enable extraction",
         variable=app.extract_var,
         command=app._save_cfg,
+        style="Dark.TCheckbutton",
     ).grid(row=0, column=0, sticky="w")
 
     ttk.Checkbutton(
@@ -141,6 +143,7 @@ def build_configuration_section(app, parent):
         text="Enable subfiles triage",
         variable=app.subfiles_var,
         command=app._save_cfg,
+        style="Dark.TCheckbutton",
     ).grid(row=0, column=1, sticky="w", padx=(14, 0))
 
     ttk.Label(app.adv_body, text="Subfile limit:").grid(row=0, column=2, sticky="e", padx=(14, 6))
@@ -151,6 +154,7 @@ def build_configuration_section(app, parent):
         textvariable=app.subfile_limit_var,
         width=6,
         command=app._save_cfg,
+        style="Dark.TSpinbox",
     )
     app.subfile_limit_spin.grid(row=0, column=3, sticky="w")
 
@@ -159,6 +163,7 @@ def build_configuration_section(app, parent):
         text="Strings lite",
         variable=app.strings_lite_var,
         command=app._on_strings_mode_changed,
+        style="Dark.TCheckbutton",
     ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
     ttk.Checkbutton(
@@ -166,6 +171,7 @@ def build_configuration_section(app, parent):
         text="Skip strings",
         variable=app.no_strings_var,
         command=app._on_strings_mode_changed,
+        style="Dark.TCheckbutton",
     ).grid(row=1, column=1, sticky="w", padx=(14, 0), pady=(8, 0))
 
     app.effective_label = ttk.Label(adv, text="")

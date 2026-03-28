@@ -26,18 +26,18 @@ def badge(label: str, value: Any) -> str:
 def report_css() -> str:
     return r"""
 :root {
-  --bg: #0f172a;
-  --panel: #111827;
-  --panel-2: #0b1220;
-  --border: #1f2937;
-  --text: #e5e7eb;
-  --muted: #94a3b8;
-  --blue: #93c5fd;
-  --blue-strong: #2563eb;
-  --good: #10b981;
-  --warn: #f59e0b;
-  --bad: #ef4444;
-  --shadow: 0 10px 30px rgba(0,0,0,0.28);
+  --bg: #0A0A0A;
+  --panel: #101726;
+  --panel-2: #0B1220;
+  --border: #22314F;
+  --text: #F3F6FB;
+  --muted: #A9B7D0;
+  --blue: #6EA8FF;
+  --blue-strong: #1E4ED8;
+  --good: #19C37D;
+  --warn: #F5B942;
+  --bad: #E45757;
+  --shadow: 0 10px 30px rgba(0,0,0,0.35);
 }
 * { box-sizing: border-box; }
 body {
@@ -67,8 +67,8 @@ h2 {
   font-size: 14px;
 }
 .banner {
-  background: linear-gradient(135deg, #0b1220, #1d4ed8);
-  border: 1px solid #1d4ed8;
+  background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
+  border: 1px solid #22314F;
   border-radius: 18px;
   padding: 22px;
   margin-bottom: 20px;

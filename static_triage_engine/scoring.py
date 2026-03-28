@@ -55,11 +55,11 @@ def _safe_load_json(path: Path) -> dict[str, Any]:
 def severity_from_score(score: int) -> str:
     if score >= 80:
         return "Critical"
-    if score >= 60:
+    if score >= 65:
         return "High"
-    if score >= 35:
+    if score >= 45:
         return "Medium"
-    if score >= 15:
+    if score >= 20:
         return "Low"
     return "Informational"
 
@@ -75,36 +75,47 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
     verdict = "BENIGN"
     confidence = "Low confidence"
 
-    if score >= 70:
+    if score >= 75:
         verdict = "MALICIOUS"
         confidence = "High confidence"
-    elif score >= 40:
+    elif score >= 50:
         verdict = "SUSPICIOUS"
         confidence = "Moderate confidence"
-    elif score >= 15:
+    elif score >= 20:
         verdict = "LOW_RISK"
         confidence = "Low confidence"
 
     if vt_found:
-        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 55)
+        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 60)
         medium_vt_suspicious = vt_mal >= 5 or vt_susp >= 10 or (vt_mal + vt_susp) >= 8
+        weak_vt_noise = 1 <= vt_mal <= 2 and vt_susp == 0
         clean_vt_signal = vt_mal == 0 and vt_susp == 0 and (vt_harmless >= 1 or vt_undetected >= 10)
 
         if strong_vt_malicious:
             verdict = "MALICIOUS"
             confidence = "High confidence" if (vt_mal >= 15 or score >= 90) else "Moderate confidence"
+
         elif medium_vt_suspicious and verdict != "MALICIOUS":
-            if score >= 70:
+            if score >= 75:
                 verdict = "MALICIOUS"
-            elif score >= 40:
+                confidence = "High confidence"
+            elif score >= 50:
                 verdict = "SUSPICIOUS"
-            elif score >= 15:
+                confidence = "High confidence" if (vt_mal >= 5 or vt_susp >= 10) else "Moderate confidence"
+            elif score >= 20:
                 verdict = "LOW_RISK"
+                confidence = "Moderate confidence"
             else:
                 verdict = "SUSPICIOUS"
-            confidence = "High confidence" if (vt_mal >= 5 or vt_susp >= 10 or score >= 75) else "Moderate confidence"
+                confidence = "Moderate confidence"
+
+        elif weak_vt_noise:
+            if score < 50:
+                verdict = "LOW_RISK" if score >= 20 else "BENIGN"
+                confidence = "Low confidence"
+
         elif clean_vt_signal:
-            if score < 40:
+            if score < 50:
                 verdict = "BENIGN"
                 confidence = "Moderate confidence" if (vt_harmless >= 3 or vt_undetected >= 20) else "Low confidence"
             elif score < 75:
@@ -126,7 +137,7 @@ def score_static(
     pe_meta = pe_meta or {}
     lief_meta = lief_meta or {}
     api_analysis = api_analysis or {}
-    
+
     evidence: list[ScoreEvidence] = []
     flags: dict[str, Any] = {}
     score = 0
@@ -148,55 +159,100 @@ def score_static(
     trusted_signed = verify_ok and timestamp_verified
 
     if trusted_signed:
-        evidence.append(ScoreEvidence("static", "trusted_signature", -8, f"Valid signature verified ({signer_subject or 'subject unavailable'})"))
-        score -= 8
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "trusted_signature",
+                -6,
+                f"Valid signature verified ({signer_subject or 'subject unavailable'})",
+            )
+        )
+        score -= 6
     else:
-        score += 12
-        evidence.append(ScoreEvidence("static", "unsigned_or_unverified", 12, "File is unsigned or signing verification failed"))
+        score += 8
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "unsigned_or_unverified",
+                8,
+                "File is unsigned or signing verification failed",
+            )
+        )
 
     if not company:
-        score += 5
-        evidence.append(ScoreEvidence("static", "missing_company", 5, "Missing CompanyName in version information"))
+        score += 2
+        evidence.append(ScoreEvidence("static", "missing_company", 2, "Missing CompanyName in version information"))
     if not product:
-        score += 4
-        evidence.append(ScoreEvidence("static", "missing_product", 4, "Missing ProductName in version information"))
+        score += 2
+        evidence.append(ScoreEvidence("static", "missing_product", 2, "Missing ProductName in version information"))
     if not desc:
-        score += 3
-        evidence.append(ScoreEvidence("static", "missing_description", 3, "Missing FileDescription in version information"))
+        score += 1
+        evidence.append(ScoreEvidence("static", "missing_description", 1, "Missing FileDescription in version information"))
     if not original_filename:
-        score += 3
-        evidence.append(ScoreEvidence("static", "missing_original_filename", 3, "Missing OriginalFilename in version information"))
+        score += 1
+        evidence.append(ScoreEvidence("static", "missing_original_filename", 1, "Missing OriginalFilename in version information"))
 
     sample_info = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
-    sample_name = str(sample_info.get("filename") or sample_info.get("name") or sample_info.get("path") or sample_info.get("path_case") or "").strip().lower()
+    sample_name = str(
+        sample_info.get("filename")
+        or sample_info.get("name")
+        or sample_info.get("path")
+        or sample_info.get("path_case")
+        or ""
+    ).strip().lower()
+
     if re.fullmatch(r"[0-9a-f]{24,}\.(exe|dll|scr|com|bat|ps1)?", sample_name):
-        score += 8
-        evidence.append(ScoreEvidence("static", "hash_like_name", 8, "Filename resembles a hash or random artifact"))
+        score += 6
+        evidence.append(ScoreEvidence("static", "hash_like_name", 6, "Filename resembles a hash or random artifact"))
+
     if sample_name.endswith((".scr", ".com", ".js", ".jse", ".vbs", ".ps1", ".hta")):
-        score += 12
-        evidence.append(ScoreEvidence("static", "suspicious_extension", 12, f"Suspicious script or executable extension: {sample_name}"))
+        score += 10
+        evidence.append(ScoreEvidence("static", "suspicious_extension", 10, f"Suspicious script or executable extension: {sample_name}"))
 
     techs = _extract_techniques(summary)
     high = [t for t in techs if _prefix_in(t, HIGH_SIGNAL_TECH_PREFIXES)]
     other = [t for t in techs if not _prefix_in(t, LOW_SIGNAL_TECH_PREFIXES)]
+
     if high:
-        add = min(28, 16 + 4 * len(high))
+        add = min(22, 12 + 3 * len(high))
         score += add
-        evidence.append(ScoreEvidence("static", "high_signal_attack", add, f"High-signal ATT&CK techniques present: {', '.join(high[:8])}"))
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "high_signal_attack",
+                add,
+                f"High-signal ATT&CK techniques present: {', '.join(high[:8])}",
+            )
+        )
     elif techs:
-        add = 6 if looks_like_installer else 10
+        add = 4 if looks_like_installer else 6
         score += add
-        evidence.append(ScoreEvidence("static", "techniques_present", add, f"ATT&CK techniques present: {len(techs)}"))
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "techniques_present",
+                add,
+                f"ATT&CK techniques present: {len(techs)}",
+            )
+        )
+
     if other and not high:
-        add = min(10, 2 + len(other))
+        add = min(5, 1 + len(other) // 2)
         score += add
-        evidence.append(ScoreEvidence("static", "additional_techniques", add, f"Additional ATT&CK techniques detected: {len(other)}"))
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "additional_techniques",
+                add,
+                f"Additional ATT&CK techniques detected: {len(other)}",
+            )
+        )
 
     capa_json_path = case_dir / "capa.json"
     capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
     match_count = capa_blob.count('"matches"')
     if match_count > 0:
-        add = min(12, 2 + int(match_count / 20))
+        add = min(6, 1 + int(match_count / 40))
         score += add
         evidence.append(ScoreEvidence("static", "capa_density", add, f"capa match density observed: {match_count}"))
 
@@ -206,7 +262,7 @@ def score_static(
     )
     score += api_add[0]
     evidence.extend(api_add[1])
-    
+
     yara_add = _score_yara_evidence(yara_results)
     score += yara_add[0]
     evidence.extend(yara_add[1])
@@ -326,13 +382,13 @@ def _score_yara_evidence(yara_results: dict[str, Any]) -> tuple[int, list[ScoreE
 
     add = 0
     if high_signal:
-        add += min(12, 6 * high_signal)
+        add += min(10, 5 * high_signal)
     if medium_signal:
-        add += min(8, 3 * medium_signal)
+        add += min(5, 2 * medium_signal)
     if low_signal:
-        add += min(4, low_signal)
+        add += min(2, low_signal)
 
-    add = min(15, add)
+    add = min(12, add)
 
     if add > 0:
         top_rules = ", ".join(rule_names[:5]) if rule_names else f"{match_count} rule(s)"

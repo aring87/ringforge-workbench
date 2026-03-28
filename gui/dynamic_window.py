@@ -76,8 +76,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
         timeout_row = ttk.Frame(settings)
         timeout_row.grid(row=2, column=1, columnspan=2, sticky="w", padx=6)
 
-        ttk.Spinbox(timeout_row, from_=5, to=7200, textvariable=self.timeout_var, width=10).pack(side="left")
-        ttk.Checkbutton(timeout_row, text="Enable Procmon Capture", variable=self.procmon_enabled_var).pack(side="left", padx=(12, 0))
+        ttk.Spinbox(
+            timeout_row,
+            from_=5,
+            to=7200,
+            textvariable=self.timeout_var,
+            width=10,
+            style="Dark.TSpinbox",
+        ).pack(side="left")
+
+        ttk.Checkbutton(
+            timeout_row,
+            text="Enable Procmon Capture",
+            variable=self.procmon_enabled_var,
+            style="Dark.TCheckbutton",
+        ).pack(side="left", padx=(12, 0))
 
         ttk.Label(settings, text="Procmon path:").grid(row=3, column=0, sticky="w")
         ttk.Entry(settings, textvariable=self.procmon_path_var, width=100).grid(row=3, column=1, sticky="we", padx=6)

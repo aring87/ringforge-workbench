@@ -128,7 +128,16 @@ class ResultController:
 
         app.latest_static_result = data
 
-        score = data.get("score", "-")
+        combined = app.latest_combined_score if isinstance(app.latest_combined_score, dict) else {}
+        subs = combined.get("subscores", {}) if isinstance(combined.get("subscores"), dict) else {}
+        present = combined.get("present", {}) if isinstance(combined.get("present"), dict) else {}
+
+        score = data.get("score")
+        if score in (None, "", "-") and present.get("static"):
+            score = subs.get("static", "-")
+        if score in (None, ""):
+            score = "-"
+
         verdict = data.get("verdict", "-")
         confidence = data.get("confidence", "-")
 

@@ -159,11 +159,20 @@ class App(tk.Tk):
         brand.columnconfigure(0, weight=1)
         brand.rowconfigure(0, weight=1)
 
+        # Match the configuration-box / Lexus-style palette
+        panel_bg = "#0B1220"
+        border = "#294C8E"
+        accent = "#2F6BFF"
+        text_main = "#F7FAFF"
+        text_soft = "#B8C7E6"
+        text_muted = "#8FA9DA"
+
         brand_inner = tk.Frame(
             brand,
-            bg="#001833",
+            bg=panel_bg,
             highlightthickness=1,
-            highlightbackground="#2a4365",
+            highlightbackground=border,
+            highlightcolor=border,
         )
         brand_inner.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         brand_inner.columnconfigure(1, weight=1)
@@ -178,7 +187,7 @@ class App(tk.Tk):
             logo_label = tk.Label(
                 brand_inner,
                 image=self.brand_logo_img,
-                bg="#001833",
+                bg=panel_bg,
                 bd=0,
                 highlightthickness=0,
             )
@@ -187,17 +196,19 @@ class App(tk.Tk):
             logo_label = tk.Label(
                 brand_inner,
                 text="[assets/anvil.png not found]",
-                bg="#001833",
-                fg="#7fb3ff",
+                bg=panel_bg,
+                fg=accent,
                 font=("Segoe UI", 11, "bold"),
+                bd=0,
+                highlightthickness=0,
             )
             logo_label.grid(row=0, column=0, rowspan=6, sticky="w", padx=(18, 24), pady=18)
 
         tk.Label(
             brand_inner,
             text="RingForge",
-            bg="#001833",
-            fg="#f8fbff",
+            bg=panel_bg,
+            fg=text_main,
             font=("Segoe UI", 24, "bold"),
             anchor="w",
         ).grid(row=0, column=1, sticky="sw", pady=(28, 0))
@@ -205,15 +216,15 @@ class App(tk.Tk):
         tk.Label(
             brand_inner,
             text="Workbench",
-            bg="#001833",
-            fg="#7fb3ff",
+            bg=panel_bg,
+            fg=accent,
             font=("Segoe UI", 20, "bold"),
             anchor="w",
         ).grid(row=1, column=1, sticky="nw")
 
         tk.Frame(
             brand_inner,
-            bg="#1f6fff",
+            bg=accent,
             height=2,
             width=220,
         ).grid(row=2, column=1, sticky="w", pady=(8, 12))
@@ -221,8 +232,8 @@ class App(tk.Tk):
         tk.Label(
             brand_inner,
             text="Static, Dynamic & Spec Analysis Platform",
-            bg="#001833",
-            fg="#c7dbff",
+            bg=panel_bg,
+            fg=text_soft,
             font=("Segoe UI", 11),
             anchor="w",
         ).grid(row=3, column=1, sticky="w")
@@ -230,8 +241,8 @@ class App(tk.Tk):
         tk.Label(
             brand_inner,
             text="Triage  •  Scoring  •  Reporting  •  Review",
-            bg="#001833",
-            fg="#86a9df",
+            bg=panel_bg,
+            fg=text_muted,
             font=("Segoe UI", 10),
             anchor="w",
         ).grid(row=4, column=1, sticky="w", pady=(6, 0))
@@ -239,8 +250,8 @@ class App(tk.Tk):
         tk.Label(
             brand_inner,
             text="v1.5",
-            bg="#001833",
-            fg="#5f86c5",
+            bg=panel_bg,
+            fg=accent,
             font=("Segoe UI", 10, "bold"),
             anchor="w",
         ).grid(row=5, column=1, sticky="w", pady=(14, 18))
