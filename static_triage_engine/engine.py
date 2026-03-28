@@ -136,8 +136,8 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
         return result
 
 
-def write_virustotal_json(case_dir: Path, sha256: str) -> dict[str, Any]:
-    api_key = os.getenv("VT_API_KEY", "").strip()
+def write_virustotal_json(case_dir: Path, sha256: str, api_key: str = "") -> dict[str, Any]:
+    api_key = (api_key or "").strip() or os.getenv("VT_API_KEY", "").strip()
     vt = vt_lookup_by_hash(sha256, api_key)
     _write_json(case_dir / "virustotal.json", vt)
     return vt
@@ -653,7 +653,7 @@ def run_case(
         "sha256": sha256,
     }
 
-    vt_result = write_virustotal_json(case_dir, sha256)
+    vt_result = write_virustotal_json(case_dir, sha256, os.getenv("VT_API_KEY", "").strip())
     vt_summary = _vt_summary_from_result(vt_result)
 
     runlog: dict[str, Any] = {"virustotal": vt_result}

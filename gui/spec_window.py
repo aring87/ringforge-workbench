@@ -515,259 +515,181 @@ class SpecAnalysisWindow(tk.Toplevel):
                 ),
             )
 
-    def _render_html(self, result: dict[str, Any]) -> str:
-        from html import escape
+        def _render_html(self, result: dict[str, Any]) -> str:
+            from html import escape
+            from dynamic_analysis.report_theme import report_page
 
-        summary = result.get("summary", {}) or {}
-        title = result.get("title") or Path(result.get("input_file", "spec")).name
-        version = result.get("version") or "-"
-        spec_type = result.get("spec_type") or "-"
-        fmt = result.get("format") or "-"
-        confidence = result.get("confidence") or "-"
-        servers = result.get("servers", []) or []
-        auth_summary = result.get("auth_summary", []) or []
-        endpoints = result.get("endpoints", []) or []
-        risk_notes = result.get("risk_notes", []) or []
-        parser_warnings = result.get("parser_warnings", []) or []
-        unresolved_refs = result.get("unresolved_refs", []) or []
-        top_risky = result.get("top_risky_endpoints", []) or []
-        recommended_tests = result.get("recommended_tests", []) or []
+            summary = result.get("summary", {}) or {}
+            title = result.get("title") or Path(result.get("input_file", "spec")).name
+            version = result.get("version") or "-"
+            spec_type = result.get("spec_type") or "-"
+            fmt = result.get("format") or "-"
+            confidence = result.get("confidence") or "-"
+            servers = result.get("servers", []) or []
+            auth_summary = result.get("auth_summary", []) or []
+            endpoints = result.get("endpoints", []) or []
+            risk_notes = result.get("risk_notes", []) or []
+            parser_warnings = result.get("parser_warnings", []) or []
+            unresolved_refs = result.get("unresolved_refs", []) or []
+            top_risky = result.get("top_risky_endpoints", []) or []
+            recommended_tests = result.get("recommended_tests", []) or []
 
-        auth_txt = ", ".join(str(x) for x in auth_summary) if auth_summary else "none"
-        servers_txt = ", ".join(str(x) for x in servers) if servers else "none"
+            auth_txt = ", ".join(str(x) for x in auth_summary) if auth_summary else "none"
+            servers_txt = ", ".join(str(x) for x in servers) if servers else "none"
 
-        risk_notes_html = "".join(f"<li>{escape(str(x))}</li>" for x in risk_notes) or "<li>None</li>"
-        parser_warnings_html = "".join(f"<li>{escape(str(x))}</li>" for x in parser_warnings) or "<li>None</li>"
-        unresolved_refs_html = "".join(f"<li>{escape(str(x))}</li>" for x in unresolved_refs[:20]) or "<li>None</li>"
+            risk_notes_html = "".join(f"<li>{escape(str(x))}</li>" for x in risk_notes) or "<li>None</li>"
+            parser_warnings_html = "".join(f"<li>{escape(str(x))}</li>" for x in parser_warnings) or "<li>None</li>"
+            unresolved_refs_html = "".join(f"<li>{escape(str(x))}</li>" for x in unresolved_refs[:20]) or "<li>None</li>"
 
-        top_risky_html = ""
-        for item in top_risky:
-            method = escape(str(item.get("method", "")))
-            path = escape(str(item.get("path", "")))
-            level = escape(str(item.get("risk_level", "")))
-            score = escape(str(item.get("risk_score", 0)))
-            reasons = item.get("risk_reasons", []) or []
-            if isinstance(reasons, str):
-                reasons = [reasons]
-            reasons_html = "".join(f"<li>{escape(str(r))}</li>" for r in reasons[:6]) or "<li>No reasons captured.</li>"
-            top_risky_html += f"""
-            <div class="endpoint-card">
-                <div class="endpoint-title">{method} {path}</div>
-                <div class="muted">Risk: {level} | Score: {score}</div>
-                <ul>{reasons_html}</ul>
+            top_risky_html = ""
+            for item in top_risky:
+                method = escape(str(item.get("method", "")))
+                path = escape(str(item.get("path", "")))
+                level = escape(str(item.get("risk_level", "")))
+                score = escape(str(item.get("risk_score", 0)))
+                reasons = item.get("risk_reasons", []) or []
+                if isinstance(reasons, str):
+                    reasons = [reasons]
+                reasons_html = "".join(f"<li>{escape(str(r))}</li>" for r in reasons[:6]) or "<li>No reasons captured.</li>"
+                top_risky_html += f"""
+                <div class="card" style="margin-bottom:10px;">
+                    <div style="font-weight:bold;margin-bottom:4px;">{method} {path}</div>
+                    <div class="muted" style="margin-bottom:6px;">Risk: {level} | Score: {score}</div>
+                    <ul>{reasons_html}</ul>
+                </div>"""
+            if not top_risky_html:
+                top_risky_html = "<p class='muted'>No high-risk endpoints identified.</p>"
+
+            recommended_html = ""
+            for item in recommended_tests:
+                method = escape(str(item.get("method", "")))
+                path = escape(str(item.get("path", "")))
+                level = escape(str(item.get("risk_level", "")))
+                score = escape(str(item.get("risk_score", 0)))
+                tests = item.get("tests", []) or []
+                if isinstance(tests, str):
+                    tests = [tests]
+                tests_html = "".join(f"<li>{escape(str(t))}</li>" for t in tests[:8]) or "<li>No tests generated.</li>"
+                recommended_html += f"""
+                <div class="card" style="margin-bottom:10px;">
+                    <div style="font-weight:bold;margin-bottom:4px;">{method} {path}</div>
+                    <div class="muted" style="margin-bottom:6px;">Risk: {level} | Score: {score}</div>
+                    <ul>{tests_html}</ul>
+                </div>"""
+            if not recommended_html:
+                recommended_html = "<p class='muted'>No recommended tests generated.</p>"
+
+            rows = []
+            for ep in endpoints:
+                params = ep.get("parameters", []) or []
+                flags = []
+                if ep.get("admin_like_route"):
+                    flags.append("admin-like")
+                if ep.get("destructive_method"):
+                    flags.append("destructive")
+                if ep.get("sensitive_parameters"):
+                    flags.append("sensitive-params")
+                if ep.get("file_upload"):
+                    flags.append("upload")
+
+                ep_auth = ep.get("auth_schemes_applied", []) or []
+                if isinstance(ep_auth, str):
+                    ep_auth = [ep_auth]
+                auth_txt_ep = ", ".join(str(x) for x in ep_auth) if ep_auth else ("required" if ep.get("auth_required") else "none")
+
+                auth_source_txt = str(ep.get("auth_source", "") or "")
+                if auth_source_txt == "explicit_none":
+                    auth_source_txt = "public"
+
+                rows.append(
+                    "<tr>"
+                    f"<td>{escape(str(ep.get('method', '')))}</td>"
+                    f"<td>{escape(str(ep.get('path', '')))}</td>"
+                    f"<td>{escape(str(ep.get('summary', '')))}</td>"
+                    f"<td>{escape(auth_txt_ep)}</td>"
+                    f"<td>{escape(auth_source_txt)}</td>"
+                    f"<td>{escape(str(ep.get('risk_level', '')))}</td>"
+                    f"<td>{len(params)}</td>"
+                    f"<td>{escape(', '.join(flags))}</td>"
+                    "</tr>"
+                )
+
+            body_html = f"""
+            <div class="tile-grid">
+                <div class="tile"><div class="tile-label">Format</div><div class="tile-value" style="font-size:18px;">{escape(fmt)}</div></div>
+                <div class="tile"><div class="tile-label">Spec Type</div><div class="tile-value" style="font-size:18px;">{escape(spec_type)}</div></div>
+                <div class="tile"><div class="tile-label">Version</div><div class="tile-value" style="font-size:18px;">{escape(version)}</div></div>
+                <div class="tile"><div class="tile-label">Endpoints</div><div class="tile-value">{summary.get("endpoint_count", 0)}</div></div>
+                <div class="tile"><div class="tile-label">Auth</div><div class="tile-value" style="font-size:18px;">{escape(auth_txt)}</div></div>
+                <div class="tile"><div class="tile-label">Top Risky</div><div class="tile-value">{summary.get("top_risky_endpoint_count", 0)}</div></div>
+                <div class="tile"><div class="tile-label">Confidence</div><div class="tile-value" style="font-size:18px;">{escape(str(confidence))}</div></div>
+                <div class="tile"><div class="tile-label">Unresolved Refs</div><div class="tile-value">{result.get("unresolved_refs_count", 0)}</div></div>
+            </div>
+
+            <div class="card">
+                <div class="section-head"><h2>Summary</h2></div>
+                <table class="kv">
+                    <tr><th>Servers</th><td>{escape(servers_txt)}</td></tr>
+                    <tr><th>Methods</th><td>GET {summary.get("get_count",0)} | POST {summary.get("post_count",0)} | PUT {summary.get("put_count",0)} | PATCH {summary.get("patch_count",0)} | DELETE {summary.get("delete_count",0)}</td></tr>
+                    <tr><th>Admin-like Routes</th><td>{summary.get("admin_like_route_count", 0)}</td></tr>
+                    <tr><th>Sensitive Parameters</th><td>{summary.get("sensitive_param_count", 0)}</td></tr>
+                </table>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px;">
+                <div class="card">
+                    <div class="section-head"><h2>Risk Notes</h2></div>
+                    <ul>{risk_notes_html}</ul>
+                </div>
+                <div class="card">
+                    <div class="section-head"><h2>Parser Warnings</h2></div>
+                    <ul>{parser_warnings_html}</ul>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-head"><h2>Unresolved Refs</h2></div>
+                <ul>{unresolved_refs_html}</ul>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px;">
+                <div class="card">
+                    <div class="section-head"><h2>Top Risky Endpoints</h2></div>
+                    {top_risky_html}
+                </div>
+                <div class="card">
+                    <div class="section-head"><h2>Recommended Tests</h2></div>
+                    {recommended_html}
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-head"><h2>Endpoint Inventory</h2></div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr>
+                            <th>Method</th><th>Path</th><th>Summary</th>
+                            <th>Auth</th><th>Auth Source</th><th>Risk</th>
+                            <th>Params</th><th>Flags</th>
+                        </tr></thead>
+                        <tbody>{''.join(rows)}</tbody>
+                    </table>
+                </div>
             </div>
             """
-        if not top_risky_html:
-            top_risky_html = "<p class='muted'>No high-risk endpoints identified.</p>"
 
-        recommended_html = ""
-        for item in recommended_tests:
-            method = escape(str(item.get("method", "")))
-            path = escape(str(item.get("path", "")))
-            level = escape(str(item.get("risk_level", "")))
-            score = escape(str(item.get("risk_score", 0)))
-            tests = item.get("tests", []) or []
-            if isinstance(tests, str):
-                tests = [tests]
-            tests_html = "".join(f"<li>{escape(str(t))}</li>" for t in tests[:8]) or "<li>No tests generated.</li>"
-            recommended_html += f"""
-            <div class="endpoint-card">
-                <div class="endpoint-title">{method} {path}</div>
-                <div class="muted">Risk: {level} | Score: {score}</div>
-                <ul>{tests_html}</ul>
-            </div>
-            """
-        if not recommended_html:
-            recommended_html = "<p class='muted'>No recommended tests generated.</p>"
+            verdict_label = str(confidence).upper() if confidence and confidence != "-" else spec_type.upper()
+            verdict_class = "verdict sev-none" if str(confidence).lower() in ("high", "very high") else "verdict sev-low"
 
-        rows = []
-        for ep in endpoints:
-            params = ep.get("parameters", []) or []
-            flags = []
-            if ep.get("admin_like_route"):
-                flags.append("admin-like")
-            if ep.get("destructive_method"):
-                flags.append("destructive")
-            if ep.get("sensitive_parameters"):
-                flags.append("sensitive-params")
-            if ep.get("file_upload"):
-                flags.append("upload")
-
-            ep_auth = ep.get("auth_schemes_applied", []) or []
-            if isinstance(ep_auth, str):
-                ep_auth = [ep_auth]
-            auth_txt_ep = ", ".join(str(x) for x in ep_auth) if ep_auth else ("required" if ep.get("auth_required") else "none")
-
-            auth_source_txt = str(ep.get("auth_source", "") or "")
-            if auth_source_txt == "explicit_none":
-                auth_source_txt = "public"
-
-            rows.append(
-                "<tr>"
-                f"<td>{escape(str(ep.get('method', '')))}</td>"
-                f"<td>{escape(str(ep.get('path', '')))}</td>"
-                f"<td>{escape(str(ep.get('summary', '')))}</td>"
-                f"<td>{escape(auth_txt_ep)}</td>"
-                f"<td>{escape(auth_source_txt)}</td>"
-                f"<td>{escape(str(ep.get('risk_level', '')))}</td>"
-                f"<td>{len(params)}</td>"
-                f"<td>{escape(', '.join(flags))}</td>"
-                "</tr>"
+            return report_page(
+                title="API Spec Analysis",
+                subtitle=escape(str(title)),
+                verdict=verdict_label,
+                verdict_class=verdict_class,
+                body_html=body_html,
             )
 
-        return f"""<!DOCTYPE html>
-    <html lang="en">
-    <head>
-    <meta charset="utf-8">
-    <title>API Spec Analysis - {escape(str(title))}</title>
-    <style>
-    body {{
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background: #071b34;
-        color: #eaf2ff;
-    }}
-    .container {{
-        max-width: 1600px;
-        margin: 0 auto;
-        padding: 24px;
-    }}
-    h1 {{
-        margin: 0 0 8px 0;
-        font-size: 28px;
-    }}
-    h2 {{
-        margin: 0 0 10px 0;
-        font-size: 18px;
-    }}
-    .muted {{
-        color: #b7c9e8;
-        font-size: 13px;
-    }}
-    .grid {{
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 12px;
-        margin: 18px 0;
-    }}
-    .card {{
-        background: #0c2344;
-        border: 1px solid #2a4365;
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 16px;
-    }}
-    .two-col {{
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-    }}
-    .endpoint-card {{
-        background: #0a1d39;
-        border: 1px solid #2a4365;
-        border-radius: 8px;
-        padding: 12px;
-        margin-bottom: 10px;
-    }}
-    .endpoint-title {{
-        font-weight: bold;
-        margin-bottom: 4px;
-    }}
-    table {{
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 8px;
-        font-size: 13px;
-    }}
-    th, td {{
-        border: 1px solid #2a4365;
-        padding: 8px;
-        text-align: left;
-        vertical-align: top;
-    }}
-    th {{
-        background: #17345f;
-    }}
-    ul {{
-        margin: 8px 0 0 18px;
-    }}
-    .footer {{
-        margin-top: 20px;
-        color: #b7c9e8;
-        font-size: 12px;
-    }}
-    </style>
-    </head>
-    <body>
-    <div class="container">
-        <h1>API Spec Analysis</h1>
-        <div class="muted">{escape(str(title))}</div>
 
-        <div class="grid">
-            <div class="card"><h2>Format</h2><div>{escape(fmt)}</div></div>
-            <div class="card"><h2>Version</h2><div>{escape(version)}</div></div>
-            <div class="card"><h2>Endpoints</h2><div>{summary.get("endpoint_count", 0)}</div></div>
-            <div class="card"><h2>Auth</h2><div>{escape(auth_txt)}</div></div>
-        </div>
-
-        <div class="card">
-            <h2>Summary</h2>
-            <div><strong>Type:</strong> {escape(spec_type)}</div>
-            <div><strong>Confidence:</strong> {escape(str(confidence))}</div>
-            <div><strong>Servers:</strong> {escape(servers_txt)}</div>
-            <div><strong>Top Risky Endpoints:</strong> {summary.get("top_risky_endpoint_count", 0)}</div>
-            <div><strong>Unresolved Refs:</strong> {result.get("unresolved_refs_count", 0)}</div>
-            <div><strong>Methods:</strong> GET {summary.get("get_count",0)} | POST {summary.get("post_count",0)} | PUT {summary.get("put_count",0)} | PATCH {summary.get("patch_count",0)} | DELETE {summary.get("delete_count",0)}</div>
-        </div>
-
-        <div class="two-col">
-            <div class="card">
-                <h2>Risk Notes</h2>
-                <ul>{risk_notes_html}</ul>
-            </div>
-            <div class="card">
-                <h2>Parser Warnings</h2>
-                <ul>{parser_warnings_html}</ul>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Unresolved Refs</h2>
-            <ul>{unresolved_refs_html}</ul>
-        </div>
-
-        <div class="two-col">
-            <div class="card">
-                <h2>Top Risky Endpoints</h2>
-                {top_risky_html}
-            </div>
-            <div class="card">
-                <h2>Recommended Tests</h2>
-                {recommended_html}
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Endpoint Inventory</h2>
-            <table>
-                <tr>
-                    <th>Method</th>
-                    <th>Path</th>
-                    <th>Summary</th>
-                    <th>Auth</th>
-                    <th>Auth Source</th>
-                    <th>Risk</th>
-                    <th>Params</th>
-                    <th>Flags</th>
-                </tr>
-                {''.join(rows)}
-            </table>
-        </div>
-
-        <div class="footer">Generated by RingForge Workbench</div>
-    </div>
-    </body>
-    </html>"""
 
     def _save_report_files(self, result: dict[str, Any]) -> tuple[Path, Path]:
         spec_dir = self._ensure_spec_dir()
