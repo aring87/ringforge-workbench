@@ -249,7 +249,7 @@ class App(tk.Tk):
 
         tk.Label(
             brand_inner,
-            text="v1.5",
+            text="v1.6",
             bg=panel_bg,
             fg=accent,
             font=("Segoe UI", 10, "bold"),

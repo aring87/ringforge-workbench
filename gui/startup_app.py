@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
@@ -20,9 +21,13 @@ class StartupApp(tk.Tk):
         super().__init__()
 
         self.project_root = Path(__file__).resolve().parents[1]
-        self.static_script = self.project_root / "scripts" / "static_analysis_gui.py"
         self.assets_dir = self.project_root / "assets"
         self.anvil_path = self.assets_dir / "anvil.png"
+
+        if getattr(sys, "frozen", False):
+            self.launch_target = Path(sys.executable)
+        else:
+            self.launch_target = self.project_root / "scripts" / "static_triage_gui.py"
 
         apply_app_theme(self)
 
@@ -58,15 +63,11 @@ class StartupApp(tk.Tk):
         self.launcher_frame.pack(fill="both", expand=True)
 
     def open_static_analysis(self):
-        if not self.static_script.exists():
-            messagebox.showerror(
-                "RingForge",
-                f"Static Analysis launcher not found:\n{self.static_script}",
-            )
-            return
-
         try:
-            subprocess.Popen([sys.executable, str(self.static_script)])
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([str(self.launch_target), "--static-analysis"])
+            else:
+                subprocess.Popen([sys.executable, str(self.launch_target), "--static-analysis"])
         except Exception as e:
             messagebox.showerror("RingForge", f"Could not launch Static Analysis:\n{e}")
 
