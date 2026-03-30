@@ -25,12 +25,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gui.main_app import App
+from gui.startup_app import StartupApp
 
 
 def main():
-    print("[DEBUG] Starting GUI launcher")
-    app = App()
+    print("[DEBUG] Starting RingForge startup launcher")
+    app = StartupApp()
     print("[DEBUG] Entering mainloop")
     app.mainloop()
     print("[DEBUG] Mainloop exited")
