@@ -28,13 +28,13 @@ from gui.gui_utils import (
     load_config, save_config,
 )
 from gui.main_sections import (
-    build_actions_and_output,
-    build_configuration_section,
+    build_bottom_actions,
     build_header,
-    build_main_columns,
-    build_progress_section,
-    build_results_section,
+    build_middle_row,
+    build_top_row,
+    build_workspace,
 )
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -43,9 +43,9 @@ class App(tk.Tk):
         try:
             apply_app_theme(self)
 
-            self.title("Static Triage GUI (v10)")
-            self.geometry("1280x980+100+100")
-            self.minsize(1180, 900)
+            self.title("RingForge Workbench - Static Analysis")
+            self.geometry("1380x1080+100+60")
+            self.minsize(1240, 940)
             self.rowconfigure(0, weight=1)
             self.columnconfigure(0, weight=1)
 
@@ -112,9 +112,7 @@ class App(tk.Tk):
             self.path_actions = PathActionsController(self)
             self.CLI_SCRIPT = CLI_SCRIPT
 
-            print("[DEBUG] Building UI...")
             self._build_ui()
-            print("[DEBUG] UI built")
 
             self._apply_preset_if_needed()
             self._refresh_path_status()
@@ -129,7 +127,6 @@ class App(tk.Tk):
             self.focus_force()
 
             self.after(100, self._drain_output)
-            print("[DEBUG] App initialized successfully")
 
         except Exception:
             import traceback
@@ -139,27 +136,21 @@ class App(tk.Tk):
     def _build_ui(self):
         outer = {"padx": 12, "pady": 8}
 
+        self._build_top_banner(outer)
         build_header(self, self, outer)
-        _, left_col, right_col = build_main_columns(self, outer)
 
-        build_configuration_section(self, left_col)
-        self._build_brand_panel(left_col)
-
-        build_progress_section(self, right_col)
-        build_results_section(self, right_col)
-
-        build_actions_and_output(self, self, outer)
+        workspace = build_workspace(self, outer)
+        build_top_row(self, workspace)
+        build_middle_row(self, workspace)
+        build_bottom_actions(self, workspace)
 
         self._sync_adv_state()
         self._update_effective_label()
-    
-    def _build_brand_panel(self, parent):
-        brand = ttk.LabelFrame(parent, text="RingForge")
-        brand.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        brand.columnconfigure(0, weight=1)
-        brand.rowconfigure(0, weight=1)
 
-        # Match the configuration-box / Lexus-style palette
+    def _build_top_banner(self, outer):
+        banner_wrap = ttk.Frame(self)
+        banner_wrap.pack(fill="x", **outer)
+
         panel_bg = "#0B1220"
         border = "#294C8E"
         accent = "#2F6BFF"
@@ -167,97 +158,72 @@ class App(tk.Tk):
         text_soft = "#B8C7E6"
         text_muted = "#8FA9DA"
 
-        brand_inner = tk.Frame(
-            brand,
+        banner = tk.Frame(
+            banner_wrap,
             bg=panel_bg,
             highlightthickness=1,
             highlightbackground=border,
             highlightcolor=border,
         )
-        brand_inner.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        brand_inner.columnconfigure(1, weight=1)
+        banner.pack(fill="x")
+
+        banner.columnconfigure(1, weight=1)
 
         logo_path = ROOT / "assets" / "anvil.png"
 
         if logo_path.exists():
             logo_img = Image.open(logo_path).convert("RGBA")
-            logo_img = logo_img.resize((220, 220), Image.LANCZOS)
+            logo_img = logo_img.resize((96, 96), Image.LANCZOS)
             self.brand_logo_img = ImageTk.PhotoImage(logo_img)
 
             logo_label = tk.Label(
-                brand_inner,
+                banner,
                 image=self.brand_logo_img,
                 bg=panel_bg,
                 bd=0,
                 highlightthickness=0,
             )
-            logo_label.grid(row=0, column=0, rowspan=6, sticky="w", padx=(18, 24), pady=18)
+            logo_label.grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
         else:
             logo_label = tk.Label(
-                brand_inner,
-                text="[assets/anvil.png not found]",
+                banner,
+                text="[anvil.png missing]",
                 bg=panel_bg,
                 fg=accent,
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 bd=0,
                 highlightthickness=0,
             )
-            logo_label.grid(row=0, column=0, rowspan=6, sticky="w", padx=(18, 24), pady=18)
+            logo_label.grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
 
         tk.Label(
-            brand_inner,
-            text="RingForge",
+            banner,
+            text="RingForge Workbench",
             bg=panel_bg,
             fg=text_main,
             font=("Segoe UI", 24, "bold"),
             anchor="w",
-        ).grid(row=0, column=1, sticky="sw", pady=(28, 0))
+        ).grid(row=0, column=1, sticky="sw", pady=(16, 0))
 
         tk.Label(
-            brand_inner,
-            text="Workbench",
+            banner,
+            text="Static Analysis",
             bg=panel_bg,
             fg=accent,
-            font=("Segoe UI", 20, "bold"),
+            font=("Segoe UI", 18, "bold"),
             anchor="w",
         ).grid(row=1, column=1, sticky="nw")
 
-        tk.Frame(
-            brand_inner,
-            bg=accent,
-            height=2,
-            width=220,
-        ).grid(row=2, column=1, sticky="w", pady=(8, 12))
-
         tk.Label(
-            brand_inner,
-            text="Static, Dynamic & Spec Analysis Platform",
+            banner,
+            text="Focused static triage, scoring, report generation, and analyst review for the selected sample.",
             bg=panel_bg,
             fg=text_soft,
-            font=("Segoe UI", 11),
-            anchor="w",
-        ).grid(row=3, column=1, sticky="w")
-
-        tk.Label(
-            brand_inner,
-            text="Triage  •  Scoring  •  Reporting  •  Review",
-            bg=panel_bg,
-            fg=text_muted,
             font=("Segoe UI", 10),
             anchor="w",
-        ).grid(row=4, column=1, sticky="w", pady=(6, 0))
-
-        tk.Label(
-            brand_inner,
-            text="v1.6",
-            bg=panel_bg,
-            fg=accent,
-            font=("Segoe UI", 10, "bold"),
-            anchor="w",
-        ).grid(row=5, column=1, sticky="w", pady=(14, 18))
-
-        return brand
-        
+            justify="left",
+            wraplength=900,
+        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
 
     def open_spec_analysis_window(self):
         if self.spec_window is not None and self.spec_window.winfo_exists():
@@ -414,7 +380,7 @@ class App(tk.Tk):
             self.strings_lite_var.set(False)
         self._save_cfg()
 
-    def _selected_preset(self) -> "Preset":
+    def _selected_preset(self):
         name = self.preset_var.get().strip()
         return next((p for p in PRESETS if p.name == name), PRESETS[1])
 

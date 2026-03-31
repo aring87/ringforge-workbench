@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
+import traceback
 
 from gui.api_window import APIAnalysisWindow
 from gui.dynamic_window import DynamicAnalysisWindow
@@ -14,6 +14,7 @@ from gui.launcher import LauncherWindow
 from gui.splash import SplashScreen
 from gui.styles import apply_app_theme
 from gui.extension_window import ExtensionAnalysisWindow
+from gui.unified_report_window import UnifiedReportWindow
 
 
 class StartupApp(tk.Tk):
@@ -31,36 +32,56 @@ class StartupApp(tk.Tk):
 
         apply_app_theme(self)
 
-        self.withdraw()
         self.title("RingForge Workbench")
         self.geometry("980x720+120+100")
         self.minsize(900, 640)
+        self.configure(bg="#05070B")
 
         self.dynamic_window = None
         self.spec_window = None
         self.api_window = None
         self.launcher_frame = None
         self.extension_window = None
+        self.unified_report_window = None
+        self.splash_window = None
 
+        self.withdraw()
         self.after(50, self._show_splash)
 
     def _show_splash(self):
-        SplashScreen(
-            self,
-            image_path=self.anvil_path,
-            on_close=self._show_launcher,
-            duration_ms=2600,
-        )
+        try:
+            print("[DEBUG] Showing splash")
+            self.splash_window = SplashScreen(
+                self,
+                image_path=self.anvil_path,
+                on_close=self._show_launcher,
+                duration_ms=2600,
+            )
+        except Exception:
+            traceback.print_exc()
+            print("[DEBUG] Splash failed, falling back to launcher")
+            self._show_launcher()
 
     def _show_launcher(self):
-        self.deiconify()
-        self.configure(bg="#05070B")
+        try:
+            print("[DEBUG] Showing launcher")
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+            self.configure(bg="#05070B")
 
-        if self.launcher_frame is not None:
-            self.launcher_frame.destroy()
+            if self.launcher_frame is not None and self.launcher_frame.winfo_exists():
+                self.launcher_frame.destroy()
 
-        self.launcher_frame = LauncherWindow(self, app=self)
-        self.launcher_frame.pack(fill="both", expand=True)
+            self.launcher_frame = LauncherWindow(self, app=self)
+            self.launcher_frame.pack(fill="both", expand=True)
+
+            self.update_idletasks()
+            print("[DEBUG] Launcher shown successfully")
+        except Exception as e:
+            traceback.print_exc()
+            self.deiconify()
+            messagebox.showerror("RingForge Startup Error", f"Failed to build launcher:\n{e}")
 
     def open_static_analysis(self):
         try:
@@ -117,4 +138,16 @@ class StartupApp(tk.Tk):
         self.extension_window.protocol(
             "WM_DELETE_WINDOW",
             lambda win=self.extension_window: (win.destroy(), setattr(self, "extension_window", None)),
+        )
+
+    def open_unified_report(self):
+        if self.unified_report_window is not None and self.unified_report_window.winfo_exists():
+            self.unified_report_window.lift()
+            self.unified_report_window.focus_force()
+            return
+
+        self.unified_report_window = UnifiedReportWindow(self)
+        self.unified_report_window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda win=self.unified_report_window: (win.destroy(), setattr(self, "unified_report_window", None)),
         )

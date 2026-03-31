@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from pathlib import Path
 from PIL import Image, ImageTk
+import traceback
 
 
 class SplashScreen(tk.Toplevel):
@@ -108,4 +109,7 @@ class SplashScreen(tk.Toplevel):
             return
         self.destroy()
         if callable(self.on_close):
-            self.on_close()
+            try:
+                self.on_close()
+            except Exception:
+                traceback.print_exc()

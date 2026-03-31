@@ -14,6 +14,7 @@ from gui.main_app import App
 
 def main():
     print("[DEBUG] Starting RingForge")
+    print("[DEBUG] argv =", sys.argv)
     if "--static-analysis" in sys.argv:
         print("[DEBUG] Launch mode: Static Analysis")
         app = App()
@@ -23,7 +24,6 @@ def main():
 
     print("[DEBUG] Entering mainloop")
     app.mainloop()
-    print("[DEBUG] Mainloop exited")
 
 
 if __name__ == "__main__":

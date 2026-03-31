@@ -61,6 +61,12 @@ class LauncherWindow(ttk.Frame):
             "Review Chrome/Edge browser extensions, manifests, permissions, and risk indicators.",
             self.app.open_extension_analysis,
         )
+        self._card(
+            3, 1,
+            "Unified Report",
+            "Generate one combined RingForge report from any completed case artifacts, regardless of which analysis modules were run.",
+            self.app.open_unified_report,
+        )
 
         footer = ttk.Frame(self)
         footer.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0))
