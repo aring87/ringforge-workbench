@@ -28,6 +28,232 @@ The platform creates case-based output and produces structured artifacts such as
 
 ---
 
+## What's New - v1.7 progress (4/2/2026)
+
+RingForge Workbench has been refactored away from the older **combined score on every window** model and moved to a cleaner, more modular **per-test scoring** design.
+
+Each analysis module now focuses on its own results, its own report output, and its own scoring pipeline. The unified reporting flow has also been updated so it only shows scores for modules that were actually run.
+
+---
+
+## Scoring Model Refactor
+
+### Per-Test Scoring Replaces Combined Window Scoring
+
+RingForge now uses a simpler module-driven approach:
+
+- **Static Analysis** shows only the static test’s own results
+- **Dynamic Analysis** shows only the dynamic test’s own results
+- **Spec Analysis** remains independent and stores its own output
+- **Manual API Tester** remains request/response focused and does not force a security-style score
+- **Unified Report** shows only the module scores that actually exist
+
+This replaces the older model where multiple windows tried to share or refresh a combined score state.
+
+---
+
+## Static Analysis Improvements
+
+The Static Analysis window was cleaned up to follow the new per-test model.
+
+### Updated Results Panel
+The static Results panel now shows only:
+
+- **Score**
+- **Verdict**
+- **Confidence**
+- **VirusTotal**
+
+Older combined/subscore display logic was removed.
+
+### Static Score Loading Fix
+A score-loading bug was fixed after confirming that static result JSON stores the value under:
+
+- `risk_score`
+
+instead of:
+
+- `score`
+
+The static result controller was updated to read the correct field, which restored score visibility on the main static screen.
+
+### Static Summary Save Fix
+Static summary saving was also rewritten so static runs now save only their own:
+
+- score
+- verdict
+- confidence
+
+This removed leftover dependencies on deleted combined-score fields.
+
+---
+
+## Dynamic Analysis Improvements
+
+Dynamic Analysis now has its own complete score pipeline.
+
+### Dynamic Score Support
+Dynamic scoring was added at the source so dynamic summary output now includes:
+
+- `score`
+- `severity`
+- `verdict`
+
+These values are now reflected in:
+
+- the dynamic summary JSON
+- the dynamic HTML report
+- the GUI Findings Summary section
+
+### Dynamic HTML Freshness Fix
+The dynamic HTML report is now regenerated from current data when opened, rather than only being reused if a file already exists. This prevents stale report output from conflicting with current GUI results.
+
+### Dynamic Window Cleanup
+The Dynamic Analysis window was also cleaned up for a more consistent workflow:
+
+- removed redundant action buttons from the Dynamic Settings area
+- fixed duplicated status label behavior
+- consolidated report actions into the Findings Summary area
+- added score display support directly in Findings Summary
+
+---
+
+## Spec Analysis Cleanup
+
+The Spec Analysis module was decoupled from the old combined-score refresh behavior.
+
+It now behaves as its own independent analysis window that:
+
+- analyzes spec files
+- saves its own JSON results
+- generates its own HTML reports
+- stores its own latest spec result
+
+This keeps Spec Analysis aligned with the new modular architecture.
+
+---
+
+## Manual API Tester
+
+The Manual API Tester remains a separate request/response-focused module.
+
+It was kept intentionally scoreless for now, since the most meaningful output for this workflow is:
+
+- HTTP status
+- response time
+- content type
+- response size
+
+This keeps the tool practical without forcing it into the same security scoring model as static or dynamic analysis.
+
+---
+
+## Unified Report Changes
+
+The Unified Report was updated to reflect the new per-module architecture.
+
+### New Unified Report Behavior
+Instead of centering around combined-score language, the unified report now shows only the module results that actually exist.
+
+It is now designed to present:
+
+- **Static Score**
+- **Dynamic Score**
+- **Spec Score**
+
+only when those modules were actually run.
+
+### Improved Module Detection
+Detection logic was tightened so stale artifacts do not create false positives, especially for manual API activity.
+
+Manual API output is now represented more clearly as:
+
+- **Manual API Tester**
+
+rather than being mixed into older combined-report assumptions.
+
+---
+
+## Launcher and Dynamic Analysis Integration
+
+Launcher-to-Dynamic Analysis behavior was improved so saved-test context can now flow correctly into the Dynamic Analysis window.
+
+### Context Passing Improvements
+The launcher now supports passing saved test context such as:
+
+- test name
+- analysis type
+- sample path
+- case directory
+
+This allows Dynamic Analysis to open with better awareness of the selected saved test.
+
+### “Use Main Sample” Fix
+The **Use Main Sample** action in Dynamic Analysis was updated to fall back to launcher-selected saved test context when live in-memory sample values are not available.
+
+This makes the workflow more reliable when launching modules from the launcher instead of from an already-open static analysis session.
+
+---
+
+## Static Window Workflow Update
+
+The Static Analysis window layout was adjusted for a cleaner flow.
+
+### Artifact Action Order
+The **Open Dynamic Analysis** button was moved out of the main static action row and into the Artifacts section.
+
+The order is now:
+
+1. **Open Case**
+2. **Open Static Report**
+3. **Open Dynamic Analysis**
+
+This makes artifact-related actions feel more consistent and reduces clutter in the main run area.
+
+---
+
+## UI Cleanup Summary
+
+Additional interface cleanup included:
+
+- removal of redundant dynamic window buttons
+- elimination of duplicate status labels
+- cleaner Findings Summary layout
+- better separation between run controls and report actions
+- improved consistency between launcher behavior and module windows
+
+---
+
+## Files Updated
+
+Key files touched during this refactor included:
+
+- `gui/main_sections.py`
+- `gui/main_app.py`
+- `gui/result_controller.py`
+- `gui/static_analysis_controller.py`
+- `gui/dynamic_window.py`
+- `dynamic_analysis/orchestrator.py`
+- `dynamic_analysis/html_report.py`
+- `gui/spec_window.py`
+- `gui/api_window.py`
+- `gui/unified_report_window.py`
+- `gui/startup_app.py`
+- `gui/launcher.py`
+
+---
+
+## Current Direction
+
+RingForge Workbench is now moving toward a cleaner module-based architecture where:
+
+- each module owns its own results
+- each module manages its own score and report output
+- the unified report summarizes what was actually run
+- UI workflows are simpler and less coupled than before
+
+This lays the groundwork for future improvements without the older combined-score dependencies across unrelated windows.
+
 ## What’s New in v1.6
 
 RingForge Workbench v1.6 is a workflow and usability release that turns the modular GUI work from v1.5 into a more polished analyst-facing experience. This version improves how users enter the platform, choose workflows, and review browser extension packages while preserving the existing static triage functionality.
