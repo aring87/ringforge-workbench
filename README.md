@@ -34,8 +34,6 @@ RingForge Workbench has been refactored away from the older **combined score on 
 
 Each analysis module now focuses on its own results, its own report output, and its own scoring pipeline. The unified reporting flow has also been updated so it only shows scores for modules that were actually run.
 
----
-
 ## Scoring Model Refactor
 
 ### Per-Test Scoring Replaces Combined Window Scoring
