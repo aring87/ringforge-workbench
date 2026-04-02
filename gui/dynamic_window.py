@@ -24,8 +24,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("RingForge Workbench - Dynamic Analysis")
-        self.geometry("1360x1040")
-        self.minsize(1120, 920)
+        self.geometry("1420x1200")
+        self.minsize(1200, 1080)
         self.configure(bg="#05070B")
 
         cfg = getattr(app, "cfg", {}) or {}
@@ -79,9 +79,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.status_var = tk.StringVar(value="Idle")
         self.summary_status_var = tk.StringVar(value="Ready")
         self.summary_sample_var = tk.StringVar(value=Path(main_sample).name if main_sample else "-")
-        self.summary_case_var = tk.StringVar(value=Path(self.case_dir_var.get()).name if self.case_dir_var.get().strip() else "-")
+        self.summary_case_var = tk.StringVar(
+            value=Path(self.case_dir_var.get()).name if self.case_dir_var.get().strip() else "-"
+        )
         self.summary_procmon_var = tk.StringVar(value="Enabled" if self.procmon_enabled_var.get() else "Disabled")
-        self.summary_timeout_var = tk.StringVar(value=str(self.timeout_var.get()))
+        self.summary_timeout_var = tk.StringVar(value=f"{self.timeout_var.get()} sec")
         self.summary_report_var = tk.StringVar(value="-")
 
         self.metric_process_var = tk.StringVar(value="-")
@@ -94,11 +96,6 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.step_vars = {}
 
         self.brand_logo_img = None
-        self.last_api_dir: Optional[Path] = None
-        self.last_html_report: Optional[Path] = None
-        self.last_json_report: Optional[Path] = None
-        self.last_response_payload: Optional[dict] = None
-
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
 
@@ -118,8 +115,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, **outer)
         frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(0, weight=0)
-        frm.rowconfigure(1, weight=1)
+        frm.rowconfigure(0, weight=2)
+        frm.rowconfigure(1, weight=3)
 
         header = ttk.LabelFrame(frm, text="Dynamic Analysis Setup")
         header.grid(row=0, column=0, sticky="ew")
@@ -129,28 +126,30 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ttk.Entry(header, textvariable=self.sample_var, width=100).grid(
             row=0, column=1, sticky="ew", padx=8, pady=(10, 0)
         )
+
+        sample_btns = ttk.Frame(header)
+        sample_btns.grid(row=0, column=2, sticky="ew", padx=(0, 10), pady=(10, 0))
+        sample_btns.columnconfigure(0, weight=1)
+        sample_btns.columnconfigure(1, weight=1)
+
         ttk.Button(
-            header,
+            sample_btns,
             text="Use Main Sample",
             style="Side.Action.TButton",
             command=self._use_main_sample,
-        ).grid(row=0, column=2, sticky="ew", padx=(0, 10), pady=(10, 0))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
-        ttk.Label(header, text="Dynamic case folder:").grid(row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 0))
-        ttk.Entry(header, textvariable=self.case_dir_var, width=100).grid(
-            row=1, column=1, sticky="ew", padx=8, pady=(8, 0)
-        )
         ttk.Button(
-            header,
+            sample_btns,
             text="Browse...",
             style="Side.Action.TButton",
-            command=self._browse_case_dir,
-        ).grid(row=1, column=2, sticky="ew", padx=(0, 10), pady=(8, 0))
+            command=self._browse_sample,
+        ).grid(row=0, column=1, sticky="ew")
 
-        ttk.Label(header, text="Timeout (seconds):").grid(row=2, column=0, sticky="w", padx=(10, 0), pady=(8, 10))
+        ttk.Label(header, text="Timeout (seconds):").grid(row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 10))
 
         runtime_row = ttk.Frame(header)
-        runtime_row.grid(row=2, column=1, columnspan=2, sticky="w", padx=8, pady=(8, 10))
+        runtime_row.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(8, 10))
 
         ttk.Spinbox(
             runtime_row,
@@ -159,6 +158,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             textvariable=self.timeout_var,
             width=10,
             style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
         ).pack(side="left")
 
         ttk.Checkbutton(
@@ -173,8 +173,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         workspace.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         workspace.columnconfigure(0, weight=1)
         workspace.columnconfigure(1, weight=1)
-        workspace.rowconfigure(0, weight=0)
-        workspace.rowconfigure(1, weight=1)
+        workspace.rowconfigure(0, weight=3)
+        workspace.rowconfigure(1, weight=2)
 
         left_top = ttk.Frame(workspace)
         left_top.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
@@ -183,6 +183,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         right_top = ttk.Frame(workspace)
         right_top.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         right_top.columnconfigure(0, weight=1)
+        right_top.rowconfigure(0, weight=1)
 
         self._build_settings_section(left_top)
         self._build_run_status_section(right_top)
@@ -193,9 +194,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
         left_bottom.rowconfigure(0, weight=1)
 
         right_bottom = ttk.Frame(workspace)
-        right_bottom.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(10, 0))
+        right_bottom.grid(row=1, column=1, sticky="new", padx=(6, 0), pady=(30, 0))
         right_bottom.columnconfigure(0, weight=1)
-        right_bottom.rowconfigure(0, weight=1)
+        right_bottom.rowconfigure(0, weight=0)
 
         self._build_output_section(left_bottom)
         self._build_findings_summary_section(right_bottom)
@@ -273,10 +274,27 @@ class DynamicAnalysisWindow(tk.Toplevel):
             wraplength=980,
         ).grid(row=2, column=1, sticky="w", pady=(4, 16))
 
+    def _browse_sample(self):
+        current = self.sample_var.get().strip()
+        start_dir = Path(current).parent if current else Path.cwd()
+
+        chosen = filedialog.askopenfilename(
+            title="Select sample for dynamic analysis",
+            initialdir=str(start_dir),
+            filetypes=[
+                ("Executable Files", "*.exe *.dll *.msi *.bat *.cmd *.ps1 *.vbs"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if chosen:
+            self.sample_var.set(str(Path(chosen)))
+            self._refresh_summary_from_inputs()
+            self._save_cfg()
+
     def _build_settings_section(self, parent):
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
-    
+
         settings = ttk.LabelFrame(parent, text="Dynamic Settings")
         settings.grid(row=0, column=0, sticky="nsew")
         settings.columnconfigure(1, weight=1)
@@ -318,7 +336,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         actions = ttk.Frame(settings)
         actions.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
-        actions.columnconfigure(4, weight=1)
+        actions.columnconfigure(3, weight=1)
 
         self.run_btn = ttk.Button(
             actions,
@@ -345,15 +363,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             command=self._open_latest_dynamic_html,
         ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
-        ttk.Button(
-            actions,
-            text="Export HTML",
-            style="Action.TButton",
-            width=14,
-            command=self._export_dynamic_report,
-        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
-
-        ttk.Label(actions, textvariable=self.status_var, anchor="e").grid(row=0, column=4, sticky="e", padx=(12, 0))
+        ttk.Label(actions, textvariable=self.status_var, anchor="e").grid(row=0, column=3, sticky="e", padx=(12, 0))
 
     def _build_run_status_section(self, parent):
         panel = ttk.LabelFrame(parent, text="Run Status")
@@ -392,13 +402,14 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         for idx, (label, var) in enumerate(rows):
             ttk.Label(summary, text=label).grid(row=idx, column=0, sticky="w", pady=(0 if idx == 0 else 6, 0))
-            ttk.Label(summary, textvariable=var, wraplength=420, justify="left").grid(
+            ttk.Label(summary, textvariable=var, wraplength=220, justify="left").grid(
                 row=idx, column=1, sticky="w", padx=(8, 0), pady=(0 if idx == 0 else 6, 0)
             )
 
         steps_panel = ttk.LabelFrame(panel, text="Execution Steps")
         steps_panel.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
-        steps_panel.columnconfigure(1, weight=1)
+        steps_panel.columnconfigure(0, weight=1)
+        steps_panel.rowconfigure(0, weight=1)
 
         self.steps_frame = ttk.Frame(steps_panel)
         self.steps_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
@@ -406,7 +417,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_output_section(self, parent):
         outwrap = ttk.LabelFrame(parent, text="Output")
-        outwrap.grid(row=0, column=0, sticky="nsew")
+        outwrap.grid(row=0, column=0, sticky="nsew", pady=(2, 0))
         outwrap.columnconfigure(0, weight=1)
         outwrap.rowconfigure(0, weight=1)
 
@@ -433,10 +444,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_findings_summary_section(self, parent):
         panel = ttk.LabelFrame(parent, text="Findings Summary")
-        panel.grid(row=0, column=0, sticky="nsew")
+        panel.grid(row=0, column=0, sticky="new")
         panel.columnconfigure(1, weight=1)
-        panel.rowconfigure(len(metrics), weight=0)
-        panel.rowconfigure(len(metrics) + 1, weight=1)
 
         metrics = [
             ("Processes:", self.metric_process_var),
@@ -447,11 +456,23 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ]
 
         for idx, (label, var) in enumerate(metrics):
-            ttk.Label(panel, text=label).grid(row=idx, column=0, sticky="w", padx=(10, 0), pady=(10 if idx == 0 else 6, 0))
-            ttk.Label(panel, textvariable=var).grid(row=idx, column=1, sticky="w", padx=(8, 10), pady=(10 if idx == 0 else 6, 0))
+            ttk.Label(panel, text=label).grid(
+                row=idx,
+                column=0,
+                sticky="w",
+                padx=(10, 0),
+                pady=(8 if idx == 0 else 6, 0),
+            )
+            ttk.Label(panel, textvariable=var).grid(
+                row=idx,
+                column=1,
+                sticky="w",
+                padx=(8, 10),
+                pady=(8 if idx == 0 else 6, 0),
+            )
 
         report_actions = ttk.LabelFrame(panel, text="Report Actions")
-        report_actions.grid(row=len(metrics), column=0, columnspan=2, sticky="ew", padx=10, pady=(14, 10))
+        report_actions.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 10))
         report_actions.columnconfigure(0, weight=1)
 
         ttk.Button(
@@ -466,14 +487,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             text="Open Latest Report",
             style="Action.TButton",
             command=self._open_latest_dynamic_html,
-        ).grid(row=1, column=0, sticky="ew", padx=10, pady=6)
-
-        ttk.Button(
-            report_actions,
-            text="Export HTML",
-            style="Action.TButton",
-            command=self._export_dynamic_report,
-        ).grid(row=2, column=0, sticky="ew", padx=10, pady=6)
+        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(6, 10))
 
     def _reset_progress(self):
         for w in self.steps_frame.winfo_children():
@@ -492,7 +506,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ]
 
         for idx, step in enumerate(steps):
-            ttk.Label(self.steps_frame, text=f"{step}:").grid(row=idx, column=0, sticky="w")
+            ttk.Label(self.steps_frame, text=f"{step}:").grid(row=idx, column=0, sticky="w", pady=1)
             bar_var = tk.IntVar(value=0)
             ttk.Progressbar(
                 self.steps_frame,
@@ -500,9 +514,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 mode="determinate",
                 maximum=100,
                 variable=bar_var,
-            ).grid(row=idx, column=1, sticky="ew", padx=8)
+            ).grid(row=idx, column=1, sticky="ew", padx=8, pady=1)
             status = ttk.Label(self.steps_frame, text="idle")
-            status.grid(row=idx, column=2, sticky="w")
+            status.grid(row=idx, column=2, sticky="w", pady=1)
             self.step_vars[step] = {"var": bar_var, "status": status}
 
         self.progress_var.set(0)
@@ -559,12 +573,34 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _use_main_sample(self):
         main_sample = ""
+
         app_sample_var = getattr(self.app, "sample_var", None)
         if app_sample_var is not None:
             try:
                 main_sample = app_sample_var.get().strip()
             except Exception:
                 main_sample = ""
+
+        if not main_sample:
+            launcher = getattr(self.app, "launcher_frame", None)
+            if launcher is not None:
+                for attr_name in ("sample_var", "selected_sample_var", "main_sample_var"):
+                    launcher_var = getattr(launcher, attr_name, None)
+                    if launcher_var is not None:
+                        try:
+                            main_sample = launcher_var.get().strip()
+                            if main_sample:
+                                break
+                        except Exception:
+                            pass
+
+        if not main_sample:
+            messagebox.showwarning(
+                "Use Main Sample",
+                "No main sample is currently selected. Use Browse to choose one manually.",
+                parent=self,
+            )
+            return
 
         self.sample_var.set(main_sample)
 
@@ -589,31 +625,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 except Exception:
                     case_root = ""
 
-            case_name = case_name or Path(main_sample or "sample").stem or "dynamic_case"
+            case_name = case_name or Path(main_sample).stem or "dynamic_case"
             case_root_path = Path(case_root) if case_root else (Path.cwd() / "cases")
             self.case_dir_var.set(str(case_root_path / case_name))
 
         self._refresh_summary_from_inputs()
         self._save_cfg()
-
-    def _browse_case_dir(self):
-        app_case_root_var = getattr(self.app, "case_root_var", None)
-
-        case_root_value = ""
-        if app_case_root_var is not None:
-            try:
-                case_root_value = app_case_root_var.get().strip()
-            except Exception:
-                case_root_value = ""
-
-        default_case_root = Path(case_root_value) if case_root_value else (Path.cwd() / "cases")
-        start = Path(self.case_dir_var.get()) if self.case_dir_var.get().strip() else default_case_root
-
-        chosen = filedialog.askdirectory(title="Select dynamic case folder", initialdir=str(start))
-        if chosen:
-            self.case_dir_var.set(str(Path(chosen)))
-            self._refresh_summary_from_inputs()
-            self._save_cfg()
 
     def _browse_procmon(self):
         project_root = Path(__file__).resolve().parents[1]
@@ -666,11 +683,15 @@ class DynamicAnalysisWindow(tk.Toplevel):
             reports_dir.mkdir(parents=True, exist_ok=True)
 
             summary_candidates = [
+                case_dir / "metadata" / "dynamic_run_summary.json",
+                case_dir / "metadata" / "static_run_summary.json",
+                case_dir / "metadata" / "run_summary.json",
                 reports_dir / "dynamic_run_summary.json",
+                reports_dir / "static_run_summary.json",
                 reports_dir / "run_summary.json",
                 case_dir / "dynamic_run_summary.json",
+                case_dir / "static_run_summary.json",
                 case_dir / "run_summary.json",
-                case_dir / "metadata" / "run_summary.json",
             ]
             findings_candidates = [
                 reports_dir / "dynamic_findings.json",
@@ -692,6 +713,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 highlights = data.get("highlights", []) or []
                 counts = data.get("counts", {}) or {}
                 sample = data.get("sample", {}) or {}
+
                 html_doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Dynamic Report</title>
 <style>
@@ -716,10 +738,14 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                 output_html.write_text(html_doc, encoding="utf-8", errors="replace")
             else:
                 checked = [str(p) for p in summary_candidates + findings_candidates]
-                messagebox.showerror("Export Report", "No dynamic source file found.\n\nChecked:\n" + "\n".join(checked), parent=self)
+                messagebox.showerror(
+                    "Export Report",
+                    "No dynamic source file found.\n\nChecked:\n" + "\n".join(checked),
+                    parent=self,
+                )
                 return
 
-            self.summary_report_var.set(str(output_html))
+            self.summary_report_var.set(output_html.name)
             webbrowser.open(output_html.resolve().as_uri())
         except Exception as e:
             messagebox.showerror("Export Report", str(e), parent=self)
@@ -730,13 +756,16 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
             if not case_dir.exists():
                 messagebox.showerror("Open Report", f"Case folder does not exist:\n{case_dir}", parent=self)
                 return
+
             html_path = case_dir / "reports" / "dynamic_report.html"
             if not html_path.exists():
                 self._export_dynamic_report()
+
             if not html_path.exists():
                 messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
                 return
-            self.summary_report_var.set(str(html_path))
+
+            self.summary_report_var.set(html_path.name)
             webbrowser.open(html_path.resolve().as_uri())
         except Exception as e:
             messagebox.showerror("Open Report", str(e), parent=self)
@@ -809,7 +838,9 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                     self.output_q.put(f"  - New tasks: {task_counts.get('new_tasks', 0)}\n")
                     self.output_q.put(f"  - Modified tasks: {task_counts.get('modified_tasks', 0)}\n")
                     self.output_q.put(f"  - Removed tasks: {task_counts.get('removed_tasks', 0)}\n")
-                    self.output_q.put(f"  - Suspicious new/modified: {task_counts.get('suspicious_new_or_modified', 0)}\n\n")
+                    self.output_q.put(
+                        f"  - Suspicious new/modified: {task_counts.get('suspicious_new_or_modified', 0)}\n\n"
+                    )
 
                 service_counts = summary.get("service_diff_summary", {})
                 if service_counts:
@@ -817,7 +848,9 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                     self.output_q.put(f"  - New services: {service_counts.get('new_services', 0)}\n")
                     self.output_q.put(f"  - Modified services: {service_counts.get('modified_services', 0)}\n")
                     self.output_q.put(f"  - Removed services: {service_counts.get('removed_services', 0)}\n")
-                    self.output_q.put(f"  - Suspicious new/modified: {service_counts.get('suspicious_new_or_modified', 0)}\n\n")
+                    self.output_q.put(
+                        f"  - Suspicious new/modified: {service_counts.get('suspicious_new_or_modified', 0)}\n\n"
+                    )
 
                 top_written = findings.get("top_written_paths", [])
                 if top_written:
@@ -877,7 +910,7 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
             if case_dir and case_dir.exists():
                 self.app.case_dir_detected = case_dir
                 html_path = case_dir / "reports" / "dynamic_report.html"
-                self.summary_report_var.set(str(html_path) if html_path.exists() else str(case_dir / "reports"))
+                self.summary_report_var.set(html_path.name if html_path.exists() else "reports")
 
                 combined_score_from_case_dir(
                     case_dir,
@@ -908,7 +941,7 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
         self.run_btn.configure(state="normal")
         self.status_var.set("Idle")
         self.summary_status_var.set("Error")
-        self._set_step("Procmon start", 100, "done")
+        self._set_step("Procmon start", 100, "failed")
         messagebox.showerror("Dynamic Analysis failed", err, parent=self)
 
     def _drain_output(self):

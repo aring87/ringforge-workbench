@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox
 
@@ -26,6 +28,48 @@ from gui.gui_utils import (
 class StaticAnalysisController:
     def __init__(self, app):
         self.app = app
+        
+    def _save_static_test_summary(self, case_dir: Path):
+        app = self.app
+
+        try:
+            meta_dir = case_dir / "metadata"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+
+            score_value = app.score_var.get().strip()
+            combined_score_value = app.combined_score_var.get().strip()
+
+            payload = {
+                "test_name": app.case_var.get().strip() or case_dir.name,
+                "analysis_type": "static",
+                "sample_path": app.sample_var.get().strip(),
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+                "score": score_value if score_value else "-",
+                "static_score": score_value if score_value else "-",
+                "combined_score": combined_score_value if combined_score_value else (score_value if score_value else "-"),
+                "status": "completed",
+                "verdict": app.verdict_var.get().strip() or "-",
+                "confidence": app.confidence_var.get().strip() or "-",
+                "combined_verdict": app.combined_verdict_var.get().strip() or "-",
+                "combined_confidence": app.combined_confidence_var.get().strip() or "-",
+                "static_subscore": app.static_subscore_var.get().strip() or "-",
+                "dynamic_subscore": app.dynamic_subscore_var.get().strip() or "-",
+                "spec_subscore": app.spec_subscore_var.get().strip() or "-",
+            }
+
+            summary_path = meta_dir / "static_run_summary.json"
+            summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+            launcher = getattr(app, "launcher_frame", None)
+            if launcher is not None and hasattr(launcher, "refresh_saved_tests"):
+                try:
+                    launcher.refresh_saved_tests()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            app.output.insert("end", f"[warn] Could not save static test summary: {e}\n")
+            app.output.see("end")
 
     def start_analysis(self):
         app = self.app
@@ -106,6 +150,7 @@ class StaticAnalysisController:
                     app._set_step("report", 100, "done")
 
                 app._update_result_summary_from_case(app.case_dir_detected)
+                self._save_static_test_summary(app.case_dir_detected)
 
             app._set_step("finalize", 100, "done")
 

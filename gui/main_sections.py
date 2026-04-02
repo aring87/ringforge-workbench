@@ -259,7 +259,16 @@ def build_configuration_section(app, parent):
     )
     app.run_btn.grid(row=0, column=0, sticky="w")
 
-    ttk.Label(run_row, textvariable=app.running_var).grid(row=0, column=1, sticky="e")
+    ttk.Button(
+        run_row,
+        text="Open Dynamic Analysis",
+        style="Action.TButton",
+        width=20,
+        command=app._open_dynamic_window,
+    ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+    ttk.Label(run_row, textvariable=app.running_var).grid(row=0, column=2, sticky="e")
+    run_row.columnconfigure(2, weight=1)
 
     return config
 
@@ -336,85 +345,83 @@ def build_results_section(app, parent):
     lower.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
     lower.columnconfigure(0, weight=1)
     lower.columnconfigure(1, weight=1)
+    lower.rowconfigure(0, weight=1)
 
-    left_metrics = ttk.Frame(lower)
-    left_metrics.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-    left_metrics.columnconfigure(1, weight=1)
+    static_panel = ttk.LabelFrame(lower, text="Static Summary")
+    static_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+    static_panel.columnconfigure(1, weight=1)
 
-    ttk.Label(left_metrics, text="Static", style="SectionHeader.TLabel").grid(
-        row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
-    )
-    ttk.Label(left_metrics, text="Score:").grid(row=1, column=0, sticky="w")
-    ttk.Label(left_metrics, textvariable=app.score_var).grid(
-        row=1, column=1, sticky="w", padx=(8, 0)
+    ttk.Label(static_panel, text="Score:").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 0))
+    ttk.Label(static_panel, textvariable=app.score_var).grid(
+        row=0, column=1, sticky="w", padx=(8, 10), pady=(10, 0)
     )
 
-    ttk.Label(left_metrics, text="Verdict:").grid(row=2, column=0, sticky="w", pady=(6, 0))
-    ttk.Label(left_metrics, textvariable=app.verdict_var).grid(
-        row=2, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+    ttk.Label(static_panel, text="Verdict:").grid(row=1, column=0, sticky="w", padx=10, pady=(6, 0))
+    ttk.Label(static_panel, textvariable=app.verdict_var).grid(
+        row=1, column=1, sticky="w", padx=(8, 10), pady=(6, 0)
     )
 
-    ttk.Label(left_metrics, text="Confidence:").grid(row=3, column=0, sticky="w", pady=(6, 0))
-    ttk.Label(left_metrics, textvariable=app.confidence_var).grid(
-        row=3, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+    ttk.Label(static_panel, text="Confidence:").grid(row=2, column=0, sticky="w", padx=10, pady=(6, 0))
+    ttk.Label(static_panel, textvariable=app.confidence_var).grid(
+        row=2, column=1, sticky="w", padx=(8, 10), pady=(6, 0)
     )
 
-    ttk.Separator(left_metrics, orient="horizontal").grid(
-        row=4, column=0, columnspan=2, sticky="ew", pady=(8, 8)
+    ttk.Separator(static_panel, orient="horizontal").grid(
+        row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 8)
     )
 
-    ttk.Label(left_metrics, text="Subscores", style="SectionHeader.TLabel").grid(
-        row=5, column=0, columnspan=2, sticky="w", pady=(0, 6)
-    )
-    ttk.Label(left_metrics, text="Static:").grid(row=6, column=0, sticky="w")
-    ttk.Label(left_metrics, textvariable=app.static_subscore_var).grid(
-        row=6, column=1, sticky="w", padx=(8, 0)
+    ttk.Label(static_panel, text="Subscores", style="SectionHeader.TLabel").grid(
+        row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6)
     )
 
-    ttk.Label(left_metrics, text="Dynamic:").grid(row=7, column=0, sticky="w", pady=(6, 0))
-    ttk.Label(left_metrics, textvariable=app.dynamic_subscore_var).grid(
-        row=7, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+    ttk.Label(static_panel, text="Static:").grid(row=5, column=0, sticky="w", padx=10)
+    ttk.Label(static_panel, textvariable=app.static_subscore_var).grid(
+        row=5, column=1, sticky="w", padx=(8, 10)
     )
 
-    ttk.Label(left_metrics, text="Spec/API:").grid(row=8, column=0, sticky="w", pady=(6, 0))
-    ttk.Label(left_metrics, textvariable=app.spec_subscore_var).grid(
-        row=8, column=1, sticky="w", padx=(8, 0), pady=(6, 0)
+    ttk.Label(static_panel, text="Dynamic:").grid(row=6, column=0, sticky="w", padx=10, pady=(6, 0))
+    ttk.Label(static_panel, textvariable=app.dynamic_subscore_var).grid(
+        row=6, column=1, sticky="w", padx=(8, 10), pady=(6, 0)
     )
 
-    right_metrics = ttk.Frame(lower)
-    right_metrics.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-    right_metrics.columnconfigure(0, weight=1)
-
-    ttk.Label(right_metrics, text="VirusTotal", style="SectionHeader.TLabel").grid(
-        row=0, column=0, sticky="w", pady=(0, 6)
+    ttk.Label(static_panel, text="Spec/API:").grid(row=7, column=0, sticky="w", padx=10, pady=(6, 10))
+    ttk.Label(static_panel, textvariable=app.spec_subscore_var).grid(
+        row=7, column=1, sticky="w", padx=(8, 10), pady=(6, 10)
     )
+
+    vt_panel = ttk.LabelFrame(lower, text="VirusTotal")
+    vt_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+    vt_panel.columnconfigure(0, weight=1)
+
     ttk.Label(
-        right_metrics,
+        vt_panel,
         textvariable=app.vt_status_var,
-        wraplength=300,
+        wraplength=320,
         justify="left",
-    ).grid(row=1, column=0, sticky="w")
+    ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 0))
+
     ttk.Label(
-        right_metrics,
+        vt_panel,
         textvariable=app.vt_name_var,
-        wraplength=300,
+        wraplength=320,
         justify="left",
-    ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+    ).grid(row=1, column=0, sticky="w", padx=10, pady=(6, 0))
+
     ttk.Label(
-        right_metrics,
+        vt_panel,
         textvariable=app.vt_counts_var,
-        wraplength=300,
+        wraplength=320,
         justify="left",
-    ).grid(row=3, column=0, sticky="w", pady=(6, 0))
+    ).grid(row=2, column=0, sticky="w", padx=10, pady=(6, 0))
 
     app.vt_open_btn = ttk.Button(
-        right_metrics,
+        vt_panel,
         text="Open VirusTotal",
         command=app._open_virustotal,
         state="disabled",
         style="Action.TButton",
     )
-    app.vt_open_btn.grid(row=4, column=0, sticky="e", pady=(12, 0))
+    app.vt_open_btn.grid(row=3, column=0, sticky="e", padx=10, pady=(12, 10))
 
     return results
 

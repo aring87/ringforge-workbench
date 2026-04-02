@@ -93,7 +93,7 @@ def run_dynamic_analysis(
 
     run_config_path = paths["metadata"] / "run_config.json"
     sample_info_path = paths["metadata"] / "sample_info.json"
-    run_summary_path = paths["metadata"] / "run_summary.json"
+    run_summary_path = paths["metadata"] / "dynamic_run_summary.json"
 
     procmon_enabled = bool(config.get("procmon_enabled", False))
     procmon_path = config.get("procmon_path")

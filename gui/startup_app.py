@@ -7,6 +7,8 @@ import tkinter as tk
 from tkinter import messagebox
 import traceback
 
+from gui.gui_utils import load_config, DEFAULT_CASE_ROOT
+
 from gui.api_window import APIAnalysisWindow
 from gui.dynamic_window import DynamicAnalysisWindow
 from gui.spec_window import SpecAnalysisWindow
@@ -33,8 +35,8 @@ class StartupApp(tk.Tk):
         apply_app_theme(self)
 
         self.title("RingForge Workbench")
-        self.geometry("980x720+120+100")
-        self.minsize(900, 640)
+        self.geometry("1280x920+80+40")
+        self.minsize(1180, 820)
         self.configure(bg="#05070B")
 
         self.dynamic_window = None
@@ -44,6 +46,10 @@ class StartupApp(tk.Tk):
         self.extension_window = None
         self.unified_report_window = None
         self.splash_window = None
+        self.cfg = load_config()
+        self.case_root_var = tk.StringVar(
+            value=self.cfg.get("case_root_dir", str(DEFAULT_CASE_ROOT))
+        )
 
         self.withdraw()
         self.after(50, self._show_splash)

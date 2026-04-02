@@ -44,7 +44,7 @@ class App(tk.Tk):
             apply_app_theme(self)
 
             self.title("RingForge Workbench - Static Analysis")
-            self.geometry("1380x1080+100+60")
+            self.geometry("1460x1120+100+60")
             self.minsize(1240, 940)
             self.rowconfigure(0, weight=1)
             self.columnconfigure(0, weight=1)
