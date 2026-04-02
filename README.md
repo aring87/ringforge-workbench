@@ -28,7 +28,7 @@ The platform creates case-based output and produces structured artifacts such as
 
 ---
 
-## What's New - v1.7 progress (4/2/2026)
+## What's New - v1.7 progress update (4/2/2026)
 
 RingForge Workbench has been refactored away from the older **combined score on every window** model and moved to a cleaner, more modular **per-test scoring** design.
 
