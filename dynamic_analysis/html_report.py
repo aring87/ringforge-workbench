@@ -130,8 +130,14 @@ def _summary_tiles(summary: dict[str, Any]) -> str:
     findings = summary.get("findings", {}) or {}
     counts = findings.get("counts", {}) or {}
 
+    score = summary.get("score", summary.get("dynamic_score", 0))
+    severity = summary.get("severity", "")
+    verdict = summary.get("verdict", "")
+
     tiles = [
         ("Exit Code", summary.get("exit_code", "")),
+        ("Dynamic Score", score),
+        ("Severity", severity),
         ("Interesting Events", counts.get("interesting_events", 0)),
         ("Process Creates", counts.get("process_creates", 0)),
         ("Network Events", counts.get("network_events", 0)),
@@ -184,6 +190,13 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
         f"Exit Code: {_esc(summary.get('exit_code', ''))}"
     )
 
+    findings_counts = {
+        "score": summary.get("score", summary.get("dynamic_score", 0)),
+        "severity": summary.get("severity", ""),
+        "verdict": summary.get("verdict", verdict),
+        **counts,
+    }
+
     body_html = f"""
 {_summary_tiles(summary)}
 
@@ -191,7 +204,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
   {_kv_table("Sample Metadata", sample)}
   {_kv_table("Procmon Summary", procmon)}
   {_kv_table("Interesting Procmon Summary", procmon_interesting)}
-  {_kv_table("Findings Counts", counts)}
+  {_kv_table("Findings Counts", findings_counts)}
   {_kv_table("Scheduled Task Diff", task_diff, badge("Suspicious", task_diff.get("suspicious_new_or_modified", 0)))}
   {_kv_table("Service Diff", service_diff, badge("Suspicious", service_diff.get("suspicious_new_or_modified", 0)))}
   {_kv_table("Dropped Files Summary", dropped, badge("Suspicious", dropped.get("suspicious", 0)))}

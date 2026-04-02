@@ -79,6 +79,60 @@ def _emit(status_cb: StatusCallback, message: str) -> None:
     if status_cb:
         status_cb(message)
 
+def calculate_dynamic_score(
+    findings_summary: dict[str, Any],
+    task_diff_summary: dict[str, Any],
+    service_diff_summary: dict[str, Any],
+    dropped_files_summary: dict[str, Any],
+) -> dict[str, Any]:
+    counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
+    task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
+    service_counts = service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {}
+    dropped = dropped_files_summary if isinstance(dropped_files_summary, dict) else {}
+
+    interesting_events = int(counts.get("interesting_events", 0) or 0)
+    process_creates = int(counts.get("process_creates", 0) or 0)
+    network_events = int(counts.get("network_events", 0) or 0)
+    file_write_events = int(counts.get("file_write_events", 0) or 0)
+    suspicious_path_hits = int(counts.get("suspicious_path_hits", 0) or 0)
+    persistence_hits = int(counts.get("persistence_hits", 0) or 0)
+    lolbin_processes = int(counts.get("lolbin_processes", 0) or 0)
+
+    suspicious_tasks = int(task_counts.get("suspicious_new_or_modified", 0) or 0)
+    suspicious_services = int(service_counts.get("suspicious_new_or_modified", 0) or 0)
+    suspicious_dropped = int(dropped.get("suspicious", 0) or 0)
+
+    score = 0
+    score += min(interesting_events, 10)
+    score += min(process_creates, 5)
+    score += min(network_events * 2, 10)
+    score += min(file_write_events, 5)
+    score += suspicious_path_hits * 4
+    score += persistence_hits * 8
+    score += lolbin_processes * 5
+    score += suspicious_tasks * 8
+    score += suspicious_services * 8
+    score += suspicious_dropped * 6
+
+    if score <= 5:
+        severity = "Low"
+        verdict = "Benign / Clean Baseline"
+    elif score <= 15:
+        severity = "Low"
+        verdict = "Low Suspicion"
+    elif score <= 30:
+        severity = "Medium"
+        verdict = "Needs Review"
+    else:
+        severity = "High"
+        verdict = "Elevated Attention"
+
+    return {
+        "score": score,
+        "severity": severity,
+        "verdict": verdict,
+    }
+
 
 def run_dynamic_analysis(
     config: dict[str, Any],
@@ -206,6 +260,13 @@ def run_dynamic_analysis(
             write_json(findings_json, findings_summary)
 
     ended_at = utc_now_iso()
+    
+    score_data = calculate_dynamic_score(
+        findings_summary=findings_summary,
+        task_diff_summary=task_diff_summary,
+        service_diff_summary=service_diff_summary,
+        dropped_files_summary=dropped_files_summary,
+    )
 
     summary = {
         "sample": sample_info,
@@ -213,6 +274,9 @@ def run_dynamic_analysis(
         "ended_at_utc": ended_at,
         "exit_code": exit_code,
         "procmon_enabled": procmon_enabled,
+        "score": score_data["score"],
+        "severity": score_data["severity"],
+        "verdict": score_data["verdict"],
         "procmon_summary": procmon_summary,
         "procmon_interesting_summary": procmon_interesting_summary,
         "task_diff_summary": task_diff_summary.get("counts", {}),

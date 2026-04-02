@@ -85,12 +85,14 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.summary_procmon_var = tk.StringVar(value="Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var = tk.StringVar(value=f"{self.timeout_var.get()} sec")
         self.summary_report_var = tk.StringVar(value="-")
-
+        
+        self.metric_score_var = tk.StringVar(value="-")
         self.metric_process_var = tk.StringVar(value="-")
         self.metric_network_var = tk.StringVar(value="-")
         self.metric_filewrite_var = tk.StringVar(value="-")
         self.metric_suspicious_var = tk.StringVar(value="-")
         self.metric_persistence_var = tk.StringVar(value="-")
+        
 
         self.progress_var = tk.IntVar(value=0)
         self.step_vars = {}
@@ -336,7 +338,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         actions = ttk.Frame(settings)
         actions.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
-        actions.columnconfigure(3, weight=1)
+        actions.columnconfigure(1, weight=1)
 
         self.run_btn = ttk.Button(
             actions,
@@ -347,23 +349,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.run_btn.grid(row=0, column=0, sticky="w")
 
-        ttk.Button(
+        ttk.Label(
             actions,
-            text="Open Case Folder",
-            style="Action.TButton",
-            width=17,
-            command=self._open_case_folder,
-        ).grid(row=0, column=1, sticky="w", padx=(8, 0))
-
-        ttk.Button(
-            actions,
-            text="Open Latest Report",
-            style="Action.TButton",
-            width=17,
-            command=self._open_latest_dynamic_html,
-        ).grid(row=0, column=2, sticky="w", padx=(8, 0))
-
-        ttk.Label(actions, textvariable=self.status_var, anchor="e").grid(row=0, column=3, sticky="e", padx=(12, 0))
+            textvariable=self.status_var,
+            anchor="e",
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
 
     def _build_run_status_section(self, parent):
         panel = ttk.LabelFrame(parent, text="Run Status")
@@ -448,6 +438,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         panel.columnconfigure(1, weight=1)
 
         metrics = [
+            ("Score:", self.metric_score_var),
             ("Processes:", self.metric_process_var),
             ("Network Events:", self.metric_network_var),
             ("File Writes:", self.metric_filewrite_var),
@@ -461,18 +452,27 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 column=0,
                 sticky="w",
                 padx=(10, 0),
-                pady=(8 if idx == 0 else 6, 0),
+                pady=(8 if idx == 0 else 5, 0),
             )
             ttk.Label(panel, textvariable=var).grid(
                 row=idx,
                 column=1,
                 sticky="w",
                 padx=(8, 10),
-                pady=(8 if idx == 0 else 6, 0),
+                pady=(8 if idx == 0 else 5, 0),
             )
 
+        ttk.Separator(panel, orient="horizontal").grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=10,
+            pady=(10, 8),
+        )
+
         report_actions = ttk.LabelFrame(panel, text="Report Actions")
-        report_actions.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 10))
+        report_actions.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
         report_actions.columnconfigure(0, weight=1)
 
         ttk.Button(
@@ -480,14 +480,14 @@ class DynamicAnalysisWindow(tk.Toplevel):
             text="Open Case Folder",
             style="Action.TButton",
             command=self._open_case_folder,
-        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6), ipady=2)
 
         ttk.Button(
             report_actions,
             text="Open Latest Report",
             style="Action.TButton",
             command=self._open_latest_dynamic_html,
-        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(6, 10))
+        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10), ipady=2)
 
     def _reset_progress(self):
         for w in self.steps_frame.winfo_children():
@@ -573,6 +573,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _use_main_sample(self):
         main_sample = ""
+        selected_ctx = None
 
         app_sample_var = getattr(self.app, "sample_var", None)
         if app_sample_var is not None:
@@ -581,9 +582,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
             except Exception:
                 main_sample = ""
 
-        if not main_sample:
-            launcher = getattr(self.app, "launcher_frame", None)
-            if launcher is not None:
+        launcher = getattr(self.app, "launcher_frame", None)
+        if launcher is not None:
+            if not main_sample:
                 for attr_name in ("sample_var", "selected_sample_var", "main_sample_var"):
                     launcher_var = getattr(launcher, attr_name, None)
                     if launcher_var is not None:
@@ -594,17 +595,32 @@ class DynamicAnalysisWindow(tk.Toplevel):
                         except Exception:
                             pass
 
+            if hasattr(launcher, "get_selected_saved_test_context"):
+                try:
+                    selected_ctx = launcher.get_selected_saved_test_context()
+                except Exception:
+                    selected_ctx = None
+
+            if not main_sample and selected_ctx:
+                main_sample = (selected_ctx.get("sample_path") or "").strip()
+
         if not main_sample:
             messagebox.showwarning(
                 "Use Main Sample",
-                "No main sample is currently selected. Use Browse to choose one manually.",
+                "No main sample is currently selected. Select a saved test in the launcher first, or use Browse to choose one manually.",
                 parent=self,
             )
             return
 
         self.sample_var.set(main_sample)
 
-        detected = getattr(self.app, "case_dir_detected", None)
+        detected = None
+        if selected_ctx:
+            detected = selected_ctx.get("case_dir")
+
+        if not detected:
+            detected = getattr(self.app, "case_dir_detected", None)
+
         if detected:
             self.case_dir_var.set(str(Path(detected)))
         else:
@@ -757,10 +773,10 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                 messagebox.showerror("Open Report", f"Case folder does not exist:\n{case_dir}", parent=self)
                 return
 
-            html_path = case_dir / "reports" / "dynamic_report.html"
-            if not html_path.exists():
-                self._export_dynamic_report()
+            # Always regenerate so the report reflects the latest code and summary data
+            self._export_dynamic_report()
 
+            html_path = case_dir / "reports" / "dynamic_report.html"
             if not html_path.exists():
                 messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
                 return
@@ -889,6 +905,8 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
         findings = summary.get("findings", {}) if isinstance(summary, dict) else {}
         counts = findings.get("counts", {}) if isinstance(findings, dict) else {}
 
+        score = summary.get("score", summary.get("dynamic_score", 0))
+        self.metric_score_var.set(str(score))
         self.metric_process_var.set(str(counts.get("process_creates", 0)))
         self.metric_network_var.set(str(counts.get("network_events", 0)))
         self.metric_filewrite_var.set(str(counts.get("file_write_events", 0)))
@@ -912,9 +930,11 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                 html_path = case_dir / "reports" / "dynamic_report.html"
                 self.summary_report_var.set(html_path.name if html_path.exists() else "reports")
 
+                self._export_dynamic_report()
+
                 combined_score_from_case_dir(
                     case_dir,
-                    dynamic_result=None,
+                    dynamic_result=summary,
                     spec_result=None,
                     write_output=True,
                 )

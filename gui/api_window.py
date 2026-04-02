@@ -15,7 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
+
 from dynamic_analysis.report_theme import report_page
+
 
 class APIAnalysisWindow(tk.Toplevel):
     def __init__(self, app: "App"):
@@ -33,6 +35,7 @@ class APIAnalysisWindow(tk.Toplevel):
         self.file_path_var = tk.StringVar(value="")
         self.file_field_var = tk.StringVar(value="file")
         self.status_var = tk.StringVar(value="Idle")
+
         self.api_status_var = tk.StringVar(value="Status: Waiting")
         self.api_time_var = tk.StringVar(value="Time: —")
         self.api_type_var = tk.StringVar(value="Type: —")
@@ -227,10 +230,14 @@ class APIAnalysisWindow(tk.Toplevel):
         ).pack(side="left", padx=(6, 0))
 
         ttk.Label(frm, text="URL:").grid(row=2, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.url_var, width=112).grid(row=2, column=1, columnspan=3, sticky="we", padx=6)
+        ttk.Entry(frm, textvariable=self.url_var, width=112).grid(
+            row=2, column=1, columnspan=3, sticky="we", padx=6
+        )
 
         ttk.Label(frm, text="Upload file:").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.file_path_var, width=92).grid(row=3, column=1, sticky="we", padx=6)
+        ttk.Entry(frm, textvariable=self.file_path_var, width=92).grid(
+            row=3, column=1, sticky="we", padx=6
+        )
         ttk.Button(
             frm,
             text="Browse...",
@@ -241,12 +248,19 @@ class APIAnalysisWindow(tk.Toplevel):
         field_wrap = ttk.Frame(frm)
         field_wrap.grid(row=3, column=3, sticky="w")
         ttk.Label(field_wrap, text="Field:").pack(side="left")
-        ttk.Entry(field_wrap, textvariable=self.file_field_var, width=10).pack(side="left", padx=(6, 0))
+        ttk.Entry(field_wrap, textvariable=self.file_field_var, width=10).pack(
+            side="left", padx=(6, 0)
+        )
 
         hints = ttk.LabelFrame(frm, text="Preset Notes")
         hints.grid(row=4, column=0, columnspan=4, sticky="we", pady=(8, 0))
         hints.columnconfigure(0, weight=1)
-        ttk.Label(hints, textvariable=self.notes_var, wraplength=1200, justify="left").grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        ttk.Label(
+            hints,
+            textvariable=self.notes_var,
+            wraplength=1200,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
 
         req_wrap = ttk.LabelFrame(frm, text="Request")
         req_wrap.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
@@ -258,21 +272,37 @@ class APIAnalysisWindow(tk.Toplevel):
         ttk.Label(req_wrap, text="Body / form fields (JSON or raw text):").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 4))
 
         self.headers_text = tk.Text(
-            req_wrap, wrap="none", height=10,
-            bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff",
-            selectbackground="#1f6fff", selectforeground="white",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#2a4365", highlightcolor="#3d86ff",
+            req_wrap,
+            wrap="none",
+            height=10,
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
             font=("Consolas", 10),
         )
         self.headers_text.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
 
         self.body_text = tk.Text(
-            req_wrap, wrap="none", height=10,
-            bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff",
-            selectbackground="#1f6fff", selectforeground="white",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#2a4365", highlightcolor="#3d86ff",
+            req_wrap,
+            wrap="none",
+            height=10,
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
             font=("Consolas", 10),
         )
         self.body_text.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=(0, 8))
@@ -280,14 +310,48 @@ class APIAnalysisWindow(tk.Toplevel):
         actions = ttk.Frame(frm)
         actions.grid(row=6, column=0, columnspan=4, sticky="we", pady=(8, 0))
 
-        self.send_btn = ttk.Button(actions, text="Send Request", style="Action.TButton", width=14, command=self._start_request)
+        self.send_btn = ttk.Button(
+            actions,
+            text="Send Request",
+            style="Action.TButton",
+            width=14,
+            command=self._start_request,
+        )
         self.send_btn.pack(side="left", padx=(0, 8), pady=4)
 
-        ttk.Button(actions, text="Clear", style="Action.TButton", width=10, command=self._clear_fields).pack(side="left", padx=6, pady=4)
-        ttk.Button(actions, text="Save HTML Report", style="Action.TButton", width=16, command=self._save_current_html_report).pack(side="left", padx=6, pady=4)
-        ttk.Button(actions, text="Open HTML Report", style="Action.TButton", width=16, command=self._open_latest_html).pack(side="left", padx=6, pady=4)
-        self.copy_btn = ttk.Button(actions, text="Copy Response", style="Action.TButton", width=14, command=self._copy_response)
+        ttk.Button(
+            actions,
+            text="Clear",
+            style="Action.TButton",
+            width=10,
+            command=self._clear_fields,
+        ).pack(side="left", padx=6, pady=4)
+
+        ttk.Button(
+            actions,
+            text="Save HTML Report",
+            style="Action.TButton",
+            width=16,
+            command=self._save_current_html_report,
+        ).pack(side="left", padx=6, pady=4)
+
+        ttk.Button(
+            actions,
+            text="Open HTML Report",
+            style="Action.TButton",
+            width=16,
+            command=self._open_latest_html,
+        ).pack(side="left", padx=6, pady=4)
+
+        self.copy_btn = ttk.Button(
+            actions,
+            text="Copy Response",
+            style="Action.TButton",
+            width=14,
+            command=self._copy_response,
+        )
         self.copy_btn.pack(side="left", padx=6, pady=4)
+
         ttk.Label(actions, textvariable=self.status_var).pack(side="right")
 
         out_wrap = ttk.LabelFrame(frm, text="Response")
@@ -318,33 +382,54 @@ class APIAnalysisWindow(tk.Toplevel):
         self.response_tabs.add(raw_tab, text="Raw")
 
         self.body_output = tk.Text(
-            body_tab, wrap="none",
-            bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff",
-            selectbackground="#1f6fff", selectforeground="white",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#2a4365", highlightcolor="#3d86ff",
+            body_tab,
+            wrap="none",
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
             font=("Consolas", 10),
         )
         self.body_output.grid(row=0, column=0, sticky="nsew")
         self.body_output.configure(state="disabled")
 
         self.headers_output = tk.Text(
-            headers_tab, wrap="none",
-            bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff",
-            selectbackground="#1f6fff", selectforeground="white",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#2a4365", highlightcolor="#3d86ff",
+            headers_tab,
+            wrap="none",
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
             font=("Consolas", 10),
         )
         self.headers_output.grid(row=0, column=0, sticky="nsew")
         self.headers_output.configure(state="disabled")
 
         self.raw_output = tk.Text(
-            raw_tab, wrap="none",
-            bg="#0d1b33", fg="#eaf2ff", insertbackground="#eaf2ff",
-            selectbackground="#1f6fff", selectforeground="white",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#2a4365", highlightcolor="#3d86ff",
+            raw_tab,
+            wrap="none",
+            bg="#0d1b33",
+            fg="#eaf2ff",
+            insertbackground="#eaf2ff",
+            selectbackground="#1f6fff",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#2a4365",
+            highlightcolor="#3d86ff",
             font=("Consolas", 10),
         )
         self.raw_output.grid(row=0, column=0, sticky="nsew")
@@ -354,17 +439,21 @@ class APIAnalysisWindow(tk.Toplevel):
         preset = self.preset_var.get().strip() or "Custom"
         presets = self._preset_map()
         data = presets.get(preset, presets["Custom"])
+
         self.method_var.set(data["method"])
         self.url_var.set(data["url"])
         self.file_path_var.set(data.get("file_path", ""))
         self.file_field_var.set(data.get("file_field", "file"))
+
         self.headers_text.delete("1.0", "end")
         self.body_text.delete("1.0", "end")
+
         self.headers_text.insert("1.0", json.dumps(data["headers"], indent=2))
         if isinstance(data["body"], (dict, list)):
             self.body_text.insert("1.0", json.dumps(data["body"], indent=2))
         else:
             self.body_text.insert("1.0", str(data["body"]))
+
         self.notes_var.set(data["notes"])
         if not initial:
             self.status_var.set(f"Loaded preset: {preset}")
@@ -720,10 +809,24 @@ class APIAnalysisWindow(tk.Toplevel):
         self.worker_thread.start()
 
     def _manual_report_dir(self) -> Path:
-        base = Path.cwd() / "reports" / "manual_api"
-        base.mkdir(parents=True, exist_ok=True)
-        self.last_api_dir = base
-        return base
+        project_root = Path(__file__).resolve().parents[1]
+
+        case_root = (
+            Path(self.app.case_root_var.get().strip())
+            if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
+            else (project_root / "cases")
+        )
+        case_root.mkdir(parents=True, exist_ok=True)
+
+        case_name = self.app.case_var.get().strip() if hasattr(self.app, "case_var") else ""
+        if not case_name:
+            sample = self.app.sample_var.get().strip() if hasattr(self.app, "sample_var") else ""
+            case_name = Path(sample).stem[:64] if sample else "manual_api_case"
+
+        report_dir = case_root / case_name / "api"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        self.last_api_dir = report_dir
+        return report_dir
 
     def _save_current_html_report(self):
         if not self.last_response_payload:
@@ -734,19 +837,21 @@ class APIAnalysisWindow(tk.Toplevel):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         html_path = report_dir / f"manual_api_report_{ts}.html"
         json_path = report_dir / f"manual_api_report_{ts}.json"
+        latest_html = report_dir / "manual_api_latest.html"
+        latest_json = report_dir / "manual_api_latest.json"
 
         payload = self.last_response_payload
         req = payload.get("request", {}) if isinstance(payload.get("request"), dict) else {}
         resp = payload.get("response", {}) if isinstance(payload.get("response"), dict) else {}
         headers = resp.get("headers", {}) if isinstance(resp.get("headers"), dict) else {}
         body_text = resp.get("display_body") or resp.get("body_text", "") or ""
-        
+
         pretty_body = body_text
         try:
             pretty_body = json.dumps(json.loads(body_text), indent=2)
         except Exception:
             pretty_body = body_text
-            
+
         status_code = str(resp.get("status_code", "") or "")
         reason = str(resp.get("reason", "") or "")
         saved_at = str(payload.get("saved_at", "") or "")
@@ -848,14 +953,16 @@ class APIAnalysisWindow(tk.Toplevel):
 
         html_path.write_text(html_doc, encoding="utf-8")
         json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        latest_html.write_text(html_doc, encoding="utf-8")
+        latest_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-        self.last_html_report = html_path
-        self.last_json_report = json_path
-        self.status_var.set(f"Saved report: {html_path.name}")
-        messagebox.showinfo("Manual API Tester", f"Report saved:\n\n{html_path}", parent=self)
+        self.last_html_report = latest_html
+        self.last_json_report = latest_json
+        self.status_var.set(f"Saved report: {latest_html.name}")
+        messagebox.showinfo("Manual API Tester", f"Report saved:\n\n{latest_html}", parent=self)
 
     def _open_latest_html(self):
-        if not self.last_response_payload:
+        if not self.last_response_payload and (not self.last_html_report or not self.last_html_report.exists()):
             messagebox.showinfo("Manual API Tester", "Run a request first.", parent=self)
             return
 

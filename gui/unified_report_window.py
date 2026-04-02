@@ -18,7 +18,7 @@ class UnifiedReportWindow(tk.Toplevel):
         super().__init__(parent)
         self.parent = parent
 
-        self.title("Unified Report TEST NEW BUILD")
+        self.title("Unified RingForge Report")
         self.geometry("1180x820+150+100")
         self.minsize(980, 720)
         self.configure(bg="#05070B")
@@ -147,10 +147,7 @@ class UnifiedReportWindow(tk.Toplevel):
         widget.configure(state="disabled")
 
     def _browse_case_dir(self):
-        path = filedialog.askdirectory(
-            title="Select case or report folder",
-            parent=self,
-        )
+        path = filedialog.askdirectory(title="Select case or report folder", parent=self)
         if path:
             self.case_path_var.set(path)
         self._bring_to_front()
@@ -176,28 +173,28 @@ class UnifiedReportWindow(tk.Toplevel):
     def _detect_artifacts(self, case_dir: Path) -> dict:
         checks = {
             "Static Analysis": [
-                case_dir / "static_analysis.json",
-                case_dir / "triage_summary.json",
+                case_dir / "report.json",
+                case_dir / "summary.json",
+                case_dir / "metadata" / "run_summary.json",
                 case_dir / "yara_results.json",
                 case_dir / "reports" / "report.html",
                 case_dir / "reports" / "static_report.html",
             ],
             "Dynamic Analysis": [
-                case_dir / "dynamic_findings.json",
+                case_dir / "metadata" / "dynamic_run_summary.json",
                 case_dir / "reports" / "dynamic_findings.json",
-                case_dir / "interesting_events.json",
                 case_dir / "files" / "dropped_files_summary.json",
-                case_dir / "persistence" / "tasks_diff.json",
-                case_dir / "persistence" / "services_diff.json",
+                case_dir / "reports" / "dynamic_report.html",
             ],
-            "API Analysis": [
-                case_dir / "api_analysis.json",
-                case_dir / "reports" / "api_analysis.json",
-                case_dir / "manual_api_results.json",
+            "Manual API Tester": [
+                case_dir / "api" / "manual_api_latest.json",
+                case_dir / "api" / "manual_api_latest.html",
             ],
             "Spec Analysis": [
-                case_dir / "api_spec_analysis.json",
+                case_dir / "spec" / "spec_inventory_latest.json",
+                case_dir / "spec" / "spec_inventory_latest.html",
                 case_dir / "spec" / "api_spec_analysis.json",
+                case_dir / "api_spec_analysis.json",
                 case_dir / "reports" / "api_spec_analysis.json",
             ],
             "Browser Extension Analysis": [
@@ -227,7 +224,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
         static_paths = self.detected_artifacts.get("Static Analysis", {}).get("paths", [])
         dynamic_paths = self.detected_artifacts.get("Dynamic Analysis", {}).get("paths", [])
-        api_paths = self.detected_artifacts.get("API Analysis", {}).get("paths", [])
+        api_paths = self.detected_artifacts.get("Manual API Tester", {}).get("paths", [])
         spec_paths = self.detected_artifacts.get("Spec Analysis", {}).get("paths", [])
         extension_paths = self.detected_artifacts.get("Browser Extension Analysis", {}).get("paths", [])
 
@@ -235,6 +232,13 @@ class UnifiedReportWindow(tk.Toplevel):
             data = self._load_json_if_exists(p)
             if not isinstance(data, dict):
                 continue
+
+            if "score" in data:
+                findings["static"].append(f"Score: {data['score']}")
+            if "verdict" in data:
+                findings["static"].append(f"Verdict: {data['verdict']}")
+            if "confidence" in data:
+                findings["static"].append(f"Confidence: {data['confidence']}")
 
             if "sample_path" in data:
                 findings["static"].append(f"Sample: {Path(str(data['sample_path'])).name}")
@@ -271,13 +275,21 @@ class UnifiedReportWindow(tk.Toplevel):
             if not isinstance(data, dict):
                 continue
 
-            if not any(k in data for k in ("highlights", "spawned_processes", "counts")):
+            if "score" in data:
+                findings["dynamic"].append(f"Score: {data['score']}")
+            if "severity" in data:
+                findings["dynamic"].append(f"Severity: {data['severity']}")
+            if "verdict" in data:
+                findings["dynamic"].append(f"Verdict: {data['verdict']}")
+
+            source = data.get("findings", data)
+            if not any(k in source for k in ("highlights", "spawned_processes", "counts")):
                 continue
 
-            spawned = data.get("spawned_processes", [])
+            spawned = source.get("spawned_processes", [])
             spawned_count = len(spawned) if isinstance(spawned, list) else 0
 
-            highlights = data.get("highlights", [])
+            highlights = source.get("highlights", [])
             if isinstance(highlights, list):
                 for x in highlights[:10]:
                     text = str(x).strip()
@@ -301,7 +313,7 @@ class UnifiedReportWindow(tk.Toplevel):
                 if preview:
                     findings["dynamic"].append("Spawned process names: " + ", ".join(preview))
 
-            counts = data.get("counts", {})
+            counts = source.get("counts", {})
             if isinstance(counts, dict):
                 if "interesting_events" in counts:
                     findings["dynamic"].append(f"Interesting events: {counts['interesting_events']}")
@@ -314,14 +326,6 @@ class UnifiedReportWindow(tk.Toplevel):
                 if "persistence_hits" in counts:
                     findings["dynamic"].append(f"Persistence hits: {counts['persistence_hits']}")
 
-            suspicious = data.get("suspicious_path_hits", [])
-            if isinstance(suspicious, list) and suspicious:
-                findings["dynamic"].append(f"Suspicious path hits: {len(suspicious)}")
-
-            persistence = data.get("persistence_hits", [])
-            if isinstance(persistence, list) and persistence:
-                findings["dynamic"].append(f"Persistence indicators: {len(persistence)}")
-
             break
 
         for p in api_paths:
@@ -329,39 +333,30 @@ class UnifiedReportWindow(tk.Toplevel):
             if not isinstance(data, dict):
                 continue
 
-            if "returncode" in data:
-                findings["api"].append(f"Return code: {data['returncode']}")
+            req = data.get("request", {}) if isinstance(data.get("request"), dict) else {}
+            resp = data.get("response", {}) if isinstance(data.get("response"), dict) else {}
 
-            summary = data.get("summary", {})
-            if isinstance(summary, dict):
-                if "dll_count" in summary:
-                    findings["api"].append(f"DLL count: {summary['dll_count']}")
-                if "import_count" in summary:
-                    findings["api"].append(f"Import count: {summary['import_count']}")
-                if "category_count" in summary:
-                    findings["api"].append(f"Behavior categories: {summary['category_count']}")
-                if "high_severity_chain_count" in summary:
-                    findings["api"].append(f"High severity chains: {summary['high_severity_chain_count']}")
-
-            category_hits = data.get("category_hits", {})
-            if isinstance(category_hits, dict) and category_hits:
-                findings["api"].append("Categories hit: " + ", ".join(category_hits.keys()))
-
-            chain_findings = data.get("chain_findings", [])
-            if isinstance(chain_findings, list) and chain_findings:
-                for item in chain_findings[:5]:
-                    if isinstance(item, dict):
-                        name = item.get("name", "unknown")
-                        sev = item.get("severity", "unknown")
-                        findings["api"].append(f"Chain finding: {name} ({sev})")
-
-            if data.get("error"):
-                findings["api"].append(f"API analysis error: {data['error']}")
+            if "method" in req:
+                findings["api"].append(f"Method: {req['method']}")
+            if "url" in req:
+                findings["api"].append(f"URL: {req['url']}")
+            if "status_code" in resp:
+                findings["api"].append(f"HTTP status: {resp['status_code']}")
+            if "reason" in resp and resp.get("reason"):
+                findings["api"].append(f"Reason: {resp['reason']}")
+            break
 
         for p in spec_paths:
             data = self._load_json_if_exists(p)
             if not isinstance(data, dict):
                 continue
+
+            if "score" in data:
+                findings["spec"].append(f"Score: {data['score']}")
+            if "verdict" in data:
+                findings["spec"].append(f"Verdict: {data['verdict']}")
+            if "confidence" in data:
+                findings["spec"].append(f"Confidence: {data['confidence']}")
 
             summary = data.get("summary", {})
             if isinstance(summary, dict) and "endpoint_count" in summary:
@@ -373,6 +368,7 @@ class UnifiedReportWindow(tk.Toplevel):
             detections = data.get("detections", [])
             if isinstance(detections, list):
                 findings["spec"].append(f"Spec detections: {len(detections)}")
+            break
 
         for p in extension_paths:
             path = Path(p)
@@ -389,6 +385,7 @@ class UnifiedReportWindow(tk.Toplevel):
                         findings["extension"].append(f"Extension verdict: {summary.get('risk_verdict', '-')}")
                         findings["extension"].append(f"Extension risk score: {summary.get('risk_score', '0')}")
                         findings["extension"].append(f"Files found: {summary.get('files_found', '0')}")
+                        break
             else:
                 data = self._load_json_if_exists(str(path))
                 if isinstance(data, dict):
@@ -410,26 +407,28 @@ class UnifiedReportWindow(tk.Toplevel):
         return findings
 
     def _derive_overall_verdict(self, artifacts: dict) -> str:
+        dynamic_summary = self._load_json_if_exists(str(self.case_dir / "metadata" / "dynamic_run_summary.json")) if self.case_dir else None
+        static_summary = self._load_json_if_exists(str(self.case_dir / "report.json")) if self.case_dir else None
+        if not isinstance(static_summary, dict) and self.case_dir:
+            static_summary = self._load_json_if_exists(str(self.case_dir / "summary.json"))
+
+        if isinstance(dynamic_summary, dict) and dynamic_summary.get("verdict"):
+            return str(dynamic_summary.get("verdict"))
+
+        if isinstance(static_summary, dict) and static_summary.get("verdict"):
+            return str(static_summary.get("verdict"))
+
         findings = self._build_detailed_findings()
+        joined = " ".join(" ".join(items).lower() for items in findings.values() if isinstance(items, list))
 
-        joined = " ".join(
-            " ".join(items).lower()
-            for items in findings.values()
-            if isinstance(items, list)
-        )
-
-        if "high severity chains" in joined and "high severity chains: 0" not in joined:
+        if "elevated attention" in joined or "high risk" in joined:
             return "High Risk"
-
-        if "chain finding:" in joined or "persistence" in joined:
+        if "needs review" in joined or "moderate risk" in joined or "persistence" in joined:
             return "Moderate Risk"
-
-        if "yara produced no matches" in joined and "network events: 0" in joined:
-            return "Low Activity"
+        if "benign / clean baseline" in joined or "low suspicion" in joined:
+            return "Low Risk"
 
         count = sum(1 for meta in artifacts.values() if meta.get("found"))
-        if count >= 4:
-            return "High Activity"
         if count >= 2:
             return "Moderate Activity"
         if count >= 1:
@@ -471,7 +470,7 @@ class UnifiedReportWindow(tk.Toplevel):
         module_map = {
             "Static Analysis": "static",
             "Dynamic Analysis": "dynamic",
-            "API Analysis": "api",
+            "Manual API Tester": "api",
             "Spec Analysis": "spec",
             "Browser Extension Analysis": "extension",
         }
@@ -500,10 +499,27 @@ class UnifiedReportWindow(tk.Toplevel):
 
         findings = self._build_detailed_findings()
 
+        static_summary = self._load_json_if_exists(str(self.case_dir / "report.json"))
+        if not isinstance(static_summary, dict):
+            static_summary = self._load_json_if_exists(str(self.case_dir / "summary.json"))
+
+        dynamic_summary = self._load_json_if_exists(str(self.case_dir / "metadata" / "dynamic_run_summary.json"))
+
+        spec_summary = self._load_json_if_exists(str(self.case_dir / "spec" / "spec_inventory_latest.json"))
+        if not isinstance(spec_summary, dict):
+            spec_summary = self._load_json_if_exists(str(self.case_dir / "api_spec_analysis.json"))
+
+        static_score = static_summary.get("score") if isinstance(static_summary, dict) else None
+        dynamic_score = dynamic_summary.get("score") if isinstance(dynamic_summary, dict) else None
+        spec_score = spec_summary.get("score") if isinstance(spec_summary, dict) else None
+
         data = {
             "case_name": self.case_dir.name,
             "case_path": str(self.case_dir),
             "overall_verdict": self._derive_overall_verdict(self.detected_artifacts),
+            "static_score": static_score,
+            "dynamic_score": dynamic_score,
+            "spec_score": spec_score,
             "modules": self.detected_artifacts,
             "findings": findings,
         }
@@ -538,8 +554,14 @@ class UnifiedReportWindow(tk.Toplevel):
         case_name = html.escape(str(data.get("case_name", "-")))
         case_path = html.escape(str(data.get("case_path", "-")))
         overall_verdict = html.escape(str(data.get("overall_verdict", "-")))
+        static_score = data.get("static_score")
+        dynamic_score = data.get("dynamic_score")
+        spec_score = data.get("spec_score")
         modules = data.get("modules", {}) or {}
         findings = data.get("findings", {}) or {}
+
+        def fmt_score(value):
+            return "-" if value is None else html.escape(str(value))
 
         def list_section(title: str, items: list[str]) -> str:
             body = "<ul>" + "".join(f"<li>{html.escape(str(x))}</li>" for x in items) + "</ul>" if items else "<p>-</p>"
@@ -656,6 +678,9 @@ li {{
     <table>
       <tr><th>Case Name</th><td>{case_name}</td></tr>
       <tr><th>Case Path</th><td>{case_path}</td></tr>
+      <tr><th>Static Score</th><td>{fmt_score(static_score)}</td></tr>
+      <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score)}</td></tr>
+      <tr><th>Spec Score</th><td>{fmt_score(spec_score)}</td></tr>
       <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
     </table>
   </section>
@@ -674,7 +699,7 @@ li {{
 
   {list_section("Static Analysis Summary", findings.get("static", []))}
   {list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
-  {list_section("API Analysis Summary", findings.get("api", []))}
+  {list_section("Manual API Tester Summary", findings.get("api", []))}
   {list_section("Spec Analysis Summary", findings.get("spec", []))}
   {list_section("Browser Extension Analysis Summary", findings.get("extension", []))}
 

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import json
-import os
 import queue
-import subprocess
-import sys
 import threading
-import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -21,11 +16,20 @@ from gui.dynamic_window import DynamicAnalysisWindow
 from gui.spec_window import SpecAnalysisWindow
 from gui.styles import apply_app_theme
 from gui.gui_utils import (
-    ROOT, DEFAULT_CASE_ROOT, DEFAULT_RULES_DIR, DEFAULT_SIGS_DIR, CLI_SCRIPT,
-    STEP_DISPLAY_ORDER, STEP_LABELS,
-    PRESETS, norm_path_str, normalize_rules_dir,
-    looks_like_rules_dir, looks_like_sigs_dir,
-    load_config, save_config,
+    ROOT,
+    DEFAULT_CASE_ROOT,
+    DEFAULT_RULES_DIR,
+    DEFAULT_SIGS_DIR,
+    CLI_SCRIPT,
+    STEP_DISPLAY_ORDER,
+    STEP_LABELS,
+    PRESETS,
+    norm_path_str,
+    normalize_rules_dir,
+    looks_like_rules_dir,
+    looks_like_sigs_dir,
+    load_config,
+    save_config,
 )
 from gui.main_sections import (
     build_bottom_actions,
@@ -49,42 +53,51 @@ class App(tk.Tk):
             self.rowconfigure(0, weight=1)
             self.columnconfigure(0, weight=1)
 
-            self.combined_verdict_var = tk.StringVar(value="-")
-            self.combined_confidence_var = tk.StringVar(value="-")
-
             self.cfg = load_config()
 
             self.sample_var = tk.StringVar(value=self.cfg.get("sample_path", ""))
             self.case_var = tk.StringVar(value=self.cfg.get("case_name", ""))
             self.preset_var = tk.StringVar(value=self.cfg.get("preset", PRESETS[1].name))
 
-            self.case_root_var = tk.StringVar(value=self.cfg.get("case_root_dir", str(DEFAULT_CASE_ROOT)))
-            self.rules_var = tk.StringVar(value=self.cfg.get("capa_rules_dir", str(DEFAULT_RULES_DIR)))
-            self.sigs_var = tk.StringVar(value=self.cfg.get("capa_sigs_dir", str(DEFAULT_SIGS_DIR)))
+            self.case_root_var = tk.StringVar(
+                value=self.cfg.get("case_root_dir", str(DEFAULT_CASE_ROOT))
+            )
+            self.rules_var = tk.StringVar(
+                value=self.cfg.get("capa_rules_dir", str(DEFAULT_RULES_DIR))
+            )
+            self.sigs_var = tk.StringVar(
+                value=self.cfg.get("capa_sigs_dir", str(DEFAULT_SIGS_DIR))
+            )
             self.vt_api_key_var = tk.StringVar(value=self.cfg.get("vt_api_key", ""))
 
             self.adv_enabled_var = tk.BooleanVar(value=self.cfg.get("adv_enabled", False))
             self.extract_var = tk.BooleanVar(value=self.cfg.get("extract", True))
             self.subfiles_var = tk.BooleanVar(value=self.cfg.get("subfiles", True))
-            self.subfile_limit_var = tk.IntVar(value=int(self.cfg.get("subfile_limit", 25)))
-            self.strings_lite_var = tk.BooleanVar(value=self.cfg.get("strings_lite", False))
+            self.subfile_limit_var = tk.IntVar(
+                value=int(self.cfg.get("subfile_limit", 25))
+            )
+            self.strings_lite_var = tk.BooleanVar(
+                value=self.cfg.get("strings_lite", False)
+            )
             self.no_strings_var = tk.BooleanVar(value=self.cfg.get("no_strings", False))
 
             self.status_var = tk.StringVar(value="")
+            self.tools_status_var = tk.StringVar(value="")
             self.running_var = tk.StringVar(value="Idle")
 
+            # Static-window-only result fields
             self.score_var = tk.StringVar(value="-")
             self.verdict_var = tk.StringVar(value="-")
             self.confidence_var = tk.StringVar(value="-")
-            self.combined_score_var = tk.StringVar(value="-")
-            self.combined_severity_var = tk.StringVar(value="-")
-            self.static_subscore_var = tk.StringVar(value="-")
-            self.dynamic_subscore_var = tk.StringVar(value="-")
-            self.spec_subscore_var = tk.StringVar(value="-")
+
+            # VirusTotal fields
             self.vt_status_var = tk.StringVar(value="VirusTotal: disabled")
             self.vt_name_var = tk.StringVar(value="VT Name: -")
-            self.vt_counts_var = tk.StringVar(value="Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
+            self.vt_counts_var = tk.StringVar(
+                value="Counts: mal=0 | susp=0 | harmless=0 | undetected=0"
+            )
             self.vt_link = ""
+
             self.brand_logo_img = None
 
             self.open_case_btn = None
@@ -93,10 +106,11 @@ class App(tk.Tk):
             self.dynamic_window = None
             self.spec_window = None
             self.api_window = None
+
+            # Keep latest module results for other windows / unified report usage
             self.latest_static_result = {}
             self.latest_dynamic_result = {}
             self.latest_spec_result = {}
-            self.latest_combined_score = None
 
             self.output_q = queue.Queue()
             self.worker_thread = None
@@ -116,7 +130,9 @@ class App(tk.Tk):
 
             self._apply_preset_if_needed()
             self._refresh_path_status()
-            self.vt_api_key_var.trace_add("write", lambda *_: self._refresh_path_status())
+            self.vt_api_key_var.trace_add(
+                "write", lambda *_: self._refresh_path_status()
+            )
             self._reset_progress()
             self._reset_result_summary()
 
@@ -156,7 +172,6 @@ class App(tk.Tk):
         accent = "#2F6BFF"
         text_main = "#F7FAFF"
         text_soft = "#B8C7E6"
-        text_muted = "#8FA9DA"
 
         banner = tk.Frame(
             banner_wrap,
@@ -166,7 +181,6 @@ class App(tk.Tk):
             highlightcolor=border,
         )
         banner.pack(fill="x")
-
         banner.columnconfigure(1, weight=1)
 
         logo_path = ROOT / "assets" / "anvil.png"
@@ -183,7 +197,9 @@ class App(tk.Tk):
                 bd=0,
                 highlightthickness=0,
             )
-            logo_label.grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+            logo_label.grid(
+                row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
+            )
         else:
             logo_label = tk.Label(
                 banner,
@@ -194,7 +210,9 @@ class App(tk.Tk):
                 bd=0,
                 highlightthickness=0,
             )
-            logo_label.grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+            logo_label.grid(
+                row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
+            )
 
         tk.Label(
             banner,
@@ -233,7 +251,10 @@ class App(tk.Tk):
         self.spec_window = SpecAnalysisWindow(self)
         self.spec_window.protocol(
             "WM_DELETE_WINDOW",
-            lambda win=self.spec_window: (win.destroy(), setattr(self, "spec_window", None)),
+            lambda win=self.spec_window: (
+                win.destroy(),
+                setattr(self, "spec_window", None),
+            ),
         )
 
     def open_api_analysis_window(self):
@@ -244,17 +265,14 @@ class App(tk.Tk):
         self.api_window = APIAnalysisWindow(self)
         self.api_window.protocol(
             "WM_DELETE_WINDOW",
-            lambda win=self.api_window: (win.destroy(), setattr(self, "api_window", None)),
+            lambda win=self.api_window: (
+                win.destroy(),
+                setattr(self, "api_window", None),
+            ),
         )
-
-    def reload_combined_score_from_disk(self):
-        self.result_controller.reload_combined_score_from_disk()
 
     def _reset_result_summary(self):
         self.result_controller.reset_result_summary()
-
-    def refresh_combined_score(self, case_dir: Optional[Path] = None):
-        self.result_controller.refresh_combined_score(case_dir)
 
     def _clear_vt_key(self):
         self.vt_api_key_var.set("")
@@ -311,7 +329,10 @@ class App(tk.Tk):
 
     def _browse_sample(self):
         start = Path(self.sample_var.get()).parent if self.sample_var.get() else ROOT
-        path = filedialog.askopenfilename(title="Select sample file", initialdir=str(start))
+        path = filedialog.askopenfilename(
+            title="Select sample file",
+            initialdir=str(start),
+        )
         if not path:
             return
         self.sample_var.set(norm_path_str(path))
@@ -321,7 +342,10 @@ class App(tk.Tk):
 
     def _browse_case_root(self):
         start = Path(self.case_root_var.get()) if self.case_root_var.get() else ROOT
-        chosen = filedialog.askdirectory(title="Select case output folder", initialdir=str(start))
+        chosen = filedialog.askdirectory(
+            title="Select case output folder",
+            initialdir=str(start),
+        )
         if not chosen:
             return
         self.case_root_var.set(norm_path_str(chosen))
@@ -329,7 +353,10 @@ class App(tk.Tk):
 
     def _browse_rules(self):
         start = Path(self.rules_var.get()) if self.rules_var.get() else ROOT
-        chosen = filedialog.askdirectory(title="Select capa rules folder", initialdir=str(start))
+        chosen = filedialog.askdirectory(
+            title="Select capa rules folder",
+            initialdir=str(start),
+        )
         if not chosen:
             return
         self.rules_var.set(norm_path_str(chosen))
@@ -338,7 +365,10 @@ class App(tk.Tk):
 
     def _browse_sigs(self):
         start = Path(self.sigs_var.get()) if self.sigs_var.get() else ROOT
-        chosen = filedialog.askdirectory(title="Select capa sigs folder", initialdir=str(start))
+        chosen = filedialog.askdirectory(
+            title="Select capa sigs folder",
+            initialdir=str(start),
+        )
         if not chosen:
             return
         self.sigs_var.set(norm_path_str(chosen))
@@ -420,7 +450,8 @@ class App(tk.Tk):
         rules_ok = looks_like_rules_dir(Path(self.rules_var.get().strip()))
         sigs_ok = looks_like_sigs_dir(Path(self.sigs_var.get().strip()))
         vt_set = bool(self.vt_api_key_var.get().strip())
-        self.status_var.set(
+
+        self.tools_status_var.set(
             f"Rules: {'OK' if rules_ok else 'MISSING/INVALID'} | "
             f"Sigs: {'OK' if sigs_ok else 'MISSING/INVALID'} | "
             f"VirusTotal API key: {'SET' if vt_set else 'MISSING'}"
@@ -430,16 +461,22 @@ class App(tk.Tk):
         sample = Path(self.sample_var.get().strip())
         if not sample.exists():
             raise FileNotFoundError(f"Sample not found:\n{sample}")
+
         case = self.case_var.get().strip() or sample.stem[:64]
+
         case_root = Path(self.case_root_var.get().strip())
         case_root.mkdir(parents=True, exist_ok=True)
+
         rules_raw = Path(self.rules_var.get().strip())
         sigs = Path(self.sigs_var.get().strip())
+
         if not looks_like_rules_dir(rules_raw):
             raise FileNotFoundError(f"capa rules folder invalid:\n{rules_raw}")
         rules = normalize_rules_dir(rules_raw)
+
         if not looks_like_sigs_dir(sigs):
             raise FileNotFoundError(f"capa sigs folder invalid:\n{sigs}")
+
         return sample, case, case_root, rules, sigs
 
     def _reset_progress(self):
@@ -449,11 +486,16 @@ class App(tk.Tk):
 
         for i, step_key in enumerate(STEP_DISPLAY_ORDER):
             label = STEP_LABELS.get(step_key, step_key)
-            ttk.Label(self.steps_frame, text=f"{label}:").grid(row=i, column=0, sticky="w")
+            ttk.Label(self.steps_frame, text=f"{label}:").grid(
+                row=i, column=0, sticky="w"
+            )
             bar_var = tk.IntVar(value=0)
             ttk.Progressbar(
-                self.steps_frame, orient="horizontal", mode="determinate",
-                maximum=100, variable=bar_var
+                self.steps_frame,
+                orient="horizontal",
+                mode="determinate",
+                maximum=100,
+                variable=bar_var,
             ).grid(row=i, column=1, sticky="we", padx=8)
             status = ttk.Label(self.steps_frame, text="idle")
             status.grid(row=i, column=2, sticky="w")
@@ -508,7 +550,10 @@ class App(tk.Tk):
         self.dynamic_window = DynamicAnalysisWindow(self)
         self.dynamic_window.protocol(
             "WM_DELETE_WINDOW",
-            lambda win=self.dynamic_window: (win.destroy(), setattr(self, "dynamic_window", None)),
+            lambda win=self.dynamic_window: (
+                win.destroy(),
+                setattr(self, "dynamic_window", None),
+            ),
         )
 
     def _start_analysis(self):

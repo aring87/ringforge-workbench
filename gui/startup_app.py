@@ -46,10 +46,18 @@ class StartupApp(tk.Tk):
         self.extension_window = None
         self.unified_report_window = None
         self.splash_window = None
+
         self.cfg = load_config()
         self.case_root_var = tk.StringVar(
             value=self.cfg.get("case_root_dir", str(DEFAULT_CASE_ROOT))
         )
+
+        # Compatibility fields so launcher-opened analysis windows can reuse
+        # the same context expectations as the main static app.
+        self.sample_var = tk.StringVar(value="")
+        self.case_var = tk.StringVar(value="")
+        self.case_dir_detected = None
+        self.latest_dynamic_result = None
 
         self.withdraw()
         self.after(50, self._show_splash)
@@ -99,6 +107,27 @@ class StartupApp(tk.Tk):
             messagebox.showerror("RingForge", f"Could not launch Static Analysis:\n{e}")
 
     def open_dynamic_analysis(self):
+        ctx = None
+        if self.launcher_frame is not None and self.launcher_frame.winfo_exists():
+            try:
+                ctx = self.launcher_frame.get_selected_saved_test_context()
+            except Exception:
+                ctx = None
+
+        if ctx:
+            sample_path = (ctx.get("sample_path") or "").strip()
+            test_name = (ctx.get("test_name") or "").strip()
+            case_dir = ctx.get("case_dir")
+
+            if sample_path:
+                self.sample_var.set(sample_path)
+
+            if test_name:
+                self.case_var.set(test_name)
+
+            if case_dir:
+                self.case_dir_detected = Path(case_dir)
+
         if self.dynamic_window is not None and self.dynamic_window.winfo_exists():
             self.dynamic_window.lift()
             self.dynamic_window.focus_force()

@@ -215,7 +215,7 @@ class LauncherWindow(ttk.Frame):
     def _build_row_from_summary(self, case_dir: Path, summary_path: Path, data: dict):
         analysis_type = data.get("analysis_type") or self._infer_type_from_summary_path(summary_path, data)
 
-        sample_obj = data.get("sample", {}) if isinstance(data.get("sample"), dict) else {}
+        sample_obj = data.get("sample", {})
         findings = data.get("findings", {}) if isinstance(data.get("findings"), dict) else {}
         counts = findings.get("counts", {}) if isinstance(findings.get("counts"), dict) else {}
 
@@ -228,7 +228,6 @@ class LauncherWindow(ttk.Frame):
         )
 
         if score == "-" and analysis_type == "dynamic":
-            # Optional fallback so dynamic summaries don't look empty
             score = counts.get("interesting_events", "-")
 
         completed_at = (
@@ -238,10 +237,35 @@ class LauncherWindow(ttk.Frame):
             or ""
         )
 
-        sample_path = (
-            data.get("sample_path")
-            or sample_obj.get("sample_path", "")
-        )
+        sample_path = ""
+
+        if isinstance(sample_obj, dict):
+            sample_path = (
+                data.get("sample_path")
+                or sample_obj.get("sample_path")
+                or sample_obj.get("path")
+                or sample_obj.get("target_path")
+                or ""
+            )
+        elif isinstance(sample_obj, str):
+            sample_path = data.get("sample_path") or sample_obj
+        else:
+            sample_path = data.get("sample_path") or ""
+
+        if not sample_path:
+            # fallback: use common executable names found in case folder metadata if available
+            possible = [
+                case_dir / "metadata" / "sample_path.txt",
+                case_dir / "sample_path.txt",
+            ]
+            for p in possible:
+                try:
+                    if p.exists():
+                        sample_path = p.read_text(encoding="utf-8", errors="replace").strip()
+                        if sample_path:
+                            break
+                except Exception:
+                    pass
 
         status = data.get("status")
         if not status:
@@ -259,6 +283,7 @@ class LauncherWindow(ttk.Frame):
             "status": status,
             "completed_at": completed_at,
             "sample_path": sample_path,
+            "case_dir": str(case_dir),
         }
 
     def _load_saved_tests(self):
@@ -266,10 +291,7 @@ class LauncherWindow(ttk.Frame):
         seen_rows = set()
 
         for case_root in self._get_case_roots():
-            print("[DEBUG] checking case root:", case_root)
-
             if not case_root.exists():
-                print("[DEBUG] case root missing:", case_root)
                 continue
 
             try:
@@ -278,8 +300,7 @@ class LauncherWindow(ttk.Frame):
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
-            except Exception as e:
-                print("[DEBUG] could not list case root:", case_root, e)
+            except Exception:
                 continue
 
             for case_dir in case_dirs:
@@ -305,20 +326,15 @@ class LauncherWindow(ttk.Frame):
                 else:
                     existing_paths = [p for p in legacy_paths if p.exists()]
 
-                print("[DEBUG] case:", case_dir)
-                print("[DEBUG] summaries used:", [str(p) for p in existing_paths])
-
                 for summary_path in existing_paths:
                     try:
                         data = json.loads(summary_path.read_text(encoding="utf-8", errors="replace"))
-                    except Exception as e:
-                        print("[DEBUG] failed reading summary:", summary_path, e)
+                    except Exception:
                         continue
 
                     try:
                         row = self._build_row_from_summary(case_dir, summary_path, data)
-                    except Exception as e:
-                        print("[DEBUG] failed building row:", summary_path, e)
+                    except Exception:
                         continue
 
                     row_key = (
@@ -330,7 +346,6 @@ class LauncherWindow(ttk.Frame):
                         continue
                     seen_rows.add(row_key)
 
-                    print("[DEBUG] loaded row:", row)
                     results.append(row)
 
         return results
@@ -343,9 +358,12 @@ class LauncherWindow(ttk.Frame):
             self.test_tree.delete(item)
 
         rows = self._load_saved_tests()
-        print("[DEBUG] Launcher loaded saved tests:", len(rows))
-        for row in rows:
-            print("[DEBUG] row =", row)
+
+        self.test_tree.tag_configure(
+            "visible_row",
+            background="#0d1b33",
+            foreground="#eaf2ff",
+        )
 
         for row in rows:
             self.test_tree.insert(
@@ -359,6 +377,54 @@ class LauncherWindow(ttk.Frame):
                     row["completed_at"],
                     row["sample_path"],
                 ),
+                tags=("visible_row",),
             )
 
-        print("[DEBUG] tree item count =", len(self.test_tree.get_children()))
+    def get_selected_saved_test_context(self):
+        if self.test_tree is None:
+            return None
+
+        selected = self.test_tree.selection()
+        if not selected:
+            return None
+
+        item_id = selected[0]
+        item = self.test_tree.item(item_id)
+        values = item.get("values", [])
+        if len(values) < 6:
+            return None
+
+        test_name, analysis_type, score, status, completed_at, sample_path = values
+
+        case_dir = None
+
+        # First try to resolve by test name
+        for case_root in self._get_case_roots():
+            candidate = case_root / str(test_name)
+            if candidate.exists():
+                case_dir = candidate
+                break
+
+        # Fallback: search summaries for matching row values
+        if case_dir is None:
+            for case_root in self._get_case_roots():
+                if not case_root.exists():
+                    continue
+                try:
+                    for candidate in case_root.iterdir():
+                        if not candidate.is_dir():
+                            continue
+                        if candidate.name == str(test_name):
+                            case_dir = candidate
+                            break
+                    if case_dir is not None:
+                        break
+                except Exception:
+                    pass
+
+        return {
+            "test_name": str(test_name),
+            "analysis_type": str(analysis_type),
+            "sample_path": str(sample_path).strip(),
+            "case_dir": case_dir,
+        }

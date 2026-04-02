@@ -9,13 +9,13 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
 
 from gui.api_window import APIAnalysisWindow
-from static_triage_engine.scoring import combined_score_from_case_dir
 from static_triage_engine.api_spec_analysis import analyze_api_spec as engine_analyze_api_spec
 
 
 def _safe_json_write(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
 
 class SpecAnalysisWindow(tk.Toplevel):
     def __init__(self, app: "App"):
@@ -24,13 +24,18 @@ class SpecAnalysisWindow(tk.Toplevel):
         self.title("API Spec Analysis")
         self.geometry("2030x1100")
         self.minsize(1650, 900)
+
         self.spec_path_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
-        self.summary_var = tk.StringVar(value="Load an OpenAPI or Swagger spec to analyze endpoints, authentication, and API risk indicators.")
+        self.summary_var = tk.StringVar(
+            value="Load an OpenAPI or Swagger spec to analyze endpoints, authentication, and API risk indicators."
+        )
+
         self.last_spec_dir: Optional[Path] = None
         self.last_html_report: Optional[Path] = None
         self.last_json_report: Optional[Path] = None
         self.last_result: Optional[dict[str, Any]] = None
+
         self._build_ui()
         self.transient(app)
         self.grab_set()
@@ -39,19 +44,28 @@ class SpecAnalysisWindow(tk.Toplevel):
         case_name = self.app.case_var.get().strip() if hasattr(self.app, "case_var") else ""
         if case_name:
             return case_name
+
         sample = self.app.sample_var.get().strip() if hasattr(self.app, "sample_var") else ""
         if sample:
             return Path(sample).stem[:64]
+
         return "spec_case"
 
     def _ensure_spec_dir(self) -> Path:
         project_root = Path(__file__).resolve().parents[1]
-        case_root = Path(self.app.case_root_var.get().strip()) if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip() else (project_root / "cases")
+        case_root = (
+            Path(self.app.case_root_var.get().strip())
+            if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
+            else (project_root / "cases")
+        )
         case_root.mkdir(parents=True, exist_ok=True)
+
         case_dir = case_root / self._current_case_name()
         case_dir.mkdir(parents=True, exist_ok=True)
+
         spec_dir = case_dir / "spec"
         spec_dir.mkdir(parents=True, exist_ok=True)
+
         self.last_spec_dir = spec_dir
         return spec_dir
 
@@ -63,7 +77,6 @@ class SpecAnalysisWindow(tk.Toplevel):
         frm.columnconfigure(0, weight=1)
         frm.rowconfigure(2, weight=1)
 
-        # ---------- Top command bar ----------
         top = ttk.LabelFrame(frm, text="API Spec Analysis")
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
@@ -112,16 +125,16 @@ class SpecAnalysisWindow(tk.Toplevel):
             command=self._open_manual_api_tester,
         ).pack(side="left")
 
-        # ---------- Quick metrics strip ----------
         metrics = ttk.LabelFrame(frm, text="Overview")
         metrics.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        for i in range(4):
+        for i in range(5):
             metrics.columnconfigure(i, weight=1)
 
         self.spec_format_var = tk.StringVar(value="-")
         self.spec_version_var = tk.StringVar(value="-")
         self.spec_endpoint_count_var = tk.StringVar(value="-")
         self.spec_auth_var = tk.StringVar(value="-")
+        self.spec_confidence_var = tk.StringVar(value="-")
 
         def metric_cell(parent, col, title, var):
             box = ttk.Frame(parent)
@@ -133,25 +146,22 @@ class SpecAnalysisWindow(tk.Toplevel):
         metric_cell(metrics, 1, "Version", self.spec_version_var)
         metric_cell(metrics, 2, "Endpoints", self.spec_endpoint_count_var)
         metric_cell(metrics, 3, "Auth", self.spec_auth_var)
+        metric_cell(metrics, 4, "Confidence", self.spec_confidence_var)
 
-        # ---------- Main workspace ----------
         body = ttk.Frame(frm)
         body.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         body.columnconfigure(0, weight=0, minsize=500)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        # Left pane
         left = ttk.Frame(body)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.columnconfigure(0, weight=1)
-
-        # Give the left-side content real vertical space
-        left.rowconfigure(0, weight=0)  # Summary
-        left.rowconfigure(1, weight=1)  # Risk Notes
-        left.rowconfigure(2, weight=1)  # Top Risky Endpoints
-        left.rowconfigure(3, weight=1)  # Recommended Tests
-        left.rowconfigure(4, weight=0)  # Getting Started
+        left.rowconfigure(0, weight=0)
+        left.rowconfigure(1, weight=1)
+        left.rowconfigure(2, weight=1)
+        left.rowconfigure(3, weight=1)
+        left.rowconfigure(4, weight=0)
 
         summary = ttk.LabelFrame(left, text="Summary")
         summary.grid(row=0, column=0, sticky="ew")
@@ -209,7 +219,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             font=("Consolas", 10),
         )
         self.top_risky_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        
+
         recommended = ttk.LabelFrame(left, text="Recommended Tests")
         recommended.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
         recommended.columnconfigure(0, weight=1)
@@ -252,17 +262,15 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         ttk.Label(
             empty,
-            text="Supported formats: JSON, YAML, YML"
+            text="Supported formats: JSON, YAML, YML",
         ).grid(row=2, column=0, sticky="w", padx=10, pady=(8, 10))
 
-        # Right pane
         right = ttk.LabelFrame(body, text="Endpoint Inventory")
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
         right.rowconfigure(1, weight=0)
 
-        # table wrapper
         table_wrap = ttk.Frame(right)
         table_wrap.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         table_wrap.columnconfigure(0, weight=1)
@@ -312,12 +320,8 @@ class SpecAnalysisWindow(tk.Toplevel):
         xsb = ttk.Scrollbar(right, orient="horizontal", command=self.tree.xview)
         xsb.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
 
-        self.tree.configure(
-            yscrollcommand=ysb.set,
-            xscrollcommand=xsb.set,
-        )
+        self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
 
-        # ---------- Status row ----------
         status_row = ttk.Frame(frm)
         status_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(status_row, textvariable=self.status_var).pack(side="right", padx=(12, 0), pady=2)
@@ -325,10 +329,14 @@ class SpecAnalysisWindow(tk.Toplevel):
     def _browse_spec(self):
         project_root = Path(__file__).resolve().parents[1]
         start = Path(self.spec_path_var.get()).parent if self.spec_path_var.get().strip() else project_root
-        chosen = filedialog.askopenfilename(title="Select API spec", initialdir=str(start), filetypes=[("API Specs", "*.json *.yaml *.yml"), ("All Files", "*.*")])
+        chosen = filedialog.askopenfilename(
+            title="Select API spec",
+            initialdir=str(start),
+            filetypes=[("API Specs", "*.json *.yaml *.yml"), ("All Files", "*.*")],
+        )
         if chosen:
             self.spec_path_var.set(str(Path(chosen)))
-    
+
     def _normalize_auth_name(self, name: str) -> str:
         n = (name or "").strip().lower().replace("_", "-")
 
@@ -344,7 +352,6 @@ class SpecAnalysisWindow(tk.Toplevel):
             return "none"
 
         return n
-
 
     def _format_endpoint_auth(self, ep: dict[str, Any]) -> str:
         raw = ep.get("auth_summary") or ep.get("auth") or []
@@ -377,6 +384,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         self.spec_version_var.set(result.get("version", "") or "-")
         self.spec_endpoint_count_var.set(str(summary.get("endpoint_count", 0)))
         self.spec_auth_var.set(", ".join(normalized_auth_summary) if normalized_auth_summary else "none")
+        self.spec_confidence_var.set(str(result.get("confidence", "-")))
 
         self.summary_var.set(
             f"Title: {title}\n"
@@ -387,8 +395,6 @@ class SpecAnalysisWindow(tk.Toplevel):
             f"PUT {summary.get('put_count',0)} | PATCH {summary.get('patch_count',0)} | "
             f"DELETE {summary.get('delete_count',0)}"
         )
-
-        self.notes_text.delete("1.0", "end")
 
         notes = result.get("risk_notes", []) or []
         parser_warnings = result.get("parser_warnings", []) or []
@@ -414,59 +420,57 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         self.notes_text.delete("1.0", "end")
         self.notes_text.insert("1.0", "\n\n".join(sections))
-        
-        if hasattr(self, "top_risky_text"):
-            self.top_risky_text.delete("1.0", "end")
-            top_risky = result.get("top_risky_endpoints", []) or []
 
-            if not top_risky:
-                endpoints = result.get("endpoints", []) or []
-                top_risky = sorted(
-                    [ep for ep in endpoints if ep.get("risk_level") == "high" or int(ep.get("risk_score", 0)) > 0],
-                    key=lambda ep: (-int(ep.get("risk_score", 0)), str(ep.get("path", "")), str(ep.get("method", "")))
-                )[:10]
+        self.top_risky_text.delete("1.0", "end")
+        top_risky = result.get("top_risky_endpoints", []) or []
 
-            if top_risky:
-                lines = []
-                for item in top_risky[:10]:
-                    method = item.get("method", "")
-                    path = item.get("path", "")
-                    level = item.get("risk_level", "")
-                    score = item.get("risk_score", 0)
-                    reasons = item.get("risk_reasons", []) or []
-                    if isinstance(reasons, str):
-                        reasons = [reasons]
+        if not top_risky:
+            endpoints = result.get("endpoints", []) or []
+            top_risky = sorted(
+                [ep for ep in endpoints if ep.get("risk_level") == "high" or int(ep.get("risk_score", 0)) > 0],
+                key=lambda ep: (-int(ep.get("risk_score", 0)), str(ep.get("path", "")), str(ep.get("method", ""))),
+            )[:10]
 
-                    lines.append(f"{method} {path} [{level} | score={score}]")
-                    for reason in reasons[:4]:
-                        lines.append(f"  - {reason}")
-                    lines.append("")
+        if top_risky:
+            lines = []
+            for item in top_risky[:10]:
+                method = item.get("method", "")
+                path = item.get("path", "")
+                level = item.get("risk_level", "")
+                score = item.get("risk_score", 0)
+                reasons = item.get("risk_reasons", []) or []
+                if isinstance(reasons, str):
+                    reasons = [reasons]
 
-                self.top_risky_text.insert("1.0", "\n".join(lines).strip())
-            else:
-                self.top_risky_text.insert("1.0", "No high-risk endpoints identified.")
-                
-        if hasattr(self, "recommended_tests_text"):
-            self.recommended_tests_text.delete("1.0", "end")
-            recs = result.get("recommended_tests", []) or []
+                lines.append(f"{method} {path} [{level} | score={score}]")
+                for reason in reasons[:4]:
+                    lines.append(f"  - {reason}")
+                lines.append("")
 
-            if recs:
-                lines = []
-                for item in recs[:10]:
-                    method = item.get("method", "")
-                    path = item.get("path", "")
-                    level = item.get("risk_level", "")
-                    score = item.get("risk_score", 0)
-                    tests = item.get("tests", []) or []
-                    if isinstance(tests, str):
-                        tests = [tests]
-                    lines.append(f"{method} {path} [{level} | score={score}]")
-                    for test in tests[:5]:
-                        lines.append(f"  - {test}")
-                    lines.append("")
-                self.recommended_tests_text.insert("1.0", "\n".join(lines).strip())
-            else:
-                self.recommended_tests_text.insert("1.0", "No recommended tests generated.")
+            self.top_risky_text.insert("1.0", "\n".join(lines).strip())
+        else:
+            self.top_risky_text.insert("1.0", "No high-risk endpoints identified.")
+
+        self.recommended_tests_text.delete("1.0", "end")
+        recs = result.get("recommended_tests", []) or []
+
+        if recs:
+            lines = []
+            for item in recs[:10]:
+                method = item.get("method", "")
+                path = item.get("path", "")
+                level = item.get("risk_level", "")
+                score = item.get("risk_score", 0)
+                tests = item.get("tests", []) or []
+                if isinstance(tests, str):
+                    tests = [tests]
+                lines.append(f"{method} {path} [{level} | score={score}]")
+                for test in tests[:5]:
+                    lines.append(f"  - {test}")
+                lines.append("")
+            self.recommended_tests_text.insert("1.0", "\n".join(lines).strip())
+        else:
+            self.recommended_tests_text.insert("1.0", "No recommended tests generated.")
 
         for ep in result.get("endpoints", []):
             params = ep.get("parameters", [])
@@ -495,7 +499,7 @@ class SpecAnalysisWindow(tk.Toplevel):
                 auth_txt = "required"
             else:
                 auth_txt = "none"
-                
+
             auth_source_txt = str(ep.get("auth_source", "") or "")
             if auth_source_txt == "explicit_none":
                 auth_source_txt = "public"
@@ -689,8 +693,6 @@ class SpecAnalysisWindow(tk.Toplevel):
             body_html=body_html,
         )
 
-
-
     def _save_report_files(self, result: dict[str, Any]) -> tuple[Path, Path]:
         spec_dir = self._ensure_spec_dir()
 
@@ -725,7 +727,6 @@ class SpecAnalysisWindow(tk.Toplevel):
             except Exception:
                 pass
 
-        # point buttons to the most recent named report for this spec
         self.last_json_report = latest_json
         self.last_html_report = latest_html
 
@@ -741,48 +742,58 @@ class SpecAnalysisWindow(tk.Toplevel):
             )
             self.status_var.set("Invalid spec file type")
             return
+
         result = engine_analyze_api_spec(spec_path, self._ensure_spec_dir())
-        if result.get('returncode') != 0:
-            messagebox.showerror('Spec Analysis', result.get('error', 'Unknown error'), parent=self)
-            self.status_var.set('Parse failed')
+        if result.get("returncode") != 0:
+            messagebox.showerror(
+                "Spec Analysis",
+                result.get("error", "Unknown error"),
+                parent=self,
+            )
+            self.status_var.set("Parse failed")
             return
+
         self.last_result = result
         self.app.latest_spec_result = result if isinstance(result, dict) else {}
         self._populate_result(result)
         self._save_report_files(result)
+
         project_root = Path(__file__).resolve().parents[1]
-        case_root = Path(self.app.case_root_var.get().strip()) if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip() else (project_root / "cases")
+        case_root = (
+            Path(self.app.case_root_var.get().strip())
+            if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
+            else (project_root / "cases")
+        )
         case_dir = case_root / self._current_case_name()
         self.app.case_dir_detected = case_dir
-
-        combined_score_from_case_dir(
-            case_dir,
-            dynamic_result=None,
-            spec_result=result,
-            write_output=True,
-        )
-        self.app.refresh_combined_score(case_dir)
 
         self.status_var.set(f"Parsed {result.get('summary', {}).get('endpoint_count', 0)} endpoints")
 
     def _save_html_report(self):
         if not self.last_result:
-            messagebox.showinfo('Save HTML Report', 'Parse a spec first so there is a report to save.', parent=self)
+            messagebox.showinfo(
+                "Save HTML Report",
+                "Parse a spec first so there is a report to save.",
+                parent=self,
+            )
             return
+
         _, html_path = self._save_report_files(self.last_result)
-        self.status_var.set(f'Saved HTML report: {html_path.name}')
-        messagebox.showinfo('Save HTML Report', f'Saved spec HTML report:{html_path}', parent=self)
+        self.status_var.set(f"Saved HTML report: {html_path.name}")
+        messagebox.showinfo(
+            "Save HTML Report",
+            f"Saved spec HTML report:\n{html_path}",
+            parent=self,
+        )
 
     def _open_html_report(self):
         report_path = None
 
-        # first choice: the last report generated in this window
         if getattr(self, "last_html_report", None):
             candidate = Path(self.last_html_report)
             if candidate.exists():
                 report_path = candidate
 
-        # second choice: derive the spec-specific latest report from the current spec path
         if report_path is None:
             spec_dir = self._ensure_spec_dir()
             src = Path(self.spec_path_var.get().strip())
@@ -795,7 +806,6 @@ class SpecAnalysisWindow(tk.Toplevel):
                 if candidate.exists():
                     report_path = candidate
 
-        # fallback: generic latest
         if report_path is None:
             spec_dir = self._ensure_spec_dir()
             candidate = spec_dir / "spec_inventory_latest.html"
@@ -813,9 +823,11 @@ class SpecAnalysisWindow(tk.Toplevel):
         if spec_dir is None:
             candidate = self._ensure_spec_dir()
             spec_dir = candidate if candidate.exists() else None
+
         if spec_dir is None or not spec_dir.exists():
-            messagebox.showinfo('Open Case Files', 'No spec case folder was found yet.', parent=self)
+            messagebox.showinfo("Open Case Files", "No spec case folder was found yet.", parent=self)
             return
+
         self.app._open_path(spec_dir)
 
     def _open_manual_api_tester(self):

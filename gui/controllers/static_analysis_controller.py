@@ -37,7 +37,8 @@ class StaticAnalysisController:
             meta_dir.mkdir(parents=True, exist_ok=True)
 
             score_value = app.score_var.get().strip()
-            combined_score_value = app.combined_score_var.get().strip()
+            verdict_value = app.verdict_var.get().strip()
+            confidence_value = app.confidence_var.get().strip()
 
             payload = {
                 "test_name": app.case_var.get().strip() or case_dir.name,
@@ -45,16 +46,9 @@ class StaticAnalysisController:
                 "sample_path": app.sample_var.get().strip(),
                 "completed_at": datetime.now().isoformat(timespec="seconds"),
                 "score": score_value if score_value else "-",
-                "static_score": score_value if score_value else "-",
-                "combined_score": combined_score_value if combined_score_value else (score_value if score_value else "-"),
                 "status": "completed",
-                "verdict": app.verdict_var.get().strip() or "-",
-                "confidence": app.confidence_var.get().strip() or "-",
-                "combined_verdict": app.combined_verdict_var.get().strip() or "-",
-                "combined_confidence": app.combined_confidence_var.get().strip() or "-",
-                "static_subscore": app.static_subscore_var.get().strip() or "-",
-                "dynamic_subscore": app.dynamic_subscore_var.get().strip() or "-",
-                "spec_subscore": app.spec_subscore_var.get().strip() or "-",
+                "verdict": verdict_value if verdict_value else "-",
+                "confidence": confidence_value if confidence_value else "-",
             }
 
             summary_path = meta_dir / "static_run_summary.json"
