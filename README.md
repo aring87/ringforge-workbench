@@ -48,8 +48,6 @@ RingForge now uses a simpler module-driven approach:
 
 This replaces the older model where multiple windows tried to share or refresh a combined score state.
 
----
-
 ## Static Analysis Improvements
 
 The Static Analysis window was cleaned up to follow the new per-test model.
@@ -84,8 +82,6 @@ Static summary saving was also rewritten so static runs now save only their own:
 
 This removed leftover dependencies on deleted combined-score fields.
 
----
-
 ## Dynamic Analysis Improvements
 
 Dynamic Analysis now has its own complete score pipeline.
@@ -114,8 +110,6 @@ The Dynamic Analysis window was also cleaned up for a more consistent workflow:
 - consolidated report actions into the Findings Summary area
 - added score display support directly in Findings Summary
 
----
-
 ## Spec Analysis Cleanup
 
 The Spec Analysis module was decoupled from the old combined-score refresh behavior.
@@ -129,8 +123,6 @@ It now behaves as its own independent analysis window that:
 
 This keeps Spec Analysis aligned with the new modular architecture.
 
----
-
 ## Manual API Tester
 
 The Manual API Tester remains a separate request/response-focused module.
@@ -143,8 +135,6 @@ It was kept intentionally scoreless for now, since the most meaningful output fo
 - response size
 
 This keeps the tool practical without forcing it into the same security scoring model as static or dynamic analysis.
-
----
 
 ## Unified Report Changes
 
@@ -170,8 +160,6 @@ Manual API output is now represented more clearly as:
 
 rather than being mixed into older combined-report assumptions.
 
----
-
 ## Launcher and Dynamic Analysis Integration
 
 Launcher-to-Dynamic Analysis behavior was improved so saved-test context can now flow correctly into the Dynamic Analysis window.
@@ -191,8 +179,6 @@ The **Use Main Sample** action in Dynamic Analysis was updated to fall back to l
 
 This makes the workflow more reliable when launching modules from the launcher instead of from an already-open static analysis session.
 
----
-
 ## Static Window Workflow Update
 
 The Static Analysis window layout was adjusted for a cleaner flow.
@@ -208,8 +194,6 @@ The order is now:
 
 This makes artifact-related actions feel more consistent and reduces clutter in the main run area.
 
----
-
 ## UI Cleanup Summary
 
 Additional interface cleanup included:
@@ -219,8 +203,6 @@ Additional interface cleanup included:
 - cleaner Findings Summary layout
 - better separation between run controls and report actions
 - improved consistency between launcher behavior and module windows
-
----
 
 ## Files Updated
 
@@ -239,8 +221,6 @@ Key files touched during this refactor included:
 - `gui/startup_app.py`
 - `gui/launcher.py`
 
----
-
 ## Current Direction
 
 RingForge Workbench is now moving toward a cleaner module-based architecture where:
@@ -251,6 +231,8 @@ RingForge Workbench is now moving toward a cleaner module-based architecture whe
 - UI workflows are simpler and less coupled than before
 
 This lays the groundwork for future improvements without the older combined-score dependencies across unrelated windows.
+
+---
 
 ## What’s New in v1.6
 
