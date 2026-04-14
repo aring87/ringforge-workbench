@@ -1,980 +1,932 @@
-import html
+from __future__ import annotations
+
 import json
-import mimetypes
-import queue
-import ssl
 import threading
 import time
-import tkinter as tk
-import urllib.error
-import urllib.request
-import uuid
 import webbrowser
-
-from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Optional
+from typing import Any
 
-from dynamic_analysis.report_theme import report_page
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+try:
+    from PIL import Image, ImageTk
+except Exception:
+    Image = None
+    ImageTk = None
+
+try:
+    import requests
+except Exception:
+    requests = None
 
 
 class APIAnalysisWindow(tk.Toplevel):
-    def __init__(self, app: "App"):
-        super().__init__(app)
-        self.app = app
-        self.title("Manual API Tester")
-        self.geometry("1400x980")
-        self.minsize(1200, 820)
+    PRESETS = {
+        "HTTPBin GET Test": {
+            "method": "GET",
+            "url": "https://httpbin.org/get",
+            "headers": {"User-Agent": "RingForge-Workbench/1.2"},
+            "body": "",
+            "notes": "Returns HTTP 200 with JSON showing your request details.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "HTTPBin POST JSON": {
+            "method": "POST",
+            "url": "https://httpbin.org/post",
+            "headers": {
+                "Content-Type": "application/json",
+                "User-Agent": "RingForge-Workbench/1.2",
+            },
+            "body": {"sample": "value"},
+            "notes": "Posts JSON to HTTPBin and returns the reflected payload and request metadata.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "HTTPBin PUT Test": {
+            "method": "PUT",
+            "url": "https://httpbin.org/put",
+            "headers": {
+                "Content-Type": "application/json",
+                "User-Agent": "RingForge-Workbench/1.2",
+            },
+            "body": {"sample": "value"},
+            "notes": "Sends a PUT request to HTTPBin and returns the reflected payload.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "HTTPBin PATCH Test": {
+            "method": "PATCH",
+            "url": "https://httpbin.org/patch",
+            "headers": {
+                "Content-Type": "application/json",
+                "User-Agent": "RingForge-Workbench/1.2",
+            },
+            "body": {"sample": "value"},
+            "notes": "Sends a PATCH request to HTTPBin and returns the reflected payload.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "HTTPBin DELETE Test": {
+            "method": "DELETE",
+            "url": "https://httpbin.org/delete",
+            "headers": {"User-Agent": "RingForge-Workbench/1.2"},
+            "body": "",
+            "notes": "Sends a DELETE request to HTTPBin and returns request details.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "HTTPBin HEAD Test": {
+            "method": "HEAD",
+            "url": "https://httpbin.org/get",
+            "headers": {"User-Agent": "RingForge-Workbench/1.2"},
+            "body": "",
+            "notes": "Sends a HEAD request and returns headers only.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "HTTPBin OPTIONS Test": {
+            "method": "OPTIONS",
+            "url": "https://httpbin.org/get",
+            "headers": {"User-Agent": "RingForge-Workbench/1.2"},
+            "body": "",
+            "notes": "Sends an OPTIONS request to inspect supported methods.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "VirusTotal File Lookup": {
+            "method": "GET",
+            "url": "https://www.virustotal.com/api/v3/files/<sha256>",
+            "headers": {
+                "x-apikey": "<your_api_key_here>",
+                "User-Agent": "RingForge-Workbench/1.2",
+            },
+            "body": "",
+            "notes": "Looks up a file hash in VirusTotal. Replace <sha256> and provide your API key.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+        "Generic Multipart Upload": {
+            "method": "POST",
+            "url": "https://httpbin.org/post",
+            "headers": {"User-Agent": "RingForge-Workbench/1.2"},
+            "body": {"note": "test-upload"},
+            "notes": "Sends a multipart form request. Select a file and adjust the form field name if needed.",
+            "verify_ssl": True,
+            "timeout": 60,
+            "upload_file": "",
+            "file_field": "file",
+        },
+    }
 
-        self.preset_var = tk.StringVar(value="HTTPBin GET Test")
+    HTTPBIN_METHOD_URLS = {
+        "GET": "https://httpbin.org/get",
+        "POST": "https://httpbin.org/post",
+        "PUT": "https://httpbin.org/put",
+        "PATCH": "https://httpbin.org/patch",
+        "DELETE": "https://httpbin.org/delete",
+        "HEAD": "https://httpbin.org/get",
+        "OPTIONS": "https://httpbin.org/get",
+    }
+
+    def __init__(self, master: tk.Misc | None = None) -> None:
+        super().__init__(master)
+        self.title("Manual API Tester")
+        self.geometry("1560x1080")
+        self.minsize(1360, 920)
+        self.configure(bg="#05070B")
+
+        self.latest_report_path: Path | None = None
+        self.brand_logo_img = None
+        self._request_thread: threading.Thread | None = None
+
         self.method_var = tk.StringVar(value="GET")
         self.url_var = tk.StringVar(value="")
-        self.timeout_var = tk.IntVar(value=60)
-        self.verify_ssl_var = tk.BooleanVar(value=True)
-        self.file_path_var = tk.StringVar(value="")
+        self.upload_file_var = tk.StringVar(value="")
         self.file_field_var = tk.StringVar(value="file")
-        self.status_var = tk.StringVar(value="Idle")
+        self.verify_ssl_var = tk.BooleanVar(value=True)
+        self.timeout_var = tk.IntVar(value=60)
+        self.preset_var = tk.StringVar(value="HTTPBin GET Test")
 
-        self.api_status_var = tk.StringVar(value="Status: Waiting")
-        self.api_time_var = tk.StringVar(value="Time: —")
-        self.api_type_var = tk.StringVar(value="Type: —")
-        self.api_size_var = tk.StringVar(value="Size: —")
-        self.notes_var = tk.StringVar(value="")
-
-        self.last_api_dir: Optional[Path] = None
-        self.last_html_report: Optional[Path] = None
-        self.last_json_report: Optional[Path] = None
-        self.last_response_payload: Optional[dict] = None
-
-        self.output_q: "queue.Queue[object]" = queue.Queue()
-        self.worker_thread: Optional[threading.Thread] = None
-
-        self.PRESET_NAMES = list(self._preset_map().keys())
-
+        self._configure_styles()
         self._build_ui()
-        self._apply_preset(initial=True)
-        self.after(150, self._drain_output)
+        self._load_preset()
 
-        self.transient(app)
-        self.grab_set()
-
-    def _app_vt_key(self) -> str:
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self)
         try:
-            return (self.app.vt_api_key_var.get() or "").strip()
+            style.theme_use("clam")
         except Exception:
-            return ""
+            pass
 
-    def _default_headers(self) -> dict:
-        return {"User-Agent": "RingForge-Workbench/1.2"}
+        bg = "#05070B"
+        panel = "#0B1220"
+        panel_alt = "#101A2E"
+        border = "#294C8E"
+        text = "#F7FAFF"
+        muted = "#B8C7E6"
+        accent = "#2F6BFF"
+        accent_active = "#3F7BFF"
+        entry_bg = "#0D1A33"
+        tab_bg = "#14213B"
 
-    def _preset_map(self) -> dict:
-        vt_key = self._app_vt_key()
-        return {
-            "Custom": {
-                "method": "GET",
-                "url": "",
-                "headers": self._default_headers(),
-                "body": "",
-                "notes": "Custom request. Enter any URL, headers, body, and optional file upload.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "HTTPBin GET Test": {
-                "method": "GET",
-                "url": "https://httpbin.org/get",
-                "headers": self._default_headers(),
-                "body": "",
-                "notes": "Returns HTTP 200 with JSON showing your request details.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "HTTPBin POST Test": {
-                "method": "POST",
-                "url": "https://httpbin.org/post",
-                "headers": {**self._default_headers(), "Content-Type": "application/json"},
-                "body": {"sample": "whoami.exe", "test": True},
-                "notes": "Simple POST validation. Useful to confirm JSON body handling works.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "JSONPlaceholder GET Test": {
-                "method": "GET",
-                "url": "https://jsonplaceholder.typicode.com/posts/1",
-                "headers": self._default_headers(),
-                "body": "",
-                "notes": "Returns a sample JSON object for validating GET requests.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "JSONPlaceholder POST Test": {
-                "method": "POST",
-                "url": "https://jsonplaceholder.typicode.com/posts",
-                "headers": {**self._default_headers(), "Content-Type": "application/json; charset=UTF-8"},
-                "body": {
-                    "title": "RingForge test",
-                    "body": "Manual API tester validation",
-                    "userId": 1,
-                },
-                "notes": "Sends a sample JSON POST request and returns a created test object.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "Example.com Test": {
-                "method": "GET",
-                "url": "https://example.com",
-                "headers": self._default_headers(),
-                "body": "",
-                "notes": "Simple HTML page test for basic connectivity and response handling.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "VirusTotal File Lookup": {
-                "method": "GET",
-                "url": "https://www.virustotal.com/api/v3/files/<sha256>",
-                "headers": {**self._default_headers(), "x-apikey": vt_key or "<YOUR_VT_API_KEY>"},
-                "body": "",
-                "notes": "Replace <sha256> with a real SHA256. Uses your main GUI VirusTotal key if available.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "VirusTotal File Upload": {
-                "method": "POST",
-                "url": "https://www.virustotal.com/api/v3/files",
-                "headers": {**self._default_headers(), "x-apikey": vt_key or "<YOUR_VT_API_KEY>"},
-                "body": {},
-                "notes": "Choose a file to upload. Sends multipart/form-data to VirusTotal.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "AbuseIPDB Check IP": {
-                "method": "GET",
-                "url": "https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8&maxAgeInDays=90&verbose",
-                "headers": {**self._default_headers(), "Key": "<YOUR_ABUSEIPDB_KEY>", "Accept": "application/json"},
-                "body": "",
-                "notes": "Replace the IP and API key. Good for header and querystring testing.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "urlscan Search": {
-                "method": "GET",
-                "url": "https://urlscan.io/api/v1/search/?q=domain:example.com",
-                "headers": self._default_headers(),
-                "body": "",
-                "notes": "Replace example.com. Useful for testing a search-style API request.",
-                "file_path": "",
-                "file_field": "file",
-            },
-            "Shodan Host Lookup": {
-                "method": "GET",
-                "url": "https://api.shodan.io/shodan/host/8.8.8.8?key=<YOUR_SHODAN_KEY>",
-                "headers": self._default_headers(),
-                "body": "",
-                "notes": "Replace the IP and API key. Good for quick host lookup testing.",
-                "file_path": "",
-                "file_field": "file",
-            },
+        self.option_add("*TCombobox*Listbox*Background", entry_bg)
+        self.option_add("*TCombobox*Listbox*Foreground", text)
+        self.option_add("*TCombobox*Listbox*selectBackground", accent)
+        self.option_add("*TCombobox*Listbox*selectForeground", "#FFFFFF")
+
+        style.configure(".", background=bg, foreground=text)
+        style.configure("App.TFrame", background=bg)
+        style.configure("Header.TFrame", background=panel)
+        style.configure("Card.TFrame", background=panel, relief="flat", borderwidth=0)
+        style.configure("SummaryCard.TFrame", background=panel_alt, relief="flat", borderwidth=0)
+
+        style.configure("Section.TLabelframe", background=bg, foreground=text, borderwidth=1, relief="solid")
+        style.configure("Section.TLabelframe.Label", background=bg, foreground=text, font=("Segoe UI", 10, "bold"))
+
+        style.configure("Field.TLabel", background=bg, foreground="#DCE6FF", font=("Segoe UI", 10, "bold"))
+        style.configure("Muted.TLabel", background=bg, foreground=muted, font=("Segoe UI", 9))
+        style.configure("SummaryLabel.TLabel", background=panel_alt, foreground=muted, font=("Segoe UI", 9, "bold"))
+        style.configure("SummaryValue.TLabel", background=panel_alt, foreground=text, font=("Segoe UI", 11, "bold"))
+
+        style.configure(
+            "Action.TButton",
+            background=accent,
+            foreground="#FFFFFF",
+            bordercolor=accent,
+            focusthickness=0,
+            focuscolor=accent,
+            padding=(12, 7),
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Action.TButton",
+            background=[("active", accent_active), ("pressed", accent_active)],
+            foreground=[("disabled", "#A6B4D0"), ("!disabled", "#FFFFFF")],
+        )
+
+        style.configure(
+            "Secondary.TButton",
+            background=panel_alt,
+            foreground=text,
+            bordercolor=border,
+            focusthickness=0,
+            focuscolor=panel_alt,
+            padding=(10, 7),
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#16284A"), ("pressed", "#16284A")],
+            foreground=[("disabled", "#A6B4D0"), ("!disabled", text)],
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground=entry_bg,
+            foreground=text,
+            insertcolor=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            padding=6,
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=entry_bg,
+            foreground=text,
+            arrowsize=12,
+            insertcolor=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            padding=4,
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=entry_bg,
+            background=entry_bg,
+            foreground=text,
+            arrowcolor=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            padding=4,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", entry_bg)],
+            foreground=[("readonly", text)],
+            background=[("readonly", entry_bg)],
+        )
+
+        style.configure("TCheckbutton", background=bg, foreground=text, font=("Segoe UI", 10))
+        style.map("TCheckbutton", background=[("active", bg)], foreground=[("active", text)])
+
+        style.configure("TNotebook", background=bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure(
+            "TNotebook.Tab",
+            background=tab_bg,
+            foreground=text,
+            padding=(16, 9),
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", accent), ("active", "#1D3F86")],
+            foreground=[("selected", "#FFFFFF"), ("active", "#FFFFFF")],
+        )
+
+        self.colors = {
+            "bg": bg,
+            "panel": panel,
+            "panel_alt": panel_alt,
+            "border": border,
+            "text": text,
+            "muted": muted,
+            "accent": accent,
+            "entry_bg": entry_bg,
         }
 
-    def _build_ui(self):
-        pad = {"padx": 10, "pady": 8}
+    def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
 
-        frm = ttk.Frame(self)
-        frm.pack(fill="both", expand=True, **pad)
+        self._build_top_banner({"padx": 10, "pady": (8, 10)})
 
-        frm.columnconfigure(1, weight=1)
-        frm.columnconfigure(3, weight=0)
-        frm.rowconfigure(7, weight=1)
+        content = ttk.Frame(self, style="App.TFrame")
+        content.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=0)
+        content.rowconfigure(1, weight=0)
+        content.rowconfigure(2, weight=0)
+        content.rowconfigure(3, weight=1)
 
-        ttk.Label(frm, text="Preset:").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
-            frm,
-            textvariable=self.preset_var,
-            values=self.PRESET_NAMES,
-            state="readonly",
-            width=28,
-        ).grid(row=0, column=1, sticky="w", padx=6)
+        self._build_request_setup(content)
+        self._build_request_editors(content)
+        self._build_action_bar(content)
+        self._build_response_section(content)
 
-        ttk.Button(
-            frm,
-            text="Load Preset",
-            style="Side.Action.TButton",
-            command=self._apply_preset,
-        ).grid(row=0, column=2, sticky="e", padx=(6, 0))
+    def _build_top_banner(self, outer: dict[str, Any]) -> None:
+        panel_bg = "#0B1220"
+        border = "#294C8E"
+        accent = "#2F6BFF"
+        text_main = "#F7FAFF"
+        text_soft = "#B8C7E6"
 
-        ttk.Label(frm, text="Method:").grid(row=1, column=0, sticky="w")
-        ttk.Combobox(
-            frm,
-            textvariable=self.method_var,
-            values=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
-            state="readonly",
-            width=12,
-        ).grid(row=1, column=1, sticky="w", padx=6)
+        banner_wrap = ttk.Frame(self, style="App.TFrame")
+        banner_wrap.grid(row=0, column=0, sticky="ew", padx=outer.get("padx", 10), pady=outer.get("pady", (8, 10)))
+        banner_wrap.columnconfigure(0, weight=1)
 
-        options_wrap = ttk.Frame(frm)
-        options_wrap.grid(row=1, column=2, columnspan=2, sticky="e")
-        ttk.Checkbutton(
-            options_wrap,
-            text="Verify SSL",
-            variable=self.verify_ssl_var,
-            style="Dark.TCheckbutton",
-        ).pack(side="left", padx=(0, 12))
-
-        ttk.Spinbox(
-            options_wrap,
-            from_=1,
-            to=300,
-            textvariable=self.timeout_var,
-            width=8,
-            style="Dark.TSpinbox",
-        ).pack(side="left", padx=(6, 0))
-
-        ttk.Label(frm, text="URL:").grid(row=2, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.url_var, width=112).grid(
-            row=2, column=1, columnspan=3, sticky="we", padx=6
+        banner = tk.Frame(
+            banner_wrap,
+            bg=panel_bg,
+            highlightthickness=1,
+            highlightbackground=border,
+            highlightcolor=border,
         )
+        banner.grid(row=0, column=0, sticky="ew")
+        banner.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="Upload file:").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.file_path_var, width=92).grid(
-            row=3, column=1, sticky="we", padx=6
+        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        if logo_path.exists() and Image is not None and ImageTk is not None:
+            try:
+                logo_img = Image.open(logo_path).convert("RGBA")
+                logo_img = logo_img.resize((96, 96), Image.LANCZOS)
+                self.brand_logo_img = ImageTk.PhotoImage(logo_img)
+                tk.Label(banner, image=self.brand_logo_img, bg=panel_bg, bd=0, highlightthickness=0).grid(
+                    row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
+                )
+            except Exception:
+                tk.Label(banner, text="[anvil.png error]", bg=panel_bg, fg=accent, font=("Segoe UI", 10, "bold"), bd=0, highlightthickness=0).grid(
+                    row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
+                )
+        else:
+            tk.Label(banner, text="[anvil.png missing]", bg=panel_bg, fg=accent, font=("Segoe UI", 10, "bold"), bd=0, highlightthickness=0).grid(
+                row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
+            )
+
+        tk.Label(banner, text="RingForge Workbench", bg=panel_bg, fg=text_main, font=("Segoe UI", 24, "bold"), anchor="w").grid(
+            row=0, column=1, sticky="sw", pady=(16, 0)
         )
-        ttk.Button(
-            frm,
-            text="Browse...",
-            style="Side.Action.TButton",
-            command=self._browse_upload_file,
-        ).grid(row=3, column=2, sticky="w", padx=(6, 0))
-
-        field_wrap = ttk.Frame(frm)
-        field_wrap.grid(row=3, column=3, sticky="w")
-        ttk.Label(field_wrap, text="Field:").pack(side="left")
-        ttk.Entry(field_wrap, textvariable=self.file_field_var, width=10).pack(
-            side="left", padx=(6, 0)
+        tk.Label(banner, text="Manual API Tester", bg=panel_bg, fg=accent, font=("Segoe UI", 18, "bold"), anchor="w").grid(
+            row=1, column=1, sticky="nw"
         )
-
-        hints = ttk.LabelFrame(frm, text="Preset Notes")
-        hints.grid(row=4, column=0, columnspan=4, sticky="we", pady=(8, 0))
-        hints.columnconfigure(0, weight=1)
-        ttk.Label(
-            hints,
-            textvariable=self.notes_var,
-            wraplength=1200,
+        tk.Label(
+            banner,
+            text="Build requests, test endpoints, inspect responses, and export analyst-ready HTML reports.",
+            bg=panel_bg,
+            fg=text_soft,
+            font=("Segoe UI", 10),
+            anchor="w",
             justify="left",
-        ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+            wraplength=980,
+        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
 
-        req_wrap = ttk.LabelFrame(frm, text="Request")
-        req_wrap.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
-        req_wrap.columnconfigure(0, weight=1)
-        req_wrap.columnconfigure(1, weight=1)
-        req_wrap.rowconfigure(1, weight=1)
+    def _build_request_setup(self, parent: tk.Misc) -> None:
+        frame = ttk.LabelFrame(parent, text="Request Setup", style="Section.TLabelframe")
+        frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        frame.columnconfigure(0, weight=0, minsize=120)
+        frame.columnconfigure(1, weight=1)
 
-        ttk.Label(req_wrap, text="Headers (JSON):").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
-        ttk.Label(req_wrap, text="Body / form fields (JSON or raw text):").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 4))
+        label_padx = (12, 10)
+        field_padx = (0, 12)
 
-        self.headers_text = tk.Text(
-            req_wrap,
-            wrap="none",
-            height=10,
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
+        ttk.Label(frame, text="Preset", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=label_padx, pady=(10, 6))
+        preset_row = ttk.Frame(frame)
+        preset_row.grid(row=0, column=1, sticky="w", padx=field_padx, pady=(10, 6))
+
+        self.preset_combo = ttk.Combobox(
+            preset_row,
+            textvariable=self.preset_var,
+            state="readonly",
+            values=list(self.PRESETS.keys()),
+            width=28,
         )
-        self.headers_text.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
+        self.preset_combo.grid(row=0, column=0, sticky="w")
+        self.preset_combo.bind("<<ComboboxSelected>>", lambda e: self._load_preset())
 
-        self.body_text = tk.Text(
-            req_wrap,
-            wrap="none",
-            height=10,
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
-        )
-        self.body_text.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=(0, 8))
+        self.load_preset_btn = ttk.Button(preset_row, text="Load Preset", style="Action.TButton", command=self._load_preset, width=12)
+        self.load_preset_btn.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
-        actions = ttk.Frame(frm)
-        actions.grid(row=6, column=0, columnspan=4, sticky="we", pady=(8, 0))
-
-        self.send_btn = ttk.Button(
-            actions,
-            text="Send Request",
-            style="Action.TButton",
-            width=14,
-            command=self._start_request,
-        )
-        self.send_btn.pack(side="left", padx=(0, 8), pady=4)
-
-        ttk.Button(
-            actions,
-            text="Clear",
-            style="Action.TButton",
+        ttk.Label(frame, text="Method", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=label_padx, pady=6)
+        self.method_combo = ttk.Combobox(
+            frame,
+            textvariable=self.method_var,
+            state="readonly",
+            values=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
             width=10,
-            command=self._clear_fields,
-        ).pack(side="left", padx=6, pady=4)
-
-        ttk.Button(
-            actions,
-            text="Save HTML Report",
-            style="Action.TButton",
-            width=16,
-            command=self._save_current_html_report,
-        ).pack(side="left", padx=6, pady=4)
-
-        ttk.Button(
-            actions,
-            text="Open HTML Report",
-            style="Action.TButton",
-            width=16,
-            command=self._open_latest_html,
-        ).pack(side="left", padx=6, pady=4)
-
-        self.copy_btn = ttk.Button(
-            actions,
-            text="Copy Response",
-            style="Action.TButton",
-            width=14,
-            command=self._copy_response,
         )
-        self.copy_btn.pack(side="left", padx=6, pady=4)
+        self.method_combo.grid(row=1, column=1, sticky="w", padx=field_padx, pady=6)
+        self.method_combo.bind("<<ComboboxSelected>>", self._on_method_changed)
 
-        ttk.Label(actions, textvariable=self.status_var).pack(side="right")
+        ttk.Label(frame, text="URL", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=label_padx, pady=6)
+        url_row = ttk.Frame(frame)
+        url_row.grid(row=2, column=1, sticky="ew", padx=field_padx, pady=6)
+        url_row.columnconfigure(0, weight=1)
 
-        out_wrap = ttk.LabelFrame(frm, text="Response")
-        out_wrap.grid(row=7, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
-        out_wrap.columnconfigure(0, weight=1)
-        out_wrap.rowconfigure(1, weight=1)
+        self.url_entry = ttk.Entry(url_row, textvariable=self.url_var)
+        self.url_entry.grid(row=0, column=0, sticky="ew")
+        self.verify_ssl_check = ttk.Checkbutton(url_row, text="Verify SSL", variable=self.verify_ssl_var)
+        self.verify_ssl_check.grid(row=0, column=1, sticky="w", padx=(10, 8))
+        self.timeout_spin = ttk.Spinbox(url_row, from_=1, to=600, textvariable=self.timeout_var, width=5)
+        self.timeout_spin.grid(row=0, column=2, sticky="w", padx=(0, 4))
+        ttk.Label(url_row, text="sec", style="Muted.TLabel").grid(row=0, column=3, sticky="w")
 
-        summary_frame = ttk.Frame(out_wrap)
-        summary_frame.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 6))
-        ttk.Label(summary_frame, textvariable=self.api_status_var).pack(side="left", padx=(0, 16))
-        ttk.Label(summary_frame, textvariable=self.api_time_var).pack(side="left", padx=(0, 16))
-        ttk.Label(summary_frame, textvariable=self.api_type_var).pack(side="left", padx=(0, 16))
-        ttk.Label(summary_frame, textvariable=self.api_size_var).pack(side="left", padx=(0, 16))
+        ttk.Label(frame, text="File Upload", style="Field.TLabel").grid(row=3, column=0, sticky="w", padx=label_padx, pady=6)
+        upload_row = ttk.Frame(frame)
+        upload_row.grid(row=3, column=1, sticky="ew", padx=field_padx, pady=6)
+        upload_row.columnconfigure(0, weight=1)
 
-        self.response_tabs = ttk.Notebook(out_wrap)
-        self.response_tabs.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.upload_entry = ttk.Entry(upload_row, textvariable=self.upload_file_var)
+        self.upload_entry.grid(row=0, column=0, sticky="ew")
+        self.browse_btn = ttk.Button(upload_row, text="Browse...", style="Secondary.TButton", command=self._browse_file, width=11)
+        self.browse_btn.grid(row=0, column=1, sticky="w", padx=(10, 18))
+        ttk.Label(upload_row, text="Form Field", style="Field.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 8))
+        self.file_field_entry = ttk.Entry(upload_row, textvariable=self.file_field_var, width=12)
+        self.file_field_entry.grid(row=0, column=3, sticky="w")
 
-        body_tab = ttk.Frame(self.response_tabs)
-        headers_tab = ttk.Frame(self.response_tabs)
-        raw_tab = ttk.Frame(self.response_tabs)
+        ttk.Label(frame, text="Preset Description", style="Field.TLabel").grid(row=4, column=0, sticky="nw", padx=label_padx, pady=(6, 10))
+        self.preset_notes = tk.Text(
+            frame,
+            height=2,
+            wrap="word",
+            bg=self.colors["entry_bg"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=self.colors["border"],
+            highlightcolor=self.colors["border"],
+            bd=0,
+            padx=10,
+            pady=7,
+            font=("Segoe UI", 10),
+            cursor="arrow",
+        )
+        self.preset_notes.grid(row=4, column=1, sticky="ew", padx=field_padx, pady=(6, 10))
+        self.preset_notes.configure(state="disabled")
 
-        for tab in (body_tab, headers_tab, raw_tab):
+    def _build_request_editors(self, parent: tk.Misc) -> None:
+        frame = ttk.LabelFrame(parent, text="Request", style="Section.TLabelframe")
+        frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Headers (JSON)", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        ttk.Label(frame, text="Body / Payload (JSON or raw text)", style="Field.TLabel").grid(row=0, column=1, sticky="w", padx=12, pady=(12, 6))
+
+        self.headers_text = self._build_textbox(frame, row=1, column=0)
+        self.body_text = self._build_textbox(frame, row=1, column=1)
+
+    def _build_action_bar(self, parent: tk.Misc) -> None:
+        bar = ttk.Frame(parent, style="App.TFrame")
+        bar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        bar.columnconfigure(0, weight=1)
+        bar.columnconfigure(1, weight=0)
+
+        left = ttk.Frame(bar, style="App.TFrame")
+        left.grid(row=0, column=0, sticky="w")
+        ttk.Button(left, text="Send Request", style="Action.TButton", command=self.send_request).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(left, text="Clear", style="Secondary.TButton", command=self.clear_form).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(left, text="Copy Response", style="Secondary.TButton", command=self.copy_response).grid(row=0, column=2, padx=(0, 6))
+
+        right = ttk.Frame(bar, style="App.TFrame")
+        right.grid(row=0, column=1, sticky="e")
+        ttk.Button(right, text="Save HTML Report", style="Secondary.TButton", command=self.save_html_report).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(right, text="Open HTML Report", style="Secondary.TButton", command=self.open_html_report).grid(row=0, column=1)
+
+    def _build_response_section(self, parent: tk.Misc) -> None:
+        outer = ttk.LabelFrame(parent, text="Response", style="Section.TLabelframe")
+        outer.grid(row=3, column=0, sticky="nsew")
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        summary = ttk.Frame(outer, style="App.TFrame")
+        summary.grid(row=0, column=0, sticky="ew", padx=10, pady=(14, 10))
+        for idx in range(4):
+            summary.columnconfigure(idx, weight=1)
+
+        self.status_card = self._build_summary_card(summary, 0, "Status", "Waiting")
+        self.time_card = self._build_summary_card(summary, 1, "Time", "—")
+        self.type_card = self._build_summary_card(summary, 2, "Type", "—")
+        self.size_card = self._build_summary_card(summary, 3, "Size", "—")
+
+        self.status_value = self.status_card[1]
+        self.time_value = self.time_card[1]
+        self.type_value = self.type_card[1]
+        self.size_value = self.size_card[1]
+
+        self.response_notebook = ttk.Notebook(outer)
+        self.response_notebook.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        self.body_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
+        self.headers_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
+        self.raw_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
+        self.response_notebook.add(self.body_tab, text="Body")
+        self.response_notebook.add(self.headers_tab, text="Headers")
+        self.response_notebook.add(self.raw_tab, text="Raw")
+
+        self.response_body_text = self._build_textbox(self.body_tab, row=0, column=0, outer_pad=0)
+        self.response_headers_text = self._build_textbox(self.headers_tab, row=0, column=0, outer_pad=0)
+        self.response_raw_text = self._build_textbox(self.raw_tab, row=0, column=0, outer_pad=0)
+
+        for tab in (self.body_tab, self.headers_tab, self.raw_tab):
             tab.columnconfigure(0, weight=1)
             tab.rowconfigure(0, weight=1)
 
-        self.response_tabs.add(body_tab, text="Body")
-        self.response_tabs.add(headers_tab, text="Headers")
-        self.response_tabs.add(raw_tab, text="Raw")
+    def _build_summary_card(self, parent: tk.Misc, column: int, label: str, value: str) -> tuple[ttk.Frame, ttk.Label]:
+        card = ttk.Frame(parent, style="SummaryCard.TFrame")
+        card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0))
+        card.columnconfigure(0, weight=1)
 
-        self.body_output = tk.Text(
-            body_tab,
-            wrap="none",
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
-            selectforeground="white",
+        ttk.Label(card, text=label, style="SummaryLabel.TLabel").grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+        value_label = ttk.Label(card, text=value, style="SummaryValue.TLabel")
+        value_label.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
+        return card, value_label
+
+    def _build_textbox(self, parent: tk.Misc, row: int, column: int, outer_pad: int = 12) -> tk.Text:
+        wrapper = ttk.Frame(parent, style="App.TFrame")
+        wrapper.grid(row=row, column=column, sticky="nsew", padx=outer_pad, pady=(0, 8))
+        wrapper.columnconfigure(0, weight=1)
+        wrapper.rowconfigure(0, weight=1)
+
+        text = tk.Text(
+            wrapper,
+            wrap="word",
+            undo=True,
+            height=12,
+            bg=self.colors["entry_bg"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
             relief="flat",
-            borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
+            highlightbackground=self.colors["border"],
+            highlightcolor=self.colors["border"],
+            padx=10,
+            pady=8,
             font=("Consolas", 10),
         )
-        self.body_output.grid(row=0, column=0, sticky="nsew")
-        self.body_output.configure(state="disabled")
+        text.grid(row=0, column=0, sticky="nsew")
+        y_scroll = ttk.Scrollbar(wrapper, orient="vertical", command=text.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=y_scroll.set)
+        return text
 
-        self.headers_output = tk.Text(
-            headers_tab,
-            wrap="none",
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
-        )
-        self.headers_output.grid(row=0, column=0, sticky="nsew")
-        self.headers_output.configure(state="disabled")
-
-        self.raw_output = tk.Text(
-            raw_tab,
-            wrap="none",
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
-        )
-        self.raw_output.grid(row=0, column=0, sticky="nsew")
-        self.raw_output.configure(state="disabled")
-
-    def _apply_preset(self, initial: bool = False):
-        preset = self.preset_var.get().strip() or "Custom"
-        presets = self._preset_map()
-        data = presets.get(preset, presets["Custom"])
-
-        self.method_var.set(data["method"])
-        self.url_var.set(data["url"])
-        self.file_path_var.set(data.get("file_path", ""))
-        self.file_field_var.set(data.get("file_field", "file"))
-
-        self.headers_text.delete("1.0", "end")
-        self.body_text.delete("1.0", "end")
-
-        self.headers_text.insert("1.0", json.dumps(data["headers"], indent=2))
-        if isinstance(data["body"], (dict, list)):
-            self.body_text.insert("1.0", json.dumps(data["body"], indent=2))
-        else:
-            self.body_text.insert("1.0", str(data["body"]))
-
-        self.notes_var.set(data["notes"])
-        if not initial:
-            self.status_var.set(f"Loaded preset: {preset}")
-
-    def _browse_upload_file(self):
-        path = filedialog.askopenfilename(parent=self, title="Select file to upload")
+    def _browse_file(self) -> None:
+        path = filedialog.askopenfilename(title="Select file to upload")
         if path:
-            self.file_path_var.set(path)
+            self.upload_file_var.set(path)
 
-    def _set_text_widget(self, widget, text: str):
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
-        widget.insert("1.0", text)
-        widget.see("1.0")
-        widget.configure(state="disabled")
-
-    def _parse_headers_and_body(self):
-        headers_raw = self.headers_text.get("1.0", "end").strip()
-        body_raw = self.body_text.get("1.0", "end").strip()
-
-        headers = {}
-        if headers_raw:
-            try:
-                headers = json.loads(headers_raw)
-            except Exception as e:
-                raise ValueError(f"Headers must be valid JSON.\n\n{e}")
-            if not isinstance(headers, dict):
-                raise ValueError("Headers JSON must be an object/dictionary.")
-
-        body_data = ""
-        if body_raw:
-            try:
-                body_data = json.loads(body_raw)
-            except Exception:
-                body_data = body_raw
-
-        return headers, body_data
-
-    def _build_ssl_context(self):
-        if self.verify_ssl_var.get():
-            return ssl.create_default_context()
-        return ssl._create_unverified_context()
-
-    def _build_multipart_body(self, fields, file_path: Path, file_field: str):
-        boundary = f"----RingForgeBoundary{uuid.uuid4().hex}"
-        parts = []
-
-        if isinstance(fields, dict):
-            for key, value in fields.items():
-                parts.append(f"--{boundary}\r\n".encode("utf-8"))
-                parts.append(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
-                parts.append(str(value).encode("utf-8"))
-                parts.append(b"\r\n")
-
-        mime_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
-        file_bytes = file_path.read_bytes()
-
-        parts.append(f"--{boundary}\r\n".encode("utf-8"))
-        parts.append(
-            f'Content-Disposition: form-data; name="{file_field}"; filename="{file_path.name}"\r\n'.encode("utf-8")
-        )
-        parts.append(f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"))
-        parts.append(file_bytes)
-        parts.append(b"\r\n")
-        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-
-        return boundary, b"".join(parts)
-
-    def _format_request_exception(self, e: Exception) -> str:
-        return f"{type(e).__name__}: {e}"
-
-    def _drain_output(self):
-        try:
-            while True:
-                msg = self.output_q.get_nowait()
-                if isinstance(msg, dict):
-                    self._set_text_widget(self.body_output, msg.get("body", ""))
-                    self._set_text_widget(self.headers_output, msg.get("headers", ""))
-                    self._set_text_widget(self.raw_output, msg.get("raw", ""))
-                else:
-                    self._set_text_widget(self.raw_output, str(msg))
-        except queue.Empty:
-            pass
-        self.after(150, self._drain_output)
-
-    def _copy_response(self):
-        current_tab = self.response_tabs.select()
-        tab_text = self.response_tabs.tab(current_tab, "text")
-
-        if tab_text == "Body":
-            text = self.body_output.get("1.0", "end-1c")
-        elif tab_text == "Headers":
-            text = self.headers_output.get("1.0", "end-1c")
-        else:
-            text = self.raw_output.get("1.0", "end-1c")
-
-        if not text.strip():
-            self.status_var.set("Nothing to copy")
-            self.after(1500, lambda: self.status_var.set("Idle"))
+    def _load_preset(self) -> None:
+        preset = self.PRESETS.get(self.preset_var.get())
+        if not preset:
             return
 
+        self.method_var.set(preset.get("method", "GET"))
+        self.url_var.set(preset.get("url", ""))
+        self.verify_ssl_var.set(bool(preset.get("verify_ssl", True)))
+        self.timeout_var.set(int(preset.get("timeout", 60)))
+        self.upload_file_var.set(preset.get("upload_file", ""))
+        self.file_field_var.set(preset.get("file_field", "file"))
+
+        self._set_text(self.headers_text, self._pretty_json_or_string(preset.get("headers", "")))
+        self._set_text(self.body_text, self._pretty_json_or_string(preset.get("body", "")))
+
+        self.preset_notes.configure(state="normal")
+        self._set_text(self.preset_notes, str(preset.get("notes", "")))
+        self.preset_notes.configure(state="disabled")
+        self.preset_notes.configure(cursor="arrow")
+    
+    def _sync_httpbin_preset_from_method(self) -> None:
+        method = self.method_var.get().strip().upper()
+        current_url = self.url_var.get().strip()
+
+        if "httpbin.org" not in current_url:
+            return
+
+        preset_map = {
+            "GET": "HTTPBin GET Test",
+            "POST": "HTTPBin POST JSON",
+            "PUT": "HTTPBin PUT Test",
+            "PATCH": "HTTPBin PATCH Test",
+            "DELETE": "HTTPBin DELETE Test",
+            "HEAD": "HTTPBin HEAD Test",
+            "OPTIONS": "HTTPBin OPTIONS Test",
+        }
+
+        preset_name = preset_map.get(method)
+        if preset_name and preset_name in self.PRESETS:
+            self.preset_var.set(preset_name)
+
+    def _on_method_changed(self, event=None) -> None:
+        method = self.method_var.get().strip().upper()
+        current_url = self.url_var.get().strip()
+
+        if "httpbin.org" not in current_url:
+            return
+
+        preset_map = {
+            "GET": "HTTPBin GET Test",
+            "POST": "HTTPBin POST JSON",
+            "PUT": "HTTPBin PUT Test",
+            "PATCH": "HTTPBin PATCH Test",
+            "DELETE": "HTTPBin DELETE Test",
+            "HEAD": "HTTPBin HEAD Test",
+            "OPTIONS": "HTTPBin OPTIONS Test",
+        }
+
+        preset_name = preset_map.get(method)
+        if preset_name and preset_name in self.PRESETS:
+            self.preset_var.set(preset_name)
+            self._load_preset()
+
+    def _set_text(self, widget: tk.Text, value: str) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", value)
+
+    def _get_text(self, widget: tk.Text) -> str:
+        return widget.get("1.0", "end").strip()
+
+    def _pretty_json_or_string(self, value: Any) -> str:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, indent=2)
+        return "" if value is None else str(value)
+
+    def _safe_parse_json(self, text: str, field_name: str) -> Any:
+        text = text.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} is not valid JSON.\n{exc}") from exc
+
+    def _normalize_headers(self, raw: Any) -> dict[str, str]:
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ValueError("Headers JSON must be an object/dictionary.")
+        return {str(k): "" if v is None else str(v) for k, v in raw.items()}
+
+    def _format_bytes(self, size: int | None) -> str:
+        if size is None:
+            return "—"
+        units = ["B", "KB", "MB", "GB"]
+        value = float(size)
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                return f"{int(value)} {unit}" if unit == "B" else f"{value:.2f} {unit}"
+            value /= 1024
+        return f"{size} B"
+
+    def _escape_html(self, value: str) -> str:
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    def clear_form(self) -> None:
+        self.preset_var.set("HTTPBin GET Test")
+        self.method_var.set("GET")
+        self.url_var.set("")
+        self.upload_file_var.set("")
+        self.file_field_var.set("file")
+        self.verify_ssl_var.set(True)
+        self.timeout_var.set(60)
+
+        self._set_text(self.headers_text, "")
+        self._set_text(self.body_text, "")
+        self._set_text(self.response_body_text, "")
+        self._set_text(self.response_headers_text, "")
+        self._set_text(self.response_raw_text, "")
+
+        self.preset_notes.configure(state="normal")
+        self._set_text(self.preset_notes, "")
+        self.preset_notes.configure(state="disabled")
+
+        self._update_response_ui("Waiting", "—", "—", "—", "", "", "", False)
+
+    def copy_response(self) -> None:
+        current_tab = self.response_notebook.select()
+        widget = {
+            str(self.body_tab): self.response_body_text,
+            str(self.headers_tab): self.response_headers_text,
+            str(self.raw_tab): self.response_raw_text,
+        }.get(current_tab, self.response_body_text)
+
+        text = self._get_text(widget)
+        if not text:
+            messagebox.showinfo("Copy Response", "There is no response content to copy.")
+            return
         self.clipboard_clear()
         self.clipboard_append(text)
-        self.status_var.set(f"{tab_text} copied")
-        self.after(1500, lambda: self.status_var.set("Idle"))
 
-    def _clear_fields(self):
-        self.url_var.set("")
-        self.file_path_var.set("")
-        self.file_field_var.set("file")
-        self.headers_text.delete("1.0", "end")
-        self.body_text.delete("1.0", "end")
-        self.notes_var.set("")
-        self._set_text_widget(self.body_output, "")
-        self._set_text_widget(self.headers_output, "")
-        self._set_text_widget(self.raw_output, "")
-        self.status_var.set("Idle")
-        self.api_status_var.set("Status: Waiting")
-        self.api_time_var.set("Time: —")
-        self.api_type_var.set("Type: —")
-        self.api_size_var.set("Size: —")
-        self.last_response_payload = None
-
-    def _on_request_done(self):
-        self.send_btn.configure(state="normal")
-        self.status_var.set("Idle")
-        self.worker_thread = None
-
-    def _start_request(self):
-        if self.worker_thread and self.worker_thread.is_alive():
+    def send_request(self) -> None:
+        if requests is None:
+            messagebox.showerror("Missing Dependency", "The 'requests' package is not installed in this environment.")
+            return
+        if self._request_thread and self._request_thread.is_alive():
+            messagebox.showinfo("Request In Progress", "A request is already running.")
             return
 
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showerror("API Analysis", "Please enter a URL.", parent=self)
+            messagebox.showwarning("Missing URL", "Please enter a URL.")
             return
-
-        method = self.method_var.get().strip().upper()
-        timeout = int(self.timeout_var.get())
 
         try:
-            headers, body_data = self._parse_headers_and_body()
-        except Exception as e:
-            messagebox.showerror("API Analysis", str(e), parent=self)
+            self._normalize_headers(self._safe_parse_json(self._get_text(self.headers_text), "Headers"))
+        except ValueError as exc:
+            messagebox.showerror("Invalid Input", str(exc))
             return
 
-        file_path_raw = self.file_path_var.get().strip()
-        file_field = self.file_field_var.get().strip() or "file"
-        body_bytes = None
+        self._update_response_ui("Sending...", "—", "—", "—", "", "", "", False)
+        self._request_thread = threading.Thread(target=self._request_worker, daemon=True)
+        self._request_thread.start()
 
-        if file_path_raw:
-            file_path = Path(file_path_raw)
-            if not file_path.exists():
-                messagebox.showerror("API Analysis", f"Upload file not found:\n{file_path}", parent=self)
-                return
-            boundary, body_bytes = self._build_multipart_body(body_data, file_path, file_field)
-            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
-        elif body_data not in ("", None):
-            if isinstance(body_data, (dict, list)):
-                body_bytes = json.dumps(body_data, indent=2).encode("utf-8")
-                headers.setdefault("Content-Type", "application/json")
-            else:
-                body_bytes = str(body_data).encode("utf-8")
-
-        self._set_text_widget(self.body_output, "")
-        self._set_text_widget(self.headers_output, "")
-        self._set_text_widget(self.raw_output, "")
-        self.status_var.set("Sending...")
-        self.send_btn.configure(state="disabled")
-
-        def worker():
-            start_time = time.perf_counter()
-            try:
-                req = urllib.request.Request(url=url, data=body_bytes, headers=headers, method=method)
-                ssl_context = self._build_ssl_context()
-
-                with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
-                    status_code = getattr(resp, "status", None) or resp.getcode()
-                    reason = getattr(resp, "reason", "")
-                    resp_headers = dict(resp.getheaders())
-                    raw = resp.read()
-                    content_type = resp_headers.get("Content-Type", "Unknown")
-                    size_bytes = len(raw or b"")
-
-                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-
-                try:
-                    response_body_text = raw.decode("utf-8")
-                except Exception:
-                    response_body_text = raw.decode("utf-8", errors="replace")
-
-                parts = [
-                    f"> Preset: {self.preset_var.get().strip()}\n",
-                    f"> Method: {method}\n",
-                    f"> URL: {url}\n",
-                    f"> Upload file: {file_path_raw or 'none'}\n\n",
-                    f"HTTP {status_code} {reason}\n",
-                    "=== Response Headers ===\n",
-                ]
-
-                for k, v in resp_headers.items():
-                    parts.append(f"{k}: {v}\n")
-
-                parts.append("\n=== Response Body ===\n")
-
-                display_body = response_body_text
-                content_type_lower = content_type.lower()
-
-                if "application/json" in content_type_lower:
-                    try:
-                        parsed_body = json.loads(response_body_text)
-                        display_body = json.dumps(parsed_body, indent=2)
-                    except Exception:
-                        display_body = response_body_text
-                elif "text/html" in content_type_lower:
-                    display_body = response_body_text.replace("><", ">\n<")
-                elif content_type_lower.startswith("text/"):
-                    display_body = response_body_text
-
-                parts.append(display_body)
-
-                headers_text = "\n".join(f"{k}: {v}" for k, v in resp_headers.items())
-                raw_text = "".join(parts)
-
-                self.last_response_payload = {
-                    "saved_at": datetime.now().isoformat(timespec="seconds"),
-                    "preset": self.preset_var.get().strip(),
-                    "request": {
-                        "method": method,
-                        "url": url,
-                        "headers": headers,
-                        "body": body_data,
-                        "upload_file": file_path_raw or "none",
-                        "file_field": file_field,
-                    },
-                    "response": {
-                        "status_code": status_code,
-                        "reason": str(reason),
-                        "headers": resp_headers,
-                        "headers_text": headers_text,
-                        "body_text": response_body_text,
-                        "display_body": display_body,
-                        "raw_text": raw_text,
-                    },
-                }
-
-                self.output_q.put({
-                    "body": display_body,
-                    "headers": headers_text,
-                    "raw": raw_text,
-                })
-                self.after(0, lambda: self.api_status_var.set(f"Status: {status_code} {reason}"))
-                self.after(0, lambda: self.api_time_var.set(f"Time: {elapsed_ms} ms"))
-                self.after(0, lambda: self.api_type_var.set(f"Type: {content_type}"))
-                self.after(0, lambda: self.api_size_var.set(f"Size: {size_bytes} bytes"))
-                self.after(0, self._on_request_done)
-
-            except urllib.error.HTTPError as e:
-                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-                try:
-                    err_body = e.read().decode("utf-8", errors="replace")
-                except Exception:
-                    err_body = "<unable to decode error body>"
-
-                err_headers = dict(e.headers.items()) if getattr(e, "headers", None) else {}
-                err_type = err_headers.get("Content-Type", "Error")
-                err_size = len(err_body.encode("utf-8", errors="ignore"))
-
-                self.last_response_payload = {
-                    "saved_at": datetime.now().isoformat(timespec="seconds"),
-                    "preset": self.preset_var.get().strip(),
-                    "request": {
-                        "method": method,
-                        "url": url,
-                        "headers": headers,
-                        "body": body_data,
-                        "upload_file": file_path_raw or "none",
-                        "file_field": file_field,
-                    },
-                    "response": {
-                        "status_code": e.code,
-                        "reason": str(e.reason),
-                        "headers": err_headers,
-                        "body_text": err_body,
-                    },
-                }
-
-                err_headers_text = "\n".join(f"{k}: {v}" for k, v in err_headers.items())
-                err_raw_text = (
-                    f"> Preset: {self.preset_var.get().strip()}\n"
-                    f"> Method: {method}\n"
-                    f"> URL: {url}\n"
-                    f"> Upload file: {file_path_raw or 'none'}\n\n"
-                    f"HTTP Error: {e.code} {e.reason}\n\n"
-                    f"{err_body}"
-                )
-
-                self.output_q.put({
-                    "body": err_body,
-                    "headers": err_headers_text,
-                    "raw": err_raw_text,
-                })
-                self.after(0, lambda: self.api_status_var.set(f"Status: {e.code} {e.reason}"))
-                self.after(0, lambda: self.api_time_var.set(f"Time: {elapsed_ms} ms"))
-                self.after(0, lambda: self.api_type_var.set(f"Type: {err_type}"))
-                self.after(0, lambda: self.api_size_var.set(f"Size: {err_size} bytes"))
-                self.after(0, self._on_request_done)
-
-            except Exception as e:
-                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-                err_text = self._format_request_exception(e)
-                err_size = len(err_text.encode("utf-8", errors="ignore"))
-
-                self.last_response_payload = {
-                    "saved_at": datetime.now().isoformat(timespec="seconds"),
-                    "preset": self.preset_var.get().strip(),
-                    "request": {
-                        "method": method,
-                        "url": url,
-                        "headers": headers,
-                        "body": body_data,
-                        "upload_file": file_path_raw or "none",
-                        "file_field": file_field,
-                    },
-                    "response": {
-                        "status_code": "",
-                        "reason": "Request failed",
-                        "headers": {},
-                        "body_text": err_text,
-                    },
-                }
-
-                err_raw_text = (
-                    f"> Preset: {self.preset_var.get().strip()}\n"
-                    f"> Method: {method}\n"
-                    f"> URL: {url}\n"
-                    f"> Upload file: {file_path_raw or 'none'}\n\n"
-                    f"Request failed:\n{err_text}"
-                )
-
-                self.output_q.put({
-                    "body": err_text,
-                    "headers": "",
-                    "raw": err_raw_text,
-                })
-                self.after(0, lambda: self.api_status_var.set("Status: Request failed"))
-                self.after(0, lambda: self.api_time_var.set(f"Time: {elapsed_ms} ms"))
-                self.after(0, lambda: self.api_type_var.set("Type: —"))
-                self.after(0, lambda: self.api_size_var.set(f"Size: {err_size} bytes"))
-                self.after(0, self._on_request_done)
-
-        self.worker_thread = threading.Thread(target=worker, daemon=True)
-        self.worker_thread.start()
-
-    def _manual_report_dir(self) -> Path:
-        project_root = Path(__file__).resolve().parents[1]
-
-        case_root = (
-            Path(self.app.case_root_var.get().strip())
-            if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
-            else (project_root / "cases")
-        )
-        case_root.mkdir(parents=True, exist_ok=True)
-
-        case_name = self.app.case_var.get().strip() if hasattr(self.app, "case_var") else ""
-        if not case_name:
-            sample = self.app.sample_var.get().strip() if hasattr(self.app, "sample_var") else ""
-            case_name = Path(sample).stem[:64] if sample else "manual_api_case"
-
-        report_dir = case_root / case_name / "api"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        self.last_api_dir = report_dir
-        return report_dir
-
-    def _save_current_html_report(self):
-        if not self.last_response_payload:
-            messagebox.showinfo("Manual API Tester", "Run a request first.", parent=self)
-            return
-
-        report_dir = self._manual_report_dir()
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        html_path = report_dir / f"manual_api_report_{ts}.html"
-        json_path = report_dir / f"manual_api_report_{ts}.json"
-        latest_html = report_dir / "manual_api_latest.html"
-        latest_json = report_dir / "manual_api_latest.json"
-
-        payload = self.last_response_payload
-        req = payload.get("request", {}) if isinstance(payload.get("request"), dict) else {}
-        resp = payload.get("response", {}) if isinstance(payload.get("response"), dict) else {}
-        headers = resp.get("headers", {}) if isinstance(resp.get("headers"), dict) else {}
-        body_text = resp.get("display_body") or resp.get("body_text", "") or ""
-
-        pretty_body = body_text
+    def _request_worker(self) -> None:
+        file_handle = None
         try:
-            pretty_body = json.dumps(json.loads(body_text), indent=2)
-        except Exception:
-            pretty_body = body_text
+            method = self.method_var.get().strip().upper()
+            url = self.url_var.get().strip()
+            timeout = int(self.timeout_var.get() or 60)
+            verify_ssl = bool(self.verify_ssl_var.get())
 
-        status_code = str(resp.get("status_code", "") or "")
-        reason = str(resp.get("reason", "") or "")
-        saved_at = str(payload.get("saved_at", "") or "")
-        preset = str(payload.get("preset", "") or "")
-        method = str(req.get("method", "") or "")
-        url = str(req.get("url", "") or "")
-        upload_file = str(req.get("upload_file", "") or "none")
-        file_field = str(req.get("file_field", "") or "file")
+            headers = self._normalize_headers(self._safe_parse_json(self._get_text(self.headers_text), "Headers"))
+            body_text = self._get_text(self.body_text)
 
-        content_type = str(headers.get("Content-Type", "Unknown") or "Unknown")
-        size_bytes = len(str(body_text).encode("utf-8", errors="replace"))
-        header_count = len(headers)
+            json_payload = None
+            data_payload = None
+            files_payload = None
 
-        def esc(x):
-            return html.escape(str(x))
+            if self.upload_file_var.get().strip():
+                upload_path = self.upload_file_var.get().strip()
+                field_name = self.file_field_var.get().strip() or "file"
+                file_handle = open(upload_path, "rb")
+                files_payload = {field_name: file_handle}
 
-        def severity_class_for_status(code_text: str) -> str:
-            try:
-                code = int(code_text)
-            except Exception:
-                return "verdict sev-med"
-            if 200 <= code <= 299:
-                return "verdict sev-none"
-            if 300 <= code <= 399:
-                return "verdict sev-low"
-            if 400 <= code <= 499:
-                return "verdict sev-med"
-            return "verdict sev-high"
+                if body_text.strip():
+                    stripped = body_text.strip()
+                    if stripped.startswith("{") or stripped.startswith("["):
+                        parsed = self._safe_parse_json(body_text, "Body")
+                        data_payload = {str(k): "" if v is None else str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else body_text
+                    else:
+                        data_payload = body_text
+            elif body_text.strip():
+                content_type = str(headers.get("Content-Type", "")).lower()
+                if "application/json" in content_type:
+                    json_payload = self._safe_parse_json(body_text, "Body")
+                else:
+                    stripped = body_text.strip()
+                    if stripped.startswith("{") or stripped.startswith("["):
+                        try:
+                            json_payload = self._safe_parse_json(body_text, "Body")
+                        except ValueError:
+                            data_payload = body_text
+                    else:
+                        data_payload = body_text
 
-        verdict = f"{status_code} {reason}".strip() or "REQUEST FAILED"
-        verdict_class = severity_class_for_status(status_code)
+            started = time.perf_counter()
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=json_payload if files_payload is None else None,
+                data=data_payload,
+                files=files_payload,
+                timeout=timeout,
+                verify=verify_ssl,
+            )
+            elapsed = time.perf_counter() - started
 
-        headers_html = "".join(
-            f"<li><strong>{esc(k)}:</strong> {esc(v)}</li>"
-            for k, v in headers.items()
-        ) or "<li>None</li>"
+            response_headers = "\n".join(f"{k}: {v}" for k, v in response.headers.items())
+            response_body = "" if method == "HEAD" else response.text
+            raw_response = f"HTTP {response.status_code} {response.reason}\n{response_headers}\n\n{response_body}"
+            content_type = response.headers.get("Content-Type", "")
+            size_text = self._format_bytes(len(response.content) if response.content is not None else 0)
 
-        body_html = f"""
-        <section class="tile-grid">
-          <div class="tile"><div class="tile-label">Method</div><div class="tile-value">{esc(method)}</div></div>
-          <div class="tile"><div class="tile-label">Status</div><div class="tile-value">{esc(status_code or '-')}</div></div>
-          <div class="tile"><div class="tile-label">Content Type</div><div class="tile-value" style="font-size:18px;">{esc(content_type)}</div></div>
-          <div class="tile"><div class="tile-label">Headers</div><div class="tile-value">{header_count}</div></div>
-          <div class="tile"><div class="tile-label">Body Size</div><div class="tile-value">{size_bytes}</div></div>
-          <div class="tile"><div class="tile-label">Preset</div><div class="tile-value" style="font-size:18px;">{esc(preset or '-')}</div></div>
-        </section>
+            self.after(0, lambda: self._apply_response_success(
+                response.status_code,
+                elapsed,
+                content_type,
+                size_text,
+                response_body,
+                response_headers,
+                raw_response,
+            ))
+        except Exception as exc:
+            self.after(0, lambda: self._apply_response_error(str(exc)))
+        finally:
+            if file_handle is not None:
+                try:
+                    file_handle.close()
+                except Exception:
+                    pass
 
-        <div class="grid">
-          <section class="card">
-            <div class="section-head">
-              <h2>Request</h2>
-            </div>
-            <table class="kv">
-              <tr><th>Preset</th><td>{esc(preset)}</td></tr>
-              <tr><th>Method</th><td>{esc(method)}</td></tr>
-              <tr><th>URL</th><td>{esc(url)}</td></tr>
-              <tr><th>Upload File</th><td>{esc(upload_file)}</td></tr>
-              <tr><th>File Field</th><td>{esc(file_field)}</td></tr>
-            </table>
-          </section>
-
-          <section class="card">
-            <div class="section-head">
-              <h2>Response</h2>
-            </div>
-            <table class="kv">
-              <tr><th>Status</th><td>{esc(verdict)}</td></tr>
-              <tr><th>Saved At</th><td>{esc(saved_at)}</td></tr>
-              <tr><th>Content Type</th><td>{esc(content_type)}</td></tr>
-              <tr><th>Body Size</th><td>{size_bytes} bytes</td></tr>
-            </table>
-          </section>
-        </div>
-
-        <section class="card">
-          <div class="section-head">
-            <h2>Response Headers</h2>
-          </div>
-          <ul>{headers_html}</ul>
-        </section>
-
-        <section class="card">
-          <div class="section-head">
-            <h2>Response Body</h2>
-          </div>
-          <div class="table-wrap">
-            <pre style="white-space:pre-wrap;word-break:break-word;background:#0b1220;border:1px solid #1f2937;padding:14px;border-radius:12px;overflow:auto;">{esc(pretty_body)}</pre>
-          </div>
-        </section>
-        """
-
-        html_doc = report_page(
-            title="Manual API Report",
-            subtitle=esc(url or "Manual API Tester"),
-            verdict=verdict,
-            verdict_class=verdict_class,
-            body_html=body_html,
+    def _apply_response_success(self, status_code: int, elapsed: float, content_type: str, size_text: str, body_text: str, headers_text: str, raw_text: str) -> None:
+        self._update_response_ui(
+            status=str(status_code),
+            elapsed=f"{elapsed:.2f}s",
+            content_type=content_type or "—",
+            size=size_text,
+            body=body_text,
+            headers=headers_text,
+            raw=raw_text,
+            ok=True,
         )
 
-        html_path.write_text(html_doc, encoding="utf-8")
-        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        latest_html.write_text(html_doc, encoding="utf-8")
-        latest_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    def _apply_response_error(self, message: str) -> None:
+        self._update_response_ui(
+            status="Error",
+            elapsed="—",
+            content_type="—",
+            size="—",
+            body=message,
+            headers="",
+            raw=message,
+            ok=False,
+        )
 
-        self.last_html_report = latest_html
-        self.last_json_report = latest_json
-        self.status_var.set(f"Saved report: {latest_html.name}")
-        messagebox.showinfo("Manual API Tester", f"Report saved:\n\n{latest_html}", parent=self)
+    def _update_response_ui(self, status: str, elapsed: str, content_type: str, size: str, body: str, headers: str, raw: str, ok: bool) -> None:
+        self.status_value.configure(text=status)
+        self.time_value.configure(text=elapsed)
+        self.type_value.configure(text=content_type)
+        self.size_value.configure(text=size)
+        self._set_text(self.response_body_text, body)
+        self._set_text(self.response_headers_text, headers)
+        self._set_text(self.response_raw_text, raw)
+        self.response_notebook.select(self.body_tab)
 
-    def _open_latest_html(self):
-        if not self.last_response_payload and (not self.last_html_report or not self.last_html_report.exists()):
-            messagebox.showinfo("Manual API Tester", "Run a request first.", parent=self)
+    def save_html_report(self) -> None:
+        method = self.method_var.get().strip()
+        url = self.url_var.get().strip()
+        status = self.status_value.cget("text")
+        elapsed = self.time_value.cget("text")
+        content_type = self.type_value.cget("text")
+        size = self.size_value.cget("text")
+        headers = self._get_text(self.response_headers_text)
+        body = self._get_text(self.response_body_text)
+        raw = self._get_text(self.response_raw_text)
+
+        if not body and not raw:
+            messagebox.showinfo("Save HTML Report", "There is no response to save yet.")
             return
 
-        if not self.last_html_report or not self.last_html_report.exists():
-            try:
-                self._save_current_html_report()
-            except Exception as e:
-                messagebox.showerror("Manual API Tester", f"Unable to generate HTML report.\n\n{e}", parent=self)
-                return
+        path = filedialog.asksaveasfilename(
+            title="Save HTML Report",
+            defaultextension=".html",
+            initialfile="api_test_report.html",
+            filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
+        )
+        if not path:
+            return
 
-        try:
-            webbrowser.open(self.last_html_report.resolve().as_uri())
-            self.status_var.set(f"Opened report: {self.last_html_report.name}")
-        except Exception as e:
-            messagebox.showerror("Manual API Tester", f"Unable to open report.\n\n{e}", parent=self)
+        html = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<title>RingForge API Test Report</title>
+<style>
+body {{ background: #05070B; color: #F7FAFF; font-family: \"Segoe UI\", Arial, sans-serif; margin: 24px; }}
+.card {{ background: #0B1220; border: 1px solid #294C8E; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
+h1, h2 {{ margin-top: 0; }}
+.grid {{ display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; }}
+.label {{ color: #B8C7E6; font-weight: 700; }}
+pre {{ white-space: pre-wrap; word-break: break-word; background: #0D1A33; border: 1px solid #294C8E; border-radius: 10px; padding: 12px; overflow-x: auto; }}
+</style>
+</head>
+<body>
+<div class=\"card\">
+    <h1>RingForge Manual API Tester Report</h1>
+    <div class=\"grid\">
+        <div class=\"label\">Method</div><div>{self._escape_html(method)}</div>
+        <div class=\"label\">URL</div><div>{self._escape_html(url)}</div>
+        <div class=\"label\">Status</div><div>{self._escape_html(status)}</div>
+        <div class=\"label\">Time</div><div>{self._escape_html(elapsed)}</div>
+        <div class=\"label\">Type</div><div>{self._escape_html(content_type)}</div>
+        <div class=\"label\">Size</div><div>{self._escape_html(size)}</div>
+    </div>
+</div>
+<div class=\"card\"><h2>Response Body</h2><pre>{self._escape_html(body)}</pre></div>
+<div class=\"card\"><h2>Response Headers</h2><pre>{self._escape_html(headers)}</pre></div>
+<div class=\"card\"><h2>Raw Output</h2><pre>{self._escape_html(raw)}</pre></div>
+</body>
+</html>
+"""
+        out_path = Path(path)
+        out_path.write_text(html, encoding="utf-8")
+        self.latest_report_path = out_path
+        messagebox.showinfo("Save HTML Report", f"Saved report to:\n{out_path}")
+
+    def open_html_report(self) -> None:
+        if self.latest_report_path and self.latest_report_path.exists():
+            webbrowser.open(self.latest_report_path.resolve().as_uri())
+            return
+        messagebox.showinfo("Open HTML Report", "No saved HTML report is available yet.")
+
+
+ApiWindow = APIAnalysisWindow
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
+    window = APIAnalysisWindow(root)
+    window.mainloop()

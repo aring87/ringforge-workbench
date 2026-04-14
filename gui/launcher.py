@@ -84,7 +84,8 @@ class LauncherWindow(ttk.Frame):
             footer,
             text="Refresh Saved Tests",
             style="Action.TButton",
-            command=self.refresh_saved_tests,
+            command=self._refresh_saved_tests_no_focus,
+            takefocus=False,
         ).grid(row=0, column=0, sticky="w")
 
         ttk.Button(
@@ -92,6 +93,7 @@ class LauncherWindow(ttk.Frame):
             text="Exit",
             style="Action.TButton",
             command=self.app.destroy,
+            takefocus=False,
         ).grid(row=0, column=1, sticky="e")
 
     def _card(self, row, col, title, desc, command):
@@ -114,12 +116,23 @@ class LauncherWindow(ttk.Frame):
             justify="left",
         ).pack(anchor="w", pady=(8, 14))
 
+        def launch():
+            self.focus_set()
+            self.after(50, self.focus_set)
+            command()
+
         ttk.Button(
             card,
             text=f"Open {title}",
-            style="Action.TButton",
-            command=command,
+            style="Launcher.Action.TButton",
+            command=launch,
+            takefocus=False,
         ).pack(anchor="w")
+    
+    def _refresh_saved_tests_no_focus(self):
+        self.focus_set()
+        self.after(50, self.focus_set)
+        self.refresh_saved_tests()
 
     def _build_recent_tests_panel(self):
         panel = ttk.LabelFrame(self, text="Saved Tests and Scores")

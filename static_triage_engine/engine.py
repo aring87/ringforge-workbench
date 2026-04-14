@@ -15,25 +15,29 @@ import requests
 
 from .api_analysis import analyze_apis
 from .config import TriageConfig
-from .logging import EventCallback, emit, log_line, ledger_append, utc_now_iso
-from .report import generate_reports
-from .scoring import score_risk, classify_verdict
-from .steps import (
-    sha_hash,
-    step_file,
-    step_strings,
-    step_capa,
-    step_pe_metadata,
-    step_lief_metadata,
-    step_iocs,
-    step_yara
-)
+from .decoded_strings import extract_decoded_strings
 from .extract import (
     extract_payloads,
     recursive_extract,
-    write_extracted_manifest,
     select_subfile_targets,
+    write_extracted_manifest,
 )
+from .floss_runner import floss_result_to_dict, run_floss
+from .ioc_parser import extract_iocs_from_strings
+from .logging import EventCallback, emit, ledger_append, log_line, utc_now_iso
+from .report import generate_reports
+from .scoring import classify_verdict, score_risk
+from .steps import (
+    sha_hash,
+    step_capa,
+    step_file,
+    step_iocs,
+    step_lief_metadata,
+    step_pe_metadata,
+    step_strings,
+    step_yara,
+)
+from .verdict_rationale import build_static_verdict_rationale
 
 TRUST_OVERRIDE_TECH_PREFIXES = {
     "T1055",
@@ -45,6 +49,90 @@ TRUST_OVERRIDE_TECH_PREFIXES = {
     "T1574",
 }
 
+def _normalize_floss_summary(floss_summary: dict[str, Any] | None, case_dir: Path) -> dict[str, Any]:
+    fs = floss_summary if isinstance(floss_summary, dict) else {}
+
+    floss_json_path = case_dir / "floss_results.json"
+    floss_json = _load_json(floss_json_path)
+
+    metadata_block = floss_json.get("metadata", {}) if isinstance(floss_json.get("metadata"), dict) else {}
+    analysis_block = floss_json.get("analysis", {}) if isinstance(floss_json.get("analysis"), dict) else {}
+    strings_block = floss_json.get("strings", {}) if isinstance(floss_json.get("strings"), dict) else {}
+
+    decoded_entries = strings_block.get("decoded_strings", [])
+    if not isinstance(decoded_entries, list):
+        decoded_entries = []
+
+    cleaned_strings: list[str] = []
+    for item in decoded_entries:
+        if isinstance(item, dict):
+            s = str(item.get("string", "") or "").strip()
+            if s:
+                cleaned_strings.append(s)
+        elif item is not None:
+            s = str(item).strip()
+            if s:
+                cleaned_strings.append(s)
+
+    cleaned_strings = list(dict.fromkeys(cleaned_strings))
+
+    high_risk_keywords = [
+        "powershell",
+        "cmd.exe",
+        "rundll32",
+        "regsvr32",
+        "wscript",
+        "cscript",
+        "mshta",
+        "http://",
+        "https://",
+        "\\run",
+        "\\runonce",
+        "appdata",
+        "temp\\",
+        "startup",
+        ".ps1",
+        ".vbs",
+        ".js",
+        ".hta",
+        "base64",
+        "frombase64string",
+    ]
+
+    high_risk_strings: list[str] = []
+    for s in cleaned_strings:
+        ls = s.lower()
+        if any(k in ls for k in high_risk_keywords):
+            high_risk_strings.append(s)
+
+    function_block = analysis_block.get("functions", {}) if isinstance(analysis_block.get("functions"), dict) else {}
+    runtime_block = metadata_block.get("runtime", {}) if isinstance(metadata_block.get("runtime"), dict) else {}
+
+    notes: list[str] = []
+    if fs.get("success") is True:
+        notes.append("FLOSS decoded-string analysis completed.")
+    if cleaned_strings:
+        notes.append(f"Recovered {len(cleaned_strings)} decoded string(s) from FLOSS output.")
+    else:
+        notes.append("FLOSS ran successfully but did not recover decoded strings.")
+
+    return {
+        "enabled": bool(fs.get("enabled", False) or floss_json_path.exists()),
+        "source": "floss",
+        "stats": {
+            "decoded_count": len(cleaned_strings),
+            "high_risk_count": len(high_risk_strings),
+            "analyzed_decoded_strings": int(function_block.get("analyzed_decoded_strings", 0) or 0),
+            "runtime_decoded_strings": runtime_block.get("decoded_strings"),
+        },
+        "decoded_strings": cleaned_strings[:200],
+        "high_risk_strings": high_risk_strings[:50],
+        "notes": notes,
+        "raw_metadata": {
+            "file_path": metadata_block.get("file_path", ""),
+            "version": metadata_block.get("version", ""),
+        },
+    }
 
 def _sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
     h = hashlib.sha256()
@@ -71,6 +159,71 @@ def _write_json(path: Path, obj: Any) -> None:
         path.write_text(json.dumps(obj, indent=2), encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+
+def _collect_strings_from_strings_json(strings_json: dict[str, Any]) -> list[str]:
+    if not isinstance(strings_json, dict):
+        return []
+
+    candidates: list[str] = []
+
+    for key in ("strings", "all_strings", "items", "lines"):
+        value = strings_json.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    candidates.append(item)
+                elif isinstance(item, dict):
+                    for nested_key in ("string", "text", "value"):
+                        nested_val = item.get(nested_key)
+                        if isinstance(nested_val, str):
+                            candidates.append(nested_val)
+            if candidates:
+                return candidates
+
+    stdout_val = strings_json.get("stdout")
+    if isinstance(stdout_val, str) and stdout_val.strip():
+        return [line.strip() for line in stdout_val.splitlines() if line.strip()]
+
+    output_file = strings_json.get("output_file")
+    if output_file:
+        try:
+            p = Path(output_file)
+            if p.exists():
+                return [
+                    line.strip()
+                    for line in p.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line.strip()
+                ]
+        except Exception:
+            pass
+
+    return []
+
+
+def _count_capa_hits(case_dir: Path) -> int:
+    capa_json = _load_json(case_dir / "capa.json")
+    if not isinstance(capa_json, dict):
+        return 0
+
+    for key in ("rules", "matches", "capabilities"):
+        value = capa_json.get(key)
+        if isinstance(value, dict):
+            return len(value)
+        if isinstance(value, list):
+            return len(value)
+
+    meta = capa_json.get("meta", {})
+    if isinstance(meta, dict):
+        analysis = meta.get("analysis", {})
+        if isinstance(analysis, dict):
+            count = analysis.get("feature_counts")
+            if isinstance(count, dict):
+                total = count.get("total")
+                if isinstance(total, int):
+                    return total
+
+    return 0
 
 
 def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[str, Any]:
@@ -218,8 +371,6 @@ def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
     }
 
 
-
-
 def _signature_present_from_subject(subject: str) -> bool:
     return bool((subject or "").strip())
 
@@ -340,6 +491,8 @@ def _verify_authenticode_powershell(
         result["error"] = f"{type(e).__name__}: {e}"
         result["verification_status"] = "verification_error"
         return result
+
+
 def verify_authenticode_cached(
     file_path: str | Path,
     cache: dict[str, Any],
@@ -383,8 +536,14 @@ def verify_authenticode_cached(
             out = dict(cached)
             out["path"] = str(p)
             out["sha256"] = sha256
-            out.setdefault("signature_present", _signature_present_from_subject(str(out.get("subject", "") or "")) or bool(out.get("verify_ok")))
-            out.setdefault("verification_status", "verified" if out.get("verify_ok") else ("signed_unverified" if out.get("signature_present") else "unsigned"))
+            out.setdefault(
+                "signature_present",
+                _signature_present_from_subject(str(out.get("subject", "") or "")) or bool(out.get("verify_ok")),
+            )
+            out.setdefault(
+                "verification_status",
+                "verified" if out.get("verify_ok") else ("signed_unverified" if out.get("signature_present") else "unsigned"),
+            )
             return out
 
     verifiers: list[Callable[[], dict[str, Any]]] = []
@@ -399,10 +558,15 @@ def verify_authenticode_cached(
         current = verifier()
         current["path"] = str(p)
         current["sha256"] = sha256
-        current.setdefault("signature_present", _signature_present_from_subject(str(current.get("subject", "") or "")) or bool(current.get("verify_ok")))
+        current.setdefault(
+            "signature_present",
+            _signature_present_from_subject(str(current.get("subject", "") or "")) or bool(current.get("verify_ok")),
+        )
         current.setdefault(
             "verification_status",
-            "verified" if current.get("verify_ok") else ("signed_unverified" if current.get("signature_present") else ("unsigned" if not current.get("error") else "verification_error")),
+            "verified"
+            if current.get("verify_ok")
+            else ("signed_unverified" if current.get("signature_present") else ("unsigned" if not current.get("error") else "verification_error")),
         )
 
         if current.get("verify_ok"):
@@ -609,6 +773,17 @@ def run_case(
 
     emit(on_event, "info", "case", {"case_dir": str(case_dir), "sample": str(sample_case)})
 
+    floss_result = run_floss(
+        sample_path=sample_case,
+        case_dir=case_dir,
+        tool_dir=cfg.tools_dir if getattr(cfg, "tools_dir", None) else None,
+        timeout_seconds=getattr(cfg, "floss_timeout", 180),
+        enabled=getattr(cfg, "enable_floss", True),
+    )
+    floss_summary = floss_result_to_dict(floss_result)
+    
+    normalized_floss = _normalize_floss_summary(floss_summary, case_dir)
+
     signing_top = write_signing_json(case_dir, sample_case, signing_cache)
     signing_summary = {
         "signature_present": bool(signing_top.get("signature_present")),
@@ -656,12 +831,19 @@ def run_case(
     vt_result = write_virustotal_json(case_dir, sha256, os.getenv("VT_API_KEY", "").strip())
     vt_summary = _vt_summary_from_result(vt_result)
 
-    runlog: dict[str, Any] = {"virustotal": vt_result}
+    runlog: dict[str, Any] = {
+        "virustotal": vt_result,
+        "floss": floss_summary,
+    }
     summary: dict[str, Any] = {
         "sample": meta,
-        "tools": {},
+        "tools": {
+            "floss": floss_summary,
+        },
         "signing": signing_summary,
         "virustotal": vt_summary,
+        "floss": floss_summary,
+        "decoded_strings": normalized_floss,
     }
 
     def _run_step(step_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -731,9 +913,12 @@ def run_case(
 
     runlog["api_analysis"] = _run_step("api_analysis", lambda: analyze_apis(sample_case, case_dir))
     runlog["yara"] = _run_step("yara", lambda: step_yara(sample_case, case_dir, cfg))
-    runlog["capa"] = _run_step("capa", lambda: step_capa(sample_case, case_dir, cfg, capa_timeout=capa_timeout, max_size_mb=capa_max_size_mb))
+    runlog["capa"] = _run_step(
+        "capa",
+        lambda: step_capa(sample_case, case_dir, cfg, capa_timeout=capa_timeout, max_size_mb=capa_max_size_mb),
+    )
     runlog["iocs"] = _run_step("iocs", lambda: step_iocs(case_dir))
-    
+
     yara_result = _load_json(case_dir / "yara_results.json")
     summary["yara"] = {
         "matched": bool(yara_result.get("matched", False)),
@@ -882,6 +1067,27 @@ def run_case(
     _write_json(case_dir / "runlog.json", runlog)
     _write_json(case_dir / "summary.json", summary)
 
+    decoded_result = extract_decoded_strings(sample_case)
+    strings_json = _load_json(case_dir / "strings.json")
+    raw_strings = _collect_strings_from_strings_json(strings_json)
+
+    legacy_decoded_strings = decoded_result.get("decoded_strings", []) or []
+    floss_decoded_strings = normalized_floss.get("decoded_strings", []) or []
+
+    all_string_material = list(raw_strings) + list(legacy_decoded_strings) + list(floss_decoded_strings)
+    ioc_summary = extract_iocs_from_strings(all_string_material)
+
+    merged_decoded_strings = dict(normalized_floss)
+
+    legacy_notes = decoded_result.get("notes", []) if isinstance(decoded_result, dict) else []
+    if isinstance(legacy_notes, list) and legacy_notes:
+        merged_decoded_strings["notes"] = list(merged_decoded_strings.get("notes", [])) + [
+            str(x) for x in legacy_notes if str(x).strip()
+        ]
+
+    summary["decoded_strings"] = merged_decoded_strings
+    summary["ioc_summary"] = ioc_summary
+
     iocs = _load_json(case_dir / "iocs.json")
     pe_meta = _load_json(case_dir / "pe_metadata.json")
     lief_meta = _load_json(case_dir / "lief_metadata.json")
@@ -896,6 +1102,22 @@ def run_case(
     summary["reason_breakdown"] = {"suspicious": suspicious, "benign": benign}
     summary.setdefault("flags", {})
     summary["flags"]["trust_override"] = _trust_override_from_case(case_dir)
+
+    capa_hits = _count_capa_hits(case_dir)
+    summary["verdict_rationale"] = build_static_verdict_rationale(
+        static_score=score,
+        verdict=verdict,
+        confidence=confidence,
+        is_signed=bool(summary.get("signing", {}).get("verify_ok", False)),
+        yara_hits=int(summary.get("yara", {}).get("match_count", 0) or 0),
+        capa_hits=capa_hits,
+        high_risk_strings=int(summary.get("decoded_strings", {}).get("stats", {}).get("high_risk_count", 0) or 0),
+        ioc_counts=summary.get("ioc_summary", {}).get("counts", {}) or {},
+        packer_score=summary.get("packer_obfuscation_rating"),
+        vt_found=bool(summary.get("virustotal", {}).get("found", False)),
+        vt_malicious=int(summary.get("virustotal", {}).get("malicious", 0) or 0),
+        vt_suspicious=int(summary.get("virustotal", {}).get("suspicious", 0) or 0),
+    )
 
     _write_json(case_dir / "summary.json", summary)
 
@@ -948,4 +1170,6 @@ def run_case(
         "report_html": report_html,
         "report_pdf": report_pdf,
         "virustotal": summary.get("virustotal", {}),
+        "floss": summary.get("floss", {}),
+        "decoded_strings": summary.get("decoded_strings", {}),
     }

@@ -37,15 +37,43 @@ class PathActionsController:
     def ensure_case_dir(self):
         app = self.app
 
-        if app.case_dir_detected and Path(app.case_dir_detected).exists():
-            return Path(app.case_dir_detected)
+        case_dir_detected = getattr(app, "case_dir_detected", None)
+        if case_dir_detected:
+            try:
+                detected = Path(case_dir_detected)
+                if detected.exists():
+                    return detected
+            except Exception:
+                pass
 
-        case_root = Path(app.case_root_var.get().strip())
-        case_name = app.case_name_var.get().strip()
+        case_root_var = getattr(app, "case_root_var", None)
+        case_var = getattr(app, "case_var", None)
+        case_name_var = getattr(app, "case_name_var", None)
 
-        if not case_root or not case_name:
+        case_root_text = ""
+        if case_root_var is not None:
+            try:
+                case_root_text = case_root_var.get().strip()
+            except Exception:
+                case_root_text = ""
+
+        case_name = ""
+        if case_var is not None:
+            try:
+                case_name = case_var.get().strip()
+            except Exception:
+                case_name = ""
+
+        if not case_name and case_name_var is not None:
+            try:
+                case_name = case_name_var.get().strip()
+            except Exception:
+                case_name = ""
+
+        if not case_name:
             return None
 
+        case_root = Path(case_root_text) if case_root_text else (Path.cwd() / "cases")
         candidate = case_root / case_name
         if candidate.exists():
             return candidate

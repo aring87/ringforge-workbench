@@ -1,18 +1,26 @@
+from __future__ import annotations
+
+import json
 import shutil
 import tkinter as tk
 import webbrowser
-import json
 
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
 
+try:
+    from PIL import Image, ImageTk
+except Exception:
+    Image = None
+    ImageTk = None
+
 from gui.api_window import APIAnalysisWindow
 from static_triage_engine.api_spec_analysis import analyze_api_spec as engine_analyze_api_spec
 
 
-def _safe_json_write(path: Path, data):
+def _safe_json_write(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -22,8 +30,9 @@ class SpecAnalysisWindow(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("API Spec Analysis")
-        self.geometry("2030x1100")
-        self.minsize(1650, 900)
+        self.geometry("1880x1080")
+        self.minsize(1600, 900)
+        self.configure(bg="#05070B")
 
         self.spec_path_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
@@ -31,14 +40,140 @@ class SpecAnalysisWindow(tk.Toplevel):
             value="Load an OpenAPI or Swagger spec to analyze endpoints, authentication, and API risk indicators."
         )
 
+        self.spec_format_var = tk.StringVar(value="-")
+        self.spec_version_var = tk.StringVar(value="-")
+        self.spec_endpoint_count_var = tk.StringVar(value="-")
+        self.spec_auth_var = tk.StringVar(value="-")
+        self.spec_confidence_var = tk.StringVar(value="-")
+
         self.last_spec_dir: Optional[Path] = None
         self.last_html_report: Optional[Path] = None
         self.last_json_report: Optional[Path] = None
         self.last_result: Optional[dict[str, Any]] = None
 
+        self.brand_logo_img = None
+
+        self._configure_styles()
         self._build_ui()
         self.transient(app)
         self.grab_set()
+
+    # -------------------------------------------------------------------------
+    # STYLES
+    # -------------------------------------------------------------------------
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self)
+
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        bg = "#05070B"
+        panel = "#0B1220"
+        panel_alt = "#101A2E"
+        border = "#294C8E"
+        text = "#F7FAFF"
+        muted = "#B8C7E6"
+        accent = "#2F6BFF"
+        accent_active = "#3F7BFF"
+        entry_bg = "#0D1A33"
+        tab_bg = "#14213B"
+
+        style.configure(".", background=bg, foreground=text)
+        style.configure("App.TFrame", background=bg)
+        style.configure("Card.TFrame", background=panel, relief="flat", borderwidth=0)
+        style.configure("SummaryCard.TFrame", background=panel_alt, relief="flat", borderwidth=0)
+
+        style.configure("Section.TLabelframe", background=bg, foreground=text, borderwidth=1, relief="solid")
+        style.configure("Section.TLabelframe.Label", background=bg, foreground=text, font=("Segoe UI", 10, "bold"))
+
+        style.configure("Title.TLabel", background=panel, foreground=text, font=("Segoe UI", 18, "bold"))
+        style.configure("Subtitle.TLabel", background=panel, foreground=muted, font=("Segoe UI", 10))
+        style.configure("Field.TLabel", background=bg, foreground="#DCE6FF", font=("Segoe UI", 10, "bold"))
+        style.configure("Muted.TLabel", background=bg, foreground=muted, font=("Segoe UI", 9))
+        style.configure("SectionHeader.TLabel", background=bg, foreground=accent, font=("Segoe UI", 11, "bold"))
+        style.configure("SummaryLabel.TLabel", background=panel_alt, foreground=muted, font=("Segoe UI", 9, "bold"))
+        style.configure("SummaryValue.TLabel", background=panel_alt, foreground=text, font=("Segoe UI", 13, "bold"))
+
+        style.configure(
+            "Action.TButton",
+            background=accent,
+            foreground="#FFFFFF",
+            bordercolor=accent,
+            focusthickness=0,
+            focuscolor=accent,
+            padding=(12, 7),
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Action.TButton",
+            background=[("active", accent_active), ("pressed", accent_active)],
+            foreground=[("disabled", "#A6B4D0"), ("!disabled", "#FFFFFF")],
+        )
+
+        style.configure(
+            "Secondary.TButton",
+            background=panel_alt,
+            foreground=text,
+            bordercolor=border,
+            focusthickness=0,
+            focuscolor=panel_alt,
+            padding=(10, 7),
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#16284A"), ("pressed", "#16284A")],
+            foreground=[("disabled", "#A6B4D0"), ("!disabled", text)],
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground=entry_bg,
+            foreground=text,
+            insertcolor=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            padding=6,
+        )
+
+        style.configure(
+            "Treeview",
+            background=entry_bg,
+            fieldbackground=entry_bg,
+            foreground=text,
+            bordercolor=border,
+            rowheight=28,
+            font=("Segoe UI", 10),
+        )
+        style.map("Treeview", background=[("selected", "#1D3F86")], foreground=[("selected", "#FFFFFF")])
+        style.configure(
+            "Treeview.Heading",
+            background=panel_alt,
+            foreground=text,
+            bordercolor=border,
+            font=("Segoe UI", 10, "bold"),
+            padding=(8, 8),
+        )
+
+        self.colors = {
+            "bg": bg,
+            "panel": panel,
+            "panel_alt": panel_alt,
+            "border": border,
+            "text": text,
+            "muted": muted,
+            "accent": accent,
+            "entry_bg": entry_bg,
+            "tab_bg": tab_bg,
+        }
+
+    # -------------------------------------------------------------------------
+    # CASE HELPERS
+    # -------------------------------------------------------------------------
 
     def _current_case_name(self) -> str:
         case_name = self.app.case_var.get().strip() if hasattr(self.app, "case_var") else ""
@@ -69,92 +204,190 @@ class SpecAnalysisWindow(tk.Toplevel):
         self.last_spec_dir = spec_dir
         return spec_dir
 
-    def _build_ui(self):
-        pad = {"padx": 12, "pady": 10}
+    # -------------------------------------------------------------------------
+    # UI
+    # -------------------------------------------------------------------------
 
-        frm = ttk.Frame(self)
-        frm.pack(fill="both", expand=True, **pad)
-        frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(2, weight=1)
+    def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
 
-        top = ttk.LabelFrame(frm, text="API Spec Analysis")
+        self._build_top_banner({"padx": 10, "pady": (8, 10)})
+
+        content = ttk.Frame(self, style="App.TFrame")
+        content.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=0)
+        content.rowconfigure(1, weight=0)
+        content.rowconfigure(2, weight=1)
+        content.rowconfigure(3, weight=0)
+
+        self._build_spec_controls(content)
+        self._build_overview_cards(content)
+        self._build_main_body(content)
+        self._build_status_bar(content)
+
+    def _build_top_banner(self, outer: dict[str, Any]) -> None:
+        panel_bg = self.colors["panel"]
+        border = self.colors["border"]
+        accent = self.colors["accent"]
+        text_main = self.colors["text"]
+        text_soft = self.colors["muted"]
+
+        banner_wrap = ttk.Frame(self, style="App.TFrame")
+        banner_wrap.grid(row=0, column=0, sticky="ew", padx=outer.get("padx", 10), pady=outer.get("pady", (8, 10)))
+        banner_wrap.columnconfigure(0, weight=1)
+
+        banner = tk.Frame(
+            banner_wrap,
+            bg=panel_bg,
+            highlightthickness=1,
+            highlightbackground=border,
+            highlightcolor=border,
+        )
+        banner.grid(row=0, column=0, sticky="ew")
+        banner.columnconfigure(1, weight=1)
+
+        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        if logo_path.exists() and Image is not None and ImageTk is not None:
+            try:
+                logo_img = Image.open(logo_path).convert("RGBA")
+                logo_img = logo_img.resize((96, 96), Image.LANCZOS)
+                self.brand_logo_img = ImageTk.PhotoImage(logo_img)
+                tk.Label(
+                    banner,
+                    image=self.brand_logo_img,
+                    bg=panel_bg,
+                    bd=0,
+                    highlightthickness=0,
+                ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+            except Exception:
+                self._build_banner_fallback(banner, panel_bg, accent)
+        else:
+            self._build_banner_fallback(banner, panel_bg, accent)
+
+        tk.Label(
+            banner,
+            text="RingForge Workbench",
+            bg=panel_bg,
+            fg=text_main,
+            font=("Segoe UI", 24, "bold"),
+            anchor="w",
+        ).grid(row=0, column=1, sticky="sw", pady=(16, 0))
+
+        tk.Label(
+            banner,
+            text="API Spec Analysis",
+            bg=panel_bg,
+            fg=accent,
+            font=("Segoe UI", 18, "bold"),
+            anchor="w",
+        ).grid(row=1, column=1, sticky="nw")
+
+        tk.Label(
+            banner,
+            text="Analyze OpenAPI and Swagger definitions, inspect endpoint inventory, review auth models, and export analyst-ready HTML reports.",
+            bg=panel_bg,
+            fg=text_soft,
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=1100,
+        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
+
+    def _build_banner_fallback(self, banner: tk.Misc, panel_bg: str, accent: str) -> None:
+        tk.Label(
+            banner,
+            text="[anvil.png missing]",
+            bg=panel_bg,
+            fg=accent,
+            font=("Segoe UI", 10, "bold"),
+            bd=0,
+            highlightthickness=0,
+        ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+
+    def _build_spec_controls(self, parent):
+        top = ttk.LabelFrame(parent, text="Spec Input", style="Section.TLabelframe")
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
 
-        ttk.Label(top, text="API Spec:").grid(row=0, column=0, sticky="w", padx=(8, 0), pady=10)
-
-        ttk.Entry(top, textvariable=self.spec_path_var, width=100).grid(
-            row=0, column=1, sticky="ew", padx=8, pady=10
+        ttk.Label(top, text="API Spec", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(12, 8), pady=10
         )
 
-        btns = ttk.Frame(top)
-        btns.grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
+        ttk.Entry(top, textvariable=self.spec_path_var).grid(
+            row=0, column=1, sticky="ew", padx=(0, 10), pady=10
+        )
+
+        btns = ttk.Frame(top, style="App.TFrame")
+        btns.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=8)
 
         ttk.Button(
             btns,
             text="Browse",
-            style="Side.Action.TButton",
+            style="Secondary.TButton",
             command=self._browse_spec,
         ).pack(side="left", padx=(0, 8))
 
         ttk.Button(
             btns,
             text="Analyze Spec",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._parse_spec,
         ).pack(side="left", padx=(0, 8))
 
         ttk.Button(
             btns,
             text="Open HTML Report",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._open_html_report,
         ).pack(side="left", padx=(0, 8))
 
         ttk.Button(
             btns,
             text="Open Case Files",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._open_case_files,
         ).pack(side="left", padx=(0, 8))
 
         ttk.Button(
             btns,
             text="Manual API Tester",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._open_manual_api_tester,
         ).pack(side="left")
 
-        metrics = ttk.LabelFrame(frm, text="Overview")
-        metrics.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+    def _build_overview_cards(self, parent: tk.Misc) -> None:
+        metrics = ttk.LabelFrame(parent, text="Overview", style="Section.TLabelframe")
+        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         for i in range(5):
             metrics.columnconfigure(i, weight=1)
 
-        self.spec_format_var = tk.StringVar(value="-")
-        self.spec_version_var = tk.StringVar(value="-")
-        self.spec_endpoint_count_var = tk.StringVar(value="-")
-        self.spec_auth_var = tk.StringVar(value="-")
-        self.spec_confidence_var = tk.StringVar(value="-")
+        self._build_metric_card(metrics, 0, "Format", self.spec_format_var)
+        self._build_metric_card(metrics, 1, "Version", self.spec_version_var)
+        self._build_metric_card(metrics, 2, "Endpoints", self.spec_endpoint_count_var)
+        self._build_metric_card(metrics, 3, "Auth", self.spec_auth_var)
+        self._build_metric_card(metrics, 4, "Confidence", self.spec_confidence_var)
 
-        def metric_cell(parent, col, title, var):
-            box = ttk.Frame(parent)
-            box.grid(row=0, column=col, sticky="ew", padx=10, pady=10)
-            ttk.Label(box, text=title, style="SectionHeader.TLabel").pack(anchor="w")
-            ttk.Label(box, textvariable=var, style="SummaryValue.TLabel").pack(anchor="w", pady=(4, 0))
+    def _build_metric_card(self, parent: tk.Misc, col: int, title: str, var: tk.StringVar) -> None:
+        card = ttk.Frame(parent, style="SummaryCard.TFrame")
+        card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0), pady=10)
+        card.columnconfigure(0, weight=1)
+        ttk.Label(card, text=title, style="SummaryLabel.TLabel").grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+        ttk.Label(card, textvariable=var, style="SummaryValue.TLabel").grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
 
-        metric_cell(metrics, 0, "Format", self.spec_format_var)
-        metric_cell(metrics, 1, "Version", self.spec_version_var)
-        metric_cell(metrics, 2, "Endpoints", self.spec_endpoint_count_var)
-        metric_cell(metrics, 3, "Auth", self.spec_auth_var)
-        metric_cell(metrics, 4, "Confidence", self.spec_confidence_var)
-
-        body = ttk.Frame(frm)
-        body.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
-        body.columnconfigure(0, weight=0, minsize=500)
+    def _build_main_body(self, parent: tk.Misc) -> None:
+        body = ttk.Frame(parent, style="App.TFrame")
+        body.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        body.columnconfigure(0, weight=0, minsize=520)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(body)
+        self._build_left_sidebar(body)
+        self._build_endpoint_inventory(body)
+
+    def _build_left_sidebar(self, parent: tk.Misc) -> None:
+        left = ttk.Frame(parent, style="App.TFrame")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=0)
@@ -163,116 +396,78 @@ class SpecAnalysisWindow(tk.Toplevel):
         left.rowconfigure(3, weight=1)
         left.rowconfigure(4, weight=0)
 
-        summary = ttk.LabelFrame(left, text="Summary")
+        summary = ttk.LabelFrame(left, text="Summary", style="Section.TLabelframe")
         summary.grid(row=0, column=0, sticky="ew")
         summary.columnconfigure(0, weight=1)
 
         self.summary_label = ttk.Label(
             summary,
             textvariable=self.summary_var,
-            wraplength=360,
+            wraplength=420,
             justify="left",
         )
-        self.summary_label.grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        self.summary_label.grid(row=0, column=0, sticky="w", padx=12, pady=12)
 
-        notes = ttk.LabelFrame(left, text="Risk Notes")
-        notes.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        notes.columnconfigure(0, weight=1)
+        self.notes_text = self._build_sidebar_box(left, 1, "Risk Notes", height=11)
+        self.top_risky_text = self._build_sidebar_box(left, 2, "Top Risky Endpoints", height=12)
+        self.recommended_tests_text = self._build_sidebar_box(left, 3, "Recommended Tests", height=11)
 
-        self.notes_text = tk.Text(
-            notes,
-            height=10,
-            wrap="word",
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
+        getting_started = ttk.LabelFrame(left, text="Getting Started", style="Section.TLabelframe")
+        getting_started.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        getting_started.columnconfigure(0, weight=1)
+
+        ttk.Label(getting_started, text="API Spec Analysis", style="SectionHeader.TLabel").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(10, 4)
         )
-        self.notes_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-
-        top_risky = ttk.LabelFrame(left, text="Top Risky Endpoints")
-        top_risky.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
-        top_risky.columnconfigure(0, weight=1)
-        top_risky.rowconfigure(0, weight=1)
-
-        self.top_risky_text = tk.Text(
-            top_risky,
-            height=12,
-            wrap="word",
-            bg="#071b34",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f61ff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
-        )
-        self.top_risky_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-
-        recommended = ttk.LabelFrame(left, text="Recommended Tests")
-        recommended.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
-        recommended.columnconfigure(0, weight=1)
-        recommended.rowconfigure(0, weight=1)
-
-        self.recommended_tests_text = tk.Text(
-            recommended,
-            height=10,
-            wrap="word",
-            bg="#071b34",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f61ff",
-            selectforeground="white",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
-            font=("Consolas", 10),
-        )
-        self.recommended_tests_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-
-        empty = ttk.LabelFrame(left, text="Getting Started")
-        empty.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
-        empty.columnconfigure(0, weight=1)
-
         ttk.Label(
-            empty,
-            text="API Spec Analysis",
-            style="SectionHeader.TLabel",
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 4))
-
-        ttk.Label(
-            empty,
+            getting_started,
             text="Load an OpenAPI or Swagger definition to build endpoint inventory, summarize authentication, generate risk notes, and create an HTML report.",
-            wraplength=360,
+            wraplength=420,
             justify="left",
-        ).grid(row=1, column=0, sticky="w", padx=10)
-
+        ).grid(row=1, column=0, sticky="w", padx=12)
         ttk.Label(
-            empty,
+            getting_started,
             text="Supported formats: JSON, YAML, YML",
-        ).grid(row=2, column=0, sticky="w", padx=10, pady=(8, 10))
+            style="Muted.TLabel",
+        ).grid(row=2, column=0, sticky="w", padx=12, pady=(8, 10))
 
-        right = ttk.LabelFrame(body, text="Endpoint Inventory")
+    def _build_sidebar_box(self, parent: tk.Misc, row: int, title: str, height: int) -> tk.Text:
+        section = ttk.LabelFrame(parent, text=title, style="Section.TLabelframe")
+        section.grid(row=row, column=0, sticky="nsew", pady=(10, 0))
+        section.columnconfigure(0, weight=1)
+        section.rowconfigure(0, weight=1)
+
+        text = tk.Text(
+            section,
+            height=height,
+            wrap="word",
+            bg=self.colors["entry_bg"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            selectbackground=self.colors["accent"],
+            selectforeground="#FFFFFF",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.colors["border"],
+            highlightcolor=self.colors["border"],
+            padx=10,
+            pady=8,
+            font=("Consolas", 10),
+        )
+        text.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+
+        return text
+
+    def _build_endpoint_inventory(self, parent: tk.Misc) -> None:
+        right = ttk.LabelFrame(parent, text="Endpoint Inventory", style="Section.TLabelframe")
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
         right.rowconfigure(1, weight=0)
 
-        table_wrap = ttk.Frame(right)
-        table_wrap.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        table_wrap = ttk.Frame(right, style="App.TFrame")
+        table_wrap.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         table_wrap.columnconfigure(0, weight=1)
         table_wrap.columnconfigure(1, weight=0)
         table_wrap.rowconfigure(0, weight=1)
@@ -285,48 +480,49 @@ class SpecAnalysisWindow(tk.Toplevel):
             "path": "Path",
             "summary": "Summary",
             "auth": "Auth",
-            "auth_source": "Auth_Source",
+            "auth_source": "Auth Source",
             "risk_level": "Risk",
             "params": "Params",
             "flags": "Flags",
         }
-
         widths = {
             "method": 100,
-            "path": 250,
-            "summary": 360,
-            "auth": 220,
+            "path": 340,
+            "summary": 420,
+            "auth": 180,
             "auth_source": 110,
             "risk_level": 80,
-            "params": 90,
+            "params": 80,
             "flags": 220,
         }
 
         for col in cols:
             self.tree.heading(col, text=headings[col], anchor="w")
-            self.tree.column(
-                col,
-                width=widths[col],
-                minwidth=widths[col],
-                anchor="w",
-                stretch=(col == "summary"),
-            )
+            self.tree.column(col, width=widths[col], minwidth=widths[col], anchor="w", stretch=(col in {"path", "summary"}))
 
         self.tree.grid(row=0, column=0, sticky="nsew")
 
         ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
-        ysb.grid(row=0, column=1, sticky="ns", padx=(0, 6))
-
+        ysb.grid(row=0, column=1, sticky="ns")
         xsb = ttk.Scrollbar(right, orient="horizontal", command=self.tree.xview)
-        xsb.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
+        xsb.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
 
         self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
 
-        status_row = ttk.Frame(frm)
-        status_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        ttk.Label(status_row, textvariable=self.status_var).pack(side="right", padx=(12, 0), pady=2)
+    def _build_status_bar(self, parent: tk.Misc) -> None:
+        status_row = ttk.Frame(parent, style="App.TFrame")
+        status_row.grid(row=3, column=0, sticky="ew")
+        status_row.columnconfigure(0, weight=1)
 
-    def _browse_spec(self):
+        ttk.Label(status_row, textvariable=self.status_var, style="Muted.TLabel").grid(
+            row=0, column=1, sticky="e", padx=(12, 0), pady=2
+        )
+
+    # -------------------------------------------------------------------------
+    # INPUT HELPERS
+    # -------------------------------------------------------------------------
+
+    def _browse_spec(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         start = Path(self.spec_path_var.get()).parent if self.spec_path_var.get().strip() else project_root
         chosen = filedialog.askopenfilename(
@@ -366,7 +562,11 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         return ", ".join(normalized) if normalized else "none"
 
-    def _populate_result(self, result: dict[str, Any]):
+    # -------------------------------------------------------------------------
+    # RESULT POPULATION
+    # -------------------------------------------------------------------------
+
+    def _populate_result(self, result: dict[str, Any]) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -401,7 +601,6 @@ class SpecAnalysisWindow(tk.Toplevel):
         unresolved_refs = result.get("unresolved_refs", []) or []
 
         sections = []
-
         if notes:
             sections.append("Risk Notes\n" + "\n".join(f"- {x}" for x in notes))
         else:
@@ -518,6 +717,10 @@ class SpecAnalysisWindow(tk.Toplevel):
                     ", ".join(flags),
                 ),
             )
+
+    # -------------------------------------------------------------------------
+    # HTML RENDERING / REPORTS
+    # -------------------------------------------------------------------------
 
     def _render_html(self, result: dict[str, Any]) -> str:
         from html import escape
@@ -697,7 +900,6 @@ class SpecAnalysisWindow(tk.Toplevel):
         spec_dir = self._ensure_spec_dir()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
         src = Path(self.spec_path_var.get().strip())
         spec_name = src.stem if src.exists() else "spec"
         safe_spec_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in spec_name)
@@ -729,10 +931,13 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         self.last_json_report = latest_json
         self.last_html_report = latest_html
-
         return latest_json, latest_html
 
-    def _parse_spec(self):
+    # -------------------------------------------------------------------------
+    # ACTIONS
+    # -------------------------------------------------------------------------
+
+    def _parse_spec(self) -> None:
         spec_path = Path(self.spec_path_var.get().strip())
         if spec_path.suffix.lower() not in {".json", ".yaml", ".yml"}:
             messagebox.showerror(
@@ -742,6 +947,9 @@ class SpecAnalysisWindow(tk.Toplevel):
             )
             self.status_var.set("Invalid spec file type")
             return
+
+        self.status_var.set("Analyzing spec...")
+        self.update_idletasks()
 
         result = engine_analyze_api_spec(spec_path, self._ensure_spec_dir())
         if result.get("returncode") != 0:
@@ -769,7 +977,7 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         self.status_var.set(f"Parsed {result.get('summary', {}).get('endpoint_count', 0)} endpoints")
 
-    def _save_html_report(self):
+    def _save_html_report(self) -> None:
         if not self.last_result:
             messagebox.showinfo(
                 "Save HTML Report",
@@ -786,10 +994,10 @@ class SpecAnalysisWindow(tk.Toplevel):
             parent=self,
         )
 
-    def _open_html_report(self):
+    def _open_html_report(self) -> None:
         report_path = None
 
-        if getattr(self, "last_html_report", None):
+        if self.last_html_report:
             candidate = Path(self.last_html_report)
             if candidate.exists():
                 report_path = candidate
@@ -818,7 +1026,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         else:
             messagebox.showinfo("Open HTML Report", "No saved HTML report found yet.", parent=self)
 
-    def _open_case_files(self):
+    def _open_case_files(self) -> None:
         spec_dir = self.last_spec_dir
         if spec_dir is None:
             candidate = self._ensure_spec_dir()
@@ -830,5 +1038,8 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         self.app._open_path(spec_dir)
 
-    def _open_manual_api_tester(self):
+    def _open_manual_api_tester(self) -> None:
         APIAnalysisWindow(self.app)
+
+
+SpecWindow = SpecAnalysisWindow

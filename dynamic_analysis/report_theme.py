@@ -4,11 +4,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def severity_class_for_count(value: Any) -> str:
+def _safe_int(value: Any, default: int = 0) -> int:
     try:
-        n = int(value)
+        return int(value)
     except Exception:
-        return "sev-none"
+        return default
+
+
+def severity_class_for_count(value: Any) -> str:
+    n = _safe_int(value, 0)
     if n <= 0:
         return "sev-none"
     if n <= 2:
@@ -18,8 +22,40 @@ def severity_class_for_count(value: Any) -> str:
     return "sev-high"
 
 
+def severity_class_for_score(value: Any) -> str:
+    n = _safe_int(value, 0)
+    if n >= 65:
+        return "sev-high"
+    if n >= 45:
+        return "sev-med"
+    if n >= 20:
+        return "sev-low"
+    return "sev-none"
+
+
+def severity_class_for_label(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"critical", "high", "malicious"}:
+        return "sev-high"
+    if text in {"medium", "suspicious"}:
+        return "sev-med"
+    if text in {"low", "low_risk"}:
+        return "sev-low"
+    return "sev-none"
+
+
 def badge(label: str, value: Any) -> str:
     cls = severity_class_for_count(value)
+    return f'<span class="badge {cls}">{label}: {value}</span>'
+
+
+def score_badge(label: str, value: Any) -> str:
+    cls = severity_class_for_score(value)
+    return f'<span class="badge {cls}">{label}: {value}</span>'
+
+
+def label_badge(label: str, value: Any) -> str:
+    cls = severity_class_for_label(value)
     return f'<span class="badge {cls}">{label}: {value}</span>'
 
 

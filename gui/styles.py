@@ -93,15 +93,42 @@ def apply_app_theme(root: tk.Misc) -> ttk.Style:
         focusthickness=0,
         focuscolor=accent_dark,
         relief="flat",
+        bordercolor=border,
+        lightcolor=border,
+        darkcolor=border,
     )
+
     style.map(
         "Action.TButton",
         background=[
-            ("active", accent_hover),
-            ("pressed", "#102A5C"),
             ("disabled", "#5E739E"),
+            ("pressed", "#102A5C"),
+            ("active", accent_hover),
+            ("!active", accent_dark),
         ],
-        foreground=[("disabled", "#DCE6FA")],
+        foreground=[
+            ("disabled", "#DCE6FA"),
+            ("!disabled", text),
+        ],
+        bordercolor=[
+            ("pressed", accent),
+            ("active", accent),
+            ("!active", border),
+        ],
+        lightcolor=[
+            ("pressed", accent),
+            ("active", accent),
+            ("!active", border),
+        ],
+        darkcolor=[
+            ("pressed", accent),
+            ("active", accent),
+            ("!active", border),
+        ],
+        relief=[
+            ("pressed", "flat"),
+            ("!pressed", "flat"),
+        ],
     )
 
     style.configure(
@@ -112,15 +139,90 @@ def apply_app_theme(root: tk.Misc) -> ttk.Style:
         background=accent_dark,
         borderwidth=1,
         relief="flat",
+        bordercolor=border,
+        lightcolor=border,
+        darkcolor=border,
     )
+
     style.map(
         "Side.Action.TButton",
         background=[
-            ("active", accent),
-            ("pressed", "#102A5C"),
             ("disabled", "#5E739E"),
+            ("pressed", "#102A5C"),
+            ("active", accent),
+            ("!active", accent_dark),
         ],
-        foreground=[("disabled", "#DCE6FA")],
+        foreground=[
+            ("disabled", "#DCE6FA"),
+            ("!disabled", text),
+        ],
+        bordercolor=[
+            ("pressed", accent),
+            ("active", accent),
+            ("!active", border),
+        ],
+        lightcolor=[
+            ("pressed", accent),
+            ("active", accent),
+            ("!active", border),
+        ],
+        darkcolor=[
+            ("pressed", accent),
+            ("active", accent),
+            ("!active", border),
+        ],
+        relief=[
+            ("pressed", "flat"),
+            ("!pressed", "flat"),
+        ],
+    )
+    
+    style.configure(
+        "Launcher.Action.TButton",
+        font=("Segoe UI", 10, "bold"),
+        padding=(12, 7),
+        foreground=text,
+        background=accent_dark,
+        borderwidth=1,
+        focusthickness=0,
+        focuscolor=accent_dark,
+        relief="flat",
+        bordercolor=border,
+        lightcolor=border,
+        darkcolor=border,
+    )
+
+    style.map(
+        "Launcher.Action.TButton",
+        background=[
+            ("disabled", "#5E739E"),
+            ("pressed", "#102A5C"),
+            ("active", accent_dark),
+            ("!active", accent_dark),
+        ],
+        foreground=[
+            ("disabled", "#DCE6FA"),
+            ("!disabled", text),
+        ],
+        bordercolor=[
+            ("pressed", accent),
+            ("active", border),
+            ("!active", border),
+        ],
+        lightcolor=[
+            ("pressed", accent),
+            ("active", border),
+            ("!active", border),
+        ],
+        darkcolor=[
+            ("pressed", accent),
+            ("active", border),
+            ("!active", border),
+        ],
+        relief=[
+            ("pressed", "flat"),
+            ("!pressed", "flat"),
+        ],
     )
 
     style.configure(

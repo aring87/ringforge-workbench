@@ -52,6 +52,26 @@ def _safe_load_json(path: Path) -> dict[str, Any]:
     return {}
 
 
+def _safe_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return 0
+        try:
+            return int(raw)
+        except Exception:
+            return 0
+    return 0
+
+
 def severity_from_score(score: int) -> str:
     if score >= 80:
         return "Critical"
@@ -271,6 +291,7 @@ def score_static(
     score = max(0, min(40, score))
     return score, evidence, flags
 
+
 def _score_api_findings_evidence(
     api_json: dict[str, Any],
     looks_like_installer: bool,
@@ -327,6 +348,7 @@ def _score_api_findings_evidence(
             f"API behavior chains detected ({counts}); no net score after dampening",
         )
     ]
+
 
 def _score_yara_evidence(yara_results: dict[str, Any]) -> tuple[int, list[ScoreEvidence], dict[str, Any]]:
     if not isinstance(yara_results, dict) or not yara_results:
@@ -411,7 +433,10 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
     score = 0
 
     findings = dynamic_result.get("findings", {}) if isinstance(dynamic_result.get("findings"), dict) else {}
-    counts = dynamic_result.get("counts", {}) if isinstance(dynamic_result.get("counts"), dict) else {}
+    counts = findings.get("counts", {}) if isinstance(findings.get("counts"), dict) else {}
+
+    if not counts and isinstance(dynamic_result.get("counts"), dict):
+        counts = dynamic_result.get("counts", {})
 
     task_summary = (
         dynamic_result.get("task_diff_summary", {})
@@ -424,46 +449,45 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         else {}
     )
 
-    spawned = int(
+    spawned = _safe_count(
         findings.get("spawned_process_count")
         or findings.get("spawned_processes")
         or counts.get("process_creates")
-        or len(dynamic_result.get("spawned_processes", []) or [])
-        or 0
+        or dynamic_result.get("spawned_processes")
+        or dynamic_result.get("child_processes")
+        or dynamic_result.get("process_tree")
     )
 
-    file_writes = int(
+    file_writes = _safe_count(
         findings.get("file_write_count")
         or findings.get("file_writes")
         or counts.get("file_write_events")
-        or 0
+        or dynamic_result.get("file_writes")
     )
 
-    net_events = int(
+    net_events = _safe_count(
         findings.get("network_event_count")
         or findings.get("network_events")
         or counts.get("network_events")
-        or 0
+        or dynamic_result.get("network_events")
     )
 
-    suspicious_paths = int(
+    suspicious_paths = _safe_count(
         findings.get("suspicious_path_hit_count")
         or findings.get("suspicious_path_hits")
         or counts.get("suspicious_path_hits")
-        or len(dynamic_result.get("suspicious_path_hits", []) or [])
-        or 0
+        or dynamic_result.get("suspicious_path_hits")
     )
 
-    persistence_hits = int(
+    persistence_hits = _safe_count(
         findings.get("persistence_hit_count")
         or findings.get("persistence_hits")
         or counts.get("persistence_hits")
-        or len(dynamic_result.get("persistence_hits", []) or [])
-        or 0
+        or dynamic_result.get("persistence_hits")
     )
 
-    suspicious_tasks = int(task_summary.get("suspicious_new_or_modified", 0) or 0)
-    suspicious_services = int(service_summary.get("suspicious_new_or_modified", 0) or 0)
+    suspicious_tasks = _safe_count(task_summary.get("suspicious_new_or_modified"))
+    suspicious_services = _safe_count(service_summary.get("suspicious_new_or_modified"))
 
     highlights = (
         findings.get("highlights")
@@ -484,7 +508,6 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         ))
     ]
 
-    # Strong signals first.
     if persistence_hits > 0:
         add = min(12, 6 + 3 * persistence_hits)
         score += add
@@ -505,7 +528,6 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         score += add
         evidence.append(ScoreEvidence("dynamic", "suspicious_paths", add, f"Suspicious path hits observed: {suspicious_paths}"))
 
-    # Soft signals are intentionally lighter so clean apps don't accumulate too many points.
     if spawned >= 6:
         add = min(4, 1 + max(0, (spawned - 6) // 4))
         score += add
@@ -516,9 +538,6 @@ def score_dynamic(dynamic_result: dict[str, Any] | None) -> tuple[int, list[Scor
         score += add
         evidence.append(ScoreEvidence("dynamic", "file_writes", add, f"File writes observed: {file_writes}"))
 
-    # Network activity is noisy for benign GUI apps. Only score it on volume alone at much higher thresholds;
-    # low-count network behavior should be handled by other higher-signal indicators (suspicious paths,
-    # persistence, high-signal highlights, LOLBins, etc.).
     if net_events >= 100:
         add = 1
         if net_events >= 250:

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import html
@@ -7,7 +6,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
-from dynamic_analysis.report_theme import badge, report_page
+
+from dynamic_analysis.report_theme import badge, score_badge, report_page
 from .scoring import combined_score_from_case_dir
 
 
@@ -59,6 +59,7 @@ def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
         stats = iocs["stats"].get("counts")
         if not isinstance(stats, dict):
             stats = iocs["stats"]
+
     if isinstance(iocs.get("counts"), dict) and not isinstance(stats, dict):
         stats = iocs["counts"]
 
@@ -84,6 +85,26 @@ def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _ioc_counts_from_summary(summary: dict[str, Any], iocs: dict[str, Any]) -> dict[str, int]:
+    ioc_summary = summary.get("ioc_summary") if isinstance(summary.get("ioc_summary"), dict) else {}
+    counts = ioc_summary.get("counts") if isinstance(ioc_summary.get("counts"), dict) else {}
+
+    if counts:
+        return {
+            "domains": int(counts.get("domains", 0) or 0),
+            "urls": int(counts.get("urls", 0) or 0),
+            "ips": int(counts.get("ips", 0) or 0),
+            "emails": int(counts.get("emails", 0) or 0),
+            "paths": int(counts.get("file_paths", 0) or 0),
+            "registry": int(counts.get("registry_paths", 0) or 0),
+            "commands": int(counts.get("commands", 0) or 0),
+        }
+
+    base = _ioc_counts(iocs)
+    base["commands"] = 0
+    return base
+
+
 def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str], List[str]]:
     rb = summary.get("reason_breakdown")
     if isinstance(rb, dict):
@@ -93,14 +114,15 @@ def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str]
 
     reasons = summary.get("reasons")
     if isinstance(reasons, list):
-        s_out, b_out = [], []
+        suspicious_out: List[str] = []
+        benign_out: List[str] = []
         for x in reasons:
             sx = str(x)
             if sx.upper().startswith("SUSPICIOUS:"):
-                s_out.append(sx.replace("SUSPICIOUS:", "", 1).strip())
+                suspicious_out.append(sx.replace("SUSPICIOUS:", "", 1).strip())
             elif sx.upper().startswith("BENIGN:"):
-                b_out.append(sx.replace("BENIGN:", "", 1).strip())
-        return (s_out[:max_items], b_out[:max_items])
+                benign_out.append(sx.replace("BENIGN:", "", 1).strip())
+        return (suspicious_out[:max_items], benign_out[:max_items])
 
     if isinstance(reasons, dict):
         suspicious = reasons.get("suspicious", []) if isinstance(reasons.get("suspicious"), list) else []
@@ -140,7 +162,11 @@ def _subfiles_block(summary: dict[str, Any]) -> dict[str, Any]:
     top = sr.get("top_scoring_subfiles", []) if isinstance(sr.get("top_scoring_subfiles"), list) else []
     attn = sr.get("attention_subfiles", []) if isinstance(sr.get("attention_subfiles"), list) else []
     crit = sr.get("criteria", {}) if isinstance(sr.get("criteria"), dict) else {}
-    return {"top": top[:5], "attn": attn[:10], "crit": crit}
+    return {
+        "top": top[:5],
+        "attn": attn[:10],
+        "crit": crit,
+    }
 
 
 def _api_block(case_dir: Path) -> dict[str, Any]:
@@ -153,13 +179,13 @@ def _api_block(case_dir: Path) -> dict[str, Any]:
     high = [x for x in chain_findings if isinstance(x, dict) and x.get("severity") == "high"]
     med = [x for x in chain_findings if isinstance(x, dict) and x.get("severity") == "medium"]
 
-    top_categories = []
+    top_categories: List[Tuple[str, int, List[str]]] = []
     for cat, funcs in category_hits.items():
         if isinstance(funcs, list):
             top_categories.append((str(cat), len(funcs), [str(x) for x in funcs[:12]]))
     top_categories.sort(key=lambda x: x[1], reverse=True)
 
-    dll_preview = []
+    dll_preview: List[Tuple[str, int, List[str]]] = []
     for dll, funcs in imports_by_dll.items():
         if isinstance(funcs, list):
             dll_preview.append((str(dll), len(funcs), [str(x) for x in funcs[:10]]))
@@ -179,14 +205,17 @@ def _api_block(case_dir: Path) -> dict[str, Any]:
         "top_dlls": dll_preview[:8],
     }
 
+
 def _yara_block(case_dir: Path) -> dict[str, Any]:
     yara_j = _read_json(case_dir / "yara_results.json")
     matches = yara_j.get("matches", []) if isinstance(yara_j.get("matches"), list) else []
 
-    top_rules: list[str] = []
+    top_rules: List[str] = []
     for m in matches[:10]:
         if isinstance(m, dict):
-            top_rules.append(str(m.get("rule", "") or ""))
+            rule_name = str(m.get("rule", "") or "").strip()
+            if rule_name:
+                top_rules.append(rule_name)
 
     return {
         "present": bool(yara_j),
@@ -195,7 +224,7 @@ def _yara_block(case_dir: Path) -> dict[str, Any]:
         "rule_file_count": int(yara_j.get("rule_file_count", 0) or 0),
         "rules_dir": str(yara_j.get("rules_dir", "") or ""),
         "error": str(yara_j.get("error", "") or ""),
-        "top_rules": [x for x in top_rules if x],
+        "top_rules": top_rules,
     }
 
 
@@ -203,8 +232,10 @@ def _spec_block(case_dir: Path) -> dict[str, Any]:
     spec = _read_json(case_dir / "spec" / "api_spec_analysis.json")
     if not spec:
         spec = _read_json(case_dir / "api_spec_analysis.json")
+
     scoring = spec.get("scoring", {}) if isinstance(spec.get("scoring"), dict) else {}
     summary = spec.get("summary", {}) if isinstance(spec.get("summary"), dict) else {}
+
     return {
         "present": bool(spec),
         "title": str(spec.get("title", "") or ""),
@@ -227,118 +258,59 @@ def _combined_block(case_dir: Path) -> dict[str, Any]:
     return combined
 
 
-def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
-    report_md = case_dir / "report.md"
-    lines: list[str] = []
-    lines.append("# Static Triage Ticket")
-    lines.append(f"**Generated (UTC):** {_utc()}")
-    lines.append("")
-    lines.append("## Verdict")
-    lines.append(f"- **Static Verdict:** **{data['verdict']}**")
-    lines.append(f"- **Static Risk Score:** `{data['score']}/100`")
-    lines.append(f"- **Confidence:** `{data['confidence']}`")
-    combined = data.get("combined", {}) or {}
-    if combined:
-        lines.append(f"- **Combined Score:** `{combined.get('total_score', 0)}/100`")
-        lines.append(f"- **Combined Severity:** `{combined.get('severity', 'Informational')}`")
-        lines.append(f"- **Subscores:** static=`{combined.get('subscores', {}).get('static', 0)}` | dynamic=`{combined.get('subscores', {}).get('dynamic', 0)}` | spec=`{combined.get('subscores', {}).get('spec', 0)}`")
-    lines.append("")
+def _decoded_strings_block(summary: dict[str, Any]) -> dict[str, Any]:
+    ds = summary.get("decoded_strings") if isinstance(summary.get("decoded_strings"), dict) else {}
+    stats = ds.get("stats") if isinstance(ds.get("stats"), dict) else {}
 
-    lines.append("## File")
-    lines.append(f"- **Name:** `{data['filename']}`")
-    lines.append(f"- **Size:** `{data['size_bytes']}` bytes")
-    lines.append(f"- **SHA256:** `{data['sha256']}`")
-    lines.append(f"- **SHA1:** `{data['sha1']}`")
-    lines.append(f"- **MD5:** `{data['md5']}`")
-    if data["file_sig"]:
-        lines.append(f"- **Type (file):** `{data['file_sig']}`")
-    if data.get("signing_summary"):
-        ss = data["signing_summary"]
-        lines.append(f"- **Signature present:** `{ss.get('signature_present')}`")
-        lines.append(f"- **Verified:** `{ss.get('verified')}`")
-        if ss.get("verification_status"):
-            lines.append(f"- **Verification status:** `{ss.get('verification_status')}`")
-        if ss.get("subject"):
-            lines.append(f"- **Signer:** `{ss.get('subject')}`")
-        if ss.get("tool"):
-            lines.append(f"- **Signing tool:** `{ss.get('tool')}`")
-        if ss.get("error"):
-            lines.append(f"- **Signing note:** `{ss.get('error')}`")
-    lines.append("")
+    decoded_strings = ds.get("decoded_strings", []) if isinstance(ds.get("decoded_strings"), list) else []
+    high_risk_strings = ds.get("high_risk_strings", []) if isinstance(ds.get("high_risk_strings"), list) else []
+    notes = ds.get("notes", []) if isinstance(ds.get("notes"), list) else []
 
-    lines.append("## Key Findings")
-    if data["suspicious_reasons"]:
-        for r in data["suspicious_reasons"]:
-            lines.append(f"- {r}")
-    else:
-        lines.append("- No high-signal suspicious reasons recorded.")
-    lines.append("")
+    source = str(ds.get("source", "") or "").strip()
+    if source.lower() == "placeholder":
+        source = ""
 
-    if combined.get("evidence"):
-        lines.append("## Combined Scoring Evidence")
-        for item in combined.get("evidence", [])[:12]:
-            if isinstance(item, dict):
-                lines.append(f"- **{item.get('source','unknown')}** `{item.get('rule','')}` `{item.get('points',0):+}` — {item.get('message','')}")
-        lines.append("")
+    return {
+        "enabled": bool(ds.get("enabled", False)),
+        "source": source,
+        "decoded_count": int(stats.get("decoded_count", len(decoded_strings)) or 0),
+        "high_risk_count": int(stats.get("high_risk_count", len(high_risk_strings)) or 0),
+        "high_risk_strings": [str(x) for x in high_risk_strings[:20]],
+        "notes": [str(x) for x in notes[:5]],
+    }
 
-    lines.append("## API Import Analysis")
-    api = data["api"]
-    if api["present"] and api["returncode"] == 0:
-        lines.append(f"- **Imported DLLs:** `{api['dll_count']}`")
-        lines.append(f"- **Imported APIs:** `{api['import_count']}`")
-        lines.append(f"- **Behavior Categories Hit:** `{api['category_count']}`")
-        lines.append(f"- **High Severity API Chains:** `{api['high_chain_count']}`")
-    else:
-        lines.append("- API analysis artifact not present or returned an error.")
-    lines.append("")
-    
-    lines.append("## YARA Results")
-    yara = data["yara"]
-    if yara["present"]:
-        lines.append(f"- **Matched:** `{'Yes' if yara['matched'] else 'No'}`")
-        lines.append(f"- **Match Count:** `{yara['match_count']}`")
-        lines.append(f"- **Rules Scanned:** `{yara['rule_file_count']}`")
-        if yara["top_rules"]:
-            lines.append("- **Top Matched Rules:**")
-            for rule in yara["top_rules"]:
-                lines.append(f"  - `{rule}`")
-        if yara["error"]:
-            lines.append(f"- **Error:** `{yara['error']}`")
-    else:
-        lines.append("- YARA results artifact not present.")
-    lines.append("")
-    
-    spec = data["spec"]
-    lines.append("## API Spec Risk Analysis")
-    if spec["present"]:
-        lines.append(f"- **Spec:** `{spec['title']}` `{spec['version']}`")
-        lines.append(f"- **Servers:** {', '.join(f'`{x}`' for x in spec['servers']) if spec['servers'] else '`none`'}")
-        lines.append(f"- **Auth:** {', '.join(f'`{x}`' for x in spec['auth_summary']) if spec['auth_summary'] else '`none`'}")
-        lines.append(f"- **Sensitive unauthenticated endpoints:** `{spec['scoring'].get('sensitive_unauthenticated_endpoints', 0)}`")
-        lines.append(f"- **File upload endpoints:** `{spec['scoring'].get('file_upload_endpoints', 0)}`")
-        if spec["risk_notes"]:
-            for note in spec["risk_notes"]:
-                lines.append(f"- {note}")
-    else:
-        lines.append("- Spec analysis artifact not present.")
-    lines.append("")
 
-    lines.append("## ATT&CK / Behavior Density (capa)")
-    lines.append(f"- **Technique IDs:** `{len(data['techniques'])}`")
-    lines.append(f"- **Match Count (heuristic):** `{data['capa_match_count']}`")
-    if data["techniques"]:
-        lines.append(f"- **Techniques:** {', '.join(f'`{t}`' for t in data['techniques'][:20])}")
-    else:
-        lines.append("- No technique IDs detected in capa output.")
-    lines.append("")
-
-    lines.append("## IOC Summary")
-    c = data["ioc_counts"]
-    lines.append(f"- Domains: `{c.get('domains',0)}` | URLs: `{c.get('urls',0)}` | IPs: `{c.get('ips',0)}` | Emails: `{c.get('emails',0)}`")
-    lines.append(f"- Paths: `{c.get('paths',0)}` | Registry: `{c.get('registry',0)}`")
-    lines.append("")
-    report_md.write_text("\n".join(lines), encoding="utf-8", errors="replace")
-    return report_md
+def _verdict_rationale_block(summary: dict[str, Any]) -> dict[str, Any]:
+    vr = summary.get("verdict_rationale") if isinstance(summary.get("verdict_rationale"), dict) else {}
+    return {
+        "score": vr.get("score", summary.get("risk_score", 0)),
+        "confidence": str(vr.get("confidence", summary.get("confidence", "")) or ""),
+        "increased": [
+            str(x)
+            for x in (
+                vr.get("increased_score_reasons", [])
+                if isinstance(vr.get("increased_score_reasons"), list)
+                else []
+            )[:8]
+        ],
+        "decreased": [
+            str(x)
+            for x in (
+                vr.get("decreased_score_reasons", [])
+                if isinstance(vr.get("decreased_score_reasons"), list)
+                else []
+            )[:5]
+        ],
+        "notes": [
+            str(x)
+            for x in (
+                vr.get("notes", [])
+                if isinstance(vr.get("notes"), list)
+                else []
+            )[:5]
+        ],
+        "recommended_next_step": str(vr.get("recommended_next_step", "") or ""),
+    }
 
 
 def _actions_html(score: int) -> str:
@@ -364,7 +336,11 @@ def _actions_html(score: int) -> str:
 
 
 def _kv_table(title: str, data: dict[str, Any], badge_html: str = "") -> str:
-    rows = [f"<tr><th>{_safe(str(k).replace('_', ' ').title())}</th><td>{_safe(v)}</td></tr>" for k, v in data.items()]
+    rows = [
+        f"<tr><th>{_safe(str(k).replace('_', ' ').title())}</th><td>{_safe(v)}</td></tr>"
+        for k, v in data.items()
+    ]
+    table_rows = "".join(rows) if rows else "<tr><td class='muted'>None</td></tr>"
     return f"""
     <section class="card">
       <div class="section-head">
@@ -372,7 +348,7 @@ def _kv_table(title: str, data: dict[str, Any], badge_html: str = "") -> str:
         {badge_html}
       </div>
       <table class="kv">
-        {''.join(rows) if rows else "<tr><td class='muted'>None</td></tr>"}
+        {table_rows}
       </table>
     </section>
     """
@@ -405,14 +381,195 @@ def _summary_tiles(data: dict[str, Any]) -> str:
         ("IOC URLs", data.get("ioc_counts", {}).get("urls", 0)),
     ]
     return '<section class="tile-grid">' + "".join(
-        f"""<div class="tile"><div class="tile-label">{_safe(label)}</div><div class="tile-value">{_safe(value)}</div></div>"""
+        f'<div class="tile"><div class="tile-label">{_safe(label)}</div><div class="tile-value">{_safe(value)}</div></div>'
         for label, value in tiles
     ) + "</section>"
 
 
+def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
+    report_md = case_dir / "report.md"
+    lines: list[str] = []
+
+    lines.append("# Static Triage Ticket")
+    lines.append(f"**Generated (UTC):** {_utc()}")
+    lines.append("")
+
+    lines.append("## Verdict")
+    lines.append(f"- **Static Verdict:** **{data['verdict']}**")
+    lines.append(f"- **Static Risk Score:** `{data['score']}/100`")
+    lines.append(f"- **Confidence:** `{data['confidence']}`")
+
+    combined = data.get("combined", {}) or {}
+    if combined:
+        lines.append(f"- **Combined Score:** `{combined.get('total_score', 0)}/100`")
+        lines.append(f"- **Combined Severity:** `{combined.get('severity', 'Informational')}`")
+        lines.append(
+            f"- **Subscores:** static=`{combined.get('subscores', {}).get('static', 0)}` | "
+            f"dynamic=`{combined.get('subscores', {}).get('dynamic', 0)}` | "
+            f"spec=`{combined.get('subscores', {}).get('spec', 0)}`"
+        )
+    lines.append("")
+
+    lines.append("## File")
+    lines.append(f"- **Name:** `{data['filename']}`")
+    lines.append(f"- **Size:** `{data['size_bytes']}` bytes")
+    lines.append(f"- **SHA256:** `{data['sha256']}`")
+    lines.append(f"- **SHA1:** `{data['sha1']}`")
+    lines.append(f"- **MD5:** `{data['md5']}`")
+
+    if data["file_sig"]:
+        lines.append(f"- **Type (file):** `{data['file_sig']}`")
+
+    if data.get("signing_summary"):
+        ss = data["signing_summary"]
+        lines.append(f"- **Signature present:** `{ss.get('signature_present')}`")
+        lines.append(f"- **Verified:** `{ss.get('verified')}`")
+        if ss.get("verification_status"):
+            lines.append(f"- **Verification status:** `{ss.get('verification_status')}`")
+        if ss.get("subject"):
+            lines.append(f"- **Signer:** `{ss.get('subject')}`")
+        if ss.get("tool"):
+            lines.append(f"- **Signing tool:** `{ss.get('tool')}`")
+        if ss.get("error"):
+            lines.append(f"- **Signing note:** `{ss.get('error')}`")
+    lines.append("")
+
+    lines.append("## Key Findings")
+    if data["suspicious_reasons"]:
+        for r in data["suspicious_reasons"]:
+            lines.append(f"- {r}")
+    else:
+        lines.append("- No high-signal suspicious reasons recorded.")
+    lines.append("")
+
+    rationale = data.get("verdict_rationale", {}) or {}
+    lines.append("## Verdict Rationale")
+    lines.append(f"- **Confidence Model:** `{rationale.get('confidence', data.get('confidence', 'N/A'))}`")
+
+    if rationale.get("increased"):
+        lines.append("- **Score Increased Because:**")
+        for item in rationale["increased"]:
+            lines.append(f"  - {item}")
+
+    if rationale.get("decreased"):
+        lines.append("- **Score Decreased Because:**")
+        for item in rationale["decreased"]:
+            lines.append(f"  - {item}")
+
+    if rationale.get("notes"):
+        lines.append("- **Notes:**")
+        for item in rationale["notes"]:
+            lines.append(f"  - {item}")
+
+    if rationale.get("recommended_next_step"):
+        lines.append(f"- **Recommended Next Step:** {rationale['recommended_next_step']}")
+    lines.append("")
+
+    decoded = data.get("decoded_strings", {}) or {}
+    lines.append("## Decoded Strings")
+    lines.append(f"- **Decoder Enabled:** `{decoded.get('enabled', False)}`")
+    lines.append(f"- **Source:** `{decoded.get('source', 'N/A')}`")
+    lines.append(f"- **Decoded Strings Found:** `{decoded.get('decoded_count', 0)}`")
+    lines.append(f"- **High-Risk Strings:** `{decoded.get('high_risk_count', 0)}`")
+
+    if decoded.get("high_risk_strings"):
+        lines.append("- **Top High-Risk Strings:**")
+        for item in decoded["high_risk_strings"]:
+            lines.append(f"  - `{item}`")
+
+    if decoded.get("notes"):
+        lines.append("- **Decoder Notes:**")
+        for item in decoded["notes"]:
+            lines.append(f"  - {item}")
+    lines.append("")
+
+    if combined.get("evidence"):
+        lines.append("## Combined Scoring Evidence")
+        for item in combined.get("evidence", [])[:12]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"- **{item.get('source', 'unknown')}** "
+                    f"`{item.get('rule', '')}` "
+                    f"`{item.get('points', 0):+}` — {item.get('message', '')}"
+                )
+        lines.append("")
+
+    lines.append("## API Import Analysis")
+    api = data["api"]
+    if api["present"] and api["returncode"] == 0:
+        lines.append(f"- **Imported DLLs:** `{api['dll_count']}`")
+        lines.append(f"- **Imported APIs:** `{api['import_count']}`")
+        lines.append(f"- **Behavior Categories Hit:** `{api['category_count']}`")
+        lines.append(f"- **High Severity API Chains:** `{api['high_chain_count']}`")
+    else:
+        lines.append("- API analysis artifact not present or returned an error.")
+    lines.append("")
+
+    lines.append("## YARA Results")
+    yara = data["yara"]
+    if yara["present"]:
+        lines.append(f"- **Matched:** `{'Yes' if yara['matched'] else 'No'}`")
+        lines.append(f"- **Match Count:** `{yara['match_count']}`")
+        lines.append(f"- **Rules Scanned:** `{yara['rule_file_count']}`")
+        if yara["top_rules"]:
+            lines.append("- **Top Matched Rules:**")
+            for rule in yara["top_rules"]:
+                lines.append(f"  - `{rule}`")
+        if yara["error"]:
+            lines.append(f"- **Error:** `{yara['error']}`")
+    else:
+        lines.append("- YARA results artifact not present.")
+    lines.append("")
+
+    spec = data["spec"]
+    lines.append("## API Spec Risk Analysis")
+    if spec["present"]:
+        lines.append(f"- **Spec:** `{spec['title']}` `{spec['version']}`")
+        lines.append(f"- **Servers:** {', '.join(f'`{x}`' for x in spec['servers']) if spec['servers'] else '`none`'}")
+        lines.append(f"- **Auth:** {', '.join(f'`{x}`' for x in spec['auth_summary']) if spec['auth_summary'] else '`none`'}")
+        lines.append(f"- **Sensitive unauthenticated endpoints:** `{spec['scoring'].get('sensitive_unauthenticated_endpoints', 0)}`")
+        lines.append(f"- **File upload endpoints:** `{spec['scoring'].get('file_upload_endpoints', 0)}`")
+        if spec["risk_notes"]:
+            for note in spec["risk_notes"]:
+                lines.append(f"- {note}")
+    else:
+        lines.append("- Spec analysis artifact not present.")
+    lines.append("")
+
+    lines.append("## ATT&CK / Behavior Density (capa)")
+    lines.append(f"- **Technique IDs:** `{len(data['techniques'])}`")
+    lines.append(f"- **Match Count (heuristic):** `{data['capa_match_count']}`")
+    if data["techniques"]:
+        lines.append(f"- **Techniques:** {', '.join(f'`{t}`' for t in data['techniques'][:20])}")
+    else:
+        lines.append("- No technique IDs detected in capa output.")
+    lines.append("")
+
+    lines.append("## IOC Summary")
+    c = data["ioc_counts"]
+    lines.append(
+        f"- Domains: `{c.get('domains', 0)}` | URLs: `{c.get('urls', 0)}` | "
+        f"IPs: `{c.get('ips', 0)}` | Emails: `{c.get('emails', 0)}`"
+    )
+    lines.append(
+        f"- Paths: `{c.get('paths', 0)}` | Registry: `{c.get('registry', 0)}` | "
+        f"Commands: `{c.get('commands', 0)}`"
+    )
+    lines.append("")
+
+    report_md.write_text("\n".join(lines), encoding="utf-8", errors="replace")
+    return report_md
+
+
 def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     report_html = case_dir / "report.html"
+
     combined = data.get("combined", {}) or {}
+    verdict_rationale = data.get("verdict_rationale", {}) or {}
+    decoded = data.get("decoded_strings", {}) or {}
+    yara = data.get("yara", {}) or {}
+    spec = data.get("spec", {}) or {}
+
     sample_meta = {
         "Name": data.get("filename", ""),
         "Size Bytes": data.get("size_bytes", 0),
@@ -425,6 +582,7 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Verification Status": (data.get("signing_summary") or {}).get("verification_status", ""),
         "Signer": (data.get("signing_summary") or {}).get("subject", ""),
     }
+
     combined_meta = {
         "Total Score": combined.get("total_score", 0),
         "Severity": combined.get("severity", "Informational"),
@@ -434,7 +592,20 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Dynamic": combined.get("subscores", {}).get("dynamic", 0),
         "Spec": combined.get("subscores", {}).get("spec", 0),
     }
-    yara = data.get("yara", {}) or {}
+
+    decoded_meta = {
+        "Decoder Enabled": decoded.get("enabled", False),
+        "Source": decoded.get("source", "") or "N/A",
+        "Decoded Strings Found": decoded.get("decoded_count", 0),
+        "High-Risk Strings": decoded.get("high_risk_count", 0),
+    }
+
+    rationale_meta = {
+        "Score": verdict_rationale.get("score", data.get("score", 0)),
+        "Confidence": verdict_rationale.get("confidence", data.get("confidence", "")),
+        "Recommended Next Step": verdict_rationale.get("recommended_next_step", "") or "N/A",
+    }
+
     yara_meta = {
         "Present": yara.get("present", False),
         "Matched": yara.get("matched", False),
@@ -443,8 +614,9 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Rules Dir": yara.get("rules_dir", "") or "N/A",
         "Error": yara.get("error", "") or "",
     }
+
     yara_rules = [str(x) for x in (yara.get("top_rules", []) or [])]
-    spec = data.get("spec", {}) or {}
+
     spec_meta = {
         "Present": spec.get("present", False),
         "Title": spec.get("title", ""),
@@ -454,26 +626,158 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Sensitive unauth": spec.get("scoring", {}).get("sensitive_unauthenticated_endpoints", 0),
         "File uploads": spec.get("scoring", {}).get("file_upload_endpoints", 0),
     }
+
     evidence = [
-        f"{item.get('source','unknown')} | {item.get('rule','')} | {item.get('points',0):+} | {item.get('message','')}"
-        for item in combined.get("evidence", []) if isinstance(item, dict)
+        f"{item.get('source', 'unknown')} | {item.get('rule', '')} | {item.get('points', 0):+} | {item.get('message', '')}"
+        for item in combined.get("evidence", [])
+        if isinstance(item, dict)
     ]
+
+    action_items = [
+        re.sub(r"<[^>]+>", "", x).strip()
+        for x in re.findall(r"<li>(.*?)</li>", data.get("actions_html", ""))
+    ]
+
+    sample_meta_html = _kv_table("Sample Metadata", sample_meta)
+    combined_html = _kv_table(
+        "Combined Scoring",
+        combined_meta,
+        score_badge("Total", combined.get("total_score", 0)),
+    )
+    rationale_html = _kv_table(
+        "Verdict Rationale",
+        rationale_meta,
+        badge("Confidence", verdict_rationale.get("confidence", data.get("confidence", "N/A"))),
+    )
+    # Only show Decoded Strings card if there is real decoded-string data
+    show_decoded_card = (
+        decoded.get("enabled", False)
+        or int(decoded.get("decoded_count", 0) or 0) > 0
+        or int(decoded.get("high_risk_count", 0) or 0) > 0
+    )
+
+    decoded_html = _kv_table(
+        "Decoded Strings",
+        decoded_meta,
+        badge("High Risk", decoded.get("high_risk_count", 0)),
+    ) if show_decoded_card else ""
+
+    # Only show Spec card if spec analysis is actually present
+    show_spec_card = bool(spec.get("present", False))
+
+    spec_html = _kv_table(
+        "Spec Risk Analysis",
+        spec_meta,
+        badge("Spec Score", combined.get("subscores", {}).get("spec", 0)),
+    ) if show_spec_card else ""
+
+    show_yara_card = (
+        yara.get("present", False)
+        and (
+            yara.get("matched", False)
+            or int(yara.get("match_count", 0) or 0) > 0
+            or int(yara.get("rule_file_count", 0) or 0) > 0
+        )
+    )
+
+    yara_html = _kv_table(
+        "YARA Results",
+        yara_meta,
+        badge("Matches", yara.get("match_count", 0)),
+    ) if show_yara_card else ""
+
+    # Only show sections when they contain data
+    increased_section = _list_section(
+        "Why Score Increased",
+        verdict_rationale.get("increased", []),
+        emphasize=True,
+    ) if verdict_rationale.get("increased") else ""
+
+    decreased_section = _list_section(
+        "Why Score Decreased",
+        verdict_rationale.get("decreased", []),
+    ) if verdict_rationale.get("decreased") else ""
+
+    notes_section = _list_section(
+        "Verdict Notes",
+        verdict_rationale.get("notes", []),
+    ) if verdict_rationale.get("notes") else ""
+
+    decoded_strings_section = _list_section(
+        "High-Risk Decoded Strings",
+        decoded.get("high_risk_strings", []),
+        emphasize=True,
+    ) if decoded.get("high_risk_strings") else ""
+
+    decoder_notes_section = _list_section(
+        "Decoder Notes",
+        decoded.get("notes", []),
+    ) if (
+        decoded.get("enabled", False)
+        or int(decoded.get("decoded_count", 0) or 0) > 0
+        or int(decoded.get("high_risk_count", 0) or 0) > 0
+    ) and decoded.get("notes") else ""
+
+    spec_notes_section = _list_section(
+        "Spec Risk Notes",
+        spec.get("risk_notes", []),
+        emphasize=True,
+    ) if spec.get("risk_notes") else ""
+
+    suspicious_section = _list_section(
+        "Key Findings (Suspicious)",
+        data.get("suspicious_reasons", []),
+        emphasize=True,
+    ) if data.get("suspicious_reasons") else ""
+
+    benign_section = _list_section(
+        "Context (Benign / Low signal)",
+        data.get("benign_reasons", []),
+    ) if data.get("benign_reasons") else ""
+
+    actions_section = _list_section(
+        "Recommended Actions",
+        action_items,
+        emphasize=True,
+    ) if action_items else ""
+
+    yara_rules_section = _list_section(
+        "YARA Matched Rules",
+        yara_rules,
+        emphasize=True,
+    ) if yara_rules else ""
+
+    evidence_section = _list_section(
+        "Combined Evidence",
+        evidence,
+        emphasize=True,
+    ) if evidence else ""
+
     subtitle = f"Generated (UTC): {_safe(data.get('generated_utc', ''))}"
+
     body_html = f"""
 {_summary_tiles(data)}
 <div class="grid">
-  {_kv_table("Sample Metadata", sample_meta)}
-  {_kv_table("Combined Scoring", combined_meta, badge("Total", combined.get("total_score", 0)))}
-  {_kv_table("Spec Risk Analysis", spec_meta, badge("Spec Score", combined.get("subscores", {}).get("spec", 0)))}
-  {_kv_table("YARA Results", yara_meta, badge("Matches", yara.get("match_count", 0)))}
+  {sample_meta_html}
+  {combined_html}
+  {rationale_html}
+  {decoded_html}
+  {spec_html}
+  {yara_html}
 </div>
-{_list_section("YARA Matched Rules", yara_rules, emphasize=True) if yara_rules else ""}
-{_list_section("Combined Evidence", evidence, emphasize=True)}
-{_list_section("Spec Risk Notes", spec.get("risk_notes", []), emphasize=True)}
-{_list_section("Key Findings (Suspicious)", data.get("suspicious_reasons", []), emphasize=True)}
-{_list_section("Context (Benign / Low signal)", data.get("benign_reasons", []))}
-{_list_section("Recommended Actions", [re.sub(r'<[^>]+>', '', x) for x in re.findall(r'<li>(.*?)</li>', data.get("actions_html", ""))], emphasize=True)}
+{increased_section}
+{decreased_section}
+{notes_section}
+{decoded_strings_section}
+{decoder_notes_section}
+{yara_rules_section}
+{evidence_section}
+{spec_notes_section}
+{suspicious_section}
+{benign_section}
+{actions_section}
 """
+
     verdict = str(data.get("verdict", "UNKNOWN"))
     verdict_class = "sev-none"
     if verdict.upper() == "MALICIOUS":
@@ -483,7 +787,14 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     elif verdict.upper() == "LOW_RISK":
         verdict_class = "sev-low"
 
-    html_doc = report_page("Static Triage Ticket", subtitle, verdict, verdict_class, body_html)
+    html_doc = report_page(
+        "Static Triage Ticket",
+        subtitle,
+        verdict,
+        verdict_class,
+        body_html,
+    )
+
     report_html.write_text(html_doc, encoding="utf-8", errors="replace")
     return report_html
 
@@ -501,24 +812,36 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
 
     verdict = str(summary.get("verdict", "UNKNOWN"))
     score = int(summary.get("risk_score", 0) or 0)
-    confidence = str(summary.get("confidence", "")) or "N/A"
+    confidence = str(summary.get("confidence", "") or "N/A")
 
     file_sig = _first_line(case_dir / "file.txt")
     techs, match_count = _extract_attack_techniques_from_capa(case_dir / "capa.json")
     susp, ben = _top_reasons(summary, max_items=6)
-    counts = _ioc_counts(iocs_j)
+    counts = _ioc_counts_from_summary(summary, iocs_j)
     artifacts = _artifact_links(case_dir)
     api = _api_block(case_dir)
     spec = _spec_block(case_dir)
     combined = _combined_block(case_dir)
     yara = _yara_block(case_dir)
+    decoded_strings = _decoded_strings_block(summary)
+    verdict_rationale = _verdict_rationale_block(summary)
 
     signing = summary.get("signing") if isinstance(summary.get("signing"), dict) else {}
     signing_summary = (
         {
-            "signature_present": bool(signing.get("signature_present")) or bool(signing.get("subject")) or bool(signing.get("verify_ok")),
+            "signature_present": bool(signing.get("signature_present"))
+            or bool(signing.get("subject"))
+            or bool(signing.get("verify_ok")),
             "verified": bool(signing.get("verify_ok")),
-            "verification_status": signing.get("verification_status", "") or ("verified" if signing.get("verify_ok") else ("signed_unverified" if (signing.get("signature_present") or signing.get("subject")) else "unsigned")),
+            "verification_status": signing.get("verification_status", "") or (
+                "verified"
+                if signing.get("verify_ok")
+                else (
+                    "signed_unverified"
+                    if (signing.get("signature_present") or signing.get("subject"))
+                    else "unsigned"
+                )
+            ),
             "subject": signing.get("subject", "") or "",
             "tool": signing.get("tool", "") or "",
             "error": signing.get("error", "") or "",
@@ -551,6 +874,8 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
         "yara": yara,
         "spec": spec,
         "combined": combined,
+        "decoded_strings": decoded_strings,
+        "verdict_rationale": verdict_rationale,
     }
 
     report_md = _write_md(case_dir, data)
@@ -559,9 +884,14 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
     report_pdf: Optional[Path] = None
     try:
         from weasyprint import HTML  # type: ignore
+
         report_pdf = case_dir / "report.pdf"
         HTML(filename=str(report_html)).write_pdf(str(report_pdf))
     except Exception:
         report_pdf = None
 
-    return {"report_md": str(report_md), "report_html": str(report_html), "report_pdf": str(report_pdf) if report_pdf else None}
+    return {
+        "report_md": str(report_md),
+        "report_html": str(report_html),
+        "report_pdf": str(report_pdf) if report_pdf else None,
+    }
