@@ -85,6 +85,98 @@ def _ioc_counts(iocs: dict[str, Any]) -> dict[str, int]:
     }
 
 
+
+
+def _capa_evidence_block(case_dir: Path) -> dict[str, Any]:
+    capa_json_path = case_dir / "capa.json"
+    capa_txt_path = case_dir / "capa.txt"
+    if not capa_json_path.exists() and not capa_txt_path.exists():
+        return {"present": False, "techniques": [], "match_count": 0, "families": {}, "top_families": [], "top_rules": [], "analyst_notes": [], "family_confidence": {}}
+
+    techniques, match_count = _extract_attack_techniques_from_capa(capa_json_path)
+    candidate_rules: set[str] = set()
+
+    if capa_json_path.exists():
+        try:
+            capa_json = json.loads(capa_json_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            capa_json = {}
+
+        for key in ("rules", "rule_matches", "capabilities"):
+            block = capa_json.get(key)
+            if isinstance(block, dict):
+                for name in block.keys():
+                    s = str(name).strip()
+                    if 3 < len(s) < 140:
+                        candidate_rules.add(s)
+
+        def walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if str(k).lower() in {"name", "rule_name"} and isinstance(v, str):
+                        s = v.strip()
+                        if 3 < len(s) < 140:
+                            candidate_rules.add(s)
+                    walk(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+        walk(capa_json)
+
+    noisy = {"meta", "analysis", "strings", "sample", "rules", "matches", "name", "function-name", "basic block", "instruction", "feature", "characteristic"}
+    top_rules = []
+    for item in sorted(candidate_rules):
+        low = item.lower()
+        if low in noisy or low.startswith("namespace/"):
+            continue
+        top_rules.append(item)
+    top_rules = top_rules[:12]
+
+    family_patterns = {
+        "Persistence": [r"\bcreate service\b", r"\binstall service\b", r"\bservice persistence\b", r"\bscheduled task\b", r"\bautorun\b", r"\brun key\b", r"\bstartup folder\b", r"\bregistry run\b"],
+        "Network": [r"\bhttp\b", r"\bhttps\b", r"\burl\b", r"\bdns\b", r"\bsocket\b", r"\bconnect\b", r"\bdownload\b", r"\bupload\b", r"\bwininet\b", r"\bwinhttp\b"],
+        "Injection/Hollowing": [r"\binject\b", r"\bprocess hollow", r"\bhollowing\b", r"\breflective\b", r"\bshellcode\b", r"\bremote thread\b", r"\bwriteprocessmemory\b", r"\bcreateremotethread\b", r"\bprocess replacement\b", r"\bhook\b"],
+        "Defense Evasion": [r"\banti-analysis\b", r"\banti debug\b", r"\banti-debug\b", r"\bsandbox\b", r"\bvm detection\b", r"\bpacker\b", r"\bunhook\b", r"\bhide\b", r"\bevasion\b"],
+        "Execution": [r"\bcommand shell\b", r"\bpowershell\b", r"\bexecute\b", r"\bcreate process\b", r"\bspawn process\b", r"\bprocess creation\b", r"\bcmd\.exe\b", r"\brundll32\b"],
+        "Discovery": [r"\bcheck os version\b", r"\benumerate\b", r"\bwhoami\b", r"\bhostname\b", r"\bsystem information\b", r"\bquery registry\b", r"\bget computer name\b"],
+        "Credential Access": [r"\bcredential\b", r"\blsass\b", r"\bpassword\b", r"\blogon\b", r"\btoken\b"],
+        "Collection": [r"\bkeylog", r"\bscreen capture\b", r"\bclipboard\b", r"\baudio capture\b"],
+        "Crypto/Encoding": [r"\bxor\b", r"\bencrypt\b", r"\bdecrypt\b", r"\bbase64\b", r"\bencode\b", r"\bdecode\b", r"\bcrypt\b"],
+        "File / Archive Operations": [r"\bcreate directory\b", r"\bcreate file\b", r"\bopen file\b", r"\bwrite file\b", r"\bread file\b", r"\barchive\b", r"\bzip\b", r"\b7z\b", r"\bextract\b", r"\bcompress\b", r"\bdecompress\b"],
+        "Registry Interaction": [r"\bregistry\b", r"\bopen registry key\b", r"\bcreate or open registry key\b", r"\bquery registry\b", r"\bset registry\b"],
+    }
+
+    families = {}
+    family_confidence = {}
+    for family, patterns in family_patterns.items():
+        hits = 0
+        for rule in top_rules:
+            rule_l = rule.lower()
+            if any(re.search(pat, rule_l, flags=re.IGNORECASE) for pat in patterns):
+                hits += 1
+        if hits:
+            families[family] = hits
+            family_confidence[family] = "high" if hits >= 2 else "medium"
+
+    family_order = ["File / Archive Operations", "Registry Interaction", "Discovery", "Execution", "Crypto/Encoding", "Defense Evasion", "Persistence", "Network", "Credential Access", "Collection", "Injection/Hollowing"]
+    top_families = [name for name in family_order if name in families][:5]
+
+    analyst_notes = []
+    if top_families:
+        annotated = [f"{name} ({family_confidence.get(name, 'medium')})" for name in top_families[:4]]
+        analyst_notes.append("Likely behavior families from explicit capa rule names: " + ", ".join(annotated))
+    if "Persistence" in families:
+        analyst_notes.append("Persistence was only labeled because capa rule names explicitly referenced service, task, autorun, or run-key style behavior.")
+    if "Network" in families:
+        analyst_notes.append("Network was only labeled because capa rule names explicitly referenced connect, DNS, HTTP, URL, or socket behavior.")
+    if "Injection/Hollowing" in families:
+        analyst_notes.append("Injection/Hollowing was only labeled because capa rule names explicitly referenced injection or hollowing-related behavior.")
+    if techniques:
+        analyst_notes.append("ATT&CK techniques remain supporting evidence and should be reviewed together with strings, signing, imports, and runtime data.")
+    if not analyst_notes and match_count:
+        analyst_notes.append("capa produced behavioral matches, but none mapped cleanly to the stricter analyst family buckets.")
+
+    return {"present": True, "techniques": techniques[:25], "match_count": int(match_count or 0), "families": families, "top_families": top_families, "top_rules": top_rules[:10], "analyst_notes": analyst_notes[:6], "family_confidence": family_confidence}
 def _ioc_counts_from_summary(summary: dict[str, Any], iocs: dict[str, Any]) -> dict[str, int]:
     ioc_summary = summary.get("ioc_summary") if isinstance(summary.get("ioc_summary"), dict) else {}
     counts = ioc_summary.get("counts") if isinstance(ioc_summary.get("counts"), dict) else {}
@@ -536,13 +628,21 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
         lines.append("- Spec analysis artifact not present.")
     lines.append("")
 
+    capa = data.get("capa", {}) or {}
     lines.append("## ATT&CK / Behavior Density (capa)")
-    lines.append(f"- **Technique IDs:** `{len(data['techniques'])}`")
-    lines.append(f"- **Match Count (heuristic):** `{data['capa_match_count']}`")
-    if data["techniques"]:
-        lines.append(f"- **Techniques:** {', '.join(f'`{t}`' for t in data['techniques'][:20])}")
+    lines.append(f"- **Technique IDs:** `{len(capa.get('techniques', data.get('techniques', [])) or [])}`")
+    lines.append(f"- **Match Count (heuristic):** `{capa.get('match_count', data.get('capa_match_count', 0))}`")
+    if capa.get("top_families"):
+        fam_conf = capa.get("family_confidence", {}) if isinstance(capa.get("family_confidence"), dict) else {}
+        lines.append("- **Likely Behavior Families:** " + ", ".join(f"`{x}` ({fam_conf.get(x, 'medium')})" for x in capa.get("top_families", [])[:5]))
+    if capa.get("top_rules"):
+        lines.append("- **Top Rules:** " + ", ".join(f"`{x}`" for x in capa.get("top_rules", [])[:8]))
+    if capa.get("techniques"):
+        lines.append(f"- **Techniques:** {', '.join(f'`{t}`' for t in capa.get('techniques', [])[:20])}")
     else:
         lines.append("- No technique IDs detected in capa output.")
+    for note in capa.get("analyst_notes", [])[:4]:
+        lines.append(f"- {note}")
     lines.append("")
 
     lines.append("## IOC Summary")
@@ -569,6 +669,7 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     decoded = data.get("decoded_strings", {}) or {}
     yara = data.get("yara", {}) or {}
     spec = data.get("spec", {}) or {}
+    capa = data.get("capa", {}) or {}
 
     sample_meta = {
         "Name": data.get("filename", ""),
@@ -627,6 +728,17 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "File uploads": spec.get("scoring", {}).get("file_upload_endpoints", 0),
     }
 
+
+    capa_meta = {
+        "Present": capa.get("present", False),
+        "Technique IDs": len(capa.get("techniques", []) or []),
+        "Match Count": capa.get("match_count", data.get("capa_match_count", 0)),
+        "Top Families": ", ".join(
+            f"{name} ({(capa.get('family_confidence', {}) if isinstance(capa.get('family_confidence'), dict) else {}).get(name, 'medium')})"
+            for name in capa.get("top_families", [])[:4]
+        ) or "none",
+    }
+
     evidence = [
         f"{item.get('source', 'unknown')} | {item.get('rule', '')} | {item.get('points', 0):+} | {item.get('message', '')}"
         for item in combined.get("evidence", [])
@@ -649,6 +761,11 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         rationale_meta,
         badge("Confidence", verdict_rationale.get("confidence", data.get("confidence", "N/A"))),
     )
+    capa_html = _kv_table(
+        "Capa Evidence Summary",
+        capa_meta,
+        badge("Families", len(capa.get("top_families", []) or [])),
+    ) if capa.get("present") else ""
     # Only show Decoded Strings card if there is real decoded-string data
     show_decoded_card = (
         decoded.get("enabled", False)
@@ -747,6 +864,17 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         emphasize=True,
     ) if yara_rules else ""
 
+    capa_rules_section = _list_section(
+        "Top capa Rules",
+        capa.get("top_rules", []),
+        emphasize=True,
+    ) if capa.get("top_rules") else ""
+
+    capa_notes_section = _list_section(
+        "capa Analyst Notes",
+        capa.get("analyst_notes", []),
+    ) if capa.get("analyst_notes") else ""
+
     evidence_section = _list_section(
         "Combined Evidence",
         evidence,
@@ -771,6 +899,8 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
 {decoded_strings_section}
 {decoder_notes_section}
 {yara_rules_section}
+{capa_rules_section}
+{capa_notes_section}
 {evidence_section}
 {spec_notes_section}
 {suspicious_section}
@@ -816,6 +946,7 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
 
     file_sig = _first_line(case_dir / "file.txt")
     techs, match_count = _extract_attack_techniques_from_capa(case_dir / "capa.json")
+    capa = _capa_evidence_block(case_dir)
     susp, ben = _top_reasons(summary, max_items=6)
     counts = _ioc_counts_from_summary(summary, iocs_j)
     artifacts = _artifact_links(case_dir)
@@ -863,6 +994,7 @@ def generate_reports(case_dir: Path) -> dict[str, Any]:
         "file_sig": file_sig,
         "techniques": techs,
         "capa_match_count": match_count,
+        "capa": capa,
         "suspicious_reasons": susp,
         "benign_reasons": ben,
         "ioc_counts": counts,
