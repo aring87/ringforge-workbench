@@ -197,12 +197,32 @@ def _ioc_counts_from_summary(summary: dict[str, Any], iocs: dict[str, Any]) -> d
     return base
 
 
+
+
+def _normalize_suspicious_reason(reason: str, summary: dict[str, Any]) -> str:
+    sx = str(reason).strip()
+    low = sx.lower()
+    score = int(summary.get("risk_score", 0) or 0)
+    verdict = str(summary.get("verdict", "") or "").upper()
+    signed = bool(((summary.get("signing") if isinstance(summary.get("signing"), dict) else {}) or {}).get("verify_ok"))
+    vt = summary.get("virustotal") if isinstance(summary.get("virustotal"), dict) else {}
+    vt_bad = int(vt.get("malicious", 0) or 0) + int(vt.get("suspicious", 0) or 0)
+
+    attack_like = ("att&ck" in low) or ("technique" in low and "capa" in low)
+    if attack_like and score < 60 and verdict in {"LOW_RISK", "MEDIUM_RISK"} and signed and vt_bad == 0:
+        return sx.replace("High-signal ", "Observed ").replace("present", "observed (context only)")
+    if attack_like and score < 45:
+        return sx.replace("High-signal ", "Observed ").replace("present", "observed (supporting evidence)")
+    return sx
+
 def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str], List[str]]:
     rb = summary.get("reason_breakdown")
     if isinstance(rb, dict):
         susp = rb.get("suspicious", []) if isinstance(rb.get("suspicious"), list) else []
         ben = rb.get("benign", []) if isinstance(rb.get("benign"), list) else []
-        return ([str(x) for x in susp][:max_items], [str(x) for x in ben][:max_items])
+        suspicious = [_normalize_suspicious_reason(str(x), summary) for x in susp][:max_items]
+        benign = [str(x) for x in ben][:max_items]
+        return (suspicious, benign)
 
     reasons = summary.get("reasons")
     if isinstance(reasons, list):
@@ -214,12 +234,15 @@ def _top_reasons(summary: dict[str, Any], max_items: int = 6) -> Tuple[List[str]
                 suspicious_out.append(sx.replace("SUSPICIOUS:", "", 1).strip())
             elif sx.upper().startswith("BENIGN:"):
                 benign_out.append(sx.replace("BENIGN:", "", 1).strip())
+        suspicious_out = [_normalize_suspicious_reason(str(x), summary) for x in suspicious_out]
         return (suspicious_out[:max_items], benign_out[:max_items])
 
     if isinstance(reasons, dict):
         suspicious = reasons.get("suspicious", []) if isinstance(reasons.get("suspicious"), list) else []
         benign = reasons.get("benign", []) if isinstance(reasons.get("benign"), list) else []
-        return ([str(x) for x in suspicious][:max_items], [str(x) for x in benign][:max_items])
+        suspicious_out = [_normalize_suspicious_reason(str(x), summary) for x in suspicious][:max_items]
+        benign_out = [str(x) for x in benign][:max_items]
+        return (suspicious_out, benign_out)
 
     return ([], [])
 

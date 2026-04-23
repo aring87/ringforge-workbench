@@ -103,6 +103,8 @@ class App(tk.Tk):
             self.open_case_btn = None
             self.open_html_btn = None
             self.open_pdf_btn = None
+            self.run_btn = None
+            self.cancel_btn = None
             self.dynamic_window = None
             self.spec_window = None
             self.api_window = None
@@ -556,10 +558,43 @@ class App(tk.Tk):
             ),
         )
 
+    def _set_static_running_state(self, running: bool):
+        try:
+            if self.run_btn is not None:
+                self.run_btn.configure(state="disabled" if running else "normal")
+        except Exception:
+            pass
+
+        try:
+            if self.cancel_btn is not None:
+                self.cancel_btn.configure(state="normal" if running else "disabled")
+        except Exception:
+            pass
+
     def _start_analysis(self):
-        self.static_controller.start_analysis()
+        self._set_static_running_state(True)
+        try:
+            self.static_controller.start_analysis()
+        except Exception:
+            self._set_static_running_state(False)
+            raise
+
+    def _cancel_analysis(self):
+        self.running_var.set("Cancelling...")
+        self.status_var.set("Cancellation requested.")
+        self._set_static_running_state(False)
+
+        try:
+            cancel_fn = getattr(self.static_controller, "cancel_analysis", None)
+            if callable(cancel_fn):
+                cancel_fn()
+            else:
+                self.status_var.set("Cancel button added. Controller cancel wiring is still needed.")
+        except Exception as e:
+            self.status_var.set(f"Cancel failed: {e}")
 
     def _on_done(self, rc: int):
+        self._set_static_running_state(False)
         self.static_controller.on_done(rc)
 
     def _drain_output(self):

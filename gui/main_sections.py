@@ -268,7 +268,7 @@ def build_configuration_section(app, parent):
 
     run_row = ttk.Frame(config)
     run_row.grid(row=2, column=0, sticky="ew", padx=10, pady=(8, 10))
-    run_row.columnconfigure(1, weight=1)
+    run_row.columnconfigure(2, weight=1)
 
     app.run_btn = ttk.Button(
         run_row,
@@ -279,18 +279,28 @@ def build_configuration_section(app, parent):
     )
     app.run_btn.grid(row=0, column=0, sticky="w", padx=(0, 8), ipady=4)
 
+    app.cancel_btn = ttk.Button(
+        run_row,
+        text="Cancel",
+        style="Action.TButton",
+        width=14,
+        command=app._cancel_analysis,
+        state="disabled",
+    )
+    app.cancel_btn.grid(row=0, column=1, sticky="w", padx=(0, 12), ipady=4)
+
     tools_var = getattr(app, "tools_status_var", app.status_var)
     ttk.Label(
         run_row,
         textvariable=tools_var,
         anchor="w",
-    ).grid(row=0, column=1, sticky="w", padx=(0, 12))
+    ).grid(row=0, column=2, sticky="w", padx=(0, 12))
 
     ttk.Label(
         run_row,
         textvariable=app.running_var,
         anchor="e",
-    ).grid(row=0, column=2, sticky="e")
+    ).grid(row=0, column=3, sticky="e")
 
     return config
 

@@ -5,6 +5,8 @@ import os
 import queue
 import threading
 import time
+import subprocess
+import signal
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox
@@ -28,6 +30,7 @@ from gui.gui_utils import (
 class StaticAnalysisController:
     def __init__(self, app):
         self.app = app
+        self.cancel_event = threading.Event()
         
     def _save_static_test_summary(self, case_dir: Path):
         app = self.app
@@ -75,10 +78,12 @@ class StaticAnalysisController:
             sample, case, case_root, rules, sigs = app._validate_inputs()
         except Exception as e:
             messagebox.showerror("Analysis failed", str(e))
+            app._set_static_running_state(False)
             return
 
         if not app.CLI_SCRIPT.exists():
             messagebox.showerror("Missing CLI", f"Could not find CLI script:\n{app.CLI_SCRIPT}")
+            app._set_static_running_state(False)
             return
 
         extract, subfiles, limit, sm = app._effective_settings()
@@ -99,6 +104,8 @@ class StaticAnalysisController:
         app.case_dir_detected = None
         app.stop_tail.set()
         app.stop_tail.clear()
+        self.cancel_event.clear()
+        app.active_process = None
 
         app._reset_progress()
         app._reset_result_summary()
@@ -112,21 +119,99 @@ class StaticAnalysisController:
         self.start_log_tail(case_root / case)
 
         app.run_btn.configure(state="disabled")
+        if getattr(app, "cancel_btn", None) is not None:
+            app.cancel_btn.configure(state="normal")
         app.running_var.set("Running...")
 
         def worker():
             rc = 1
             try:
-                rc = run_cli_streaming(py_exe, args, env_overrides, app.output_q)
+                cmd = [str(py_exe)] + [str(x) for x in args]
+                env = os.environ.copy()
+                env.update(env_overrides)
+
+                creationflags = 0
+                if os.name == "nt":
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    env=env,
+                    creationflags=creationflags,
+                )
+                app.active_process = proc
+
+                if proc.stdout is not None:
+                    for line in iter(proc.stdout.readline, ""):
+                        if self.cancel_event.is_set():
+                            self._terminate_process(proc)
+                            break
+                        app.output_q.put(line)
+
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._terminate_process(proc)
+                    proc.wait(timeout=5)
+
+                rc = proc.returncode if proc.returncode is not None else 1
+
+                if self.cancel_event.is_set():
+                    rc = -1
+
             except Exception as e:
                 app.output_q.put(f"[error] {e}\n")
                 rc = 1
             finally:
+                app.active_process = None
+                if rc == -1:
+                    app.output_q.put("\n[cancelled] analysis cancelled by user\n")
                 app.output_q.put(f"\n[done] exit_code={rc}\n")
                 app.after(0, lambda: self.on_done(rc))
 
         app.worker_thread = threading.Thread(target=worker, daemon=True)
         app.worker_thread.start()
+
+    def cancel_analysis(self):
+        app = self.app
+        self.cancel_event.set()
+        app.stop_tail.set()
+        app.running_var.set("Cancelling...")
+
+        proc = getattr(app, "active_process", None)
+        if proc is not None:
+            self._terminate_process(proc)
+
+    def _terminate_process(self, proc):
+        try:
+            if proc.poll() is not None:
+                return
+
+            if os.name == "nt":
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                if proc.poll() is None:
+                    proc.kill()
+            else:
+                try:
+                    proc.send_signal(signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+                time.sleep(0.5)
+                if proc.poll() is None:
+                    proc.kill()
+        except Exception:
+            pass
 
     def on_done(self, rc: int):
         app = self.app
@@ -162,10 +247,15 @@ class StaticAnalysisController:
             app._recalc_overall()
 
         app.run_btn.configure(state="normal")
+        if getattr(app, "cancel_btn", None) is not None:
+            app.cancel_btn.configure(state="disabled")
         app.running_var.set("Idle")
 
         if rc == 0:
             messagebox.showinfo("Completed", "Analysis completed successfully.")
+        elif rc == -1:
+            app.status_var.set("Analysis cancelled.")
+            messagebox.showinfo("Cancelled", "Analysis was cancelled.")
         else:
             messagebox.showwarning("Completed", f"Analysis finished with exit code {rc}.\nCheck output for details.")
 

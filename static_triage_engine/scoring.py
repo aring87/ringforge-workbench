@@ -199,6 +199,17 @@ def score_static(
             )
         )
 
+    if likely_benign_installer_context:
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "installer_context",
+                -2,
+                "Installer-like package with only weak VirusTotal noise and no YARA matches; ATT&CK/capa evidence dampened",
+            )
+        )
+        score -= 2
+
     if not company:
         score += 2
         evidence.append(ScoreEvidence("static", "missing_company", 2, "Missing CompanyName in version information"))
