@@ -176,6 +176,11 @@ def score_static(
 
     vt = summary.get("virustotal", {}) if isinstance(summary.get("virustotal"), dict) else {}
     weak_vt_noise = _is_weak_vt_noise(vt)
+    clean_vt_signal = (
+        bool(vt.get("found", False))
+        and _safe_count(vt.get("malicious", 0)) == 0
+        and _safe_count(vt.get("suspicious", 0)) == 0
+    )
 
     yara_matched = bool(yara_results.get("matched", False)) if isinstance(yara_results, dict) else False
     likely_benign_installer_context = looks_like_installer and weak_vt_noise and not yara_matched
