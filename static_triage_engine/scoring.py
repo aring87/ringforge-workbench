@@ -72,16 +72,13 @@ def _safe_count(value: Any) -> int:
     return 0
 
 
-def severity_from_score(score: int) -> str:
-    if score >= 80:
-        return "Critical"
-    if score >= 65:
-        return "High"
-    if score >= 45:
-        return "Medium"
-    if score >= 20:
-        return "Low"
-    return "Informational"
+def _is_weak_vt_noise(vt: dict[str, Any]) -> bool:
+    if not isinstance(vt, dict):
+        return False
+    vt_found = bool(vt.get("found", False))
+    vt_mal = _safe_count(vt.get("malicious", 0))
+    vt_susp = _safe_count(vt.get("suspicious", 0))
+    return vt_found and 1 <= vt_mal <= 2 and vt_susp == 0
 
 
 def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple[str, str]:
@@ -108,7 +105,7 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
     if vt_found:
         strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 60)
         medium_vt_suspicious = vt_mal >= 5 or vt_susp >= 10 or (vt_mal + vt_susp) >= 8
-        weak_vt_noise = 1 <= vt_mal <= 2 and vt_susp == 0
+        weak_vt_noise = _is_weak_vt_noise(vt)
         clean_vt_signal = vt_mal == 0 and vt_susp == 0 and (vt_harmless >= 1 or vt_undetected >= 10)
 
         if strong_vt_malicious:
@@ -172,6 +169,13 @@ def score_static(
     looks_like_installer = _looks_like_installer(company, product, desc, summary, case_dir)
     flags["looks_like_installer"] = looks_like_installer
 
+    vt = summary.get("virustotal", {}) if isinstance(summary.get("virustotal"), dict) else {}
+    weak_vt_noise = _is_weak_vt_noise(vt)
+
+    yara_matched = bool(yara_results.get("matched", False)) if isinstance(yara_results, dict) else False
+    likely_benign_installer_context = looks_like_installer and weak_vt_noise and not yara_matched
+    flags["likely_benign_installer_context"] = likely_benign_installer_context
+        
     signing = _load_signing(case_dir)
     verify_ok = bool(signing.get("verify_ok"))
     timestamp_verified = bool(signing.get("timestamp_verified"))
