@@ -41,6 +41,11 @@ KNOWN_BENIGN_DOMAIN_SUFFIXES = {
 }
 KNOWN_BENIGN_IPS = {"8.8.8.8", "8.8.4.4", "1.1.1.1", "9.9.9.9"}
 
+STATIC_SCORE_MAX = 40
+STATIC_LOW_RISK_THRESHOLD = 8
+STATIC_SUSPICIOUS_THRESHOLD = 20
+STATIC_MALICIOUS_THRESHOLD = 30
+
 
 def _safe_load_json(path: Path) -> dict[str, Any]:
     try:
@@ -92,25 +97,25 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
     verdict = "BENIGN"
     confidence = "Low confidence"
 
-    if score >= 75:
+    if score >= STATIC_MALICIOUS_THRESHOLD:
         verdict = "MALICIOUS"
         confidence = "High confidence"
-    elif score >= 50:
+    elif score >= STATIC_SUSPICIOUS_THRESHOLD:
         verdict = "SUSPICIOUS"
         confidence = "Moderate confidence"
-    elif score >= 20:
+    elif score >= STATIC_LOW_RISK_THRESHOLD:
         verdict = "LOW_RISK"
         confidence = "Low confidence"
 
     if vt_found:
-        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 60)
+        strong_vt_malicious = vt_mal >= 15 or (vt_mal >= 8 and score >= 24)
         medium_vt_suspicious = vt_mal >= 5 or vt_susp >= 10 or (vt_mal + vt_susp) >= 8
         weak_vt_noise = _is_weak_vt_noise(vt)
         clean_vt_signal = vt_mal == 0 and vt_susp == 0 and (vt_harmless >= 1 or vt_undetected >= 10)
 
         if strong_vt_malicious:
             verdict = "MALICIOUS"
-            confidence = "High confidence" if (vt_mal >= 15 or score >= 90) else "Moderate confidence"
+            confidence = "High confidence" if (vt_mal >= 15 or score >= 36) else "Moderate confidence"
 
         elif medium_vt_suspicious and verdict != "MALICIOUS":
             if score >= 75:
@@ -127,15 +132,15 @@ def classify_verdict(score: int, summary: dict[str, Any] | None = None) -> tuple
                 confidence = "Moderate confidence"
 
         elif weak_vt_noise:
-            if score < 50:
-                verdict = "LOW_RISK" if score >= 20 else "BENIGN"
+            if score < STATIC_SUSPICIOUS_THRESHOLD:
+                verdict = "LOW_RISK" if score >= STATIC_LOW_RISK_THRESHOLD else "BENIGN"
                 confidence = "Low confidence"
 
         elif clean_vt_signal:
             if score < 50:
                 verdict = "BENIGN"
                 confidence = "Moderate confidence" if (vt_harmless >= 3 or vt_undetected >= 20) else "Low confidence"
-            elif score < 75:
+            elif score < STATIC_MALICIOUS_THRESHOLD:
                 verdict = "LOW_RISK"
                 confidence = "Low confidence"
 
@@ -181,6 +186,8 @@ def score_static(
     timestamp_verified = bool(signing.get("timestamp_verified"))
     signer_subject = (signing.get("subject") or "").strip()
     trusted_signed = verify_ok and timestamp_verified
+    likely_trusted_benign_context = trusted_signed and clean_vt_signal and not yara_matched
+    flags["likely_trusted_benign_context"] = likely_trusted_benign_context
 
     if trusted_signed:
         evidence.append(
@@ -214,16 +221,26 @@ def score_static(
         )
         score -= 2
 
-    if not company:
+    if likely_trusted_benign_context and (not company or not product or not desc or not original_filename):
+        evidence.append(
+            ScoreEvidence(
+                "static",
+                "version_info_dampened",
+                0,
+                "Version-info penalties dampened for trusted-signed file with clean VirusTotal signal and no YARA matches",
+            )
+        )
+
+    if not company and not likely_trusted_benign_context:
         score += 2
         evidence.append(ScoreEvidence("static", "missing_company", 2, "Missing CompanyName in version information"))
-    if not product:
+    if not product and not likely_trusted_benign_context:
         score += 2
         evidence.append(ScoreEvidence("static", "missing_product", 2, "Missing ProductName in version information"))
-    if not desc:
+    if not desc and not likely_trusted_benign_context:
         score += 1
         evidence.append(ScoreEvidence("static", "missing_description", 1, "Missing FileDescription in version information"))
-    if not original_filename:
+    if not original_filename and not likely_trusted_benign_context:
         score += 1
         evidence.append(ScoreEvidence("static", "missing_original_filename", 1, "Missing OriginalFilename in version information"))
 
@@ -260,7 +277,7 @@ def score_static(
             )
         )
     elif techs:
-        add = 4 if looks_like_installer else 6
+        add = 2 if likely_trusted_benign_context else (4 if looks_like_installer else 6)
         score += add
         evidence.append(
             ScoreEvidence(
@@ -272,7 +289,7 @@ def score_static(
         )
 
     if other and not high:
-        add = min(5, 1 + len(other) // 2)
+        add = 1 if likely_trusted_benign_context else min(5, 1 + len(other) // 2)
         score += add
         evidence.append(
             ScoreEvidence(
@@ -287,7 +304,7 @@ def score_static(
     capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
     match_count = capa_blob.count('"matches"')
     if match_count > 0:
-        add = min(6, 1 + int(match_count / 40))
+        add = 1 if likely_trusted_benign_context else min(6, 1 + int(match_count / 40))
         score += add
         evidence.append(ScoreEvidence("static", "capa_density", add, f"capa match density observed: {match_count}"))
 
@@ -303,7 +320,7 @@ def score_static(
     evidence.extend(yara_add[1])
     flags.update(yara_add[2])
 
-    score = max(0, min(40, score))
+    score = max(0, min(STATIC_SCORE_MAX, score))
     return score, evidence, flags
 
 
@@ -783,9 +800,9 @@ def score_risk(
     static_score, evidence, _ = score_static(summary, iocs, pe_meta, lief_meta, None)
     suspicious = [e.message for e in evidence if e.points > 0]
     benign = [e.message for e in evidence if e.points <= 0]
-    if static_score < 40:
+    if static_score < STATIC_SUSPICIOUS_THRESHOLD:
         benign.append("Low overall heuristic score")
-    elif static_score < 75:
+    elif static_score < STATIC_MALICIOUS_THRESHOLD:
         benign.append("Moderate overall heuristic score")
     else:
         suspicious.append("High overall heuristic score")
