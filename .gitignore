@@ -121,4 +121,4 @@ tools/*.txt
 # Keep Procmon configs tracked
 # -----------------------------
 !tools/procmon-configs/
-!tools/procmon-configs/*.pmc
+!tools/procmon-configs/*.pmctools/yara/
