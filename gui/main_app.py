@@ -140,7 +140,7 @@ class App(tk.Tk):
 
             self.update_idletasks()
             self.deiconify()
-            self.state("normal")
+            self._autosize_to_screen()
             self.lift()
             self.focus_force()
 
@@ -150,6 +150,29 @@ class App(tk.Tk):
             import traceback
             traceback.print_exc()
             raise
+
+    def _autosize_to_screen(self):
+        """
+        Open large enough to show all major sections by default.
+        Prefer maximized window state; fallback to near-fullscreen geometry.
+        """
+        try:
+            self.state("zoomed")
+            return
+        except Exception:
+            pass
+
+        try:
+            self.attributes("-zoomed", True)
+            return
+        except Exception:
+            pass
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        target_w = max(self.minsize()[0], min(screen_w - 40, 1920))
+        target_h = max(self.minsize()[1], min(screen_h - 80, 1240))
+        self.geometry(f"{target_w}x{target_h}+20+20")
 
     def _build_ui(self):
         outer = {"padx": 12, "pady": 8}

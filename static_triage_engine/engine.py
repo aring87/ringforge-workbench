@@ -1121,11 +1121,15 @@ def run_case(
 
     _write_json(case_dir / "summary.json", summary)
 
+    log_line(case_dir, "STEP_START report")
     emit(on_event, "start", "report", {})
     rep = generate_reports(case_dir)
+    log_line(case_dir, "STEP_DONE report rc=0")
     emit(on_event, "done", "report", rep)
 
     total_sec = round(time.time() - total_start, 3)
+    log_line(case_dir, "STEP_START finalize")
+    log_line(case_dir, "STEP_DONE finalize rc=0")
     log_line(case_dir, f"CASE_DONE total_sec={total_sec} verdict={verdict} score={score}")
 
     try:
