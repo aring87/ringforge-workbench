@@ -122,3 +122,4 @@ tools/*.txt
 # -----------------------------
 !tools/procmon-configs/
 !tools/procmon-configs/*.pmctools/yara/
+tools/yara/
