@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -79,6 +81,91 @@ def _emit(status_cb: StatusCallback, message: str) -> None:
     if status_cb:
         status_cb(message)
 
+
+def _seconds_between(started_at: str, ended_at: str) -> int:
+    start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+    duration = int((end_dt - start_dt).total_seconds())
+    return max(duration, 0)
+
+
+def _build_capture_quality(
+    *,
+    procmon_enabled: bool,
+    procmon_started: bool,
+    sample_launch_attempted: bool,
+    exit_code: int | None,
+    procmon_summary: dict[str, Any],
+) -> dict[str, Any]:
+    total_events = int(procmon_summary.get("total_events", 0) or 0)
+    checks = [
+        {
+            "name": "sample_launch_attempted",
+            "passed": sample_launch_attempted,
+            "detail": "Sample launch was attempted." if sample_launch_attempted else "Sample launch was not attempted.",
+        },
+        {
+            "name": "sample_exit_captured",
+            "passed": exit_code is not None,
+            "detail": f"Sample exit code captured: {exit_code}" if exit_code is not None else "Sample exit code not captured.",
+        },
+    ]
+
+    if procmon_enabled:
+        checks.extend(
+            [
+                {
+                    "name": "procmon_started",
+                    "passed": procmon_started,
+                    "detail": "Procmon capture started." if procmon_started else "Procmon did not start.",
+                },
+                {
+                    "name": "procmon_events_parsed",
+                    "passed": total_events > 0,
+                    "detail": f"Parsed {total_events} Procmon events."
+                    if total_events > 0
+                    else "No Procmon events were parsed.",
+                },
+            ]
+        )
+
+    passed_count = sum(1 for check in checks if check.get("passed"))
+    score = int((passed_count / len(checks)) * 100) if checks else 0
+
+    if score >= 90:
+        status = "good"
+    elif score >= 60:
+        status = "partial"
+    else:
+        status = "poor"
+
+    return {
+        "score": score,
+        "status": status,
+        "checks": checks,
+    }
+
+
+def _build_behavior_summary(
+    findings_summary: dict[str, Any],
+    task_diff_summary: dict[str, Any],
+    service_diff_summary: dict[str, Any],
+) -> dict[str, int]:
+    counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
+    task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
+    service_counts = service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {}
+
+    return {
+        "interesting_events": int(counts.get("interesting_events", 0) or 0),
+        "process_creates": int(counts.get("process_creates", 0) or 0),
+        "network_events": int(counts.get("network_events", 0) or 0),
+        "file_write_events": int(counts.get("file_write_events", 0) or 0),
+        "persistence_hits": int(counts.get("persistence_hits", 0) or 0),
+        "suspicious_new_or_modified_tasks": int(task_counts.get("suspicious_new_or_modified", 0) or 0),
+        "suspicious_new_or_modified_services": int(service_counts.get("suspicious_new_or_modified", 0) or 0),
+    }
+
+
 def calculate_dynamic_score(
     findings_summary: dict[str, Any],
     task_diff_summary: dict[str, Any],
@@ -142,6 +229,11 @@ def run_dynamic_analysis(
     case_dir = Path(config["case_dir"])
     timeout_seconds = int(config.get("timeout_seconds", 180))
 
+    run_profile = str(config.get("run_profile", "standard") or "standard").strip().lower()
+    if run_profile not in {"quick", "standard", "deep"}:
+        run_profile = "standard"
+    run_id = str(config.get("run_id") or uuid.uuid4())
+
     _emit(status_cb, "Preparing case folders...")
     paths = build_case_paths(case_dir)
 
@@ -194,6 +286,7 @@ def run_dynamic_analysis(
     task_diff_summary: dict[str, Any] = {}
     service_diff_summary: dict[str, Any] = {}
     procmon_started = False
+    sample_launch_attempted = False
 
     try:
         if procmon_enabled:
@@ -206,6 +299,7 @@ def run_dynamic_analysis(
             procmon_started = True
 
         _emit(status_cb, f"Launching sample and waiting up to {timeout_seconds} seconds...")
+        sample_launch_attempted = True
         exit_code = run_sample(sample_path, timeout_seconds)
         _emit(status_cb, f"Sample exited with code {exit_code}.")
 
@@ -260,7 +354,20 @@ def run_dynamic_analysis(
             write_json(findings_json, findings_summary)
 
     ended_at = utc_now_iso()
-    
+    duration_seconds = _seconds_between(started_at, ended_at)
+    capture_quality = _build_capture_quality(
+        procmon_enabled=procmon_enabled,
+        procmon_started=procmon_started,
+        sample_launch_attempted=sample_launch_attempted,
+        exit_code=exit_code,
+        procmon_summary=procmon_summary,
+    )
+    behavior_summary = _build_behavior_summary(
+        findings_summary=findings_summary,
+        task_diff_summary=task_diff_summary,
+        service_diff_summary=service_diff_summary,
+    )
+
     score_data = calculate_dynamic_score(
         findings_summary=findings_summary,
         task_diff_summary=task_diff_summary,
@@ -269,11 +376,17 @@ def run_dynamic_analysis(
     )
 
     summary = {
+        "schema_version": "dynamic-1.0",
+        "run_id": run_id,
+        "run_profile": run_profile,
         "sample": sample_info,
         "started_at_utc": started_at,
         "ended_at_utc": ended_at,
+        "duration_seconds": duration_seconds,
         "exit_code": exit_code,
         "procmon_enabled": procmon_enabled,
+        "capture_quality": capture_quality,
+        "behavior_summary": behavior_summary,
         "score": score_data["score"],
         "severity": score_data["severity"],
         "verdict": score_data["verdict"],
