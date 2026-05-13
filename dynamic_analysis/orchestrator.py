@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import re
 import subprocess
 import uuid
 from datetime import datetime
@@ -37,8 +39,26 @@ from dynamic_analysis.utils import (
     write_json,
 )
 
-
 StatusCallback = Optional[Callable[[str], None]]
+
+
+def _slugify(value: str, fallback: str = "dynamic_test") -> str:
+    text = (value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9._-]+", "_", text)
+    text = text.strip("._-")
+    return text or fallback
+
+
+def _build_run_case_dir(base_case_dir: Path, run_id: str, test_name: str | None = None) -> Path:
+    runs_root = base_case_dir / "dynamic_runs"
+    ensure_dir(runs_root)
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    safe_test = _slugify(test_name or "dynamic_test", fallback="dynamic_test")
+    short_id = run_id.split("-")[0]
+    run_dir = runs_root / f"{safe_test}_{timestamp}_{short_id}"
+    ensure_dir(run_dir)
+    return run_dir
 
 
 def build_case_paths(case_dir: str | Path) -> dict[str, Path]:
@@ -51,6 +71,7 @@ def build_case_paths(case_dir: str | Path) -> dict[str, Path]:
         "persistence": base / "persistence",
         "files": base / "files",
         "reports": base / "reports",
+        "autoruns": base / "autoruns",
     }
 
     for p in paths.values():
@@ -89,6 +110,14 @@ def _seconds_between(started_at: str, ended_at: str) -> int:
     return max(duration, 0)
 
 
+def _sum_numeric_values(data: dict[str, Any]) -> int:
+    total = 0
+    for value in data.values():
+        if isinstance(value, (int, float)):
+            total += int(value)
+    return total
+
+
 def _build_capture_quality(
     *,
     procmon_enabled: bool,
@@ -97,7 +126,8 @@ def _build_capture_quality(
     exit_code: int | None,
     procmon_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    total_events = int(procmon_summary.get("total_events", 0) or 0)
+    total_events = _sum_numeric_values(procmon_summary)
+
     checks = [
         {
             "name": "sample_launch_attempted",
@@ -129,7 +159,7 @@ def _build_capture_quality(
             ]
         )
 
-    passed_count = sum(1 for check in checks if check.get("passed"))
+    passed_count = sum(1 for c in checks if c.get("passed"))
     score = int((passed_count / len(checks)) * 100) if checks else 0
 
     if score >= 90:
@@ -142,6 +172,7 @@ def _build_capture_quality(
     return {
         "score": score,
         "status": status,
+        "procmon_total_events": total_events,
         "checks": checks,
     }
 
@@ -150,10 +181,12 @@ def _build_behavior_summary(
     findings_summary: dict[str, Any],
     task_diff_summary: dict[str, Any],
     service_diff_summary: dict[str, Any],
+    autoruns_diff_summary: dict[str, Any],
 ) -> dict[str, int]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
     service_counts = service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {}
+    autoruns_counts = autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {}
 
     return {
         "interesting_events": int(counts.get("interesting_events", 0) or 0),
@@ -163,7 +196,334 @@ def _build_behavior_summary(
         "persistence_hits": int(counts.get("persistence_hits", 0) or 0),
         "suspicious_new_or_modified_tasks": int(task_counts.get("suspicious_new_or_modified", 0) or 0),
         "suspicious_new_or_modified_services": int(service_counts.get("suspicious_new_or_modified", 0) or 0),
+        "autoruns_new_entries": int(autoruns_counts.get("new_entries", 0) or 0),
+        "autoruns_modified_entries": int(autoruns_counts.get("modified_entries", 0) or 0),
+        "autoruns_suspicious_new_or_modified": int(autoruns_counts.get("suspicious_new_or_modified", 0) or 0),
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Autorunsc / Autoruns persistence snapshot support
+# ---------------------------------------------------------------------------
+
+AUTORUNS_SUSPICIOUS_PATH_MARKERS = (
+    "\\appdata\\",
+    "\\temp\\",
+    "\\tmp\\",
+    "\\programdata\\",
+    "\\users\\public\\",
+    "\\downloads\\",
+    "\\recycle",
+)
+
+AUTORUNS_HIGH_SIGNAL_CATEGORIES = (
+    "logon",
+    "scheduled tasks",
+    "services",
+    "drivers",
+    "winlogon",
+    "appinit",
+    "image hijacks",
+    "known dlls",
+    "boot execute",
+    "wmi",
+)
+
+
+def _default_autorunsc_path() -> Path:
+    """
+    Default RingForge tool path:
+        <project_root>\\tools\\autorunsc64.exe
+
+    This file lives in:
+        dynamic_analysis\\orchestrator.py
+    so parents[1] is the project root.
+    """
+    return Path(__file__).resolve().parents[1] / "tools" / "autorunsc64.exe"
+
+
+def _run_autorunsc_snapshot(
+    *,
+    autorunsc_path: str | Path,
+    output_csv: Path,
+    deep_scan: bool = False,
+    timeout_seconds: int = 180,
+) -> dict[str, Any]:
+    """
+    Run autorunsc and save a CSV snapshot.
+
+    Fast/default mode:
+        autorunsc64.exe -accepteula -a * -c
+
+    Deep mode:
+        adds -h -s for hashes and signature verification.
+
+    Returns a small status dictionary for inclusion in run_config/summary.
+    """
+    exe = Path(autorunsc_path)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    result = {
+        "enabled": True,
+        "tool_path": str(exe),
+        "output_csv": str(output_csv),
+        "deep_scan": bool(deep_scan),
+        "success": False,
+        "returncode": None,
+        "error": "",
+    }
+
+    if not exe.exists():
+        result["error"] = f"autorunsc executable not found: {exe}"
+        return result
+
+    args = [str(exe), "-accepteula", "-a", "*", "-c"]
+    if deep_scan:
+        args.extend(["-h", "-s"])
+
+    try:
+        with output_csv.open("w", encoding="utf-8", errors="replace", newline="") as f:
+            proc = subprocess.run(
+                args,
+                stdout=f,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+
+        result["returncode"] = int(proc.returncode)
+        result["stderr"] = (proc.stderr or "").strip()[:4000]
+        result["success"] = output_csv.exists() and output_csv.stat().st_size > 0
+
+        if proc.returncode not in (0, 1):
+            # Autorunsc may return non-zero in some environments while still
+            # producing useful output, so do not fail the whole dynamic run.
+            result["error"] = f"autorunsc returned {proc.returncode}"
+
+    except subprocess.TimeoutExpired:
+        result["error"] = f"autorunsc timed out after {timeout_seconds} seconds"
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+def _read_autoruns_csv(csv_path: Path) -> list[dict[str, str]]:
+    """
+    Read Autorunsc CSV output.
+
+    Handles both formats:
+      1. Banner lines followed by the CSV header
+      2. CSV header on the first line
+
+    Fast mode header usually looks like:
+      Time,Entry Location,Entry,Enabled,Category,Profile,Description,Company,Image Path,Version,Launch String
+
+    Deep mode may include extra hash/signature columns:
+      Time,Entry Location,Entry,Enabled,Category,Profile,Description,Signer,Company,Image Path,...
+    """
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        return []
+
+    raw_text = ""
+    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "cp1252"):
+        try:
+            raw_text = csv_path.read_text(encoding=enc, errors="replace")
+            if "Entry Location" in raw_text and "Image Path" in raw_text:
+                break
+        except Exception:
+            continue
+
+    if not raw_text:
+        return []
+
+    raw_lines = [line.strip("\ufeff") for line in raw_text.splitlines() if line.strip()]
+    if not raw_lines:
+        return []
+
+    header_index = None
+    for idx, line in enumerate(raw_lines):
+        normalized = line.strip().lower().replace("\ufeff", "")
+        if normalized.startswith("time,entry location,entry"):
+            header_index = idx
+            break
+
+    if header_index is None:
+        for idx, line in enumerate(raw_lines):
+            lower = line.lower()
+            if "entry location" in lower and "image path" in lower and "launch string" in lower:
+                header_index = idx
+                break
+
+    if header_index is None:
+        return []
+
+    csv_lines = raw_lines[header_index:]
+    rows: list[dict[str, str]] = []
+
+    try:
+        reader = csv.DictReader(csv_lines)
+        for row in reader:
+            if not row:
+                continue
+
+            normalized = {
+                str(k or "").strip().replace("\ufeff", ""): str(v or "").strip()
+                for k, v in row.items()
+                if k is not None
+            }
+
+            if not any(normalized.get(k, "") for k in ("Entry", "Image Path", "Launch String", "Entry Location")):
+                continue
+
+            rows.append(normalized)
+    except Exception:
+        return []
+
+    return rows
+
+
+def _autoruns_identity(row: dict[str, str]) -> str:
+    """
+    Build a stable identity for an autorun entry.
+    """
+    parts = [
+        row.get("Entry Location", ""),
+        row.get("Entry", ""),
+        row.get("Category", ""),
+        row.get("Profile", ""),
+        row.get("Image Path", ""),
+        row.get("Launch String", ""),
+    ]
+    return "||".join(str(p).strip().lower() for p in parts)
+
+
+def _autoruns_content_fingerprint(row: dict[str, str]) -> str:
+    """
+    Build a broad fingerprint so modified entries can be detected.
+    """
+    keys = [
+        "Enabled",
+        "Description",
+        "Signer",
+        "Company",
+        "Image Path",
+        "Version",
+        "Launch String",
+        "MD5",
+        "SHA-1",
+        "SHA-256",
+        "PESHA-256",
+    ]
+    return "||".join(str(row.get(k, "")).strip().lower() for k in keys)
+
+
+def _is_suspicious_autorun(row: dict[str, str]) -> bool:
+    signer = row.get("Signer", "").lower()
+    company = row.get("Company", "").lower()
+    image_path = row.get("Image Path", "").lower()
+    launch = row.get("Launch String", "").lower()
+    category = row.get("Category", "").lower()
+    enabled = row.get("Enabled", "").lower()
+
+    if enabled and enabled not in {"enabled", "true", "yes"}:
+        return False
+
+    if any(marker in image_path or marker in launch for marker in AUTORUNS_SUSPICIOUS_PATH_MARKERS):
+        return True
+
+    if "verified" not in signer and not ("microsoft" in signer or "microsoft" in company):
+        if any(cat in category for cat in AUTORUNS_HIGH_SIGNAL_CATEGORIES):
+            return True
+
+    return False
+
+
+def _summarize_autorun_row(row: dict[str, str]) -> dict[str, str]:
+    return {
+        "time": row.get("Time", ""),
+        "entry_location": row.get("Entry Location", ""),
+        "entry": row.get("Entry", ""),
+        "enabled": row.get("Enabled", ""),
+        "category": row.get("Category", ""),
+        "profile": row.get("Profile", ""),
+        "description": row.get("Description", ""),
+        "signer": row.get("Signer", ""),
+        "company": row.get("Company", ""),
+        "image_path": row.get("Image Path", ""),
+        "launch_string": row.get("Launch String", ""),
+        "sha256": row.get("SHA-256", ""),
+    }
+
+
+def diff_autoruns_snapshots(before_csv: Path, after_csv: Path) -> dict[str, Any]:
+    before_rows = _read_autoruns_csv(before_csv)
+    after_rows = _read_autoruns_csv(after_csv)
+
+    before_by_id = {_autoruns_identity(row): row for row in before_rows}
+    after_by_id = {_autoruns_identity(row): row for row in after_rows}
+
+    before_ids = set(before_by_id)
+    after_ids = set(after_by_id)
+
+    new_ids = sorted(after_ids - before_ids)
+    removed_ids = sorted(before_ids - after_ids)
+    common_ids = sorted(before_ids & after_ids)
+
+    modified_ids = []
+    for entry_id in common_ids:
+        if _autoruns_content_fingerprint(before_by_id[entry_id]) != _autoruns_content_fingerprint(after_by_id[entry_id]):
+            modified_ids.append(entry_id)
+
+    new_entries = [_summarize_autorun_row(after_by_id[i]) for i in new_ids]
+    removed_entries = [_summarize_autorun_row(before_by_id[i]) for i in removed_ids]
+    modified_entries = [
+        {
+            "before": _summarize_autorun_row(before_by_id[i]),
+            "after": _summarize_autorun_row(after_by_id[i]),
+        }
+        for i in modified_ids
+    ]
+
+    suspicious_new = [
+        _summarize_autorun_row(after_by_id[i])
+        for i in new_ids
+        if _is_suspicious_autorun(after_by_id[i])
+    ]
+
+    suspicious_modified = [
+        {
+            "before": _summarize_autorun_row(before_by_id[i]),
+            "after": _summarize_autorun_row(after_by_id[i]),
+        }
+        for i in modified_ids
+        if _is_suspicious_autorun(after_by_id[i])
+    ]
+
+    counts = {
+        "before_total": len(before_rows),
+        "after_total": len(after_rows),
+        "new_entries": len(new_entries),
+        "removed_entries": len(removed_entries),
+        "modified_entries": len(modified_entries),
+        "suspicious_new_entries": len(suspicious_new),
+        "suspicious_modified_entries": len(suspicious_modified),
+        "suspicious_new_or_modified": len(suspicious_new) + len(suspicious_modified),
+    }
+
+    return {
+        "counts": counts,
+        "new_entries": new_entries[:100],
+        "removed_entries": removed_entries[:100],
+        "modified_entries": modified_entries[:100],
+        "suspicious_new_entries": suspicious_new[:100],
+        "suspicious_modified_entries": suspicious_modified[:100],
+    }
+
 
 
 def calculate_dynamic_score(
@@ -171,11 +531,17 @@ def calculate_dynamic_score(
     task_diff_summary: dict[str, Any],
     service_diff_summary: dict[str, Any],
     dropped_files_summary: dict[str, Any],
+    autoruns_diff_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
     service_counts = service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {}
     dropped = dropped_files_summary if isinstance(dropped_files_summary, dict) else {}
+    autoruns_counts = (
+        autoruns_diff_summary.get("counts", {})
+        if isinstance(autoruns_diff_summary, dict)
+        else {}
+    )
 
     interesting_events = int(counts.get("interesting_events", 0) or 0)
     process_creates = int(counts.get("process_creates", 0) or 0)
@@ -188,6 +554,9 @@ def calculate_dynamic_score(
     suspicious_tasks = int(task_counts.get("suspicious_new_or_modified", 0) or 0)
     suspicious_services = int(service_counts.get("suspicious_new_or_modified", 0) or 0)
     suspicious_dropped = int(dropped.get("suspicious", 0) or 0)
+    autoruns_new = int(autoruns_counts.get("new_entries", 0) or 0)
+    autoruns_modified = int(autoruns_counts.get("modified_entries", 0) or 0)
+    autoruns_suspicious = int(autoruns_counts.get("suspicious_new_or_modified", 0) or 0)
 
     score = 0
     score += min(interesting_events, 10)
@@ -200,6 +569,9 @@ def calculate_dynamic_score(
     score += suspicious_tasks * 8
     score += suspicious_services * 8
     score += suspicious_dropped * 6
+    score += min(autoruns_new, 5) * 2
+    score += min(autoruns_modified, 5) * 2
+    score += autoruns_suspicious * 10
 
     if score <= 5:
         severity = "Low"
@@ -214,11 +586,7 @@ def calculate_dynamic_score(
         severity = "High"
         verdict = "Elevated Attention"
 
-    return {
-        "score": score,
-        "severity": severity,
-        "verdict": verdict,
-    }
+    return {"score": score, "severity": severity, "verdict": verdict}
 
 
 def run_dynamic_analysis(
@@ -226,16 +594,21 @@ def run_dynamic_analysis(
     status_cb: StatusCallback = None,
 ) -> dict[str, Any]:
     sample_path = Path(config["sample_path"])
-    case_dir = Path(config["case_dir"])
+    root_case_dir = Path(config["case_dir"])
     timeout_seconds = int(config.get("timeout_seconds", 180))
 
     run_profile = str(config.get("run_profile", "standard") or "standard").strip().lower()
     if run_profile not in {"quick", "standard", "deep"}:
         run_profile = "standard"
-    run_id = str(config.get("run_id") or uuid.uuid4())
 
-    _emit(status_cb, "Preparing case folders...")
-    paths = build_case_paths(case_dir)
+    run_id = str(config.get("run_id") or uuid.uuid4())
+    test_name = str(config.get("test_name") or sample_path.stem or "dynamic_test")
+
+    # Create separate folder per test run
+    run_case_dir = _build_run_case_dir(root_case_dir, run_id=run_id, test_name=test_name)
+
+    _emit(status_cb, f"Preparing case folders in run directory: {run_case_dir}")
+    paths = build_case_paths(run_case_dir)
 
     run_config_path = paths["metadata"] / "run_config.json"
     sample_info_path = paths["metadata"] / "sample_info.json"
@@ -258,16 +631,34 @@ def run_dynamic_analysis(
     services_after_json = paths["persistence"] / "services_after.json"
     service_diffs_json = paths["persistence"] / "service_diffs.json"
 
+    autoruns_enabled = bool(config.get("autoruns_enabled", True))
+    autoruns_deep_scan = bool(config.get("autoruns_deep_scan", run_profile == "deep"))
+    autoruns_timeout_seconds = int(config.get("autoruns_timeout_seconds", 180))
+    autorunsc_path = Path(config.get("autorunsc_path") or _default_autorunsc_path())
+
+    autoruns_before_csv = paths["autoruns"] / "autoruns_before.csv"
+    autoruns_after_csv = paths["autoruns"] / "autoruns_after.csv"
+    autoruns_diff_json = paths["autoruns"] / "autoruns_diff.json"
+
     dropped_files_json = paths["files"] / "dropped_files.json"
     dropped_files_summary_json = paths["files"] / "dropped_files_summary.json"
     findings_json = paths["reports"] / "dynamic_findings.json"
 
     _emit(status_cb, "Writing run configuration...")
-    write_json(run_config_path, config)
+    stored_config = dict(config)
+    stored_config["resolved_run_case_dir"] = str(run_case_dir)
+    stored_config["run_id"] = run_id
+    stored_config["run_profile"] = run_profile
+    stored_config["test_name"] = test_name
+    write_json(run_config_path, stored_config)
 
     _emit(status_cb, "Collecting sample hashes and metadata...")
     sample_info = collect_sample_info(sample_path)
     write_json(sample_info_path, sample_info)
+
+    autoruns_before_status: dict[str, Any] = {"enabled": autoruns_enabled, "success": False, "error": "not run"}
+    autoruns_after_status: dict[str, Any] = {"enabled": autoruns_enabled, "success": False, "error": "not run"}
+    autoruns_diff_summary: dict[str, Any] = {}
 
     _emit(status_cb, "Snapshotting scheduled tasks (before)...")
     tasks_before = snapshot_scheduled_tasks()
@@ -276,6 +667,19 @@ def run_dynamic_analysis(
     _emit(status_cb, "Snapshotting services (before)...")
     services_before = snapshot_services()
     write_json(services_before_json, services_before)
+
+    if autoruns_enabled:
+        _emit(status_cb, "Snapshotting Autoruns entries (before)...")
+        autoruns_before_status = _run_autorunsc_snapshot(
+            autorunsc_path=autorunsc_path,
+            output_csv=autoruns_before_csv,
+            deep_scan=autoruns_deep_scan,
+            timeout_seconds=autoruns_timeout_seconds,
+        )
+        if not autoruns_before_status.get("success"):
+            _emit(status_cb, f"Autoruns before snapshot warning: {autoruns_before_status.get('error', 'unknown error')}")
+    else:
+        _emit(status_cb, "Autoruns snapshot disabled.")
 
     started_at = utc_now_iso()
     exit_code: int | None = None
@@ -353,8 +757,25 @@ def run_dynamic_analysis(
             findings_summary = summarize_dynamic_findings(events, interesting_events)
             write_json(findings_json, findings_summary)
 
+    if autoruns_enabled:
+        _emit(status_cb, "Snapshotting Autoruns entries (after)...")
+        autoruns_after_status = _run_autorunsc_snapshot(
+            autorunsc_path=autorunsc_path,
+            output_csv=autoruns_after_csv,
+            deep_scan=autoruns_deep_scan,
+            timeout_seconds=autoruns_timeout_seconds,
+        )
+        if not autoruns_after_status.get("success"):
+            _emit(status_cb, f"Autoruns after snapshot warning: {autoruns_after_status.get('error', 'unknown error')}")
+
+        if autoruns_before_csv.exists() and autoruns_after_csv.exists():
+            _emit(status_cb, "Diffing Autoruns snapshots...")
+            autoruns_diff_summary = diff_autoruns_snapshots(autoruns_before_csv, autoruns_after_csv)
+            write_json(autoruns_diff_json, autoruns_diff_summary)
+
     ended_at = utc_now_iso()
     duration_seconds = _seconds_between(started_at, ended_at)
+
     capture_quality = _build_capture_quality(
         procmon_enabled=procmon_enabled,
         procmon_started=procmon_started,
@@ -362,10 +783,12 @@ def run_dynamic_analysis(
         exit_code=exit_code,
         procmon_summary=procmon_summary,
     )
+
     behavior_summary = _build_behavior_summary(
         findings_summary=findings_summary,
         task_diff_summary=task_diff_summary,
         service_diff_summary=service_diff_summary,
+        autoruns_diff_summary=autoruns_diff_summary,
     )
 
     score_data = calculate_dynamic_score(
@@ -373,18 +796,25 @@ def run_dynamic_analysis(
         task_diff_summary=task_diff_summary,
         service_diff_summary=service_diff_summary,
         dropped_files_summary=dropped_files_summary,
+        autoruns_diff_summary=autoruns_diff_summary,
     )
 
     summary = {
         "schema_version": "dynamic-1.0",
         "run_id": run_id,
         "run_profile": run_profile,
+        "test_name": test_name,
+        "run_case_dir": str(run_case_dir),
         "sample": sample_info,
         "started_at_utc": started_at,
         "ended_at_utc": ended_at,
         "duration_seconds": duration_seconds,
         "exit_code": exit_code,
         "procmon_enabled": procmon_enabled,
+        "autoruns_enabled": autoruns_enabled,
+        "autoruns_deep_scan": autoruns_deep_scan,
+        "autoruns_before_status": autoruns_before_status,
+        "autoruns_after_status": autoruns_after_status,
         "capture_quality": capture_quality,
         "behavior_summary": behavior_summary,
         "score": score_data["score"],
@@ -394,6 +824,8 @@ def run_dynamic_analysis(
         "procmon_interesting_summary": procmon_interesting_summary,
         "task_diff_summary": task_diff_summary.get("counts", {}),
         "service_diff_summary": service_diff_summary.get("counts", {}),
+        "autoruns_diff_summary": autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {},
+        "autoruns_diff": autoruns_diff_summary,
         "dropped_files_summary": dropped_files_summary,
         "findings": findings_summary,
     }

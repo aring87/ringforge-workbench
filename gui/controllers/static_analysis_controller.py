@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import threading
 import time
 import subprocess
@@ -26,27 +27,152 @@ from gui.gui_utils import (
     run_cli_streaming,
 )
 
+from static_triage_engine.scoring import combined_score_from_case_dir
+
 
 class StaticAnalysisController:
+    """
+    Static-analysis controller with RingForge case-home layout support.
+
+    New preferred layout:
+
+        cases\\<case_name>\\
+            case_metadata.json
+            static_analysis\\
+                summary.json
+                iocs.json
+                pe_metadata.json
+                lief_metadata.json
+                report.md
+                report.html
+                report.pdf
+                metadata\\
+                    static_run_summary.json
+            dynamic_analysis\\
+            metadata\\
+                static_run_summary.json
+                combined_score.json
+            combined_score.json
+
+    How this works:
+
+    The CLI already writes to:
+        CASE_ROOT_DIR\\<case>
+
+    So for the new layout, the GUI launches the CLI with:
+        CASE_ROOT_DIR = cases\\<case_name>
+        case          = static_analysis
+
+    That makes the static engine write to:
+        cases\\<case_name>\\static_analysis
+
+    The controller still keeps the case home as:
+        cases\\<case_name>
+
+    This lets dynamic analysis later write to:
+        cases\\<case_name>\\dynamic_analysis
+    """
+
     def __init__(self, app):
         self.app = app
         self.cancel_event = threading.Event()
-        
-    def _save_static_test_summary(self, case_dir: Path):
+
+    # ---------------------------------------------------------------------
+    # Folder layout helpers
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_case_name(value: str) -> str:
+        value = (value or "static_case").strip()
+        value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+        value = value.strip("._-")
+        return value or "static_case"
+
+    def _case_layout(self, case_root: Path, case: str) -> tuple[Path, Path]:
+        """
+        Returns:
+            case_home_dir, static_output_dir
+        """
+        safe_case = self._safe_case_name(case)
+        case_home_dir = Path(case_root) / safe_case
+        static_output_dir = case_home_dir / "static_analysis"
+        return case_home_dir, static_output_dir
+
+    def _normalize_case_home(self, path: Path) -> Path:
+        """
+        If a module folder is provided, return its parent case home.
+        """
+        if path.name in {
+            "static_analysis",
+            "dynamic_analysis",
+            "spec_analysis",
+            "api_analysis",
+            "extension_analysis",
+        }:
+            return path.parent
+        return path
+
+    def _static_output_from_home_or_detected(self, path: Path) -> Path:
+        """
+        If a detected path is already the static_analysis folder, return it.
+        If it is the case home, return case_home/static_analysis.
+        """
+        if path.name == "static_analysis":
+            return path
+        return path / "static_analysis"
+
+    def _ensure_case_layout(self, case_home_dir: Path, static_output_dir: Path, sample: Path):
+        case_home_dir.mkdir(parents=True, exist_ok=True)
+        static_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create module folders so the case home looks organized immediately.
+        (case_home_dir / "static_analysis").mkdir(parents=True, exist_ok=True)
+        (case_home_dir / "dynamic_analysis").mkdir(parents=True, exist_ok=True)
+        (case_home_dir / "metadata").mkdir(parents=True, exist_ok=True)
+        (static_output_dir / "metadata").mkdir(parents=True, exist_ok=True)
+
+        metadata = {
+            "case_name": case_home_dir.name,
+            "case_home": str(case_home_dir),
+            "static_analysis_dir": str(static_output_dir),
+            "dynamic_analysis_dir": str(case_home_dir / "dynamic_analysis"),
+            "sample_path": str(sample),
+            "sample_name": sample.name,
+            "layout_version": "ringforge-case-layout-1.0",
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+        (case_home_dir / "case_metadata.json").write_text(
+            json.dumps(metadata, indent=2),
+            encoding="utf-8",
+        )
+
+    # ---------------------------------------------------------------------
+    # Summary save
+    # ---------------------------------------------------------------------
+
+    def _save_static_test_summary(self, static_output_dir: Path, case_home_dir: Path | None = None):
         app = self.app
 
         try:
-            meta_dir = case_dir / "metadata"
-            meta_dir.mkdir(parents=True, exist_ok=True)
+            static_output_dir = Path(static_output_dir)
+            case_home_dir = Path(case_home_dir) if case_home_dir else self._normalize_case_home(static_output_dir)
+
+            static_meta_dir = static_output_dir / "metadata"
+            case_meta_dir = case_home_dir / "metadata"
+            static_meta_dir.mkdir(parents=True, exist_ok=True)
+            case_meta_dir.mkdir(parents=True, exist_ok=True)
 
             score_value = app.score_var.get().strip()
             verdict_value = app.verdict_var.get().strip()
             confidence_value = app.confidence_var.get().strip()
 
             payload = {
-                "test_name": app.case_var.get().strip() or case_dir.name,
+                "test_name": app.case_var.get().strip() or case_home_dir.name,
                 "analysis_type": "static",
                 "sample_path": app.sample_var.get().strip(),
+                "case_home": str(case_home_dir),
+                "static_analysis_dir": str(static_output_dir),
                 "completed_at": datetime.now().isoformat(timespec="seconds"),
                 "score": score_value if score_value else "-",
                 "status": "completed",
@@ -54,8 +180,17 @@ class StaticAnalysisController:
                 "confidence": confidence_value if confidence_value else "-",
             }
 
-            summary_path = meta_dir / "static_run_summary.json"
-            summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            # Write in the static module folder.
+            (static_meta_dir / "static_run_summary.json").write_text(
+                json.dumps(payload, indent=2),
+                encoding="utf-8",
+            )
+
+            # Compatibility / launcher-friendly copy at the case-home metadata level.
+            (case_meta_dir / "static_run_summary.json").write_text(
+                json.dumps(payload, indent=2),
+                encoding="utf-8",
+            )
 
             launcher = getattr(app, "launcher_frame", None)
             if launcher is not None and hasattr(launcher, "refresh_saved_tests"):
@@ -67,6 +202,10 @@ class StaticAnalysisController:
         except Exception as e:
             app.output.insert("end", f"[warn] Could not save static test summary: {e}\n")
             app.output.see("end")
+
+    # ---------------------------------------------------------------------
+    # Start/cancel execution
+    # ---------------------------------------------------------------------
 
     def start_analysis(self):
         app = self.app
@@ -81,17 +220,30 @@ class StaticAnalysisController:
             app._set_static_running_state(False)
             return
 
+        sample = Path(sample)
+        case_root = Path(case_root)
+        case = self._safe_case_name(case)
+
+        case_home_dir, static_output_dir = self._case_layout(case_root, case)
+        self._ensure_case_layout(case_home_dir, static_output_dir, sample)
+
         if not app.CLI_SCRIPT.exists():
             messagebox.showerror("Missing CLI", f"Could not find CLI script:\n{app.CLI_SCRIPT}")
             app._set_static_running_state(False)
             return
 
         extract, subfiles, limit, sm = app._effective_settings()
-        args = build_cli_args(sample, case, extract, subfiles, limit, sm)
+
+        # Important:
+        # We want the CLI to write to cases\\<case>\\static_analysis.
+        # The CLI writes CASE_ROOT_DIR\\case, so pass:
+        #   CASE_ROOT_DIR = cases\\<case>
+        #   case          = static_analysis
+        args = build_cli_args(sample, "static_analysis", extract, subfiles, limit, sm)
 
         vt_api_key = app.vt_api_key_var.get().strip()
         env_overrides = {
-            "CASE_ROOT_DIR": str(case_root),
+            "CASE_ROOT_DIR": str(case_home_dir),
             "CAPA_RULES_DIR": str(rules),
             "CAPA_SIGS_DIR": str(sigs),
             "PYTHONIOENCODING": "utf-8",
@@ -102,6 +254,9 @@ class StaticAnalysisController:
         py_exe = choose_python_exe()
 
         app.case_dir_detected = None
+        app.static_case_dir_detected = static_output_dir
+        app.case_home_dir_detected = case_home_dir
+
         app.stop_tail.set()
         app.stop_tail.clear()
         self.cancel_event.clear()
@@ -111,12 +266,14 @@ class StaticAnalysisController:
         app._reset_result_summary()
         app.output.delete("1.0", "end")
         app.output.insert("end", "Starting analysis:\n")
-        app.output.insert("end", f"  sample={sample}\n  case={case}\n")
-        app.output.insert("end", f"  case_root={case_root}\n")
+        app.output.insert("end", f"  sample={sample}\n")
+        app.output.insert("end", f"  case={case}\n")
+        app.output.insert("end", f"  case_home={case_home_dir}\n")
+        app.output.insert("end", f"  static_output={static_output_dir}\n")
         app.output.insert("end", f"  rules={rules}\n  sigs={sigs}\n\n")
         app.output.see("end")
 
-        self.start_log_tail(case_root / case)
+        self.start_log_tail(static_output_dir)
 
         app.run_btn.configure(state="disabled")
         if getattr(app, "cancel_btn", None) is not None:
@@ -213,23 +370,52 @@ class StaticAnalysisController:
         except Exception:
             pass
 
+    # ---------------------------------------------------------------------
+    # Completion handling
+    # ---------------------------------------------------------------------
+
     def on_done(self, rc: int):
         app = self.app
 
         app.stop_tail.set()
         app.current_log_path = None
 
+        detected = Path(app.case_dir_detected) if getattr(app, "case_dir_detected", None) else None
+        configured_static = Path(app.static_case_dir_detected) if getattr(app, "static_case_dir_detected", None) else None
+        configured_home = Path(app.case_home_dir_detected) if getattr(app, "case_home_dir_detected", None) else None
+
+        if detected:
+            static_output_dir = self._static_output_from_home_or_detected(detected)
+            case_home_dir = self._normalize_case_home(static_output_dir)
+        elif configured_static:
+            static_output_dir = configured_static
+            case_home_dir = configured_home or self._normalize_case_home(static_output_dir)
+        else:
+            case_home_dir = configured_home
+            static_output_dir = self._static_output_from_home_or_detected(case_home_dir) if case_home_dir else None
+
         if rc == 0:
-            if app.case_dir_detected:
-                report_md = app.case_dir_detected / "report.md"
-                report_html = app.case_dir_detected / "report.html"
-                report_pdf = app.case_dir_detected / "report.pdf"
+            if static_output_dir:
+                report_md = static_output_dir / "report.md"
+                report_html = static_output_dir / "report.html"
+                report_pdf = static_output_dir / "report.pdf"
 
                 if report_md.exists() or report_html.exists() or report_pdf.exists():
                     app._set_step("report", 100, "done")
 
-                app._update_result_summary_from_case(app.case_dir_detected)
-                self._save_static_test_summary(app.case_dir_detected)
+                app._update_result_summary_from_case(static_output_dir)
+                self._save_static_test_summary(static_output_dir, case_home_dir)
+
+                try:
+                    combined_score_from_case_dir(case_home_dir or static_output_dir, write_output=True)
+                except Exception as e:
+                    app.output.insert("end", f"[warn] Combined score refresh failed: {e}\n")
+                    app.output.see("end")
+
+                # After static summary is updated, expose the case home to the rest
+                # of the app so dynamic/spec modules use the shared case folder.
+                if case_home_dir:
+                    app.case_dir_detected = case_home_dir
 
             app._set_step("finalize", 100, "done")
 
@@ -242,8 +428,8 @@ class StaticAnalysisController:
             app.overall_var.set(100)
             app.overall_text.configure(text="100%")
         else:
-            if app.case_dir_detected:
-                app._update_result_summary_from_case(app.case_dir_detected)
+            if static_output_dir:
+                app._update_result_summary_from_case(static_output_dir)
             app._recalc_overall()
 
         app.run_btn.configure(state="normal")
@@ -259,6 +445,10 @@ class StaticAnalysisController:
         else:
             messagebox.showwarning("Completed", f"Analysis finished with exit code {rc}.\nCheck output for details.")
 
+    # ---------------------------------------------------------------------
+    # Output/log handling
+    # ---------------------------------------------------------------------
+
     def drain_output(self):
         app = self.app
 
@@ -269,10 +459,17 @@ class StaticAnalysisController:
                 if app.case_dir_detected is None:
                     cd = self.maybe_detect_case_dir_from_stdout(line)
                     if cd is not None:
+                        # During the static run, this will normally be:
+                        # cases\\<case>\\static_analysis
                         app.case_dir_detected = cd
-                        app.output.insert("end", f"[info] Detected case_dir: {cd}\n")
-                        self.start_log_tail(cd)
-                        app._update_result_summary_from_case(cd)
+                        app.static_case_dir_detected = self._static_output_from_home_or_detected(cd)
+                        app.case_home_dir_detected = self._normalize_case_home(app.static_case_dir_detected)
+
+                        app.output.insert("end", f"[info] Detected static_output: {app.static_case_dir_detected}\n")
+                        app.output.insert("end", f"[info] Detected case_home: {app.case_home_dir_detected}\n")
+
+                        self.start_log_tail(app.static_case_dir_detected)
+                        app._update_result_summary_from_case(app.static_case_dir_detected)
 
                 if REPORT_STDOUT_MDHTML_RE.search(line):
                     app._set_step("report", 100, "done")
@@ -288,8 +485,10 @@ class StaticAnalysisController:
                 app.output.insert("end", line)
                 app.output.see("end")
 
-                if line.startswith("[done]") and app.case_dir_detected:
-                    app._update_result_summary_from_case(app.case_dir_detected)
+                if line.startswith("[done]"):
+                    target = getattr(app, "static_case_dir_detected", None) or getattr(app, "case_dir_detected", None)
+                    if target:
+                        app._update_result_summary_from_case(Path(target))
 
         except queue.Empty:
             pass
@@ -298,7 +497,7 @@ class StaticAnalysisController:
 
     def start_log_tail(self, case_dir: Path):
         app = self.app
-        log_path = case_dir / "analysis.log"
+        log_path = Path(case_dir) / "analysis.log"
 
         if app.current_log_path == log_path and app.log_tail_thread and app.log_tail_thread.is_alive():
             return
@@ -392,7 +591,7 @@ class StaticAnalysisController:
 
         m2 = CASE_DIR_RE.search(line)
         if m2:
-            p = m2.group("p").strip().strip('"').strip("'")
+            p = m2.group("p").strip().strip("'").strip('"')
             pp = Path(p)
             if pp.is_dir():
                 return pp

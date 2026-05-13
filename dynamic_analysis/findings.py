@@ -43,6 +43,16 @@ KNOWN_NOISE_PROCESSES = {
     "runtimebroker.exe",
     "msmpeng.exe",
     "nisserv.exe",
+
+    # RingForge / analysis tooling noise. These are launched by the analyzer,
+    # not by the sample, and should not count as sample behavior.
+    "procmon.exe",
+    "procmon64.exe",
+    "procmon64a.exe",
+    "autorunsc.exe",
+    "autorunsc64.exe",
+    "autoruns.exe",
+    "autoruns64.exe",
 }
 
 KNOWN_NOISE_PATH_SUBSTRINGS = (
@@ -141,6 +151,34 @@ LOLBIN_NAMES = {
     "net1.exe",
 }
 
+ANALYZER_TOOL_PROCESS_NAMES = {
+    "procmon.exe",
+    "procmon64.exe",
+    "procmon64a.exe",
+    "autorunsc.exe",
+    "autorunsc64.exe",
+    "autoruns.exe",
+    "autoruns64.exe",
+    "python.exe",
+    "pythonw.exe",
+}
+
+ANALYZER_TOOL_COMMAND_MARKERS = (
+    "procmon64.exe /accepteula",
+    "procmon.exe /accepteula",
+    "procmon64.exe /terminate",
+    "procmon.exe /terminate",
+    "autorunsc64.exe -accepteula",
+    "autorunsc.exe -accepteula",
+    "autoruns_before.csv",
+    "autoruns_after.csv",
+    "autoruns_diff.json",
+    "dynamic_analysis",
+    "static-software-malware-analysis",
+    "ringforge_analyzer",
+    "ringforge-workbench",
+)
+
 
 def _normalize_process_name(value: object) -> str:
     return str(value or "").strip().lower()
@@ -203,14 +241,53 @@ def _is_defender_or_wbem_noise(path: object, process_name: object, detail: objec
 
 
 def _is_analyzer_activity(process_name: object, path: object = None, detail: object = None) -> bool:
+    """
+    Return True when an event was created by RingForge or one of its helper
+    tools instead of the sample being analyzed.
+
+    This keeps Procmon, Autorunsc, report writing, metadata creation, and
+    PowerShell snapshot commands from inflating the sample's dynamic score.
+    """
     proc = _normalize_process_name(process_name)
     path_l = _normalize_text_lower(path)
     detail_l = _normalize_text_lower(detail)
+    combined = f"{proc} {path_l} {detail_l}"
 
-    if _is_analyzer_noise_path(path_l):
+    if proc in {"procmon.exe", "procmon64.exe", "procmon64a.exe", "autorunsc.exe", "autorunsc64.exe", "autoruns.exe", "autoruns64.exe"}:
         return True
 
-    if r"\cases\\" in path_l and any(part in path_l for part in (r"\reports\\", r"\metadata\\", r"\procmon\\", r"\files\\", r"\persistence\\")):
+    if _is_analyzer_noise_path(path_l) or _is_analyzer_noise_path(detail_l):
+        return True
+
+    if any(marker in combined for marker in ANALYZER_TOOL_COMMAND_MARKERS):
+        return True
+
+    if r"\cases\\" in path_l and any(
+        part in path_l
+        for part in (
+            r"\reports\\",
+            r"\metadata\\",
+            r"\procmon\\",
+            r"\autoruns\\",
+            r"\files\\",
+            r"\persistence\\",
+            r"\unified_report\\",
+        )
+    ):
+        return True
+
+    if r"\cases\\" in detail_l and any(
+        part in detail_l
+        for part in (
+            r"\reports\\",
+            r"\metadata\\",
+            r"\procmon\\",
+            r"\autoruns\\",
+            r"\files\\",
+            r"\persistence\\",
+            r"\unified_report\\",
+        )
+    ):
         return True
 
     if "get-scheduledtask" in detail_l:
@@ -224,7 +301,7 @@ def _is_analyzer_activity(process_name: object, path: object = None, detail: obj
 
     if proc == "powershell.exe" and ("write-output $outfile" in detail_l or "$outfile =" in detail_l):
         return True
-    if proc == "python.exe" and "powershell.exe -noprofile -executionpolicy bypass" in detail_l:
+    if proc in {"python.exe", "pythonw.exe"} and "powershell.exe -noprofile -executionpolicy bypass" in detail_l:
         return True
 
     return False
@@ -379,6 +456,10 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
 
         if "process" in operation and "create" in operation:
             record = _build_process_create_record(event)
+
+            # Exclude RingForge helper tools and normal background noise from
+            # spawned-process findings. This prevents Procmon terminate events
+            # and Autorunsc snapshots from being attributed to the sample.
             if not record["is_noise_process"] and not record["is_analyzer_activity"]:
                 process_creates.append(record)
                 process_create_count += 1

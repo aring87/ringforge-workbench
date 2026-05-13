@@ -2,6 +2,7 @@ import html
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -20,13 +21,36 @@ from static_triage_engine.scoring import combined_score_from_case_dir
 
 
 class DynamicAnalysisWindow(tk.Toplevel):
+    """
+    RingForge Dynamic Analysis window.
+
+    Folder model used by this window:
+
+    cases\<case_name>\
+        static_analysis\
+        dynamic_analysis\
+            dynamic_runs\
+                <run_id>\
+                    metadata\
+                        dynamic_run_summary.json
+            reports\
+                dynamic_report.html
+
+    The main case folder remains:
+        cases\<case_name>
+
+    The dynamic engine receives:
+        cases\<case_name>\dynamic_analysis
+
+    This keeps static, dynamic, spec, API, and extension outputs cleaner.
+    """
+
     def __init__(self, app):
         super().__init__(app)
         self.app = app
         self.title("RingForge Workbench - Dynamic Analysis")
-        self.geometry("1420x1200")
-        self.minsize(1200, 1080)
         self.configure(bg="#05070B")
+        self._autosize_window()
 
         cfg = getattr(app, "cfg", {}) or {}
 
@@ -57,11 +81,29 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 case_root_value = ""
 
         default_case_name = main_case_name or Path(main_sample or "sample").stem or "dynamic_case"
+        default_case_name = self._safe_case_name(default_case_name)
+
         default_case_root = Path(case_root_value) if case_root_value else (Path.cwd() / "cases")
-        default_case_path = Path(app_case_dir_detected) if app_case_dir_detected else (default_case_root / default_case_name)
+
+        if app_case_dir_detected:
+            default_case_home = Path(app_case_dir_detected)
+        else:
+            default_case_home = default_case_root / default_case_name
+
+        default_dynamic_output = default_case_home / "dynamic_analysis"
 
         self.sample_var = tk.StringVar(value=main_sample)
-        self.case_dir_var = tk.StringVar(value=cfg.get("dynamic_case_dir", str(default_case_path)))
+
+        # Main case folder / home folder.
+        self.case_dir_var = tk.StringVar(
+            value=cfg.get("dynamic_case_dir", str(default_case_home))
+        )
+
+        # Dynamic-only output folder under the case home folder.
+        self.dynamic_output_dir_var = tk.StringVar(
+            value=cfg.get("dynamic_output_dir", str(default_dynamic_output))
+        )
+
         self.timeout_var = tk.IntVar(value=int(cfg.get("dynamic_timeout_seconds", 30)))
         self.procmon_enabled_var = tk.BooleanVar(value=bool(cfg.get("dynamic_procmon_enabled", True)))
 
@@ -79,20 +121,18 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.status_var = tk.StringVar(value="Idle")
         self.summary_status_var = tk.StringVar(value="Ready")
         self.summary_sample_var = tk.StringVar(value=Path(main_sample).name if main_sample else "-")
-        self.summary_case_var = tk.StringVar(
-            value=Path(self.case_dir_var.get()).name if self.case_dir_var.get().strip() else "-"
-        )
+        self.summary_case_var = tk.StringVar(value=Path(self.case_dir_var.get()).name)
+        self.summary_output_var = tk.StringVar(value=str(self.dynamic_output_dir_var.get()))
         self.summary_procmon_var = tk.StringVar(value="Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var = tk.StringVar(value=f"{self.timeout_var.get()} sec")
         self.summary_report_var = tk.StringVar(value="-")
-        
+
         self.metric_score_var = tk.StringVar(value="-")
         self.metric_process_var = tk.StringVar(value="-")
         self.metric_network_var = tk.StringVar(value="-")
         self.metric_filewrite_var = tk.StringVar(value="-")
         self.metric_suspicious_var = tk.StringVar(value="-")
         self.metric_persistence_var = tk.StringVar(value="-")
-        
 
         self.progress_var = tk.IntVar(value=0)
         self.step_vars = {}
@@ -109,16 +149,232 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.transient(app)
         self.grab_set()
 
+
+    def _autosize_window(self):
+        """
+        Size the Dynamic Analysis window based on the current screen.
+
+        This avoids hard-coded window heights like 1200px, which can cut off
+        the bottom of the UI on laptops, VMware consoles, Linux desktops, or
+        systems using Windows display scaling.
+        """
+        try:
+            self.update_idletasks()
+            screen_w = int(self.winfo_screenwidth())
+            screen_h = int(self.winfo_screenheight())
+
+            # Compact mode helps VMware/laptop screens where vertical space is tight.
+            self._compact_ui = screen_h < 1000
+
+            width_pct = 0.94
+            height_pct = 0.90 if self._compact_ui else 0.88
+
+            width = int(screen_w * width_pct)
+            height = int(screen_h * height_pct)
+
+            # Keep sane lower bounds, but never force a window taller than the screen.
+            min_w = min(1180, max(980, screen_w - 80))
+            min_h = min(760, max(640, screen_h - 120))
+
+            width = max(width, min_w)
+            height = max(height, min_h)
+
+            width = min(width, max(900, screen_w - 40))
+            height = min(height, max(640, screen_h - 80))
+
+            x = max((screen_w - width) // 2, 0)
+            y = max((screen_h - height) // 2, 0)
+
+            self.geometry(f"{width}x{height}+{x}+{y}")
+            self.minsize(min_w, min_h)
+
+            # Windows: maximize when possible. This gives the best fit on most VMs.
+            if os.name == "nt":
+                try:
+                    self.state("zoomed")
+                except Exception:
+                    pass
+
+            # Linux: some window managers support this.
+            elif sys.platform.startswith("linux"):
+                try:
+                    self.attributes("-zoomed", True)
+                except Exception:
+                    pass
+
+        except Exception:
+            self._compact_ui = False
+            self.geometry("1360x860")
+            self.minsize(1100, 720)
+
+
+    # -------------------------------------------------------------------------
+    # Path helpers
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_case_name(value: str) -> str:
+        value = (value or "dynamic_case").strip()
+        value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+        value = value.strip("._-")
+        return value or "dynamic_case"
+
+    def _project_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _get_case_home_dir(self) -> Path:
+        raw = self.case_dir_var.get().strip()
+        if raw:
+            return Path(raw)
+
+        sample = self.sample_var.get().strip()
+        case_name = self._safe_case_name(Path(sample).stem if sample else "dynamic_case")
+        return self._project_root() / "cases" / case_name
+
+    def _get_dynamic_output_dir(self) -> Path:
+        raw = self.dynamic_output_dir_var.get().strip()
+        if raw:
+            return Path(raw)
+
+        return self._get_case_home_dir() / "dynamic_analysis"
+
+    def _ensure_case_layout(self) -> tuple[Path, Path]:
+        """
+        Creates the cleaner case folder layout.
+
+        Returns:
+            (case_home_dir, dynamic_output_dir)
+        """
+        case_home = self._get_case_home_dir()
+        dynamic_output = self._get_dynamic_output_dir()
+
+        case_home.mkdir(parents=True, exist_ok=True)
+
+        # Create module folders.
+        (case_home / "static_analysis").mkdir(parents=True, exist_ok=True)
+        dynamic_output.mkdir(parents=True, exist_ok=True)
+        (dynamic_output / "reports").mkdir(parents=True, exist_ok=True)
+        (dynamic_output / "metadata").mkdir(parents=True, exist_ok=True)
+
+        self.case_dir_var.set(str(case_home))
+        self.dynamic_output_dir_var.set(str(dynamic_output))
+
+        return case_home, dynamic_output
+
+    def _sync_dynamic_output_to_case(self):
+        """
+        Updates the dynamic output folder to:
+            <case_home>\dynamic_analysis
+
+        This is used when the selected sample or case folder changes.
+        """
+        case_home = self._get_case_home_dir()
+        self.dynamic_output_dir_var.set(str(case_home / "dynamic_analysis"))
+
+    def _latest_existing(self, paths):
+        existing = [p for p in paths if p.exists()]
+        if not existing:
+            return None
+        return sorted(existing, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    def _find_latest_dynamic_summary(self, case_home: Path, dynamic_output: Optional[Path] = None) -> tuple[Optional[Path], list[Path]]:
+        """
+        Finds the newest dynamic_run_summary.json using both the new layout and
+        older compatibility paths.
+        """
+        dynamic_output = dynamic_output or (case_home / "dynamic_analysis")
+        reports_dir = dynamic_output / "reports"
+
+        candidates = []
+
+        dynamic_run_roots = [
+            dynamic_output / "dynamic_runs",
+            case_home / "dynamic_analysis" / "dynamic_runs",
+            case_home / "dynamic_runs",
+        ]
+
+        for root in dynamic_run_roots:
+            if root.exists():
+                candidates.extend(root.glob("*/metadata/dynamic_run_summary.json"))
+                candidates.extend(root.glob("*/dynamic_run_summary.json"))
+
+        candidates.extend(
+            [
+                dynamic_output / "metadata" / "dynamic_run_summary.json",
+                dynamic_output / "reports" / "dynamic_run_summary.json",
+                dynamic_output / "dynamic_run_summary.json",
+                case_home / "metadata" / "dynamic_run_summary.json",
+                case_home / "reports" / "dynamic_run_summary.json",
+                case_home / "dynamic_run_summary.json",
+                reports_dir / "dynamic_run_summary.json",
+            ]
+        )
+
+        found = self._latest_existing(candidates)
+        return found, candidates
+
+    def _find_latest_dynamic_findings(self, case_home: Path, dynamic_output: Optional[Path] = None) -> tuple[Optional[Path], list[Path]]:
+        dynamic_output = dynamic_output or (case_home / "dynamic_analysis")
+        candidates = []
+
+        dynamic_run_roots = [
+            dynamic_output / "dynamic_runs",
+            case_home / "dynamic_analysis" / "dynamic_runs",
+            case_home / "dynamic_runs",
+        ]
+
+        for root in dynamic_run_roots:
+            if root.exists():
+                candidates.extend(root.glob("*/dynamic_findings.json"))
+                candidates.extend(root.glob("*/metadata/dynamic_findings.json"))
+
+        candidates.extend(
+            [
+                dynamic_output / "dynamic_findings.json",
+                dynamic_output / "metadata" / "dynamic_findings.json",
+                dynamic_output / "reports" / "dynamic_findings.json",
+                case_home / "dynamic_findings.json",
+                case_home / "metadata" / "dynamic_findings.json",
+                case_home / "reports" / "dynamic_findings.json",
+            ]
+        )
+
+        found = self._latest_existing(candidates)
+        return found, candidates
+
+    def _write_case_metadata(self, case_home: Path, dynamic_output: Path, sample: Path):
+        metadata = {
+            "case_name": case_home.name,
+            "case_home": str(case_home),
+            "dynamic_analysis_dir": str(dynamic_output),
+            "static_analysis_dir": str(case_home / "static_analysis"),
+            "sample_path": str(sample),
+            "sample_name": sample.name,
+            "layout_version": "ringforge-case-layout-1.0",
+        }
+        (case_home / "case_metadata.json").write_text(
+            json.dumps(metadata, indent=2),
+            encoding="utf-8",
+        )
+
+    # -------------------------------------------------------------------------
+    # UI
+    # -------------------------------------------------------------------------
+
     def _build_ui(self):
-        outer = {"padx": 12, "pady": 8}
+        compact = bool(getattr(self, "_compact_ui", False))
+        outer = {"padx": 10 if compact else 12, "pady": 5 if compact else 8}
 
         self._build_top_banner(outer)
 
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, **outer)
         frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(0, weight=2)
-        frm.rowconfigure(1, weight=3)
+
+        # Header should keep its requested height. The workspace/output area
+        # gets the extra space instead.
+        frm.rowconfigure(0, weight=0)
+        frm.rowconfigure(1, weight=1)
 
         header = ttk.LabelFrame(frm, text="Dynamic Analysis Setup")
         header.grid(row=0, column=0, sticky="ew")
@@ -173,10 +429,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         workspace = ttk.Frame(frm)
         workspace.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        workspace.columnconfigure(0, weight=1)
-        workspace.columnconfigure(1, weight=1)
-        workspace.rowconfigure(0, weight=3)
-        workspace.rowconfigure(1, weight=2)
+        workspace.columnconfigure(0, weight=3)
+        workspace.columnconfigure(1, weight=2)
+
+        # Top row contains settings/status. Bottom row contains output/actions.
+        workspace.rowconfigure(0, weight=0)
+        workspace.rowconfigure(1, weight=1)
 
         left_top = ttk.Frame(workspace)
         left_top.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
@@ -196,19 +454,27 @@ class DynamicAnalysisWindow(tk.Toplevel):
         left_bottom.rowconfigure(0, weight=1)
 
         right_bottom = ttk.Frame(workspace)
-        right_bottom.grid(row=1, column=1, sticky="new", padx=(6, 0), pady=(30, 0))
+        right_bottom.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(10, 0))
         right_bottom.columnconfigure(0, weight=1)
-        right_bottom.rowconfigure(0, weight=0)
+        right_bottom.rowconfigure(0, weight=1)
 
         self._build_output_section(left_bottom)
         self._build_findings_summary_section(right_bottom)
 
     def _build_top_banner(self, outer):
+        compact = bool(getattr(self, "_compact_ui", False))
         panel_bg = "#0B1220"
         border = "#294C8E"
         accent = "#2F6BFF"
         text_main = "#F7FAFF"
         text_soft = "#B8C7E6"
+
+        logo_size = 72 if compact else 96
+        title_font = 20 if compact else 24
+        module_font = 15 if compact else 18
+        logo_pad_y = 8 if compact else 14
+        banner_title_pad = 10 if compact else 16
+        banner_bottom_pad = 10 if compact else 16
 
         banner_wrap = ttk.Frame(self)
         banner_wrap.pack(fill="x", **outer)
@@ -223,10 +489,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
         banner.pack(fill="x")
         banner.columnconfigure(1, weight=1)
 
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        logo_path = self._project_root() / "assets" / "anvil.png"
         if logo_path.exists():
             logo_img = Image.open(logo_path).convert("RGBA")
-            logo_img = logo_img.resize((96, 96), Image.LANCZOS)
+            logo_img = logo_img.resize((logo_size, logo_size), Image.LANCZOS)
             self.brand_logo_img = ImageTk.PhotoImage(logo_img)
 
             tk.Label(
@@ -235,7 +501,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 bg=panel_bg,
                 bd=0,
                 highlightthickness=0,
-            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(14, 16), pady=logo_pad_y)
         else:
             tk.Label(
                 banner,
@@ -245,23 +511,23 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 font=("Segoe UI", 10, "bold"),
                 bd=0,
                 highlightthickness=0,
-            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(14, 16), pady=logo_pad_y)
 
         tk.Label(
             banner,
             text="RingForge Workbench",
             bg=panel_bg,
             fg=text_main,
-            font=("Segoe UI", 24, "bold"),
+            font=("Segoe UI", title_font, "bold"),
             anchor="w",
-        ).grid(row=0, column=1, sticky="sw", pady=(16, 0))
+        ).grid(row=0, column=1, sticky="sw", pady=(banner_title_pad, 0))
 
         tk.Label(
             banner,
             text="Dynamic Analysis",
             bg=panel_bg,
             fg=accent,
-            font=("Segoe UI", 18, "bold"),
+            font=("Segoe UI", module_font, "bold"),
             anchor="w",
         ).grid(row=1, column=1, sticky="nw")
 
@@ -274,24 +540,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             anchor="w",
             justify="left",
             wraplength=980,
-        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
-
-    def _browse_sample(self):
-        current = self.sample_var.get().strip()
-        start_dir = Path(current).parent if current else Path.cwd()
-
-        chosen = filedialog.askopenfilename(
-            title="Select sample for dynamic analysis",
-            initialdir=str(start_dir),
-            filetypes=[
-                ("Executable Files", "*.exe *.dll *.msi *.bat *.cmd *.ps1 *.vbs"),
-                ("All Files", "*.*"),
-            ],
-        )
-        if chosen:
-            self.sample_var.set(str(Path(chosen)))
-            self._refresh_summary_from_inputs()
-            self._save_cfg()
+        ).grid(row=2, column=1, sticky="w", pady=(3, banner_bottom_pad))
 
     def _build_settings_section(self, parent):
         parent.rowconfigure(0, weight=1)
@@ -300,44 +549,62 @@ class DynamicAnalysisWindow(tk.Toplevel):
         settings = ttk.LabelFrame(parent, text="Dynamic Settings")
         settings.grid(row=0, column=0, sticky="nsew")
         settings.columnconfigure(1, weight=1)
-        settings.rowconfigure(2, weight=1)
+        settings.rowconfigure(3, weight=0)
+        settings.rowconfigure(4, weight=0)
 
-        ttk.Label(settings, text="Procmon path:").grid(row=0, column=0, sticky="w", padx=(10, 0), pady=(10, 0))
-        ttk.Entry(settings, textvariable=self.procmon_path_var, width=100).grid(
+        ttk.Label(settings, text="Case output folder:").grid(
+            row=0, column=0, sticky="w", padx=(10, 0), pady=(10, 0)
+        )
+        ttk.Entry(settings, textvariable=self.dynamic_output_dir_var, width=100).grid(
             row=0, column=1, sticky="ew", padx=8, pady=(10, 0)
         )
         ttk.Button(
             settings,
             text="Browse...",
             style="Side.Action.TButton",
-            command=self._browse_procmon,
+            command=self._browse_dynamic_output_dir,
         ).grid(row=0, column=2, sticky="ew", padx=(0, 10), pady=(10, 0))
 
-        ttk.Label(settings, text="Procmon config:").grid(row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 0))
-        ttk.Entry(settings, textvariable=self.procmon_config_var, width=100).grid(
+        ttk.Label(settings, text="Procmon path:").grid(
+            row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 0)
+        )
+        ttk.Entry(settings, textvariable=self.procmon_path_var, width=100).grid(
             row=1, column=1, sticky="ew", padx=8, pady=(8, 0)
         )
         ttk.Button(
             settings,
             text="Browse...",
             style="Side.Action.TButton",
-            command=self._browse_procmon_config,
+            command=self._browse_procmon,
         ).grid(row=1, column=2, sticky="ew", padx=(0, 10), pady=(8, 0))
 
+        ttk.Label(settings, text="Procmon config:").grid(
+            row=2, column=0, sticky="w", padx=(10, 0), pady=(8, 0)
+        )
+        ttk.Entry(settings, textvariable=self.procmon_config_var, width=100).grid(
+            row=2, column=1, sticky="ew", padx=8, pady=(8, 0)
+        )
+        ttk.Button(
+            settings,
+            text="Browse...",
+            style="Side.Action.TButton",
+            command=self._browse_procmon_config,
+        ).grid(row=2, column=2, sticky="ew", padx=(0, 10), pady=(8, 0))
+
         notes = ttk.LabelFrame(settings, text="Analyst Notes")
-        notes.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(10, 10))
+        notes.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
         notes.columnconfigure(0, weight=1)
 
         note_text = (
             "• Use a VM snapshot before execution.\n"
             "• Run elevated when Procmon capture requires it.\n"
             "• Prefer isolated networking for unknown samples.\n"
-            "• Signed installers may produce noisy but expected writes."
+            "• Output is stored under the case home folder in dynamic_analysis."
         )
-        ttk.Label(notes, text=note_text, justify="left").grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        ttk.Label(notes, text=note_text, justify="left").grid(row=0, column=0, sticky="w", padx=10, pady=6)
 
         actions = ttk.Frame(settings)
-        actions.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
+        actions.grid(row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
         actions.columnconfigure(1, weight=1)
 
         self.run_btn = ttk.Button(
@@ -385,6 +652,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             ("Status:", self.summary_status_var),
             ("Sample:", self.summary_sample_var),
             ("Case:", self.summary_case_var),
+            ("Output:", self.summary_output_var),
             ("Procmon:", self.summary_procmon_var),
             ("Timeout:", self.summary_timeout_var),
             ("Latest Report:", self.summary_report_var),
@@ -392,7 +660,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         for idx, (label, var) in enumerate(rows):
             ttk.Label(summary, text=label).grid(row=idx, column=0, sticky="w", pady=(0 if idx == 0 else 6, 0))
-            ttk.Label(summary, textvariable=var, wraplength=220, justify="left").grid(
+            ttk.Label(summary, textvariable=var, wraplength=300, justify="left").grid(
                 row=idx, column=1, sticky="w", padx=(8, 0), pady=(0 if idx == 0 else 6, 0)
             )
 
@@ -434,7 +702,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_findings_summary_section(self, parent):
         panel = ttk.LabelFrame(parent, text="Findings Summary")
-        panel.grid(row=0, column=0, sticky="new")
+        panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(1, weight=1)
 
         metrics = [
@@ -484,10 +752,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         ttk.Button(
             report_actions,
+            text="Open Dynamic Output Folder",
+            style="Action.TButton",
+            command=self._open_dynamic_output_folder,
+        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6), ipady=2)
+
+        ttk.Button(
+            report_actions,
             text="Open Latest Report",
             style="Action.TButton",
             command=self._open_latest_dynamic_html,
-        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10), ipady=2)
+        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10), ipady=2)
+
+    # -------------------------------------------------------------------------
+    # Progress
+    # -------------------------------------------------------------------------
 
     def _reset_progress(self):
         for w in self.steps_frame.winfo_children():
@@ -548,12 +827,18 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.progress_var.set(pct)
         self.overall_text.configure(text=f"{pct}%")
 
+    # -------------------------------------------------------------------------
+    # Input/config
+    # -------------------------------------------------------------------------
+
     def _refresh_summary_from_inputs(self):
         sample_text = self.sample_var.get().strip()
-        case_text = self.case_dir_var.get().strip()
+        case_home = self._get_case_home_dir()
+        dynamic_output = self._get_dynamic_output_dir()
 
         self.summary_sample_var.set(Path(sample_text).name if sample_text else "-")
-        self.summary_case_var.set(Path(case_text).name if case_text else "-")
+        self.summary_case_var.set(case_home.name if str(case_home).strip() else "-")
+        self.summary_output_var.set(str(dynamic_output))
         self.summary_procmon_var.set("Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var.set(f"{self.timeout_var.get()} sec")
 
@@ -562,14 +847,40 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self.app.cfg = {}
 
         self.app.cfg["dynamic_case_dir"] = self.case_dir_var.get().strip()
+        self.app.cfg["dynamic_output_dir"] = self.dynamic_output_dir_var.get().strip()
         self.app.cfg["dynamic_timeout_seconds"] = int(self.timeout_var.get())
         self.app.cfg["dynamic_procmon_enabled"] = bool(self.procmon_enabled_var.get())
         self.app.cfg["dynamic_procmon_path"] = self.procmon_path_var.get().strip()
         self.app.cfg["dynamic_procmon_config_path"] = self.procmon_config_var.get().strip()
 
-        project_root = Path(__file__).resolve().parents[1]
-        config_path = project_root / "config.json"
+        config_path = self._project_root() / "config.json"
         config_path.write_text(json.dumps(self.app.cfg, indent=2), encoding="utf-8")
+
+    def _browse_sample(self):
+        current = self.sample_var.get().strip()
+        start_dir = Path(current).parent if current else Path.cwd()
+
+        chosen = filedialog.askopenfilename(
+            title="Select sample for dynamic analysis",
+            initialdir=str(start_dir),
+            filetypes=[
+                ("Executable Files", "*.exe *.dll *.msi *.bat *.cmd *.ps1 *.vbs"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if chosen:
+            sample = Path(chosen)
+            self.sample_var.set(str(sample))
+
+            # If case folder is still generic/default, update it based on sample name.
+            case_home = self._get_case_home_dir()
+            if case_home.name in {"sample", "dynamic_case"}:
+                new_case_home = self._project_root() / "cases" / self._safe_case_name(sample.stem)
+                self.case_dir_var.set(str(new_case_home))
+
+            self._sync_dynamic_output_to_case()
+            self._refresh_summary_from_inputs()
+            self._save_cfg()
 
     def _use_main_sample(self):
         main_sample = ""
@@ -614,15 +925,18 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self.sample_var.set(main_sample)
 
-        detected = None
-        if selected_ctx:
-            detected = selected_ctx.get("case_dir")
-
+        detected = selected_ctx.get("case_dir") if selected_ctx else None
         if not detected:
             detected = getattr(self.app, "case_dir_detected", None)
 
         if detected:
-            self.case_dir_var.set(str(Path(detected)))
+            case_home = Path(detected)
+
+            # If the detected path is already inside dynamic_analysis, move back to the case home.
+            if case_home.name == "dynamic_analysis":
+                case_home = case_home.parent
+
+            self.case_dir_var.set(str(case_home))
         else:
             app_case_var = getattr(self.app, "case_var", None)
             app_case_root_var = getattr(self.app, "case_root_var", None)
@@ -641,16 +955,33 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 except Exception:
                     case_root = ""
 
-            case_name = case_name or Path(main_sample).stem or "dynamic_case"
+            case_name = self._safe_case_name(case_name or Path(main_sample).stem or "dynamic_case")
             case_root_path = Path(case_root) if case_root else (Path.cwd() / "cases")
             self.case_dir_var.set(str(case_root_path / case_name))
 
+        self._sync_dynamic_output_to_case()
         self._refresh_summary_from_inputs()
         self._save_cfg()
 
+    def _browse_dynamic_output_dir(self):
+        case_home = self._get_case_home_dir()
+        start = self._get_dynamic_output_dir()
+        initial = start if start.exists() else case_home
+
+        chosen = filedialog.askdirectory(
+            title="Select Dynamic Analysis Output Folder",
+            initialdir=str(initial),
+            parent=self,
+        )
+        if chosen:
+            self.dynamic_output_dir_var.set(str(Path(chosen)))
+            self._refresh_summary_from_inputs()
+            self._save_cfg()
+
     def _browse_procmon(self):
-        project_root = Path(__file__).resolve().parents[1]
-        start = Path(self.procmon_path_var.get()).parent if self.procmon_path_var.get().strip() else (project_root / "tools")
+        start = Path(self.procmon_path_var.get()).parent if self.procmon_path_var.get().strip() else (
+            self._project_root() / "tools"
+        )
         chosen = filedialog.askopenfilename(
             title="Select Procmon executable",
             initialdir=str(start),
@@ -661,9 +992,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self._save_cfg()
 
     def _browse_procmon_config(self):
-        project_root = Path(__file__).resolve().parents[1]
         raw = self.procmon_config_var.get().strip()
-        start = Path(raw).parent if raw else (project_root / "tools" / "procmon-configs")
+        start = Path(raw).parent if raw else (self._project_root() / "tools" / "procmon-configs")
         chosen = filedialog.askopenfilename(
             title="Select Procmon config (.pmc)",
             initialdir=str(start),
@@ -673,85 +1003,53 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self.procmon_config_var.set(str(Path(chosen)))
             self._save_cfg()
 
-    def _open_case_folder(self):
-        case_dir = Path(self.case_dir_var.get().strip())
-        if not case_dir.exists():
-            messagebox.showwarning("Open Case Folder", f"Folder not found:\n{case_dir}", parent=self)
+    # -------------------------------------------------------------------------
+    # Folder/report actions
+    # -------------------------------------------------------------------------
+
+    def _open_folder(self, folder: Path, title: str):
+        if not folder.exists():
+            messagebox.showwarning(title, f"Folder not found:\n{folder}", parent=self)
             return
+
         try:
             if os.name == "nt":
-                os.startfile(str(case_dir))
+                os.startfile(str(folder))
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(case_dir)])
+                subprocess.Popen(["open", str(folder)])
             else:
-                subprocess.Popen(["xdg-open", str(case_dir)])
+                subprocess.Popen(["xdg-open", str(folder)])
         except Exception as e:
-            messagebox.showerror("Open Case Folder", str(e), parent=self)
+            messagebox.showerror(title, str(e), parent=self)
 
-    def _export_dynamic_report(self):
+    def _open_case_folder(self):
+        self._open_folder(self._get_case_home_dir(), "Open Case Folder")
+
+    def _open_dynamic_output_folder(self):
+        self._open_folder(self._get_dynamic_output_dir(), "Open Dynamic Output Folder")
+
+    def _export_dynamic_report(self, open_after: bool = True) -> Optional[Path]:
         try:
-            case_dir = Path(self.case_dir_var.get().strip())
-            if not case_dir.exists():
-                messagebox.showerror("Export Report", f"Case folder does not exist:\n{case_dir}", parent=self)
-                return
+            case_home = self._get_case_home_dir()
+            dynamic_output = self._get_dynamic_output_dir()
 
-            reports_dir = case_dir / "reports"
+            if not case_home.exists():
+                messagebox.showerror("Export Report", f"Case folder does not exist:\n{case_home}", parent=self)
+                return None
+
+            reports_dir = dynamic_output / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
 
-            summary_candidates = [
-                case_dir / "metadata" / "dynamic_run_summary.json",
-                case_dir / "metadata" / "static_run_summary.json",
-                case_dir / "metadata" / "run_summary.json",
-                reports_dir / "dynamic_run_summary.json",
-                reports_dir / "static_run_summary.json",
-                reports_dir / "run_summary.json",
-                case_dir / "dynamic_run_summary.json",
-                case_dir / "static_run_summary.json",
-                case_dir / "run_summary.json",
-            ]
-            findings_candidates = [
-                reports_dir / "dynamic_findings.json",
-                case_dir / "dynamic_findings.json",
-            ]
+            summary_path, summary_candidates = self._find_latest_dynamic_summary(case_home, dynamic_output)
+            findings_path, findings_candidates = self._find_latest_dynamic_findings(case_home, dynamic_output)
 
-            summary_path = next((p for p in summary_candidates if p.exists()), None)
-            findings_path = next((p for p in findings_candidates if p.exists()), None)
             output_html = reports_dir / "dynamic_report.html"
 
             if summary_path:
                 write_dynamic_html_report(summary_path, output_html)
             elif findings_path:
                 data = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
-
-                def esc(x):
-                    return html.escape(str(x if x is not None else ""))
-
-                highlights = data.get("highlights", []) or []
-                counts = data.get("counts", {}) or {}
-                sample = data.get("sample", {}) or {}
-
-                html_doc = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>Dynamic Report</title>
-<style>
-body {{ font-family: Segoe UI, Arial, sans-serif; background: #0b1220; color: #e5eefc; margin: 0; padding: 24px; }}
-.card {{ background: #101a2f; border: 1px solid #223455; border-radius: 14px; padding: 18px; margin-bottom: 16px; }}
-h1, h2 {{ margin-top: 0; color: #9cc4ff; }}
-table {{ width: 100%; border-collapse: collapse; }}
-th, td {{ border-bottom: 1px solid #223455; text-align: left; padding: 8px; vertical-align: top; }}
-ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
-</style></head><body>
-<div class="card"><h1>Dynamic Analysis Report</h1><p class="muted">Case: {esc(case_dir.name)}</p><p><b>Sample:</b> {esc(sample.get("sample_name", ""))}</p><p><b>Path:</b> {esc(sample.get("sample_path", ""))}</p><p><b>SHA256:</b> {esc(sample.get("sha256", ""))}</p></div>
-<div class="card"><h2>Highlights</h2>{"<ul>" + "".join(f"<li>{esc(x)}</li>" for x in highlights) + "</ul>" if highlights else "<p class='muted'>None</p>"}</div>
-<div class="card"><h2>Findings Counts</h2><table>
-<tr><th>Interesting Events</th><td>{esc(counts.get("interesting_events", 0))}</td></tr>
-<tr><th>Process Creates</th><td>{esc(counts.get("process_creates", 0))}</td></tr>
-<tr><th>Network Events</th><td>{esc(counts.get("network_events", 0))}</td></tr>
-<tr><th>File Write Events</th><td>{esc(counts.get("file_write_events", 0))}</td></tr>
-<tr><th>Suspicious Path Hits</th><td>{esc(counts.get("suspicious_path_hits", 0))}</td></tr>
-<tr><th>Persistence Hits</th><td>{esc(counts.get("persistence_hits", 0))}</td></tr>
-</table></div>
-</body></html>"""
-                output_html.write_text(html_doc, encoding="utf-8", errors="replace")
+                self._write_fallback_dynamic_html(data, output_html, case_home)
             else:
                 checked = [str(p) for p in summary_candidates + findings_candidates]
                 messagebox.showerror(
@@ -759,32 +1057,88 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                     "No dynamic source file found.\n\nChecked:\n" + "\n".join(checked),
                     parent=self,
                 )
-                return
+                return None
 
-            self.summary_report_var.set(output_html.name)
-            webbrowser.open(output_html.resolve().as_uri())
+            self.summary_report_var.set(str(output_html))
+            if open_after:
+                webbrowser.open(output_html.resolve().as_uri())
+
+            return output_html
         except Exception as e:
             messagebox.showerror("Export Report", str(e), parent=self)
+            return None
+
+    def _write_fallback_dynamic_html(self, data: Dict, output_html: Path, case_home: Path):
+        def esc(x):
+            return html.escape(str(x if x is not None else ""))
+
+        findings = data.get("findings", data) if isinstance(data, dict) else {}
+        highlights = findings.get("highlights", []) or data.get("highlights", []) or []
+        counts = findings.get("counts", {}) or data.get("counts", {}) or {}
+        sample = data.get("sample", {}) or {}
+
+        html_doc = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Dynamic Report</title>
+<style>
+body {{ font-family: Segoe UI, Arial, sans-serif; background: #0b1220; color: #e5eefc; margin: 0; padding: 24px; }}
+.card {{ background: #101a2f; border: 1px solid #223455; border-radius: 14px; padding: 18px; margin-bottom: 16px; }}
+h1, h2 {{ margin-top: 0; color: #9cc4ff; }}
+table {{ width: 100%; border-collapse: collapse; }}
+th, td {{ border-bottom: 1px solid #223455; text-align: left; padding: 8px; vertical-align: top; }}
+ul {{ margin-top: 8px; }}
+.muted {{ color: #9fb3d9; }}
+</style></head><body>
+<div class="card">
+<h1>Dynamic Analysis Report</h1>
+<p class="muted">Case: {esc(case_home.name)}</p>
+<p><b>Sample:</b> {esc(sample.get("sample_name", ""))}</p>
+<p><b>Path:</b> {esc(sample.get("sample_path", ""))}</p>
+<p><b>SHA256:</b> {esc(sample.get("sha256", ""))}</p>
+</div>
+<div class="card">
+<h2>Highlights</h2>
+{"<ul>" + "".join(f"<li>{esc(x)}</li>" for x in highlights) + "</ul>" if highlights else "<p class='muted'>None</p>"}
+</div>
+<div class="card">
+<h2>Findings Counts</h2>
+<table>
+<tr><th>Interesting Events</th><td>{esc(counts.get("interesting_events", 0))}</td></tr>
+<tr><th>Process Creates</th><td>{esc(counts.get("process_creates", 0))}</td></tr>
+<tr><th>Network Events</th><td>{esc(counts.get("network_events", 0))}</td></tr>
+<tr><th>File Write Events</th><td>{esc(counts.get("file_write_events", 0))}</td></tr>
+<tr><th>Suspicious Path Hits</th><td>{esc(counts.get("suspicious_path_hits", 0))}</td></tr>
+<tr><th>Persistence Hits</th><td>{esc(counts.get("persistence_hits", 0))}</td></tr>
+</table>
+</div>
+</body></html>"""
+
+        output_html.write_text(html_doc, encoding="utf-8", errors="replace")
 
     def _open_latest_dynamic_html(self):
         try:
-            case_dir = Path(self.case_dir_var.get().strip())
-            if not case_dir.exists():
-                messagebox.showerror("Open Report", f"Case folder does not exist:\n{case_dir}", parent=self)
+            case_home = self._get_case_home_dir()
+            dynamic_output = self._get_dynamic_output_dir()
+
+            if not case_home.exists():
+                messagebox.showerror("Open Report", f"Case folder does not exist:\n{case_home}", parent=self)
                 return
 
-            # Always regenerate so the report reflects the latest code and summary data
-            self._export_dynamic_report()
+            html_path = self._export_dynamic_report(open_after=False)
+            if not html_path:
+                return
 
-            html_path = case_dir / "reports" / "dynamic_report.html"
             if not html_path.exists():
                 messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
                 return
 
-            self.summary_report_var.set(html_path.name)
+            self.summary_report_var.set(str(html_path))
             webbrowser.open(html_path.resolve().as_uri())
         except Exception as e:
             messagebox.showerror("Open Report", str(e), parent=self)
+
+    # -------------------------------------------------------------------------
+    # Run dynamic analysis
+    # -------------------------------------------------------------------------
 
     def _start_dynamic_analysis(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -795,8 +1149,8 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
             messagebox.showerror("Dynamic Analysis failed", f"Sample not found:\n{sample}", parent=self)
             return
 
-        case_dir = Path(self.case_dir_var.get().strip())
-        case_dir.mkdir(parents=True, exist_ok=True)
+        case_home, dynamic_output = self._ensure_case_layout()
+        self._write_case_metadata(case_home, dynamic_output, sample)
 
         procmon_path = Path(self.procmon_path_var.get().strip())
         if self.procmon_enabled_var.get() and not procmon_path.exists():
@@ -805,9 +1159,15 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
 
         timeout_seconds = int(self.timeout_var.get())
         procmon_config = self.procmon_config_var.get().strip()
+
+        # Important:
+        # The orchestrator receives dynamic_output as its case_dir.
+        # That means dynamic_runs will now be created under:
+        # cases\<case>\dynamic_analysis\dynamic_runs\
         config = {
             "sample_path": str(sample),
-            "case_dir": str(case_dir),
+            "case_dir": str(dynamic_output),
+            "case_home_dir": str(case_home),
             "timeout_seconds": timeout_seconds,
             "procmon_enabled": bool(self.procmon_enabled_var.get()),
             "procmon_path": str(procmon_path),
@@ -827,7 +1187,8 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
         self.output.delete("1.0", "end")
         self.output.insert("end", "Starting dynamic analysis:\n")
         self.output.insert("end", f"  sample={sample}\n")
-        self.output.insert("end", f"  case_dir={case_dir}\n")
+        self.output.insert("end", f"  case_home={case_home}\n")
+        self.output.insert("end", f"  dynamic_output={dynamic_output}\n")
         self.output.insert("end", f"  timeout_seconds={timeout_seconds}\n")
         self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n\n")
         self.output.see("end")
@@ -839,8 +1200,8 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                     status_cb=lambda msg: self.output_q.put(f"[status] {msg}\n"),
                 )
 
-                findings = summary.get("findings", {})
-                highlights = findings.get("highlights", [])
+                findings = summary.get("findings", {}) if isinstance(summary, dict) else {}
+                highlights = findings.get("highlights", []) if isinstance(findings, dict) else []
 
                 if highlights:
                     self.output_q.put("Highlights:\n")
@@ -848,7 +1209,7 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                         self.output_q.put(f"  - {item}\n")
                     self.output_q.put("\n")
 
-                task_counts = summary.get("task_diff_summary", {})
+                task_counts = summary.get("task_diff_summary", {}) if isinstance(summary, dict) else {}
                 if task_counts:
                     self.output_q.put("Scheduled task diff:\n")
                     self.output_q.put(f"  - New tasks: {task_counts.get('new_tasks', 0)}\n")
@@ -858,7 +1219,7 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                         f"  - Suspicious new/modified: {task_counts.get('suspicious_new_or_modified', 0)}\n\n"
                     )
 
-                service_counts = summary.get("service_diff_summary", {})
+                service_counts = summary.get("service_diff_summary", {}) if isinstance(summary, dict) else {}
                 if service_counts:
                     self.output_q.put("Service diff:\n")
                     self.output_q.put(f"  - New services: {service_counts.get('new_services', 0)}\n")
@@ -868,14 +1229,14 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
                         f"  - Suspicious new/modified: {service_counts.get('suspicious_new_or_modified', 0)}\n\n"
                     )
 
-                top_written = findings.get("top_written_paths", [])
+                top_written = findings.get("top_written_paths", []) if isinstance(findings, dict) else []
                 if top_written:
                     self.output_q.put("Top written paths:\n")
                     for row in top_written[:5]:
                         self.output_q.put(f"  - {row.get('count', 0)}x  {row.get('path', '')}\n")
                     self.output_q.put("\n")
 
-                top_net = findings.get("top_network_processes", [])
+                top_net = findings.get("top_network_processes", []) if isinstance(findings, dict) else []
                 if top_net:
                     self.output_q.put("Top network processes:\n")
                     for row in top_net[:5]:
@@ -905,7 +1266,7 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
         findings = summary.get("findings", {}) if isinstance(summary, dict) else {}
         counts = findings.get("counts", {}) if isinstance(findings, dict) else {}
 
-        score = summary.get("score", summary.get("dynamic_score", 0))
+        score = summary.get("score", summary.get("dynamic_score", 0)) if isinstance(summary, dict) else 0
         self.metric_score_var.set(str(score))
         self.metric_process_var.set(str(counts.get("process_creates", 0)))
         self.metric_network_var.set(str(counts.get("network_events", 0)))
@@ -918,34 +1279,32 @@ ul {{ margin-top: 8px; }} .muted {{ color: #9fb3d9; }}
         self.summary_status_var.set("Completed")
 
         def finalize_refresh():
-            case_dir = None
+            case_home = self._get_case_home_dir()
+            dynamic_output = self._get_dynamic_output_dir()
 
-            if getattr(self.app, "case_dir_detected", None):
-                case_dir = Path(self.app.case_dir_detected)
-            else:
-                case_dir = Path(self.case_dir_var.get().strip())
+            if case_home and case_home.exists():
+                self.app.case_dir_detected = case_home
 
-            if case_dir and case_dir.exists():
-                self.app.case_dir_detected = case_dir
-                html_path = case_dir / "reports" / "dynamic_report.html"
-                self.summary_report_var.set(html_path.name if html_path.exists() else "reports")
+                html_path = self._export_dynamic_report(open_after=False)
+                self.summary_report_var.set(str(html_path) if html_path and html_path.exists() else "-")
 
-                self._export_dynamic_report()
-
-                combined_score_from_case_dir(
-                    case_dir,
-                    dynamic_result=summary,
-                    spec_result=None,
-                    write_output=True,
-                )
+                try:
+                    combined_score_from_case_dir(
+                        case_home,
+                        dynamic_result=summary,
+                        spec_result=None,
+                        write_output=True,
+                    )
+                except Exception as e:
+                    self.output_q.put(f"\n[warning] Combined score refresh failed: {e}\n")
 
                 if hasattr(self.app, "refresh_combined_score"):
-                    self.app.refresh_combined_score(case_dir)
+                    self.app.refresh_combined_score(case_home)
             else:
                 if hasattr(self.app, "refresh_combined_score"):
                     self.app.refresh_combined_score()
 
-            exit_code = summary.get("exit_code")
+            exit_code = summary.get("exit_code") if isinstance(summary, dict) else None
             if exit_code == 0:
                 messagebox.showinfo("Completed", "Dynamic analysis completed successfully.", parent=self)
             else:

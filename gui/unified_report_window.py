@@ -14,6 +14,48 @@ except Exception:
 
 
 class UnifiedReportWindow(tk.Toplevel):
+    """
+    Unified RingForge report window with the cleaned case-home layout.
+
+    Preferred layout:
+
+        cases\<case>\
+            case_metadata.json
+            combined_score.json
+            metadata\
+                static_run_summary.json
+                combined_score.json
+
+            static_analysis\
+                summary.json
+                iocs.json
+                pe_metadata.json
+                lief_metadata.json
+                report.html
+                report.md
+                metadata\
+                    static_run_summary.json
+
+            dynamic_analysis\
+                dynamic_runs\
+                    <run_id>\
+                        metadata\
+                            dynamic_run_summary.json
+                        procmon\
+                        persistence\
+                        files\
+                        reports\
+                            dynamic_findings.json
+                reports\
+                    dynamic_report.html
+
+            unified_report\
+                unified_report.json
+                unified_report.html
+
+    Legacy paths are still supported.
+    """
+
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
@@ -37,6 +79,10 @@ class UnifiedReportWindow(tk.Toplevel):
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    # ---------------------------------------------------------------------
+    # UI
+    # ---------------------------------------------------------------------
 
     def _build_ui(self):
         outer = ttk.Frame(self, padding=12)
@@ -111,22 +157,8 @@ class UnifiedReportWindow(tk.Toplevel):
         ttk.Label(parent, textvariable=var2, wraplength=360, justify="left").grid(row=row, column=3, sticky="ew", padx=8, pady=4)
 
     def _make_text(self, parent):
-        if scrolledtext is not None:
-            return scrolledtext.ScrolledText(
-                parent,
-                wrap="word",
-                height=18,
-                bg="#0B1220",
-                fg="#F7FAFF",
-                insertbackground="#F7FAFF",
-                relief="flat",
-                borderwidth=1,
-                padx=10,
-                pady=10,
-                font=("Consolas", 10),
-            )
-
-        return tk.Text(
+        widget_cls = scrolledtext.ScrolledText if scrolledtext is not None else tk.Text
+        return widget_cls(
             parent,
             wrap="word",
             height=18,
@@ -147,9 +179,10 @@ class UnifiedReportWindow(tk.Toplevel):
         widget.configure(state="disabled")
 
     def _browse_case_dir(self):
-        path = filedialog.askdirectory(title="Select case or report folder", parent=self)
+        path = filedialog.askdirectory(title="Select case folder", parent=self)
         if path:
-            self.case_path_var.set(path)
+            p = self._normalize_case_dir(Path(path))
+            self.case_path_var.set(str(p))
         self._bring_to_front()
 
     def _bring_to_front(self):
@@ -160,37 +193,157 @@ class UnifiedReportWindow(tk.Toplevel):
         except Exception:
             pass
 
-    def _load_json_if_exists(self, path_str: str):
+    # ---------------------------------------------------------------------
+    # Path/data helpers
+    # ---------------------------------------------------------------------
+
+    def _normalize_case_dir(self, path: Path) -> Path:
+        """
+        If user browses directly into static_analysis or dynamic_analysis,
+        normalize back to the shared case-home folder.
+        """
+        if path.name in {"static_analysis", "dynamic_analysis", "spec_analysis", "api_analysis", "extension_analysis"}:
+            return path.parent
+
+        # If user picks a specific dynamic run folder, walk back to case home:
+        # cases\<case>\dynamic_analysis\dynamic_runs\<run_id>
+        parts = [p.lower() for p in path.parts]
+        if "dynamic_runs" in parts and "dynamic_analysis" in parts:
+            try:
+                idx = parts.index("dynamic_analysis")
+                return Path(*path.parts[:idx])
+            except Exception:
+                pass
+
+        return path
+
+    def _load_json_if_exists(self, path_str: str | Path):
         try:
             path = Path(path_str)
             if path.exists() and path.is_file():
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
                     return json.load(f)
         except Exception:
             pass
         return None
 
+    def _existing_paths(self, paths: list[Path]) -> list[str]:
+        found = []
+        seen = set()
+        for p in paths:
+            key = str(p).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if p.exists():
+                    found.append(str(p))
+            except Exception:
+                pass
+        return found
+
+    def _latest_path(self, paths: list[Path]) -> Path | None:
+        existing = [p for p in paths if p.exists()]
+        if not existing:
+            return None
+        return sorted(existing, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    def _dynamic_summary_candidates(self, case_dir: Path) -> list[Path]:
+        candidates = []
+
+        dynamic_runs_dir = case_dir / "dynamic_analysis" / "dynamic_runs"
+        if dynamic_runs_dir.exists():
+            try:
+                candidates.extend(
+                    sorted(
+                        dynamic_runs_dir.glob("*/metadata/dynamic_run_summary.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            except Exception:
+                pass
+
+        # Legacy and compatibility paths.
+        candidates.extend([
+            case_dir / "metadata" / "dynamic_run_summary.json",
+            case_dir / "dynamic_analysis" / "metadata" / "dynamic_run_summary.json",
+            case_dir / "dynamic_analysis" / "dynamic_run_summary.json",
+            case_dir / "reports" / "dynamic_run_summary.json",
+            case_dir / "dynamic_run_summary.json",
+        ])
+        return candidates
+
+    def _dynamic_findings_candidates(self, case_dir: Path) -> list[Path]:
+        candidates = []
+
+        dynamic_runs_dir = case_dir / "dynamic_analysis" / "dynamic_runs"
+        if dynamic_runs_dir.exists():
+            try:
+                candidates.extend(
+                    sorted(
+                        dynamic_runs_dir.glob("*/reports/dynamic_findings.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+                candidates.extend(
+                    sorted(
+                        dynamic_runs_dir.glob("*/dynamic_findings.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            except Exception:
+                pass
+
+        candidates.extend([
+            case_dir / "dynamic_analysis" / "reports" / "dynamic_findings.json",
+            case_dir / "dynamic_analysis" / "dynamic_findings.json",
+            case_dir / "reports" / "dynamic_findings.json",
+            case_dir / "dynamic_findings.json",
+        ])
+        return candidates
+
     def _detect_artifacts(self, case_dir: Path) -> dict:
+        static_candidates = [
+            case_dir / "static_analysis" / "summary.json",
+            case_dir / "static_analysis" / "report.html",
+            case_dir / "static_analysis" / "report.md",
+            case_dir / "static_analysis" / "iocs.json",
+            case_dir / "static_analysis" / "pe_metadata.json",
+            case_dir / "static_analysis" / "lief_metadata.json",
+            case_dir / "static_analysis" / "metadata" / "static_run_summary.json",
+            case_dir / "metadata" / "static_run_summary.json",
+            # legacy
+            case_dir / "report.json",
+            case_dir / "summary.json",
+            case_dir / "metadata" / "run_summary.json",
+            case_dir / "yara_results.json",
+            case_dir / "reports" / "report.html",
+            case_dir / "reports" / "static_report.html",
+        ]
+
+        dynamic_candidates = [
+            *self._dynamic_summary_candidates(case_dir),
+            *self._dynamic_findings_candidates(case_dir),
+            case_dir / "dynamic_analysis" / "reports" / "dynamic_report.html",
+        ]
+
         checks = {
-            "Static Analysis": [
-                case_dir / "report.json",
-                case_dir / "summary.json",
-                case_dir / "metadata" / "run_summary.json",
-                case_dir / "yara_results.json",
-                case_dir / "reports" / "report.html",
-                case_dir / "reports" / "static_report.html",
-            ],
-            "Dynamic Analysis": [
-                case_dir / "metadata" / "dynamic_run_summary.json",
-                case_dir / "reports" / "dynamic_findings.json",
-                case_dir / "files" / "dropped_files_summary.json",
-                case_dir / "reports" / "dynamic_report.html",
-            ],
+            "Static Analysis": static_candidates,
+            "Dynamic Analysis": dynamic_candidates,
             "Manual API Tester": [
+                case_dir / "api_analysis" / "manual_api_latest.json",
+                case_dir / "api_analysis" / "manual_api_latest.html",
                 case_dir / "api" / "manual_api_latest.json",
                 case_dir / "api" / "manual_api_latest.html",
             ],
             "Spec Analysis": [
+                case_dir / "spec_analysis" / "api_spec_analysis.json",
+                case_dir / "spec_analysis" / "metadata" / "api_spec_analysis.json",
+                case_dir / "spec_analysis" / "spec_inventory_latest.json",
+                case_dir / "spec_analysis" / "spec_inventory_latest.html",
                 case_dir / "spec" / "spec_inventory_latest.json",
                 case_dir / "spec" / "spec_inventory_latest.html",
                 case_dir / "spec" / "api_spec_analysis.json",
@@ -198,20 +351,30 @@ class UnifiedReportWindow(tk.Toplevel):
                 case_dir / "reports" / "api_spec_analysis.json",
             ],
             "Browser Extension Analysis": [
+                case_dir / "extension_analysis" / "extension_analysis.json",
+                case_dir / "extension_analysis" / "reports" / "extension_analysis.json",
                 case_dir / "ringforge_extension_reports",
                 case_dir / "extension_analysis.json",
                 case_dir / "reports" / "extension_analysis.json",
+            ],
+            "Combined Score": [
+                case_dir / "combined_score.json",
+                case_dir / "metadata" / "combined_score.json",
             ],
         }
 
         results = {}
         for module_name, candidates in checks.items():
-            found_paths = [str(p) for p in candidates if p.exists()]
+            found_paths = self._existing_paths(candidates)
             results[module_name] = {
                 "found": bool(found_paths),
                 "paths": found_paths,
             }
         return results
+
+    # ---------------------------------------------------------------------
+    # Findings extraction
+    # ---------------------------------------------------------------------
 
     def _build_detailed_findings(self) -> dict:
         findings = {
@@ -220,6 +383,7 @@ class UnifiedReportWindow(tk.Toplevel):
             "api": [],
             "spec": [],
             "extension": [],
+            "combined": [],
         }
 
         static_paths = self.detected_artifacts.get("Static Analysis", {}).get("paths", [])
@@ -227,6 +391,7 @@ class UnifiedReportWindow(tk.Toplevel):
         api_paths = self.detected_artifacts.get("Manual API Tester", {}).get("paths", [])
         spec_paths = self.detected_artifacts.get("Spec Analysis", {}).get("paths", [])
         extension_paths = self.detected_artifacts.get("Browser Extension Analysis", {}).get("paths", [])
+        combined_paths = self.detected_artifacts.get("Combined Score", {}).get("paths", [])
 
         for p in static_paths:
             data = self._load_json_if_exists(p)
@@ -240,8 +405,13 @@ class UnifiedReportWindow(tk.Toplevel):
             if "confidence" in data:
                 findings["static"].append(f"Confidence: {data['confidence']}")
 
+            sample_obj = data.get("sample", {})
             if "sample_path" in data:
                 findings["static"].append(f"Sample: {Path(str(data['sample_path'])).name}")
+            elif isinstance(sample_obj, dict):
+                sample_path = sample_obj.get("sample_path") or sample_obj.get("path") or sample_obj.get("target_path")
+                if sample_path:
+                    findings["static"].append(f"Sample: {Path(str(sample_path)).name}")
 
             if "engine" in data:
                 findings["static"].append(f"YARA engine: {data['engine']}")
@@ -283,7 +453,7 @@ class UnifiedReportWindow(tk.Toplevel):
                 findings["dynamic"].append(f"Verdict: {data['verdict']}")
 
             source = data.get("findings", data)
-            if not any(k in source for k in ("highlights", "spawned_processes", "counts")):
+            if not isinstance(source, dict):
                 continue
 
             spawned = source.get("spawned_processes", [])
@@ -293,11 +463,10 @@ class UnifiedReportWindow(tk.Toplevel):
             if isinstance(highlights, list):
                 for x in highlights[:10]:
                     text = str(x).strip()
-                    if spawned_count and text.lower() == f"spawned processes observed: {spawned_count}".lower():
-                        continue
-                    findings["dynamic"].append(text)
+                    if text:
+                        findings["dynamic"].append(text)
 
-            if isinstance(spawned, list):
+            if isinstance(spawned, list) and spawned:
                 findings["dynamic"].append(f"Spawned processes: {spawned_count}")
 
                 preview = []
@@ -315,18 +484,19 @@ class UnifiedReportWindow(tk.Toplevel):
 
             counts = source.get("counts", {})
             if isinstance(counts, dict):
-                if "interesting_events" in counts:
-                    findings["dynamic"].append(f"Interesting events: {counts['interesting_events']}")
-                if "process_creates" in counts:
-                    findings["dynamic"].append(f"Process creates: {counts['process_creates']}")
-                if "network_events" in counts:
-                    findings["dynamic"].append(f"Network events: {counts['network_events']}")
-                if "file_write_events" in counts:
-                    findings["dynamic"].append(f"File write events: {counts['file_write_events']}")
-                if "persistence_hits" in counts:
-                    findings["dynamic"].append(f"Persistence hits: {counts['persistence_hits']}")
+                for key, label in [
+                    ("interesting_events", "Interesting events"),
+                    ("process_creates", "Process creates"),
+                    ("network_events", "Network events"),
+                    ("file_write_events", "File write events"),
+                    ("persistence_hits", "Persistence hits"),
+                ]:
+                    if key in counts:
+                        findings["dynamic"].append(f"{label}: {counts[key]}")
 
-            break
+            # Stop after first JSON dynamic source. Usually newest run summary.
+            if "dynamic_run_summary.json" in str(p).lower() or "dynamic_findings.json" in str(p).lower():
+                break
 
         for p in api_paths:
             data = self._load_json_if_exists(p)
@@ -395,6 +565,32 @@ class UnifiedReportWindow(tk.Toplevel):
                         findings["extension"].append(f"Extension risk score: {summary.get('risk_score', '0')}")
                         findings["extension"].append(f"Files found: {summary.get('files_found', '0')}")
 
+        for p in combined_paths:
+            data = self._load_json_if_exists(p)
+            if not isinstance(data, dict):
+                continue
+
+            total = data.get("total_score", data.get("score"))
+            severity = data.get("severity")
+            verdict = data.get("verdict")
+            if total is not None:
+                findings["combined"].append(f"Total score: {total}")
+            if severity:
+                findings["combined"].append(f"Severity: {severity}")
+            if verdict:
+                findings["combined"].append(f"Verdict: {verdict}")
+
+            static_score = data.get("static_score")
+            dynamic_score = data.get("dynamic_score")
+            spec_score = data.get("spec_score")
+            if static_score is not None:
+                findings["combined"].append(f"Static score: {static_score}")
+            if dynamic_score is not None:
+                findings["combined"].append(f"Dynamic score: {dynamic_score}")
+            if spec_score is not None:
+                findings["combined"].append(f"Spec score: {spec_score}")
+            break
+
         for key in findings:
             deduped = []
             seen = set()
@@ -406,11 +602,59 @@ class UnifiedReportWindow(tk.Toplevel):
 
         return findings
 
+    def _latest_static_summary(self) -> dict | None:
+        if not self.case_dir:
+            return None
+        candidates = [
+            self.case_dir / "static_analysis" / "summary.json",
+            self.case_dir / "static_analysis" / "metadata" / "static_run_summary.json",
+            self.case_dir / "metadata" / "static_run_summary.json",
+            self.case_dir / "summary.json",
+            self.case_dir / "report.json",
+        ]
+        p = self._latest_path(candidates)
+        data = self._load_json_if_exists(p) if p else None
+        return data if isinstance(data, dict) else None
+
+    def _latest_dynamic_summary(self) -> dict | None:
+        if not self.case_dir:
+            return None
+        p = self._latest_path(self._dynamic_summary_candidates(self.case_dir))
+        data = self._load_json_if_exists(p) if p else None
+        return data if isinstance(data, dict) else None
+
+    def _latest_spec_summary(self) -> dict | None:
+        if not self.case_dir:
+            return None
+        candidates = [
+            self.case_dir / "spec_analysis" / "api_spec_analysis.json",
+            self.case_dir / "spec_analysis" / "metadata" / "api_spec_analysis.json",
+            self.case_dir / "spec" / "spec_inventory_latest.json",
+            self.case_dir / "api_spec_analysis.json",
+        ]
+        p = self._latest_path(candidates)
+        data = self._load_json_if_exists(p) if p else None
+        return data if isinstance(data, dict) else None
+
+    def _combined_summary(self) -> dict | None:
+        if not self.case_dir:
+            return None
+        p = self._latest_path([
+            self.case_dir / "combined_score.json",
+            self.case_dir / "metadata" / "combined_score.json",
+        ])
+        data = self._load_json_if_exists(p) if p else None
+        return data if isinstance(data, dict) else None
+
     def _derive_overall_verdict(self, artifacts: dict) -> str:
-        dynamic_summary = self._load_json_if_exists(str(self.case_dir / "metadata" / "dynamic_run_summary.json")) if self.case_dir else None
-        static_summary = self._load_json_if_exists(str(self.case_dir / "report.json")) if self.case_dir else None
-        if not isinstance(static_summary, dict) and self.case_dir:
-            static_summary = self._load_json_if_exists(str(self.case_dir / "summary.json"))
+        combined = self._combined_summary()
+        if isinstance(combined, dict):
+            for key in ("verdict", "severity"):
+                if combined.get(key):
+                    return str(combined.get(key))
+
+        dynamic_summary = self._latest_dynamic_summary()
+        static_summary = self._latest_static_summary()
 
         if isinstance(dynamic_summary, dict) and dynamic_summary.get("verdict"):
             return str(dynamic_summary.get("verdict"))
@@ -421,11 +665,11 @@ class UnifiedReportWindow(tk.Toplevel):
         findings = self._build_detailed_findings()
         joined = " ".join(" ".join(items).lower() for items in findings.values() if isinstance(items, list))
 
-        if "elevated attention" in joined or "high risk" in joined:
+        if "critical" in joined or "high risk" in joined:
             return "High Risk"
         if "needs review" in joined or "moderate risk" in joined or "persistence" in joined:
             return "Moderate Risk"
-        if "benign / clean baseline" in joined or "low suspicion" in joined:
+        if "benign" in joined or "low suspicion" in joined or "low risk" in joined:
             return "Low Risk"
 
         count = sum(1 for meta in artifacts.values() if meta.get("found"))
@@ -435,18 +679,23 @@ class UnifiedReportWindow(tk.Toplevel):
             return "Limited Activity"
         return "No Results"
 
+    # ---------------------------------------------------------------------
+    # Scan/report generation
+    # ---------------------------------------------------------------------
+
     def _scan_case_dir(self):
         raw = self.case_path_var.get().strip()
         if not raw:
             messagebox.showwarning("Unified Report", "Select a case folder first.")
             return
 
-        case_dir = Path(raw)
+        case_dir = self._normalize_case_dir(Path(raw))
         if not case_dir.exists() or not case_dir.is_dir():
             messagebox.showerror("Unified Report", f"Folder not found:\n{case_dir}")
             return
 
         self.case_dir = case_dir
+        self.case_path_var.set(str(case_dir))
         self.case_name_var.set(case_dir.name)
 
         artifacts = self._detect_artifacts(case_dir)
@@ -473,6 +722,7 @@ class UnifiedReportWindow(tk.Toplevel):
             "Manual API Tester": "api",
             "Spec Analysis": "spec",
             "Browser Extension Analysis": "extension",
+            "Combined Score": "combined",
         }
 
         for module_name, key in module_map.items():
@@ -481,13 +731,8 @@ class UnifiedReportWindow(tk.Toplevel):
                 summary_lines.append(f"  - {item}")
             summary_lines.append("")
 
-        if not artifact_lines:
-            artifact_lines.append("No artifacts detected.")
-        if not summary_lines:
-            summary_lines.append("Nothing found yet.")
-
-        self._set_text(self.artifacts_text, "\n".join(artifact_lines))
-        self._set_text(self.summary_text, "\n".join(summary_lines))
+        self._set_text(self.artifacts_text, "\n".join(artifact_lines) if artifact_lines else "No artifacts detected.")
+        self._set_text(self.summary_text, "\n".join(summary_lines) if summary_lines else "Nothing found yet.")
         self.status_var.set(f"Scanned case folder: {case_dir}")
         self._bring_to_front()
 
@@ -499,24 +744,36 @@ class UnifiedReportWindow(tk.Toplevel):
 
         findings = self._build_detailed_findings()
 
-        static_summary = self._load_json_if_exists(str(self.case_dir / "report.json"))
-        if not isinstance(static_summary, dict):
-            static_summary = self._load_json_if_exists(str(self.case_dir / "summary.json"))
+        static_summary = self._latest_static_summary()
+        dynamic_summary = self._latest_dynamic_summary()
+        spec_summary = self._latest_spec_summary()
+        combined_summary = self._combined_summary()
 
-        dynamic_summary = self._load_json_if_exists(str(self.case_dir / "metadata" / "dynamic_run_summary.json"))
+        static_score = None
+        dynamic_score = None
+        spec_score = None
+        combined_score = None
 
-        spec_summary = self._load_json_if_exists(str(self.case_dir / "spec" / "spec_inventory_latest.json"))
-        if not isinstance(spec_summary, dict):
-            spec_summary = self._load_json_if_exists(str(self.case_dir / "api_spec_analysis.json"))
+        if isinstance(combined_summary, dict):
+            combined_score = combined_summary.get("total_score", combined_summary.get("score"))
+            static_score = combined_summary.get("static_score")
+            dynamic_score = combined_summary.get("dynamic_score")
+            spec_score = combined_summary.get("spec_score")
 
-        static_score = static_summary.get("score") if isinstance(static_summary, dict) else None
-        dynamic_score = dynamic_summary.get("score") if isinstance(dynamic_summary, dict) else None
-        spec_score = spec_summary.get("score") if isinstance(spec_summary, dict) else None
+        if static_score is None and isinstance(static_summary, dict):
+            static_score = static_summary.get("score") or static_summary.get("static_score")
+
+        if dynamic_score is None and isinstance(dynamic_summary, dict):
+            dynamic_score = dynamic_summary.get("score") or dynamic_summary.get("dynamic_score")
+
+        if spec_score is None and isinstance(spec_summary, dict):
+            spec_score = spec_summary.get("score") or spec_summary.get("spec_score")
 
         data = {
             "case_name": self.case_dir.name,
             "case_path": str(self.case_dir),
             "overall_verdict": self._derive_overall_verdict(self.detected_artifacts),
+            "combined_score": combined_score,
             "static_score": static_score,
             "dynamic_score": dynamic_score,
             "spec_score": spec_score,
@@ -524,7 +781,7 @@ class UnifiedReportWindow(tk.Toplevel):
             "findings": findings,
         }
 
-        report_dir = self.case_dir / "reports"
+        report_dir = self.case_dir / "unified_report"
         report_dir.mkdir(parents=True, exist_ok=True)
 
         json_path = report_dir / "unified_report.json"
@@ -554,6 +811,7 @@ class UnifiedReportWindow(tk.Toplevel):
         case_name = html.escape(str(data.get("case_name", "-")))
         case_path = html.escape(str(data.get("case_path", "-")))
         overall_verdict = html.escape(str(data.get("overall_verdict", "-")))
+        combined_score = data.get("combined_score")
         static_score = data.get("static_score")
         dynamic_score = data.get("dynamic_score")
         spec_score = data.get("spec_score")
@@ -678,6 +936,7 @@ li {{
     <table>
       <tr><th>Case Name</th><td>{case_name}</td></tr>
       <tr><th>Case Path</th><td>{case_path}</td></tr>
+      <tr><th>Combined Score</th><td>{fmt_score(combined_score)}</td></tr>
       <tr><th>Static Score</th><td>{fmt_score(static_score)}</td></tr>
       <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score)}</td></tr>
       <tr><th>Spec Score</th><td>{fmt_score(spec_score)}</td></tr>
@@ -697,6 +956,7 @@ li {{
     </table>
   </section>
 
+  {list_section("Combined Score Summary", findings.get("combined", []))}
   {list_section("Static Analysis Summary", findings.get("static", []))}
   {list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
   {list_section("Manual API Tester Summary", findings.get("api", []))}
@@ -713,7 +973,7 @@ li {{
             messagebox.showinfo("Unified Report", "No case folder selected yet.")
             return
 
-        report_dir = self.case_dir / "reports"
+        report_dir = self.case_dir / "unified_report"
         report_dir.mkdir(parents=True, exist_ok=True)
 
         try:

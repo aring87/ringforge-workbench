@@ -300,6 +300,18 @@ class LauncherWindow(ttk.Frame):
         }
 
     def _load_saved_tests(self):
+        """
+        Load saved test rows from the RingForge case-home layout without duplicate
+        static/combined rows.
+
+        New layout:
+            cases\\<case>\\metadata\\static_run_summary.json
+            cases\\<case>\\static_analysis\\metadata\\static_run_summary.json
+            cases\\<case>\\dynamic_analysis\\dynamic_runs\\<run>\\metadata\\dynamic_run_summary.json
+            cases\\<case>\\combined_score.json
+
+        Legacy layout is still supported.
+        """
         results = []
         seen_rows = set()
 
@@ -317,29 +329,74 @@ class LauncherWindow(ttk.Frame):
                 continue
 
             for case_dir in case_dirs:
-                preferred_paths = [
+                summary_paths = []
+
+                # Static: choose only one static summary per case.
+                static_candidates = [
                     case_dir / "metadata" / "static_run_summary.json",
-                    case_dir / "metadata" / "dynamic_run_summary.json",
-                ]
-
-                legacy_paths = [
+                    case_dir / "static_analysis" / "metadata" / "static_run_summary.json",
                     case_dir / "reports" / "static_run_summary.json",
-                    case_dir / "reports" / "dynamic_run_summary.json",
-                    case_dir / "reports" / "run_summary.json",
                     case_dir / "static_run_summary.json",
-                    case_dir / "dynamic_run_summary.json",
-                    case_dir / "run_summary.json",
-                    case_dir / "runlog.json",
                 ]
+                for p in static_candidates:
+                    if p.exists():
+                        summary_paths.append(p)
+                        break
 
-                existing_preferred = [p for p in preferred_paths if p.exists()]
+                # Dynamic: show each dynamic run summary, newest first.
+                dynamic_runs_dir = case_dir / "dynamic_analysis" / "dynamic_runs"
+                dynamic_run_found = False
+                if dynamic_runs_dir.exists():
+                    try:
+                        dynamic_run_summaries = sorted(
+                            dynamic_runs_dir.glob("*/metadata/dynamic_run_summary.json"),
+                            key=lambda p: p.stat().st_mtime,
+                            reverse=True,
+                        )
+                        if dynamic_run_summaries:
+                            summary_paths.extend(dynamic_run_summaries)
+                            dynamic_run_found = True
+                    except Exception:
+                        pass
 
-                if existing_preferred:
-                    existing_paths = existing_preferred
-                else:
-                    existing_paths = [p for p in legacy_paths if p.exists()]
+                # Dynamic compatibility fallback only if no dynamic run summaries exist.
+                if not dynamic_run_found:
+                    dynamic_candidates = [
+                        case_dir / "metadata" / "dynamic_run_summary.json",
+                        case_dir / "dynamic_analysis" / "metadata" / "dynamic_run_summary.json",
+                        case_dir / "dynamic_analysis" / "dynamic_run_summary.json",
+                        case_dir / "reports" / "dynamic_run_summary.json",
+                        case_dir / "dynamic_run_summary.json",
+                        case_dir / "dynamic_findings.json",
+                        case_dir / "reports" / "dynamic_findings.json",
+                    ]
+                    for p in dynamic_candidates:
+                        if p.exists():
+                            summary_paths.append(p)
+                            break
 
-                for summary_path in existing_paths:
+                # Combined: choose only one combined score per case.
+                combined_candidates = [
+                    case_dir / "combined_score.json",
+                    case_dir / "metadata" / "combined_score.json",
+                ]
+                for p in combined_candidates:
+                    if p.exists():
+                        summary_paths.append(p)
+                        break
+
+                # Legacy generic run summary, only if no better summaries were found.
+                if not summary_paths:
+                    for p in [
+                        case_dir / "reports" / "run_summary.json",
+                        case_dir / "run_summary.json",
+                        case_dir / "runlog.json",
+                    ]:
+                        if p.exists():
+                            summary_paths.append(p)
+                            break
+
+                for summary_path in summary_paths:
                     try:
                         data = json.loads(summary_path.read_text(encoding="utf-8", errors="replace"))
                     except Exception:
@@ -350,10 +407,22 @@ class LauncherWindow(ttk.Frame):
                     except Exception:
                         continue
 
+                    if summary_path.name.lower() == "combined_score.json":
+                        row["analysis_type"] = "combined"
+                        row["test_name"] = case_dir.name
+                        row["score"] = data.get("total_score", data.get("score", "-"))
+                        row["status"] = "completed"
+                        row["completed_at"] = data.get("completed_at", "")
+                        if not row.get("sample_path"):
+                            row["sample_path"] = self._sample_path_from_case(case_dir) or ""
+
+                    # De-dupe by logical row, not by file path. This prevents the
+                    # case-home copy and module copy from displaying twice.
                     row_key = (
                         str(case_dir).lower(),
                         str(row.get("analysis_type", "")).lower(),
                         str(row.get("completed_at", "")),
+                        str(row.get("score", "")),
                     )
                     if row_key in seen_rows:
                         continue
@@ -361,7 +430,60 @@ class LauncherWindow(ttk.Frame):
 
                     results.append(row)
 
+        def sort_key(row):
+            return str(row.get("completed_at") or "")
+
+        results.sort(key=sort_key, reverse=True)
         return results
+
+    def _sample_path_from_case(self, case_dir: Path) -> str:
+        """
+        Best-effort sample path lookup for combined rows or older summaries.
+        """
+        candidates = [
+            case_dir / "case_metadata.json",
+            case_dir / "metadata" / "static_run_summary.json",
+            case_dir / "static_analysis" / "metadata" / "static_run_summary.json",
+            case_dir / "metadata" / "dynamic_run_summary.json",
+        ]
+
+        dynamic_runs_dir = case_dir / "dynamic_analysis" / "dynamic_runs"
+        if dynamic_runs_dir.exists():
+            try:
+                candidates.extend(
+                    sorted(
+                        dynamic_runs_dir.glob("*/metadata/dynamic_run_summary.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            except Exception:
+                pass
+
+        for p in candidates:
+            try:
+                if not p.exists():
+                    continue
+                data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+                sample_obj = data.get("sample", {})
+                if isinstance(sample_obj, dict):
+                    value = (
+                        data.get("sample_path")
+                        or sample_obj.get("sample_path")
+                        or sample_obj.get("path")
+                        or sample_obj.get("target_path")
+                        or ""
+                    )
+                else:
+                    value = data.get("sample_path") or sample_obj or ""
+
+                value = str(value).strip()
+                if value:
+                    return value
+            except Exception:
+                pass
+
+        return ""
 
     def refresh_saved_tests(self):
         if self.test_tree is None:
@@ -411,25 +533,31 @@ class LauncherWindow(ttk.Frame):
 
         case_dir = None
 
-        # First try to resolve by test name
         for case_root in self._get_case_roots():
             candidate = case_root / str(test_name)
             if candidate.exists():
                 case_dir = candidate
                 break
 
-        # Fallback: search summaries for matching row values
         if case_dir is None:
             for case_root in self._get_case_roots():
                 if not case_root.exists():
                     continue
+
                 try:
                     for candidate in case_root.iterdir():
                         if not candidate.is_dir():
                             continue
+
                         if candidate.name == str(test_name):
                             case_dir = candidate
                             break
+
+                        sample_guess = self._sample_path_from_case(candidate)
+                        if sample_guess and sample_guess == str(sample_path).strip():
+                            case_dir = candidate
+                            break
+
                     if case_dir is not None:
                         break
                 except Exception:
@@ -438,6 +566,9 @@ class LauncherWindow(ttk.Frame):
         return {
             "test_name": str(test_name),
             "analysis_type": str(analysis_type),
+            "score": str(score),
+            "status": str(status),
+            "completed_at": str(completed_at),
             "sample_path": str(sample_path).strip(),
             "case_dir": case_dir,
         }

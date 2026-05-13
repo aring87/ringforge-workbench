@@ -47,6 +47,28 @@ STATIC_SUSPICIOUS_THRESHOLD = 20
 STATIC_MALICIOUS_THRESHOLD = 30
 
 
+def severity_from_score(score: int | float) -> str:
+    """
+    Convert a RingForge combined/static/dynamic score into a severity label.
+    """
+    try:
+        score = float(score)
+    except Exception:
+        score = 0
+
+    if score >= 80:
+        return "Critical"
+    if score >= 60:
+        return "High"
+    if score >= 35:
+        return "Medium"
+    if score >= 10:
+        return "Low"
+    return "Informational"
+
+
+
+
 def _safe_load_json(path: Path) -> dict[str, Any]:
     try:
         if path.exists():
@@ -755,30 +777,122 @@ def combined_score_from_case_dir(
     spec_result: dict[str, Any] | None = None,
     write_output: bool = True,
 ) -> dict[str, Any]:
+    """
+    Load static, dynamic, and spec results from a RingForge case folder.
+
+    Supports both layouts.
+
+    Old layout:
+        cases\<case>\summary.json
+        cases\<case>\iocs.json
+        cases\<case>\pe_metadata.json
+        cases\<case>\dynamic_findings.json
+
+    New layout:
+        cases\<case>\static_analysis\summary.json
+        cases\<case>\dynamic_analysis\dynamic_runs\<run>\metadata\dynamic_run_summary.json
+        cases\<case>\spec_analysis\api_spec_analysis.json
+    """
     case_dir = Path(case_dir)
 
+    # If someone accidentally passes cases\<case>\dynamic_analysis or
+    # cases\<case>\static_analysis, normalize back to the case home.
+    if case_dir.name in {"dynamic_analysis", "static_analysis", "spec_analysis", "api_analysis", "extension_analysis"}:
+        case_dir = case_dir.parent
+
+    static_dir = case_dir / "static_analysis"
+    dynamic_dir = case_dir / "dynamic_analysis"
+    spec_dir = case_dir / "spec_analysis"
+
+    def newest_path(paths: list[Path]) -> Path | None:
+        existing = [p for p in paths if p.exists()]
+        if not existing:
+            return None
+        return sorted(existing, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    def newest_json(paths: list[Path]) -> dict[str, Any]:
+        p = newest_path(paths)
+        return _safe_load_json(p) if p else {}
+
     static_result = {
-        "summary": _safe_load_json(case_dir / "summary.json"),
-        "iocs": _safe_load_json(case_dir / "iocs.json"),
-        "pe_meta": _safe_load_json(case_dir / "pe_metadata.json"),
-        "lief_meta": _safe_load_json(case_dir / "lief_metadata.json"),
-        "api_analysis": _safe_load_json(case_dir / "api_analysis.json"),
+        "summary": newest_json([
+            static_dir / "summary.json",
+            static_dir / "metadata" / "summary.json",
+            static_dir / "metadata" / "run_summary.json",
+            static_dir / "run_summary.json",
+            case_dir / "summary.json",
+            case_dir / "metadata" / "summary.json",
+            case_dir / "metadata" / "run_summary.json",
+            case_dir / "run_summary.json",
+        ]),
+        "iocs": newest_json([
+            static_dir / "iocs.json",
+            static_dir / "metadata" / "iocs.json",
+            case_dir / "iocs.json",
+            case_dir / "metadata" / "iocs.json",
+        ]),
+        "pe_meta": newest_json([
+            static_dir / "pe_metadata.json",
+            static_dir / "metadata" / "pe_metadata.json",
+            case_dir / "pe_metadata.json",
+            case_dir / "metadata" / "pe_metadata.json",
+        ]),
+        "lief_meta": newest_json([
+            static_dir / "lief_metadata.json",
+            static_dir / "metadata" / "lief_metadata.json",
+            case_dir / "lief_metadata.json",
+            case_dir / "metadata" / "lief_metadata.json",
+        ]),
+        "api_analysis": newest_json([
+            static_dir / "api_analysis.json",
+            static_dir / "metadata" / "api_analysis.json",
+            case_dir / "api_analysis.json",
+            case_dir / "metadata" / "api_analysis.json",
+        ]),
     }
 
     if not any(static_result.values()):
         static_result = None
 
     if dynamic_result is None:
+        dynamic_summary_candidates: list[Path] = []
+        dynamic_findings_candidates: list[Path] = []
+
+        for root in [
+            dynamic_dir / "dynamic_runs",
+            case_dir / "dynamic_analysis" / "dynamic_runs",
+            case_dir / "dynamic_runs",
+        ]:
+            if root.exists():
+                dynamic_summary_candidates.extend(root.glob("*/metadata/dynamic_run_summary.json"))
+                dynamic_summary_candidates.extend(root.glob("*/dynamic_run_summary.json"))
+                dynamic_findings_candidates.extend(root.glob("*/dynamic_findings.json"))
+                dynamic_findings_candidates.extend(root.glob("*/metadata/dynamic_findings.json"))
+
         dynamic_result = (
-            _safe_load_json(case_dir / "dynamic_findings.json")
-            or _safe_load_json(case_dir / "reports" / "dynamic_findings.json")
+            newest_json(dynamic_summary_candidates)
+            or newest_json(dynamic_findings_candidates)
+            or newest_json([
+                dynamic_dir / "metadata" / "dynamic_run_summary.json",
+                dynamic_dir / "dynamic_run_summary.json",
+                dynamic_dir / "metadata" / "dynamic_findings.json",
+                dynamic_dir / "dynamic_findings.json",
+                dynamic_dir / "reports" / "dynamic_findings.json",
+                case_dir / "metadata" / "dynamic_run_summary.json",
+                case_dir / "dynamic_run_summary.json",
+                case_dir / "dynamic_findings.json",
+                case_dir / "reports" / "dynamic_findings.json",
+            ])
         )
 
     if spec_result is None:
-        spec_result = (
-            _safe_load_json(case_dir / "spec" / "api_spec_analysis.json")
-            or _safe_load_json(case_dir / "api_spec_analysis.json")
-        )
+        spec_result = newest_json([
+            spec_dir / "api_spec_analysis.json",
+            spec_dir / "metadata" / "api_spec_analysis.json",
+            case_dir / "spec" / "api_spec_analysis.json",
+            case_dir / "api_spec_analysis.json",
+            case_dir / "metadata" / "api_spec_analysis.json",
+        ])
 
     combined = calculate_combined_score(
         static_result=static_result,
@@ -793,7 +907,16 @@ def combined_score_from_case_dir(
             errors="replace",
         )
 
+        metadata_dir = case_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        (metadata_dir / "combined_score.json").write_text(
+            json.dumps(combined, indent=2),
+            encoding="utf-8",
+            errors="replace",
+        )
+
     return combined
+
 
 
 def score_risk(
@@ -861,7 +984,8 @@ def _get_case_dir(summary: dict[str, Any]) -> Path:
     sample = summary.get("sample", {}) if isinstance(summary.get("sample", {}), dict) else {}
     path_case = sample.get("path_case")
     if isinstance(path_case, str) and path_case:
-        return Path(path_case).parent
+        p = Path(path_case).parent
+        return p
     return Path(".")
 
 
