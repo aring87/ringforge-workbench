@@ -576,10 +576,6 @@ Key engineering areas represented:
 - Case-based output organization
 - False-positive reduction and baseline tuning
 
-Suggested description:
-
-> RingForge Workbench is a Python-based static and dynamic software triage platform that combines metadata extraction, IOC review, capa analysis, Procmon-backed runtime collection, Autorunsc persistence diffing, scoring, and structured HTML reporting into a single analyst workflow.
-
 ---
 
 ## Roadmap
