@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from pathlib import PureWindowsPath
 from typing import Any
@@ -38,9 +39,17 @@ KNOWN_NOISE_PROCESSES = {
     "wmiprvse.exe",
     "dllhost.exe",
     "backgroundtaskhost.exe",
+    "applicationframehost.exe",
+    "dataexchangehost.exe",
+    "runtimebroker.exe",
+    "textinputhost.exe",
     "searchprotocolhost.exe",
     "searchfilterhost.exe",
-    "runtimebroker.exe",
+    "startmenuexperiencehost.exe",
+    "shellexperiencehost.exe",
+    "searchhost.exe",
+    "widgets.exe",
+    "widgetservice.exe",
     "msmpeng.exe",
     "nisserv.exe",
 
@@ -83,6 +92,14 @@ ANALYZER_NOISE_PATH_SUBSTRINGS = (
     r"\persistence\\",
     r"\metadata\\",
     r"\files\\dropped_files",
+    r"\autoruns\\",
+    "autoruns_before.csv",
+    "autoruns_after.csv",
+    "autoruns_diff.json",
+    "raw.pml",
+    "export.csv",
+    "parsed_events.json",
+    "interesting_events.json",
 )
 
 SUSPICIOUS_PATH_KEYWORDS = (
@@ -206,6 +223,34 @@ def _path_suffix(path_value: object) -> str:
         return ""
 
 
+def _basename_from_event_path(value: object) -> str:
+    value_l = _normalize_text_lower(value).replace("/", "\\").strip().strip('"')
+    if not value_l:
+        return ""
+    return value_l.split("\\")[-1].strip().strip('"')
+
+
+def _event_process_image_name(process_name: object, path: object = None, detail: object = None) -> str:
+    """
+    For Procmon Process Create rows, process_name is often the parent process
+    and path is the child executable that was created. Prefer the child image.
+    """
+    path_base = _basename_from_event_path(path)
+    if path_base.endswith(".exe"):
+        return path_base
+
+    detail_l = _normalize_text_lower(detail).replace("/", "\\")
+    match = re.search(r"command line:\s*\"?([a-z]:\\[^\"\r\n]+?\.exe)", detail_l)
+    if match:
+        return match.group(1).split("\\")[-1].strip().strip('"')
+
+    match = re.search(r"command line:\s*([^,\r\n]+?\.exe)", detail_l)
+    if match:
+        return match.group(1).split("\\")[-1].strip().strip('"')
+
+    return _normalize_process_name(process_name)
+
+
 def _is_noise_process(value: object) -> bool:
     return _normalize_process_name(value) in KNOWN_NOISE_PROCESSES
 
@@ -240,6 +285,70 @@ def _is_defender_or_wbem_noise(path: object, process_name: object, detail: objec
     return False
 
 
+def _is_windows_baseline_process_create(process_name: object, path: object = None, detail: object = None) -> bool:
+    """
+    Filters normal Windows 10/11 helper processes and packaged app activation
+    noise. This is only for process-create/event counting; it does not hide
+    suspicious paths, LOLBins, encoded commands, or persistence evidence.
+    """
+    parent_proc = _normalize_process_name(process_name)
+    child_proc = _event_process_image_name(process_name, path, detail)
+    path_l = _normalize_text_lower(path).replace("/", "\\")
+    detail_l = _normalize_text_lower(detail).replace("/", "\\")
+    combined = f"{parent_proc} {child_proc} {path_l} {detail_l}"
+
+    suspicious_launch_markers = (
+        "powershell",
+        "cmd.exe",
+        "rundll32",
+        "regsvr32",
+        "mshta",
+        "wscript",
+        "cscript",
+        "http://",
+        "https://",
+        "-enc",
+        "encodedcommand",
+    )
+
+    baseline_children = {
+        "dllhost.exe",
+        "dataexchangehost.exe",
+        "applicationframehost.exe",
+        "runtimebroker.exe",
+        "backgroundtaskhost.exe",
+        "textinputhost.exe",
+        "sihost.exe",
+        "ctfmon.exe",
+    }
+
+    if child_proc in baseline_children or parent_proc in baseline_children:
+        return True
+
+    if child_proc == "svchost.exe" and "-s netsetupsvc" in combined:
+        return True
+
+    # Windows 11 Notepad often runs as a packaged app:
+    # C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_...\Notepad.exe /SESSION...
+    if child_proc == "notepad.exe" and "\\windowsapps\\" in combined and "notepad" in combined:
+        if not any(marker in combined for marker in suspicious_launch_markers):
+            return True
+
+    # Other common Microsoft packaged apps without suspicious command lines.
+    if "\\windowsapps\\" in combined and any(
+        marker in combined
+        for marker in (
+            "microsoft.windowsnotepad",
+            "microsoft.windowscalculator",
+            "microsoft.paint",
+        )
+    ):
+        if not any(marker in combined for marker in suspicious_launch_markers):
+            return True
+
+    return False
+
+
 def _is_analyzer_activity(process_name: object, path: object = None, detail: object = None) -> bool:
     """
     Return True when an event was created by RingForge or one of its helper
@@ -251,9 +360,10 @@ def _is_analyzer_activity(process_name: object, path: object = None, detail: obj
     proc = _normalize_process_name(process_name)
     path_l = _normalize_text_lower(path)
     detail_l = _normalize_text_lower(detail)
-    combined = f"{proc} {path_l} {detail_l}"
+    child_proc = _event_process_image_name(process_name, path, detail)
+    combined = f"{proc} {child_proc} {path_l} {detail_l}"
 
-    if proc in {"procmon.exe", "procmon64.exe", "procmon64a.exe", "autorunsc.exe", "autorunsc64.exe", "autoruns.exe", "autoruns64.exe"}:
+    if proc in ANALYZER_TOOL_PROCESS_NAMES or child_proc in ANALYZER_TOOL_PROCESS_NAMES:
         return True
 
     if _is_analyzer_noise_path(path_l) or _is_analyzer_noise_path(detail_l):
@@ -355,7 +465,8 @@ def _is_benign_registry_noise(path: object, operation: object, detail: object = 
 
 def _is_lolbin(process_name: object, path: object = None, detail: object = None) -> bool:
     proc = _normalize_process_name(process_name)
-    if proc in LOLBIN_NAMES:
+    child_proc = _event_process_image_name(process_name, path, detail)
+    if proc in LOLBIN_NAMES or child_proc in LOLBIN_NAMES:
         return True
     combined = " ".join([_normalize_text_lower(process_name), _normalize_text_lower(path), _normalize_text_lower(detail)])
     return any(name in combined for name in LOLBIN_NAMES)
@@ -407,15 +518,19 @@ def _build_process_create_record(event: dict[str, Any]) -> dict[str, Any]:
     process_name = _event_process_name(event)
     path = _event_path(event)
     detail = _event_detail(event)
+    child_process_name = _event_process_image_name(process_name, path, detail)
+
     return {
         "timestamp": _event_timestamp(event),
         "process_name": process_name,
+        "child_process_name": child_process_name,
         "pid": _event_pid(event),
         "path": path,
         "detail": detail,
         "is_lolbin": _is_lolbin(process_name, path, detail),
         "is_analyzer_activity": _is_analyzer_activity(process_name, path, detail),
-        "is_noise_process": _is_noise_process(process_name),
+        "is_windows_baseline": _is_windows_baseline_process_create(process_name, path, detail),
+        "is_noise_process": _is_noise_process(process_name) or _is_noise_process(child_process_name),
     }
 
 
@@ -451,34 +566,45 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
         is_noise_proc = _is_noise_process(process_name)
         is_noise_path = _is_noise_path(path)
         is_analyzer = _is_analyzer_activity(process_name, path, detail)
+        is_windows_baseline = _is_windows_baseline_process_create(process_name, path, detail)
         is_benign_registry = _is_benign_registry_noise(path, operation, detail)
         is_defender_or_wbem = _is_defender_or_wbem_noise(path, process_name, detail)
 
         if "process" in operation and "create" in operation:
             record = _build_process_create_record(event)
 
-            # Exclude RingForge helper tools and normal background noise from
-            # spawned-process findings. This prevents Procmon terminate events
-            # and Autorunsc snapshots from being attributed to the sample.
-            if not record["is_noise_process"] and not record["is_analyzer_activity"]:
+            # Exclude RingForge helper tools, known OS noise, and normal Windows
+            # packaged-app helper behavior from sample spawned-process findings.
+            if (
+                not record["is_noise_process"]
+                and not record["is_analyzer_activity"]
+                and not record["is_windows_baseline"]
+            ):
                 process_creates.append(record)
                 process_create_count += 1
                 if record["is_lolbin"]:
                     lolbin_count += 1
 
         if "tcp connect" in operation or ("network" in operation and "connect" in operation):
-            if process_name and not is_noise_proc and not is_analyzer and not is_defender_or_wbem:
+            if process_name and not is_noise_proc and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
                 network_counter[process_name] += 1
                 network_event_count += 1
 
         if _is_high_signal_write(path, operation):
-            if path and not is_noise_path and not is_analyzer and not is_defender_or_wbem:
+            if path and not is_noise_path and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
                 write_counter[path] += 1
                 file_write_event_count += 1
 
         joined = f"{path} {detail}"
         if path and (_looks_suspicious_path(path) or (_path_is_executable_or_script(path) and _path_is_user_writable(path))):
-            if not is_noise_proc and not is_noise_path and not is_analyzer and not is_benign_registry and not is_defender_or_wbem:
+            if (
+                not is_noise_proc
+                and not is_noise_path
+                and not is_analyzer
+                and not is_windows_baseline
+                and not is_benign_registry
+                and not is_defender_or_wbem
+            ):
                 suspicious_path_hits.append(
                     {
                         "timestamp": _event_timestamp(event),
@@ -490,7 +616,14 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
                 )
 
         if joined and _looks_persistence(joined):
-            if not is_noise_proc and not is_noise_path and not is_analyzer and not is_benign_registry and not is_defender_or_wbem:
+            if (
+                not is_noise_proc
+                and not is_noise_path
+                and not is_analyzer
+                and not is_windows_baseline
+                and not is_benign_registry
+                and not is_defender_or_wbem
+            ):
                 persistence_hits.append(
                     {
                         "timestamp": _event_timestamp(event),

@@ -93,9 +93,23 @@ class PathActionsController:
             messagebox.showwarning("Report Not Found", "No case directory is available yet.")
             return
 
-        report = case_dir / "report.html"
-        if not report.exists():
-            messagebox.showwarning("Report Not Found", f"Could not find:\n{report}")
+        report_candidates = [
+            case_dir / "static_analysis" / "report.html",
+            case_dir / "static_analysis" / "report.md",
+            case_dir / "reports" / "static_report.html",
+            case_dir / "reports" / "report.html",
+            case_dir / "report.html",
+            case_dir / "report.md",
+        ]
+
+        report = next((p for p in report_candidates if p.exists()), None)
+
+        if not report:
+            checked = "\n".join(str(p) for p in report_candidates)
+            messagebox.showwarning(
+                "Report Not Found",
+                f"Could not find a static report.\n\nChecked:\n{checked}",
+            )
             return
 
         self.open_path(report)
@@ -106,9 +120,21 @@ class PathActionsController:
             messagebox.showwarning("Report Not Found", "No case directory is available yet.")
             return
 
-        report = case_dir / "report.pdf"
-        if not report.exists():
-            messagebox.showwarning("Report Not Found", f"Could not find:\n{report}")
+        report_candidates = [
+            case_dir / "static_analysis" / "report.pdf",
+            case_dir / "reports" / "static_report.pdf",
+            case_dir / "reports" / "report.pdf",
+            case_dir / "report.pdf",
+        ]
+
+        report = next((p for p in report_candidates if p.exists()), None)
+
+        if not report:
+            checked = "\n".join(str(p) for p in report_candidates)
+            messagebox.showwarning(
+                "Report Not Found",
+                f"Could not find a static PDF report.\n\nChecked:\n{checked}",
+            )
             return
 
         self.open_path(report)
