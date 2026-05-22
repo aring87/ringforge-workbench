@@ -4,6 +4,7 @@ import os
 import queue
 import re
 import subprocess
+import ctypes
 import sys
 import threading
 import tkinter as tk
@@ -1136,6 +1137,147 @@ ul {{ margin-top: 8px; }}
         except Exception as e:
             messagebox.showerror("Open Report", str(e), parent=self)
 
+
+    # -------------------------------------------------------------------------
+    # Dynamic preflight checks
+    # -------------------------------------------------------------------------
+
+    def _is_running_as_admin(self) -> bool:
+        """
+        Return True when RingForge is running with Administrator privileges.
+
+        Procmon, service snapshots, scheduled task snapshots, and Autoruns
+        collection are more reliable when the GUI is elevated.
+        """
+        if os.name != "nt":
+            return False
+
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+    def _find_autorunsc_path(self) -> Optional[Path]:
+        """
+        Locate Autorunsc in the local tools folder.
+
+        Autorunsc is optional for Dynamic Analysis, so this is a warning-only
+        preflight item. The orchestrator can still run without Autoruns support.
+        """
+        tools_dir = self._project_root() / "tools"
+        candidates = [
+            tools_dir / "autorunsc64.exe",
+            tools_dir / "Autorunsc64.exe",
+            tools_dir / "autorunsc.exe",
+            tools_dir / "Autorunsc.exe",
+        ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        return None
+
+    def _check_case_folder_writable(self, folder: Path) -> tuple[bool, str]:
+        """
+        Confirm that the selected case/output folder can be created and written.
+        """
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            test_file = folder / ".ringforge_write_test"
+            test_file.write_text("ringforge write test", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
+            return True, ""
+        except Exception as error:
+            return False, str(error)
+
+    def _run_dynamic_preflight_checks(
+        self,
+        sample: Path,
+        case_home: Path,
+        dynamic_output: Path,
+        procmon_path: Path,
+        procmon_config: str,
+    ) -> bool:
+        """
+        Professional preflight validation before starting Dynamic Analysis.
+
+        Blocking issues stop the run. Warnings allow the analyst to continue.
+        """
+        issues: list[str] = []
+        warnings: list[str] = []
+
+        if not sample.exists():
+            issues.append(f"Sample file not found:\n{sample}")
+
+        if sample.exists() and not sample.is_file():
+            issues.append(f"Selected sample path is not a file:\n{sample}")
+
+        case_ok, case_error = self._check_case_folder_writable(case_home)
+        if not case_ok:
+            issues.append(f"Case folder is not writable:\n{case_home}\n\n{case_error}")
+
+        dynamic_ok, dynamic_error = self._check_case_folder_writable(dynamic_output)
+        if not dynamic_ok:
+            issues.append(f"Dynamic output folder is not writable:\n{dynamic_output}\n\n{dynamic_error}")
+
+        if self.procmon_enabled_var.get():
+            if not procmon_path.exists():
+                issues.append(f"Procmon is enabled but the executable was not found:\n{procmon_path}")
+            elif not procmon_path.is_file():
+                issues.append(f"Procmon path is not a file:\n{procmon_path}")
+
+        if procmon_config:
+            procmon_config_path = Path(procmon_config)
+            if not procmon_config_path.exists():
+                warnings.append(
+                    "Procmon config file was not found. RingForge will continue, "
+                    "but Procmon may run with default capture behavior:\n"
+                    f"{procmon_config_path}"
+                )
+
+        autorunsc_path = self._find_autorunsc_path()
+        if autorunsc_path is None:
+            warnings.append(
+                "Autorunsc was not found in the local tools folder. "
+                "Autoruns persistence diffing may be skipped.\n\n"
+                "Expected one of:\n"
+                f"{self._project_root() / 'tools' / 'autorunsc64.exe'}\n"
+                f"{self._project_root() / 'tools' / 'autorunsc.exe'}"
+            )
+
+        if os.name == "nt" and not self._is_running_as_admin():
+            warnings.append(
+                "RingForge is not running as Administrator. Procmon capture, "
+                "service snapshots, scheduled task snapshots, and Autoruns collection "
+                "may be incomplete."
+            )
+
+        if issues:
+            messagebox.showerror(
+                "Dynamic Preflight Failed",
+                "Dynamic Analysis cannot start until these issues are fixed:\n\n"
+                + "\n\n".join(issues),
+                parent=self,
+            )
+            self._set_step("Pre-checks", 100, "failed")
+            return False
+
+        if warnings:
+            proceed = messagebox.askyesno(
+                "Dynamic Preflight Warnings",
+                "Dynamic Analysis can start, but these warnings were found:\n\n"
+                + "\n\n".join(warnings)
+                + "\n\nContinue anyway?",
+                parent=self,
+            )
+            if not proceed:
+                self._set_step("Pre-checks", 100, "cancelled")
+                return False
+
+        return True
+
+
     # -------------------------------------------------------------------------
     # Run dynamic analysis
     # -------------------------------------------------------------------------
@@ -1145,20 +1287,24 @@ ul {{ margin-top: 8px; }}
             return
 
         sample = Path(self.sample_var.get().strip())
-        if not sample.exists():
-            messagebox.showerror("Dynamic Analysis failed", f"Sample not found:\n{sample}", parent=self)
-            return
-
         case_home, dynamic_output = self._ensure_case_layout()
-        self._write_case_metadata(case_home, dynamic_output, sample)
-
         procmon_path = Path(self.procmon_path_var.get().strip())
-        if self.procmon_enabled_var.get() and not procmon_path.exists():
-            messagebox.showerror("Dynamic Analysis failed", f"Procmon not found:\n{procmon_path}", parent=self)
-            return
-
         timeout_seconds = int(self.timeout_var.get())
         procmon_config = self.procmon_config_var.get().strip()
+
+        self._reset_progress()
+        self._set_step("Pre-checks", 50, "checking")
+
+        if not self._run_dynamic_preflight_checks(
+            sample=sample,
+            case_home=case_home,
+            dynamic_output=dynamic_output,
+            procmon_path=procmon_path,
+            procmon_config=procmon_config,
+        ):
+            return
+
+        self._write_case_metadata(case_home, dynamic_output, sample)
 
         # Important:
         # The orchestrator receives dynamic_output as its case_dir.
@@ -1175,7 +1321,6 @@ ul {{ margin-top: 8px; }}
         }
 
         self._save_cfg()
-        self._reset_progress()
         self._refresh_summary_from_inputs()
         self.summary_status_var.set("Running")
         self.status_var.set("Running dynamic...")
@@ -1190,7 +1335,11 @@ ul {{ margin-top: 8px; }}
         self.output.insert("end", f"  case_home={case_home}\n")
         self.output.insert("end", f"  dynamic_output={dynamic_output}\n")
         self.output.insert("end", f"  timeout_seconds={timeout_seconds}\n")
-        self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n\n")
+        self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n")
+        self.output.insert("end", f"  procmon_path={procmon_path}\n")
+        self.output.insert("end", f"  procmon_config={procmon_config or '-'}\n")
+        self.output.insert("end", f"  autorunsc_path={self._find_autorunsc_path() or 'not found'}\n")
+        self.output.insert("end", f"  admin={self._is_running_as_admin()}\n\n")
         self.output.see("end")
 
         def worker():
