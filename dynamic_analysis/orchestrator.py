@@ -4,6 +4,7 @@ import csv
 import re
 import subprocess
 import uuid
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -93,9 +94,46 @@ def collect_sample_info(sample_path: str | Path) -> dict[str, Any]:
     }
 
 
-def run_sample(sample_path: str | Path, timeout_seconds: int) -> int:
-    proc = subprocess.run([str(sample_path)], timeout=timeout_seconds)
-    return int(proc.returncode)
+def run_sample(
+    sample_path: str | Path,
+    timeout_seconds: int,
+    minimum_observation_seconds: int = 30,
+) -> int:
+    """
+    Launch the sample and observe for at least minimum_observation_seconds.
+
+    This avoids ending too quickly when Windows launcher binaries hand off to
+    packaged app processes, such as Windows 11 Notepad launching the
+    WindowsApps Notepad process and exiting immediately.
+    """
+    sample = Path(sample_path)
+
+    start_time = time.monotonic()
+    proc = subprocess.Popen([str(sample)])
+
+    exit_code: int | None = None
+
+    while True:
+        elapsed = time.monotonic() - start_time
+
+        if exit_code is None:
+            exit_code = proc.poll()
+
+        minimum_elapsed = elapsed >= minimum_observation_seconds
+        timeout_elapsed = elapsed >= timeout_seconds
+
+        if timeout_elapsed:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            return exit_code if exit_code is not None else -1
+
+        if exit_code is not None and minimum_elapsed:
+            return int(exit_code)
+
+        time.sleep(1)
 
 
 def _emit(status_cb: StatusCallback, message: str) -> None:
@@ -702,10 +740,20 @@ def run_dynamic_analysis(
             )
             procmon_started = True
 
-        _emit(status_cb, f"Launching sample and waiting up to {timeout_seconds} seconds...")
+        minimum_observation_seconds = int(config.get("minimum_observation_seconds", 30))
+
+        _emit(
+            status_cb,
+            f"Launching sample and observing for at least {minimum_observation_seconds} seconds "
+            f"(timeout: {timeout_seconds} seconds)..."
+        )
         sample_launch_attempted = True
-        exit_code = run_sample(sample_path, timeout_seconds)
-        _emit(status_cb, f"Sample exited with code {exit_code}.")
+        exit_code = run_sample(
+            sample_path,
+            timeout_seconds,
+            minimum_observation_seconds=minimum_observation_seconds,
+        )
+        _emit(status_cb, f"Sample observation completed with exit code {exit_code}.")
 
     finally:
         _emit(status_cb, "Snapshotting scheduled tasks (after)...")
