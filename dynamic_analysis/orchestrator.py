@@ -5,6 +5,7 @@ import re
 import subprocess
 import uuid
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -41,6 +42,21 @@ from dynamic_analysis.utils import (
 )
 
 StatusCallback = Optional[Callable[[str], None]]
+CancelEvent = Optional[threading.Event]
+
+
+class DynamicAnalysisCancelled(Exception):
+    """Raised when the analyst cancels a dynamic analysis run."""
+
+
+def _cancel_requested(cancel_event: CancelEvent) -> bool:
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _raise_if_cancelled(cancel_event: CancelEvent) -> None:
+    if _cancel_requested(cancel_event):
+        raise DynamicAnalysisCancelled("Dynamic analysis cancelled by analyst.")
+
 
 
 def _slugify(value: str, fallback: str = "dynamic_test") -> str:
@@ -98,6 +114,7 @@ def run_sample(
     sample_path: str | Path,
     timeout_seconds: int,
     minimum_observation_seconds: int = 30,
+    cancel_event: CancelEvent = None,
 ) -> int:
     """
     Launch the sample and observe for at least minimum_observation_seconds.
@@ -105,8 +122,13 @@ def run_sample(
     This avoids ending too quickly when Windows launcher binaries hand off to
     packaged app processes, such as Windows 11 Notepad launching the
     WindowsApps Notepad process and exiting immediately.
+
+    If cancel_event is set during observation, the active sample process is
+    terminated and DynamicAnalysisCancelled is raised.
     """
     sample = Path(sample_path)
+
+    _raise_if_cancelled(cancel_event)
 
     start_time = time.monotonic()
     proc = subprocess.Popen([str(sample)])
@@ -114,6 +136,17 @@ def run_sample(
     exit_code: int | None = None
 
     while True:
+        if _cancel_requested(cancel_event):
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            raise DynamicAnalysisCancelled(
+                "Dynamic analysis cancelled during sample observation."
+            )
+
         elapsed = time.monotonic() - start_time
 
         if exit_code is None:
@@ -630,6 +663,7 @@ def calculate_dynamic_score(
 def run_dynamic_analysis(
     config: dict[str, Any],
     status_cb: StatusCallback = None,
+    cancel_event: CancelEvent = None,
 ) -> dict[str, Any]:
     sample_path = Path(config["sample_path"])
     root_case_dir = Path(config["case_dir"])
@@ -642,7 +676,7 @@ def run_dynamic_analysis(
     run_id = str(config.get("run_id") or uuid.uuid4())
     test_name = str(config.get("test_name") or sample_path.stem or "dynamic_test")
 
-    # Create separate folder per test run
+    # Create separate folder per test run.
     run_case_dir = _build_run_case_dir(root_case_dir, run_id=run_id, test_name=test_name)
 
     _emit(status_cb, f"Preparing case folders in run directory: {run_case_dir}")
@@ -682,55 +716,89 @@ def run_dynamic_analysis(
     dropped_files_summary_json = paths["files"] / "dropped_files_summary.json"
     findings_json = paths["reports"] / "dynamic_findings.json"
 
-    _emit(status_cb, "Writing run configuration...")
-    stored_config = dict(config)
-    stored_config["resolved_run_case_dir"] = str(run_case_dir)
-    stored_config["run_id"] = run_id
-    stored_config["run_profile"] = run_profile
-    stored_config["test_name"] = test_name
-    write_json(run_config_path, stored_config)
-
-    _emit(status_cb, "Collecting sample hashes and metadata...")
-    sample_info = collect_sample_info(sample_path)
-    write_json(sample_info_path, sample_info)
-
-    autoruns_before_status: dict[str, Any] = {"enabled": autoruns_enabled, "success": False, "error": "not run"}
-    autoruns_after_status: dict[str, Any] = {"enabled": autoruns_enabled, "success": False, "error": "not run"}
-    autoruns_diff_summary: dict[str, Any] = {}
-
-    _emit(status_cb, "Snapshotting scheduled tasks (before)...")
-    tasks_before = snapshot_scheduled_tasks()
-    write_json(tasks_before_json, tasks_before)
-
-    _emit(status_cb, "Snapshotting services (before)...")
-    services_before = snapshot_services()
-    write_json(services_before_json, services_before)
-
-    if autoruns_enabled:
-        _emit(status_cb, "Snapshotting Autoruns entries (before)...")
-        autoruns_before_status = _run_autorunsc_snapshot(
-            autorunsc_path=autorunsc_path,
-            output_csv=autoruns_before_csv,
-            deep_scan=autoruns_deep_scan,
-            timeout_seconds=autoruns_timeout_seconds,
-        )
-        if not autoruns_before_status.get("success"):
-            _emit(status_cb, f"Autoruns before snapshot warning: {autoruns_before_status.get('error', 'unknown error')}")
-    else:
-        _emit(status_cb, "Autoruns snapshot disabled.")
-
     started_at = utc_now_iso()
     exit_code: int | None = None
+
+    sample_info: dict[str, Any] = {}
     procmon_summary: dict[str, int] = {}
     procmon_interesting_summary: dict[str, int] = {}
     dropped_files_summary: dict[str, int] = {}
     findings_summary: dict[str, Any] = {}
     task_diff_summary: dict[str, Any] = {}
     service_diff_summary: dict[str, Any] = {}
+    autoruns_diff_summary: dict[str, Any] = {}
+
+    autoruns_before_status: dict[str, Any] = {
+        "enabled": autoruns_enabled,
+        "success": False,
+        "error": "not run",
+    }
+    autoruns_after_status: dict[str, Any] = {
+        "enabled": autoruns_enabled,
+        "success": False,
+        "error": "not run",
+    }
+
+    tasks_before: Any = []
+    services_before: Any = []
+
     procmon_started = False
     sample_launch_attempted = False
+    cancelled = False
+    cancellation_reason = ""
 
     try:
+        _raise_if_cancelled(cancel_event)
+
+        _emit(status_cb, "Writing run configuration...")
+        stored_config = dict(config)
+        stored_config["resolved_run_case_dir"] = str(run_case_dir)
+        stored_config["run_id"] = run_id
+        stored_config["run_profile"] = run_profile
+        stored_config["test_name"] = test_name
+        write_json(run_config_path, stored_config)
+
+        _raise_if_cancelled(cancel_event)
+
+        _emit(status_cb, "Collecting sample hashes and metadata...")
+        sample_info = collect_sample_info(sample_path)
+        write_json(sample_info_path, sample_info)
+
+        _raise_if_cancelled(cancel_event)
+
+        _emit(status_cb, "Snapshotting scheduled tasks (before)...")
+        tasks_before = snapshot_scheduled_tasks()
+        write_json(tasks_before_json, tasks_before)
+
+        _raise_if_cancelled(cancel_event)
+
+        _emit(status_cb, "Snapshotting services (before)...")
+        services_before = snapshot_services()
+        write_json(services_before_json, services_before)
+
+        _raise_if_cancelled(cancel_event)
+
+        if autoruns_enabled:
+            _emit(status_cb, "Snapshotting Autoruns entries (before)...")
+            autoruns_before_status = _run_autorunsc_snapshot(
+                autorunsc_path=autorunsc_path,
+                output_csv=autoruns_before_csv,
+                deep_scan=autoruns_deep_scan,
+                timeout_seconds=autoruns_timeout_seconds,
+            )
+            if not autoruns_before_status.get("success"):
+                _emit(
+                    status_cb,
+                    f"Autoruns before snapshot warning: {autoruns_before_status.get('error', 'unknown error')}",
+                )
+        else:
+            _emit(status_cb, "Autoruns snapshot disabled.")
+
+        # Autorunsc cannot be interrupted from here once subprocess.run is
+        # already inside _run_autorunsc_snapshot, but cancellation is honored
+        # immediately after that snapshot returns.
+        _raise_if_cancelled(cancel_event)
+
         if procmon_enabled:
             _emit(status_cb, "Starting Procmon capture...")
             start_procmon_capture(
@@ -740,72 +808,88 @@ def run_dynamic_analysis(
             )
             procmon_started = True
 
+        _raise_if_cancelled(cancel_event)
+
         minimum_observation_seconds = int(config.get("minimum_observation_seconds", 30))
 
         _emit(
             status_cb,
             f"Launching sample and observing for at least {minimum_observation_seconds} seconds "
-            f"(timeout: {timeout_seconds} seconds)..."
+            f"(timeout: {timeout_seconds} seconds)...",
         )
         sample_launch_attempted = True
         exit_code = run_sample(
             sample_path,
             timeout_seconds,
             minimum_observation_seconds=minimum_observation_seconds,
+            cancel_event=cancel_event,
         )
         _emit(status_cb, f"Sample observation completed with exit code {exit_code}.")
 
+    except DynamicAnalysisCancelled as cancel_error:
+        cancelled = True
+        cancellation_reason = str(cancel_error)
+        exit_code = -2
+        _emit(status_cb, cancellation_reason)
+
     finally:
-        _emit(status_cb, "Snapshotting scheduled tasks (after)...")
-        tasks_after = snapshot_scheduled_tasks()
-        write_json(tasks_after_json, tasks_after)
-
-        _emit(status_cb, "Diffing scheduled tasks...")
-        task_diff_summary = diff_scheduled_tasks(tasks_before, tasks_after)
-        write_json(task_diffs_json, task_diff_summary)
-
-        _emit(status_cb, "Snapshotting services (after)...")
-        services_after = snapshot_services()
-        write_json(services_after_json, services_after)
-
-        _emit(status_cb, "Diffing services...")
-        service_diff_summary = diff_services(services_before, services_after)
-        write_json(service_diffs_json, service_diff_summary)
-
         if procmon_enabled and procmon_started:
             _emit(status_cb, "Stopping Procmon capture...")
-            terminate_procmon_capture(procmon_path)
+            try:
+                terminate_procmon_capture(procmon_path)
+            except Exception as error:
+                _emit(status_cb, f"Procmon stop warning: {error}")
 
-            _emit(status_cb, "Exporting Procmon CSV...")
-            export_procmon_csv(
-                procmon_path=procmon_path,
-                backing_file=procmon_backing,
-                csv_path=procmon_csv,
-            )
+        if cancelled:
+            _emit(status_cb, "Skipping after snapshots and Procmon export because run was cancelled.")
+        else:
+            _emit(status_cb, "Snapshotting scheduled tasks (after)...")
+            tasks_after = snapshot_scheduled_tasks()
+            write_json(tasks_after_json, tasks_after)
 
-            _emit(status_cb, "Parsing Procmon events...")
-            events = parse_procmon_csv(procmon_csv)
-            write_json(procmon_json, events)
-            procmon_summary = summarize_procmon_events(events)
+            _emit(status_cb, "Diffing scheduled tasks...")
+            task_diff_summary = diff_scheduled_tasks(tasks_before, tasks_after)
+            write_json(task_diffs_json, task_diff_summary)
 
-            _emit(status_cb, "Filtering interesting Procmon events...")
-            interesting_events = find_interesting_events(events)
-            write_json(procmon_interesting_json, interesting_events)
-            procmon_interesting_summary = summarize_interesting_events(interesting_events)
+            _emit(status_cb, "Snapshotting services (after)...")
+            services_after = snapshot_services()
+            write_json(services_after_json, services_after)
 
-            _emit(status_cb, "Triaging dropped-file candidates...")
-            dropped_candidates = collect_dropped_file_candidates(events)
-            dropped_files = enrich_dropped_files(dropped_candidates)
-            write_json(dropped_files_json, dropped_files)
+            _emit(status_cb, "Diffing services...")
+            service_diff_summary = diff_services(services_before, services_after)
+            write_json(service_diffs_json, service_diff_summary)
 
-            dropped_files_summary = summarize_dropped_files(dropped_files)
-            write_json(dropped_files_summary_json, dropped_files_summary)
+            if procmon_enabled and procmon_started:
+                _emit(status_cb, "Exporting Procmon CSV...")
+                export_procmon_csv(
+                    procmon_path=procmon_path,
+                    backing_file=procmon_backing,
+                    csv_path=procmon_csv,
+                )
 
-            _emit(status_cb, "Building dynamic findings summary...")
-            findings_summary = summarize_dynamic_findings(events, interesting_events)
-            write_json(findings_json, findings_summary)
+                _emit(status_cb, "Parsing Procmon events...")
+                events = parse_procmon_csv(procmon_csv)
+                write_json(procmon_json, events)
+                procmon_summary = summarize_procmon_events(events)
 
-    if autoruns_enabled:
+                _emit(status_cb, "Filtering interesting Procmon events...")
+                interesting_events = find_interesting_events(events)
+                write_json(procmon_interesting_json, interesting_events)
+                procmon_interesting_summary = summarize_interesting_events(interesting_events)
+
+                _emit(status_cb, "Triaging dropped-file candidates...")
+                dropped_candidates = collect_dropped_file_candidates(events)
+                dropped_files = enrich_dropped_files(dropped_candidates)
+                write_json(dropped_files_json, dropped_files)
+
+                dropped_files_summary = summarize_dropped_files(dropped_files)
+                write_json(dropped_files_summary_json, dropped_files_summary)
+
+                _emit(status_cb, "Building dynamic findings summary...")
+                findings_summary = summarize_dynamic_findings(events, interesting_events)
+                write_json(findings_json, findings_summary)
+
+    if autoruns_enabled and not cancelled:
         _emit(status_cb, "Snapshotting Autoruns entries (after)...")
         autoruns_after_status = _run_autorunsc_snapshot(
             autorunsc_path=autorunsc_path,
@@ -814,12 +898,17 @@ def run_dynamic_analysis(
             timeout_seconds=autoruns_timeout_seconds,
         )
         if not autoruns_after_status.get("success"):
-            _emit(status_cb, f"Autoruns after snapshot warning: {autoruns_after_status.get('error', 'unknown error')}")
+            _emit(
+                status_cb,
+                f"Autoruns after snapshot warning: {autoruns_after_status.get('error', 'unknown error')}",
+            )
 
         if autoruns_before_csv.exists() and autoruns_after_csv.exists():
             _emit(status_cb, "Diffing Autoruns snapshots...")
             autoruns_diff_summary = diff_autoruns_snapshots(autoruns_before_csv, autoruns_after_csv)
             write_json(autoruns_diff_json, autoruns_diff_summary)
+    elif autoruns_enabled and cancelled:
+        _emit(status_cb, "Skipping Autoruns after snapshot because run was cancelled.")
 
     ended_at = utc_now_iso()
     duration_seconds = _seconds_between(started_at, ended_at)
@@ -847,6 +936,13 @@ def run_dynamic_analysis(
         autoruns_diff_summary=autoruns_diff_summary,
     )
 
+    if cancelled:
+        score_data = {
+            "score": 0,
+            "severity": "Info",
+            "verdict": "Cancelled",
+        }
+
     summary = {
         "schema_version": "dynamic-1.0",
         "run_id": run_id,
@@ -858,6 +954,8 @@ def run_dynamic_analysis(
         "ended_at_utc": ended_at,
         "duration_seconds": duration_seconds,
         "exit_code": exit_code,
+        "cancelled": bool(cancelled),
+        "cancellation_reason": cancellation_reason,
         "procmon_enabled": procmon_enabled,
         "autoruns_enabled": autoruns_enabled,
         "autoruns_deep_scan": autoruns_deep_scan,
@@ -870,8 +968,8 @@ def run_dynamic_analysis(
         "verdict": score_data["verdict"],
         "procmon_summary": procmon_summary,
         "procmon_interesting_summary": procmon_interesting_summary,
-        "task_diff_summary": task_diff_summary.get("counts", {}),
-        "service_diff_summary": service_diff_summary.get("counts", {}),
+        "task_diff_summary": task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {},
+        "service_diff_summary": service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {},
         "autoruns_diff_summary": autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {},
         "autoruns_diff": autoruns_diff_summary,
         "dropped_files_summary": dropped_files_summary,
@@ -880,6 +978,10 @@ def run_dynamic_analysis(
 
     _emit(status_cb, "Writing final run summary...")
     write_json(run_summary_path, summary)
-    _emit(status_cb, "Dynamic analysis completed.")
+
+    if cancelled:
+        _emit(status_cb, "Dynamic analysis cancelled. Partial summary written.")
+    else:
+        _emit(status_cb, "Dynamic analysis completed.")
 
     return summary

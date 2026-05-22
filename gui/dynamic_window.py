@@ -22,7 +22,7 @@ from static_triage_engine.scoring import combined_score_from_case_dir
 
 
 class DynamicAnalysisWindow(tk.Toplevel):
-    """
+    r"""
     RingForge Dynamic Analysis window.
 
     Folder model used by this window:
@@ -51,6 +51,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app = app
         self.title("RingForge Workbench - Dynamic Analysis")
         self.configure(bg="#05070B")
+        self.resizable(True, True)
         self._autosize_window()
 
         cfg = getattr(app, "cfg", {}) or {}
@@ -141,72 +142,97 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.brand_logo_img = None
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
+        self.cancel_event = threading.Event()
 
         self._build_ui()
         self._reset_progress()
         self._refresh_summary_from_inputs()
         self.after(150, self._drain_output)
 
-        self.transient(app)
         self.grab_set()
 
 
+    def _get_work_area(self) -> tuple[int, int, int, int]:
+        """
+        Return the usable desktop work area as (left, top, width, height).
+
+        On Windows this excludes the taskbar, which prevents the bottom of the
+        Dynamic Analysis window from being hidden behind the taskbar in VMs or
+        high-DPI displays. Other platforms fall back to Tk screen dimensions.
+        """
+        screen_w = int(self.winfo_screenwidth())
+        screen_h = int(self.winfo_screenheight())
+
+        if os.name == "nt":
+            try:
+                class RECT(ctypes.Structure):
+                    _fields_ = [
+                        ("left", ctypes.c_long),
+                        ("top", ctypes.c_long),
+                        ("right", ctypes.c_long),
+                        ("bottom", ctypes.c_long),
+                    ]
+
+                rect = RECT()
+                SPI_GETWORKAREA = 0x0030
+                if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+                    return (
+                        int(rect.left),
+                        int(rect.top),
+                        int(rect.right - rect.left),
+                        int(rect.bottom - rect.top),
+                    )
+            except Exception:
+                pass
+
+        return 0, 0, screen_w, screen_h
+
     def _autosize_window(self):
         """
-        Size the Dynamic Analysis window based on the current screen.
+        Size the Dynamic Analysis window based on the usable screen area.
 
-        This avoids hard-coded window heights like 1200px, which can cut off
-        the bottom of the UI on laptops, VMware consoles, Linux desktops, or
-        systems using Windows display scaling.
+        The previous approach maximized the window on Windows. That can still
+        cause clipping on VMware consoles, taskbar-heavy desktops, or scaled
+        displays. This version uses the work area, leaves a small safety margin,
+        and enables compact layout rules when vertical space is limited.
         """
         try:
             self.update_idletasks()
-            screen_w = int(self.winfo_screenwidth())
-            screen_h = int(self.winfo_screenheight())
 
-            # Compact mode helps VMware/laptop screens where vertical space is tight.
-            self._compact_ui = screen_h < 1000
+            work_x, work_y, work_w, work_h = self._get_work_area()
 
-            width_pct = 0.94
-            height_pct = 0.90 if self._compact_ui else 0.88
+            # Compact mode reduces banner, padding, and text-area height on
+            # smaller VM/laptop displays.
+            self._compact_ui = work_h < 980
 
-            width = int(screen_w * width_pct)
-            height = int(screen_h * height_pct)
+            width_pct = 0.97
+            height_pct = 0.96 if self._compact_ui else 0.94
+            safety_x = 20
+            safety_y = 36 if os.name == "nt" else 28
 
-            # Keep sane lower bounds, but never force a window taller than the screen.
-            min_w = min(1180, max(980, screen_w - 80))
-            min_h = min(760, max(640, screen_h - 120))
+            width = min(int(work_w * width_pct), max(900, work_w - safety_x))
+            height = min(int(work_h * height_pct), max(640, work_h - safety_y))
+
+            min_w = min(1120, max(940, work_w - 80))
+            min_h = min(720, max(620, work_h - 100))
 
             width = max(width, min_w)
             height = max(height, min_h)
 
-            width = min(width, max(900, screen_w - 40))
-            height = min(height, max(640, screen_h - 80))
-
-            x = max((screen_w - width) // 2, 0)
-            y = max((screen_h - height) // 2, 0)
+            x = work_x + max((work_w - width) // 2, 0)
+            y = work_y + max((work_h - height) // 2, 0)
 
             self.geometry(f"{width}x{height}+{x}+{y}")
             self.minsize(min_w, min_h)
 
-            # Windows: maximize when possible. This gives the best fit on most VMs.
-            if os.name == "nt":
-                try:
-                    self.state("zoomed")
-                except Exception:
-                    pass
-
-            # Linux: some window managers support this.
-            elif sys.platform.startswith("linux"):
-                try:
-                    self.attributes("-zoomed", True)
-                except Exception:
-                    pass
+            # Do not force zoomed/maximized here. Keeping the window inside the
+            # calculated work area avoids clipping behind the Windows taskbar.
+            # Users can still maximize manually if desired.
 
         except Exception:
-            self._compact_ui = False
-            self.geometry("1360x860")
-            self.minsize(1100, 720)
+            self._compact_ui = True
+            self.geometry("1280x780")
+            self.minsize(1040, 660)
 
 
     # -------------------------------------------------------------------------
@@ -364,7 +390,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_ui(self):
         compact = bool(getattr(self, "_compact_ui", False))
-        outer = {"padx": 10 if compact else 12, "pady": 5 if compact else 8}
+        outer = {"padx": 6 if compact else 10, "pady": 3 if compact else 6}
 
         self._build_top_banner(outer)
 
@@ -429,8 +455,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ).pack(side="left", padx=(14, 0))
 
         workspace = ttk.Frame(frm)
-        workspace.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        workspace.columnconfigure(0, weight=3)
+        workspace.grid(row=1, column=0, sticky="nsew", pady=(6 if compact else 8, 0))
+        workspace.columnconfigure(0, weight=4)
         workspace.columnconfigure(1, weight=2)
 
         # Top row contains settings/status. Bottom row contains output/actions.
@@ -450,12 +476,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self._build_run_status_section(right_top)
 
         left_bottom = ttk.Frame(workspace)
-        left_bottom.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(10, 0))
+        left_bottom.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(6 if compact else 8, 0))
         left_bottom.columnconfigure(0, weight=1)
         left_bottom.rowconfigure(0, weight=1)
 
         right_bottom = ttk.Frame(workspace)
-        right_bottom.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(10, 0))
+        right_bottom.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(6 if compact else 8, 0))
         right_bottom.columnconfigure(0, weight=1)
         right_bottom.rowconfigure(0, weight=1)
 
@@ -470,12 +496,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         text_main = "#F7FAFF"
         text_soft = "#B8C7E6"
 
-        logo_size = 72 if compact else 96
-        title_font = 20 if compact else 24
-        module_font = 15 if compact else 18
-        logo_pad_y = 8 if compact else 14
-        banner_title_pad = 10 if compact else 16
-        banner_bottom_pad = 10 if compact else 16
+        logo_size = 52 if compact else 82
+        title_font = 17 if compact else 22
+        module_font = 13 if compact else 17
+        logo_pad_y = 4 if compact else 10
+        banner_title_pad = 6 if compact else 12
+        banner_bottom_pad = 6 if compact else 12
 
         banner_wrap = ttk.Frame(self)
         banner_wrap.pack(fill="x", **outer)
@@ -596,17 +622,25 @@ class DynamicAnalysisWindow(tk.Toplevel):
         notes.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
         notes.columnconfigure(0, weight=1)
 
-        note_text = (
-            "• Use a VM snapshot before execution.\n"
-            "• Run elevated when Procmon capture requires it.\n"
-            "• Prefer isolated networking for unknown samples.\n"
-            "• Output is stored under the case home folder in dynamic_analysis."
-        )
-        ttk.Label(notes, text=note_text, justify="left").grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        compact = bool(getattr(self, "_compact_ui", False))
+        if compact:
+            note_text = (
+                "• Snapshot VM before execution.  "
+                "• Run elevated for best Procmon/Autoruns capture.  "
+                "• Use isolated networking for unknown samples."
+            )
+        else:
+            note_text = (
+                "• Use a VM snapshot before execution.\n"
+                "• Run elevated when Procmon capture requires it.\n"
+                "• Prefer isolated networking for unknown samples.\n"
+                "• Output is stored under the case home folder in dynamic_analysis."
+            )
+        ttk.Label(notes, text=note_text, justify="left", wraplength=980).grid(row=0, column=0, sticky="w", padx=8, pady=(4 if compact else 6))
 
         actions = ttk.Frame(settings)
         actions.grid(row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
-        actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=1)
 
         self.run_btn = ttk.Button(
             actions,
@@ -616,12 +650,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
             command=self._start_dynamic_analysis,
         )
         self.run_btn.grid(row=0, column=0, sticky="w")
+        
+        self.cancel_btn = ttk.Button(
+            actions,
+            text="Cancel Analysis",
+            style="Side.Action.TButton",
+            command=self._cancel_dynamic_analysis,
+            state="disabled",
+        )
+        self.cancel_btn.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
         ttk.Label(
             actions,
             textvariable=self.status_var,
             anchor="e",
-        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
 
     def _build_run_status_section(self, parent):
         panel = ttk.LabelFrame(parent, text="Run Status")
@@ -661,7 +704,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         for idx, (label, var) in enumerate(rows):
             ttk.Label(summary, text=label).grid(row=idx, column=0, sticky="w", pady=(0 if idx == 0 else 6, 0))
-            ttk.Label(summary, textvariable=var, wraplength=300, justify="left").grid(
+            ttk.Label(summary, textvariable=var, wraplength=260 if getattr(self, "_compact_ui", False) else 340, justify="left").grid(
                 row=idx, column=1, sticky="w", padx=(8, 0), pady=(0 if idx == 0 else 6, 0)
             )
 
@@ -705,6 +748,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         panel = ttk.LabelFrame(parent, text="Findings Summary")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(1, weight=1)
+        panel.rowconfigure(8, weight=1)
 
         metrics = [
             ("Score:", self.metric_score_var),
@@ -749,21 +793,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
             text="Open Case Folder",
             style="Action.TButton",
             command=self._open_case_folder,
-        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6), ipady=2)
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(6 if getattr(self, "_compact_ui", False) else 10, 4), ipady=1)
 
         ttk.Button(
             report_actions,
             text="Open Dynamic Output Folder",
             style="Action.TButton",
             command=self._open_dynamic_output_folder,
-        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6), ipady=2)
+        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4), ipady=1)
 
         ttk.Button(
             report_actions,
             text="Open Latest Report",
             style="Action.TButton",
             command=self._open_latest_dynamic_html,
-        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10), ipady=2)
+        ).grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6 if getattr(self, "_compact_ui", False) else 10), ipady=1)
 
     # -------------------------------------------------------------------------
     # Progress
@@ -1277,7 +1321,20 @@ ul {{ margin-top: 8px; }}
 
         return True
 
+    def _cancel_dynamic_analysis(self):
+        if not self.worker_thread or not self.worker_thread.is_alive():
+            return
 
+        self.cancel_event.set()
+        self.status_var.set("Cancelling...")
+        self.summary_status_var.set("Cancelling")
+
+        if self.cancel_btn is not None:
+            self.cancel_btn.configure(state="disabled")
+
+        self.output_q.put(
+            "\n[cancel] Cancellation requested by analyst. Waiting for cleanup...\n"
+        )
     # -------------------------------------------------------------------------
     # Run dynamic analysis
     # -------------------------------------------------------------------------
@@ -1323,8 +1380,11 @@ ul {{ margin-top: 8px; }}
         self._save_cfg()
         self._refresh_summary_from_inputs()
         self.summary_status_var.set("Running")
+        self.cancel_event.clear()
         self.status_var.set("Running dynamic...")
         self.run_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        self.update_idletasks()
 
         self._set_step("Pre-checks", 100, "done")
         self._set_step("Procmon start", 25, "running")
@@ -1347,6 +1407,7 @@ ul {{ margin-top: 8px; }}
                 summary = run_dynamic_analysis(
                     config,
                     status_cb=lambda msg: self.output_q.put(f"[status] {msg}\n"),
+                    cancel_event=self.cancel_event,
                 )
 
                 findings = summary.get("findings", {}) if isinstance(summary, dict) else {}
@@ -1424,6 +1485,7 @@ ul {{ margin-top: 8px; }}
         self.metric_persistence_var.set(str(counts.get("persistence_hits", 0)))
 
         self.run_btn.configure(state="normal")
+        self.cancel_btn.configure(state="disabled")
         self.status_var.set("Idle")
         self.summary_status_var.set("Completed")
 
@@ -1467,6 +1529,8 @@ ul {{ margin-top: 8px; }}
 
     def _on_error(self, err: str):
         self.run_btn.configure(state="normal")
+        if self.cancel_btn is not None:
+            self.cancel_btn.configure(state="disabled")
         self.status_var.set("Idle")
         self.summary_status_var.set("Error")
         self._set_step("Procmon start", 100, "failed")
