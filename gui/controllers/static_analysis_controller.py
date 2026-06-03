@@ -233,6 +233,21 @@ class StaticAnalysisController:
             return
 
         extract, subfiles, limit, sm = app._effective_settings()
+        
+        if subfiles and int(limit) >= 15:
+            proceed = messagebox.askyesno(
+                "Deep Triage Notice",
+                (
+                    "This analysis may take several minutes.\n\n"
+                    f"RingForge is configured to analyze up to {limit} extracted subfiles. "
+                    "Large installers can appear idle while each extracted EXE/DLL is processed.\n\n"
+                    "The Output window will show [subfile:start] and [subfile:done] progress messages.\n\n"
+                    "Continue?"
+                ),
+            )
+            if not proceed:
+                app.running_var.set("Idle")
+                return
 
         # Important:
         # We want the CLI to write to cases\\<case>\\static_analysis.
