@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import contextlib
 import json
 import os
 import re
@@ -299,10 +301,40 @@ def write_virustotal_json(case_dir: Path, sha256: str, api_key: str = "") -> dic
 def _extract_first_match(pattern: str, text: str, flags: int = 0) -> str:
     m = re.search(pattern, text, flags)
     return m.group(1).strip() if m else ""
+    
+def _extract_signature_parse_warnings(raw: str) -> list[str]:
+    """
+    Normalize noisy signature/timestamp parser warnings.
+
+    Some signed Windows installers contain Authenticode timestamp structures
+    that osslsigncode cannot fully decode, for example:
+        Can't parse PKCS9 TSTInfo (pos=134)
+
+    This should be treated as a non-fatal timestamp parse warning, not as a
+    static-analysis failure.
+    """
+    text = raw or ""
+    warnings: list[str] = []
+
+    patterns = [
+        r"Can't parse PKCS9 TSTInfo[^\r\n]*",
+        r"PKCS9 TSTInfo[^\r\n]*",
+        r"TSTInfo[^\r\n]*",
+        r"timestamp[^\r\n]*parse[^\r\n]*",
+    ]
+
+    for pattern in patterns:
+        for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            warning = str(match).strip()
+            if warning and warning not in warnings:
+                warnings.append(warning)
+
+    return warnings
 
 
 def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
     text = raw or ""
+    parse_warnings = _extract_signature_parse_warnings(text)
 
     subject = _extract_first_match(
         r"Signer #0:\s*\n\s*Subject:\s*(.+)",
@@ -359,6 +391,8 @@ def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
         "issuer": issuer,
         "signing_time_utc": signing_time_utc,
         "timestamp_time_utc": timestamp_time_utc,
+        "warnings": parse_warnings,
+        "signature_parse_warning": " | ".join(parse_warnings),
         "parse_evidence": {
             "signature_verification_ok": signature_verification_ok,
             "verified_sig_count": verified_sig_count,
@@ -396,6 +430,8 @@ def _verify_authenticode_powershell(
         "timestamp_time_utc": "",
         "raw": "",
         "error": "",
+        "warnings": [],
+        "signature_parse_warning": "",
     }
 
     if not p.exists():
@@ -515,6 +551,8 @@ def verify_authenticode_cached(
         "timestamp_time_utc": "",
         "raw": "",
         "error": "",
+        "warnings": [],
+        "signature_parse_warning": "",
     }
 
     if not p.exists():
@@ -613,6 +651,8 @@ def _verify_authenticode_osslsigncode(
         "timestamp_time_utc": "",
         "raw": "",
         "error": "",
+        "warnings": [],
+        "signature_parse_warning": "",
     }
 
     if not p.exists():
@@ -654,6 +694,8 @@ def _verify_authenticode_osslsigncode(
         result["signing_time_utc"] = parsed.get("signing_time_utc", "") or ""
         result["timestamp_time_utc"] = parsed.get("timestamp_time_utc", "") or ""
         result["parse_evidence"] = parsed.get("parse_evidence", {})
+        result["warnings"] = parsed.get("warnings", []) or []
+        result["signature_parse_warning"] = parsed.get("signature_parse_warning", "") or ""
         result["signature_present"] = _signature_present_from_subject(result["subject"]) or bool(result["verify_ok"])
 
         if result["verify_ok"]:
@@ -664,7 +706,13 @@ def _verify_authenticode_osslsigncode(
             result["verification_status"] = "unsigned"
 
         if cp.returncode != 0 and not result["verify_ok"]:
-            result["error"] = f"osslsigncode verify returned {cp.returncode}"
+            if result.get("signature_parse_warning"):
+                result["error"] = ""
+                result["verification_status"] = (
+                    "signed_unverified" if result.get("signature_present") else "verification_warning"
+                )
+            else:
+                result["error"] = f"osslsigncode verify returned {cp.returncode}"
 
         return result
 
@@ -679,7 +727,36 @@ def _verify_authenticode_osslsigncode(
 
 
 def write_signing_json(case_dir: Path, sample_path: Path, cache: dict[str, Any]) -> dict[str, Any]:
-    signing = verify_authenticode_cached(sample_path, cache)
+    captured_stdout = io.StringIO()
+    captured_stderr = io.StringIO()
+
+    with contextlib.redirect_stdout(captured_stdout), contextlib.redirect_stderr(captured_stderr):
+        signing = verify_authenticode_cached(sample_path, cache)
+
+    captured_text = "\n".join(
+        x.strip()
+        for x in (captured_stdout.getvalue(), captured_stderr.getvalue())
+        if x and x.strip()
+    )
+
+    captured_warnings = _extract_signature_parse_warnings(captured_text)
+
+    if captured_warnings:
+        existing_warnings = signing.get("warnings", [])
+        if not isinstance(existing_warnings, list):
+            existing_warnings = [str(existing_warnings)]
+
+        for warning in captured_warnings:
+            if warning not in existing_warnings:
+                existing_warnings.append(warning)
+
+        signing["warnings"] = existing_warnings
+        signing["signature_parse_warning"] = " | ".join(existing_warnings)
+        signing["parser_status"] = "partial"
+
+        if not signing.get("error"):
+            signing["error"] = ""
+
     signing["generated_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     signing["parser_version"] = "signing-v2"
     _write_json(case_dir / "signing.json", signing)

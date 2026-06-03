@@ -332,6 +332,18 @@ class StaticAnalysisController:
                         if self.cancel_event.is_set():
                             self._terminate_process(proc)
                             break
+
+                        line_lower = line.lower()
+
+                        # Suppress noisy Authenticode timestamp parser output.
+                        # This is usually a non-fatal timestamp parsing warning from a signing
+                        # parser, not a static-analysis failure.
+                        if "can't parse pkcs9 tstinfo" in line_lower or "pkcs9 tstinfo" in line_lower:
+                            app.output_q.put(
+                                "[warn] Authenticode timestamp metadata could not be fully parsed; continuing analysis.\n"
+                            )
+                            continue
+
                         app.output_q.put(line)
 
                 try:
