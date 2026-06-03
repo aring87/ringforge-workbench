@@ -217,25 +217,27 @@ def build_configuration_section(app, parent):
     app.adv_body.grid(row=1, column=0, sticky="ew", pady=(8, 0))
     app.adv_body.columnconfigure(4, weight=1)
 
-    ttk.Checkbutton(
+    app.extract_check = ttk.Checkbutton(
         app.adv_body,
         text="Enable extraction",
         variable=app.extract_var,
         command=app._save_cfg,
         style="Dark.TCheckbutton",
-    ).grid(row=0, column=0, sticky="w")
+    )
+    app.extract_check.grid(row=0, column=0, sticky="w")
 
-    ttk.Checkbutton(
+    app.subfiles_check = ttk.Checkbutton(
         app.adv_body,
         text="Enable subfiles triage",
         variable=app.subfiles_var,
         command=app._save_cfg,
         style="Dark.TCheckbutton",
-    ).grid(row=0, column=1, sticky="w", padx=(14, 0))
-
-    ttk.Label(app.adv_body, text="Subfile limit:").grid(
-        row=0, column=2, sticky="e", padx=(14, 6)
     )
+    app.subfiles_check.grid(row=0, column=1, sticky="w", padx=(14, 0))
+
+    app.subfile_limit_label = ttk.Label(app.adv_body, text="Subfile limit:")
+    app.subfile_limit_label.grid(row=0, column=2, sticky="e", padx=(14, 6))
+    
     app.subfile_limit_spin = ttk.Spinbox(
         app.adv_body,
         from_=0,
@@ -247,21 +249,23 @@ def build_configuration_section(app, parent):
     )
     app.subfile_limit_spin.grid(row=0, column=3, sticky="w")
 
-    ttk.Checkbutton(
+    app.strings_lite_check = ttk.Checkbutton(
         app.adv_body,
         text="Strings lite",
         variable=app.strings_lite_var,
         command=app._on_strings_mode_changed,
         style="Dark.TCheckbutton",
-    ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+    )
+    app.strings_lite_check.grid(row=1, column=0, sticky="w", pady=(8, 0))
 
-    ttk.Checkbutton(
+    app.skip_strings_check = ttk.Checkbutton(
         app.adv_body,
         text="Skip strings",
         variable=app.no_strings_var,
         command=app._on_strings_mode_changed,
         style="Dark.TCheckbutton",
-    ).grid(row=1, column=1, sticky="w", padx=(14, 0), pady=(8, 0))
+    )
+    app.skip_strings_check.grid(row=1, column=1, sticky="w", padx=(14, 0), pady=(8, 0))
 
     app.effective_label = ttk.Label(adv, text="")
     app.effective_label.grid(row=2, column=0, sticky="w", pady=(10, 0))

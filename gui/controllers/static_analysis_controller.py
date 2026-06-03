@@ -362,20 +362,43 @@ class StaticAnalysisController:
 
             if os.name == "nt":
                 try:
-                    proc.terminate()
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
                 except Exception:
-                    pass
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
                 time.sleep(0.5)
+
                 if proc.poll() is None:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
             else:
                 try:
                     proc.send_signal(signal.SIGTERM)
                 except Exception:
-                    proc.terminate()
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
                 time.sleep(0.5)
+
                 if proc.poll() is None:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
         except Exception:
             pass
 

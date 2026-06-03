@@ -943,13 +943,18 @@ def run_case(
     if triage_extracted_pes and enable_payload_extraction and bool(payload_result.get("success", False)):
         targets = select_subfile_targets(payload_result, limit=subfile_limit)
         sub_rollup["count"] = len(targets)
+        print(f"[subfile:triage] selected={len(targets)} limit={subfile_limit}", flush=True)
 
         sub_results: list[dict[str, Any]] = []
         sub_base = case_dir / "subfiles"
         sub_base.mkdir(parents=True, exist_ok=True)
 
+        total_subfiles = len(targets)
+
         for idx, t in enumerate(targets, start=1):
             sub_name = f"{idx:02d}_{t.name}"
+            print(f"[subfile:start] {idx}/{total_subfiles} {sub_name}", flush=True)
+
             sub_dir = sub_base / sub_name
             sub_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1050,6 +1055,12 @@ def run_case(
                     "signer": sub_summary["signing"].get("subject", ""),
                     "trust_override": trust_override,
                 }
+            )
+            
+            print(
+                f"[subfile:done] {idx}/{total_subfiles} {sub_name} "
+                f"score={sf_score} verdict={sf_verdict}",
+                flush=True,
             )
 
         sub_results_sorted = sorted(sub_results, key=lambda x: int(x.get("score", 0)), reverse=True)
