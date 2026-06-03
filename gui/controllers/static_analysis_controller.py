@@ -264,6 +264,13 @@ class StaticAnalysisController:
 
         app._reset_progress()
         app._reset_result_summary()
+        try:
+            old_log = static_output_dir / "analysis.log"
+            if old_log.exists():
+                old_log.unlink()
+        except Exception:
+            pass
+            
         app.output.delete("1.0", "end")
         app.output.insert("end", "Starting analysis:\n")
         app.output.insert("end", f"  sample={sample}\n")
@@ -319,8 +326,9 @@ class StaticAnalysisController:
                     proc.wait(timeout=5)
 
                 rc = proc.returncode if proc.returncode is not None else 1
+                was_cancelled = self.cancel_event.is_set()
 
-                if self.cancel_event.is_set():
+                if was_cancelled:
                     rc = -1
 
             except Exception as e:
@@ -328,10 +336,11 @@ class StaticAnalysisController:
                 rc = 1
             finally:
                 app.active_process = None
-                if rc == -1:
+                if self.cancel_event.is_set():
                     app.output_q.put("\n[cancelled] analysis cancelled by user\n")
+
                 app.output_q.put(f"\n[done] exit_code={rc}\n")
-                app.after(0, lambda: self.on_done(rc))
+                app.after(0, lambda cancelled=self.cancel_event.is_set(): self.on_done(rc, cancelled))
 
         app.worker_thread = threading.Thread(target=worker, daemon=True)
         app.worker_thread.start()
@@ -374,7 +383,7 @@ class StaticAnalysisController:
     # Completion handling
     # ---------------------------------------------------------------------
 
-    def on_done(self, rc: int):
+    def on_done(self, rc: int, was_cancelled: bool = False):
         app = self.app
 
         app.stop_tail.set()
@@ -439,11 +448,14 @@ class StaticAnalysisController:
 
         if rc == 0:
             messagebox.showinfo("Completed", "Analysis completed successfully.")
-        elif rc == -1:
+        elif was_cancelled:
             app.status_var.set("Analysis cancelled.")
             messagebox.showinfo("Cancelled", "Analysis was cancelled.")
         else:
-            messagebox.showwarning("Completed", f"Analysis finished with exit code {rc}.\nCheck output for details.")
+            messagebox.showwarning(
+                "Completed",
+                f"Analysis finished with exit code {rc}.\nCheck output for details.",
+            )
 
     # ---------------------------------------------------------------------
     # Output/log handling
@@ -559,7 +571,9 @@ class StaticAnalysisController:
                     line_lower = line.lower()
                     optional_na_steps = {"extract", "file", "filetype", "strings", "capa"}
 
-                    if (
+                    if "cancelled" in line_lower or "canceled" in line_lower:
+                        fail_label = "cancelled"
+                    elif (
                         os.name == "nt"
                         and step_key in optional_na_steps
                         and (

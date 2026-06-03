@@ -109,6 +109,47 @@ def collect_sample_info(sample_path: str | Path) -> dict[str, Any]:
         "sha256": sha256_file(sample),
     }
 
+def build_dynamic_launch_command(sample_path: str | Path, run_dir: str | Path | None = None) -> list[str]:
+    sample = Path(sample_path)
+    suffix = sample.suffix.lower()
+
+    if run_dir is None:
+        run_dir = sample.parent
+
+    run_dir = Path(run_dir)
+
+    if suffix == ".exe":
+        return [str(sample)]
+
+    if suffix == ".msi":
+        return [
+            "msiexec.exe",
+            "/i",
+            str(sample),
+            "/qn",
+            "/norestart",
+            "/L*v",
+            str(run_dir / "msi_install.log"),
+        ]
+
+    if suffix == ".ps1":
+        return [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(sample),
+        ]
+
+    if suffix in [".bat", ".cmd"]:
+        return [
+            "cmd.exe",
+            "/c",
+            str(sample),
+        ]
+
+    raise ValueError(f"Unsupported sample type for dynamic execution: {suffix}")
 
 def run_sample(
     sample_path: str | Path,
@@ -131,7 +172,12 @@ def run_sample(
     _raise_if_cancelled(cancel_event)
 
     start_time = time.monotonic()
-    proc = subprocess.Popen([str(sample)])
+    
+    launch_cmd = build_dynamic_launch_command(sample)
+
+    print(f"[status] Launch command: {' '.join(launch_cmd)}")
+
+    proc = subprocess.Popen(launch_cmd)
 
     exit_code: int | None = None
 

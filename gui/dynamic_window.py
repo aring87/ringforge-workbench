@@ -291,7 +291,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
     def _sync_dynamic_output_to_case(self):
         """
         Updates the dynamic output folder to:
-            <case_home>\dynamic_analysis
+            <case_home>/dynamic_analysis
 
         This is used when the selected sample or case folder changes.
         """
@@ -650,7 +650,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             command=self._start_dynamic_analysis,
         )
         self.run_btn.grid(row=0, column=0, sticky="w")
-        
+
         self.cancel_btn = ttk.Button(
             actions,
             text="Cancel Analysis",
@@ -1487,7 +1487,10 @@ ul {{ margin-top: 8px; }}
         self.run_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         self.status_var.set("Idle")
-        self.summary_status_var.set("Completed")
+        if isinstance(summary, dict) and summary.get("cancelled"):
+            self.summary_status_var.set("Cancelled")
+        else:
+            self.summary_status_var.set("Completed")
 
         def finalize_refresh():
             case_home = self._get_case_home_dir()
@@ -1516,8 +1519,19 @@ ul {{ margin-top: 8px; }}
                     self.app.refresh_combined_score()
 
             exit_code = summary.get("exit_code") if isinstance(summary, dict) else None
-            if exit_code == 0:
-                messagebox.showinfo("Completed", "Dynamic analysis completed successfully.", parent=self)
+
+            if isinstance(summary, dict) and summary.get("cancelled"):
+                messagebox.showwarning(
+                    "Cancelled",
+                    summary.get("cancellation_reason", "Dynamic analysis cancelled by analyst."),
+                    parent=self,
+                )
+            elif exit_code == 0:
+                messagebox.showinfo(
+                    "Completed",
+                    "Dynamic analysis completed successfully.",
+                    parent=self,
+                )
             else:
                 messagebox.showwarning(
                     "Completed",
