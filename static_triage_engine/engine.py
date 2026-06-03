@@ -242,12 +242,17 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
         "times_submitted": 0,
         "permalink": f"https://www.virustotal.com/gui/file/{sha256}",
         "error": "",
+        "status": "unknown",
+        "lookup_status": "unknown",
         "last_analysis_stats": {},
         "last_analysis_results": {},
     }
 
     if not api_key:
         result["enabled"] = False
+        result["found"] = False
+        result["status"] = "skipped"
+        result["lookup_status"] = "skipped_no_api_key"
         result["error"] = "VT_API_KEY not set"
         return result
 
@@ -272,13 +277,14 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
             result["meaningful_name"] = attrs.get("meaningful_name", "") or ""
             result["type_description"] = attrs.get("type_description", "") or ""
             result["times_submitted"] = int(attrs.get("times_submitted", 0) or 0)
+            result["status"] = "done"
+            result["lookup_status"] = "found"
             result["last_analysis_stats"] = stats
             result["last_analysis_results"] = results
             return result
 
-        if r.status_code == 404:
-            result["error"] = "Hash not found in VirusTotal"
-            return result
+        result["status"] = "warning"
+        result["lookup_status"] = f"api_error_{r.status_code}"
 
         try:
             result["error"] = f"VirusTotal API error {r.status_code}: {r.json()}"
@@ -286,7 +292,19 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
             result["error"] = f"VirusTotal API error {r.status_code}: {r.text[:500]}"
         return result
 
+    except requests.exceptions.Timeout:
+        result["status"] = "warning"
+        result["lookup_status"] = "timeout"
+        result["error"] = f"VirusTotal lookup timed out after {timeout_sec}s"
+        return result
+    except requests.exceptions.RequestException as e:
+        result["status"] = "warning"
+        result["lookup_status"] = "request_error"
+        result["error"] = f"{type(e).__name__}: {e}"
+        return result
     except Exception as e:
+        result["status"] = "warning"
+        result["lookup_status"] = "error"
         result["error"] = f"{type(e).__name__}: {e}"
         return result
 

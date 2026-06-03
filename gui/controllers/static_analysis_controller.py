@@ -29,6 +29,21 @@ from gui.gui_utils import (
 
 from static_triage_engine.scoring import combined_score_from_case_dir
 
+SUBFILE_TRIAGE_RE = re.compile(
+    r"^\[subfile:triage\]\s+selected=(?P<selected>\d+)\s+limit=(?P<limit>\d+)",
+    re.I,
+)
+
+SUBFILE_START_RE = re.compile(
+    r"^\[subfile:start\]\s+(?P<idx>\d+)/(?P<total>\d+)\s+(?P<name>.+)$",
+    re.I,
+)
+
+SUBFILE_DONE_RE = re.compile(
+    r"^\[subfile:done\]\s+(?P<idx>\d+)/(?P<total>\d+)\s+(?P<rest>.+)$",
+    re.I,
+)
+
 
 class StaticAnalysisController:
     """
@@ -475,6 +490,10 @@ class StaticAnalysisController:
                 # of the app so dynamic/spec modules use the shared case folder.
                 if case_home_dir:
                     app.case_dir_detected = case_home_dir
+                    
+            subfiles_status = app.step_widgets.get("subfiles", {}).get("status")
+            if subfiles_status is not None and subfiles_status.cget("text") == "idle":
+                app._set_step("subfiles", 100, "skipped")
 
             app._set_step("finalize", 100, "done")
 
@@ -542,6 +561,41 @@ class StaticAnalysisController:
                     val = (mpdf.group("p") or "").strip()
                     if val.lower() != "none":
                         app._set_step("report", 100, "done")
+                        app._recalc_overall()
+                
+                m_sub_triage = SUBFILE_TRIAGE_RE.search(line)
+                if m_sub_triage:
+                    selected = int(m_sub_triage.group("selected"))
+                    limit = int(m_sub_triage.group("limit"))
+                    app.status_var.set(f"Subfile triage started: {selected} selected, limit {limit}")
+                    app.running_var.set(f"Subfile triage: 0/{selected}")
+                    app._set_step("subfiles", 15, "running")
+                    app._recalc_overall()
+
+                m_sub_start = SUBFILE_START_RE.search(line)
+                if m_sub_start:
+                    idx = int(m_sub_start.group("idx"))
+                    total = int(m_sub_start.group("total"))
+                    name = m_sub_start.group("name").strip()
+                    pct = int(round((idx / max(total, 1)) * 100))
+                    app.status_var.set(f"Subfile triage {idx}/{total}: {name}")
+                    app.running_var.set(f"Subfile triage: {idx}/{total}")
+                    app._set_step("subfiles", min(95, max(15, pct)), f"{idx}/{total}")
+                    app._recalc_overall()
+
+                m_sub_done = SUBFILE_DONE_RE.search(line)
+                if m_sub_done:
+                    idx = int(m_sub_done.group("idx"))
+                    total = int(m_sub_done.group("total"))
+                    pct = int(round((idx / max(total, 1)) * 100))
+                    app.running_var.set(f"Subfile triage: {idx}/{total}")
+                    app._set_step("subfiles", min(95, max(15, pct)), f"{idx}/{total}")
+                    app._recalc_overall()
+                    
+                    if idx >= total:
+                        app._set_step("subfiles", 100, "done")
+                        app.running_var.set("Running...")
+                        app.status_var.set("Subfile triage completed.")
                         app._recalc_overall()
 
                 app.output.insert("end", line)

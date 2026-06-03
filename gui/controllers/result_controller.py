@@ -131,7 +131,20 @@ class ResultController:
         vt_display = vt_raw or vt
 
         if not vt_display:
-            if app.vt_api_key_var.get().strip():
+            if vt_raw:
+                vt_status = str(vt_raw.get("status") or "").strip().lower()
+                lookup_status = str(vt_raw.get("lookup_status") or "").strip()
+                vt_error = str(vt_raw.get("error") or "").strip()
+
+                if vt_status == "skipped" or vt_error == "VT_API_KEY not set":
+                    app.vt_status_var.set("VirusTotal: skipped")
+                elif vt_status == "warning":
+                    app.vt_status_var.set(f"VirusTotal: warning ({lookup_status or 'unavailable'})")
+                elif vt_status == "done" and lookup_status == "not_found":
+                    app.vt_status_var.set("VirusTotal: hash not found")
+                else:
+                    app.vt_status_var.set("VirusTotal: no result available")
+            elif app.vt_api_key_var.get().strip():
                 app.vt_status_var.set("VirusTotal: no result available")
             else:
                 app.vt_status_var.set("VirusTotal: disabled")
@@ -166,7 +179,24 @@ class ResultController:
             link = str(vt_display.get("permalink", "") or "")
             found = bool(vt_display.get("found", False) or link or name != "-")
 
-        status = "VirusTotal: report found" if found else "VirusTotal: no report available"
+        vt_status = str(vt_display.get("status") or vt_raw.get("status") or "").strip().lower()
+        lookup_status = str(vt_display.get("lookup_status") or vt_raw.get("lookup_status") or "").strip()
+        vt_error = str(vt_display.get("error") or vt_raw.get("error") or "").strip()
+
+        if vt_status == "skipped":
+            status = "VirusTotal: skipped"
+        elif vt_status == "warning":
+            status = f"VirusTotal: warning ({lookup_status or 'unavailable'})"
+        elif vt_status == "done" and found:
+            status = "VirusTotal: report found"
+        elif vt_status == "done" and lookup_status == "not_found":
+            status = "VirusTotal: hash not found"
+        elif found:
+            status = "VirusTotal: report found"
+        elif vt_error == "VT_API_KEY not set":
+            status = "VirusTotal: skipped"
+        else:
+            status = "VirusTotal: no report available"
 
         app.vt_status_var.set(status)
         app.vt_name_var.set(f"VT Name: {name}")
