@@ -1234,6 +1234,33 @@ ul {{ margin-top: 8px; }}
             return True, ""
         except Exception as error:
             return False, str(error)
+            
+    def _confirm_case_sample_match(self, sample: Path, case_home: Path) -> bool:
+        sample_stem = self._safe_case_name(sample.stem).lower()
+        case_name = self._safe_case_name(case_home.name).lower()
+
+        generic_case_names = {"sample", "dynamic_case", "notepad"}
+
+        if not sample_stem or not case_name:
+            return True
+
+        if case_name == sample_stem:
+            return True
+
+        if sample_stem in case_name or case_name in sample_stem:
+            return True
+
+        proceed = messagebox.askyesno(
+            "Case Folder Mismatch",
+            "The selected sample name does not appear to match the selected case folder.\n\n"
+            f"Sample:\n{sample.name}\n\n"
+            f"Case folder:\n{case_home}\n\n"
+            "This may mix dynamic results into the wrong case.\n\n"
+            "Continue anyway?",
+            parent=self,
+        )
+
+        return bool(proceed)
 
     def _run_dynamic_preflight_checks(
         self,
@@ -1345,6 +1372,13 @@ ul {{ margin-top: 8px; }}
 
         sample = Path(self.sample_var.get().strip())
         case_home, dynamic_output = self._ensure_case_layout()
+        
+        if not self._confirm_case_sample_match(sample, case_home):
+            self._set_step("Pre-checks", 100, "cancelled")
+            self.status_var.set("Idle")
+            self.summary_status_var.set("Ready")
+            return
+    
         procmon_path = Path(self.procmon_path_var.get().strip())
         timeout_seconds = int(self.timeout_var.get())
         procmon_config = self.procmon_config_var.get().strip()
