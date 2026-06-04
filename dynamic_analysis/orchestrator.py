@@ -1061,6 +1061,10 @@ def run_dynamic_analysis(
         exit_code=exit_code,
         procmon_summary=procmon_summary,
     )
+    
+    if cancelled:
+        capture_quality["status"] = "cancelled"
+        capture_quality["note"] = cancellation_reason or "Dynamic analysis was cancelled before full telemetry collection completed."
 
     behavior_summary = _build_behavior_summary(
         findings_summary=findings_summary,
