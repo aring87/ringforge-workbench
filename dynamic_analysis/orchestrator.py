@@ -155,31 +155,37 @@ def run_sample(
     sample_path: str | Path,
     timeout_seconds: int,
     minimum_observation_seconds: int = 30,
+    post_exit_observation_seconds: int = 120,
+    installer_observation_mode: bool = True,
     cancel_event: CancelEvent = None,
+    status_cb: StatusCallback = None,
 ) -> int:
     """
-    Launch the sample and observe for at least minimum_observation_seconds.
+    Launch the sample and observe runtime behavior.
 
-    This avoids ending too quickly when Windows launcher binaries hand off to
-    packaged app processes, such as Windows 11 Notepad launching the
-    WindowsApps Notepad process and exiting immediately.
-
-    If cancel_event is set during observation, the active sample process is
-    terminated and DynamicAnalysisCancelled is raised.
+    Installer-style behavior:
+    - Procmon should not stop just because the initial launcher/bootstrapper exits.
+    - The run observes for at least minimum_observation_seconds.
+    - If the initial process exits, RingForge keeps observing for
+      post_exit_observation_seconds so child installers, msiexec handoffs,
+      services, scheduled tasks, and background setup activity can be captured.
+    - The run never exceeds timeout_seconds.
+    - Analyst cancellation is honored during observation.
     """
     sample = Path(sample_path)
 
     _raise_if_cancelled(cancel_event)
 
     start_time = time.monotonic()
-    
     launch_cmd = build_dynamic_launch_command(sample)
 
-    print(f"[status] Launch command: {' '.join(launch_cmd)}")
+    _emit(status_cb, f"Launch command: {' '.join(launch_cmd)}")
 
     proc = subprocess.Popen(launch_cmd)
 
     exit_code: int | None = None
+    process_exit_time: float | None = None
+    last_notice_second = -1
 
     while True:
         if _cancel_requested(cancel_event):
@@ -193,24 +199,67 @@ def run_sample(
                 "Dynamic analysis cancelled during sample observation."
             )
 
-        elapsed = time.monotonic() - start_time
+        now = time.monotonic()
+        elapsed = now - start_time
 
-        if exit_code is None:
-            exit_code = proc.poll()
+        current_exit = proc.poll()
+        if exit_code is None and current_exit is not None:
+            exit_code = int(current_exit)
+            process_exit_time = now
+            _emit(
+                status_cb,
+                f"Initial sample process exited with code {exit_code}; continuing observation for installer/background activity.",
+            )
 
-        minimum_elapsed = elapsed >= minimum_observation_seconds
-        timeout_elapsed = elapsed >= timeout_seconds
-
-        if timeout_elapsed:
+        if elapsed >= timeout_seconds:
             if proc.poll() is None:
                 try:
                     proc.terminate()
                 except Exception:
                     pass
-            return exit_code if exit_code is not None else -1
 
-        if exit_code is not None and minimum_elapsed:
+            if exit_code is None:
+                return -1
+
             return int(exit_code)
+
+        minimum_elapsed = elapsed >= minimum_observation_seconds
+
+        if not installer_observation_mode:
+            if exit_code is not None and minimum_elapsed:
+                return int(exit_code)
+
+        if installer_observation_mode and exit_code is not None and minimum_elapsed:
+            post_exit_elapsed = 0
+            if process_exit_time is not None:
+                post_exit_elapsed = int(now - process_exit_time)
+
+            if post_exit_elapsed >= post_exit_observation_seconds:
+                _emit(
+                    status_cb,
+                    f"Post-exit observation completed after {post_exit_elapsed} seconds.",
+                )
+                return int(exit_code)
+
+        if exit_code is None and minimum_elapsed and not installer_observation_mode:
+            # Defensive fallback. In normal non-installer mode this only returns
+            # once the original process exits.
+            pass
+
+        elapsed_int = int(elapsed)
+        if elapsed_int % 30 == 0 and elapsed_int != last_notice_second:
+            last_notice_second = elapsed_int
+            if exit_code is None:
+                _emit(
+                    status_cb,
+                    f"Observation still running... elapsed={elapsed_int}s timeout={timeout_seconds}s",
+                )
+            else:
+                post_exit_elapsed = int(now - process_exit_time) if process_exit_time else 0
+                _emit(
+                    status_cb,
+                    f"Post-exit observation still running... elapsed={elapsed_int}s post_exit={post_exit_elapsed}s/{post_exit_observation_seconds}s timeout={timeout_seconds}s",
+                )
 
         time.sleep(1)
 
@@ -671,40 +720,60 @@ def calculate_dynamic_score(
     suspicious_tasks = int(task_counts.get("suspicious_new_or_modified", 0) or 0)
     suspicious_services = int(service_counts.get("suspicious_new_or_modified", 0) or 0)
     suspicious_dropped = int(dropped.get("suspicious", 0) or 0)
+
     autoruns_new = int(autoruns_counts.get("new_entries", 0) or 0)
     autoruns_modified = int(autoruns_counts.get("modified_entries", 0) or 0)
     autoruns_suspicious = int(autoruns_counts.get("suspicious_new_or_modified", 0) or 0)
 
     score = 0
-    score += min(interesting_events, 10)
-    score += min(process_creates, 5)
-    score += min(network_events * 2, 10)
-    score += min(file_write_events, 5)
-    score += suspicious_path_hits * 4
-    score += persistence_hits * 8
-    score += lolbin_processes * 5
-    score += suspicious_tasks * 8
-    score += suspicious_services * 8
-    score += suspicious_dropped * 6
-    score += min(autoruns_new, 5) * 2
-    score += min(autoruns_modified, 5) * 2
-    score += autoruns_suspicious * 10
 
-    if score <= 5:
+    # General activity: useful context, but not automatically suspicious.
+    score += min(interesting_events, 10)
+    score += min(process_creates, 10)
+    score += min(network_events, 10)
+    score += min(file_write_events, 10)
+
+    # Installer-safe weighting. These still matter, but should not dominate
+    # clean installer assessments by themselves.
+    score += min(suspicious_path_hits, 10) * 2
+    score += min(persistence_hits, 10) * 3
+    score += min(lolbin_processes, 3) * 2
+
+    # Persistence diffs are higher signal than raw Procmon hits.
+    score += suspicious_tasks * 6
+    score += suspicious_services * 6
+    score += suspicious_dropped * 8
+
+    # Autoruns is high-value, but legitimate installers can create expected
+    # startup entries, services, or drivers.
+    score += min(autoruns_new, 5) * 1
+    score += min(autoruns_modified, 5) * 1
+    score += autoruns_suspicious * 6
+
+    if score <= 10:
         severity = "Low"
         verdict = "Benign / Clean Baseline"
-    elif score <= 15:
+    elif score <= 45:
         severity = "Low"
         verdict = "Low Suspicion"
-    elif score <= 30:
+    elif score <= 120:
         severity = "Medium"
         verdict = "Needs Review"
     else:
         severity = "High"
         verdict = "Elevated Attention"
 
-    return {"score": score, "severity": severity, "verdict": verdict}
-
+    return {
+        "score": score,
+        "severity": severity,
+        "verdict": verdict,
+        "score_model": "dynamic-installer-aware-v1",
+        "score_notes": [
+            "Installer-aware scoring caps repetitive Procmon persistence/path hits.",
+            "LOLBin usage is weighted lower unless paired with stronger persistence or dropped-file evidence.",
+            "Autoruns changes remain visible but are not automatically treated as malicious.",
+        ],
+    }
 
 def run_dynamic_analysis(
     config: dict[str, Any],
@@ -857,18 +926,25 @@ def run_dynamic_analysis(
         _raise_if_cancelled(cancel_event)
 
         minimum_observation_seconds = int(config.get("minimum_observation_seconds", 30))
+        post_exit_observation_seconds = int(config.get("post_exit_observation_seconds", 120))
+        installer_observation_mode = bool(config.get("installer_observation_mode", True))
 
         _emit(
             status_cb,
             f"Launching sample and observing for at least {minimum_observation_seconds} seconds "
-            f"(timeout: {timeout_seconds} seconds)...",
+            f"(post-exit observation: {post_exit_observation_seconds} seconds, "
+            f"installer mode: {installer_observation_mode}, timeout: {timeout_seconds} seconds)...",
         )
+
         sample_launch_attempted = True
         exit_code = run_sample(
             sample_path,
             timeout_seconds,
             minimum_observation_seconds=minimum_observation_seconds,
+            post_exit_observation_seconds=post_exit_observation_seconds,
+            installer_observation_mode=installer_observation_mode,
             cancel_event=cancel_event,
+            status_cb=status_cb,
         )
         _emit(status_cb, f"Sample observation completed with exit code {exit_code}.")
 
