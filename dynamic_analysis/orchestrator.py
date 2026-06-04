@@ -802,6 +802,10 @@ def run_dynamic_analysis(
     sample_path = Path(config["sample_path"])
     root_case_dir = Path(config["case_dir"])
     timeout_seconds = int(config.get("timeout_seconds", 180))
+    
+    minimum_observation_seconds = int(config.get("minimum_observation_seconds", 30))
+    post_exit_observation_seconds = int(config.get("post_exit_observation_seconds", 120))
+    installer_observation_mode = bool(config.get("installer_observation_mode", True))
 
     run_profile = str(config.get("run_profile", "standard") or "standard").strip().lower()
     if run_profile not in {"quick", "standard", "deep"}:
@@ -944,10 +948,7 @@ def run_dynamic_analysis(
 
         _raise_if_cancelled(cancel_event)
 
-        minimum_observation_seconds = int(config.get("minimum_observation_seconds", 30))
-        post_exit_observation_seconds = int(config.get("post_exit_observation_seconds", 120))
-        installer_observation_mode = bool(config.get("installer_observation_mode", True))
-
+        
         _emit(
             status_cb,
             f"Launching sample and observing for at least {minimum_observation_seconds} seconds "
@@ -1094,6 +1095,10 @@ def run_dynamic_analysis(
         "run_profile": run_profile,
         "test_name": test_name,
         "run_case_dir": str(run_case_dir),
+        "timeout_seconds": timeout_seconds,
+        "minimum_observation_seconds": minimum_observation_seconds,
+        "post_exit_observation_seconds": post_exit_observation_seconds,
+        "installer_observation_mode": installer_observation_mode,
         "sample": sample_info,
         "started_at_utc": started_at,
         "ended_at_utc": ended_at,

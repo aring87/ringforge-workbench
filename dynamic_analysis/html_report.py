@@ -13,7 +13,25 @@ def _esc(value: Any) -> str:
 
 
 def _pretty_key(value: str) -> str:
-    return value.replace("_", " ").strip().title()
+    labels = {
+        "total_run_duration_seconds": "Total Run Duration",
+        "sample_observation_timeout_seconds": "Sample Observation Timeout",
+        "minimum_observation_seconds": "Minimum Observation",
+        "post_exit_observation_seconds": "Post-Exit Observation",
+        "installer_observation_mode": "Installer Observation Mode",
+        "procmon_enabled": "Procmon Enabled",
+        "procmon_capture_quality": "Procmon Capture Quality",
+        "procmon_capture_score": "Procmon Capture Score",
+        "procmon_total_events": "Procmon Total Events",
+        "autoruns_enabled": "Autoruns Enabled",
+        "autoruns_deep_scan": "Autoruns Deep Scan",
+        "autoruns_before_success": "Autoruns Before Success",
+        "autoruns_before_error": "Autoruns Before Error",
+        "autoruns_after_success": "Autoruns After Success",
+        "autoruns_after_error": "Autoruns After Error",
+    }
+    key = str(value or "").strip()
+    return labels.get(key, key.replace("_", " ").strip().title())
 
 
 def _to_int(value: Any, default: int = 0) -> int:
@@ -219,6 +237,8 @@ def _capture_configuration_table(summary: dict[str, Any]) -> str:
     data = {
         "run_profile": summary.get("run_profile", ""),
         "cancelled": summary.get("cancelled", False),
+        "total_run_duration_seconds": summary.get("duration_seconds", ""),
+        "sample_observation_timeout_seconds": summary.get("timeout_seconds", ""),
         "procmon_enabled": summary.get("procmon_enabled", False),
         "procmon_capture_quality": capture_quality.get("status", ""),
         "procmon_capture_score": capture_quality.get("score", ""),
