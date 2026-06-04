@@ -108,6 +108,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self.timeout_var = tk.IntVar(value=int(cfg.get("dynamic_timeout_seconds", 30)))
         self.procmon_enabled_var = tk.BooleanVar(value=bool(cfg.get("dynamic_procmon_enabled", True)))
+        
+        self.minimum_observation_var = tk.IntVar(
+            value=int(cfg.get("dynamic_minimum_observation_seconds", 30))
+        )
+        self.post_exit_observation_var = tk.IntVar(
+            value=int(cfg.get("dynamic_post_exit_observation_seconds", 120))
+        )
+        self.installer_observation_mode_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_installer_observation_mode", True))
+        )
 
         project_root = Path(__file__).resolve().parents[1]
         self.procmon_path_var = tk.StringVar(
@@ -432,6 +442,56 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ).grid(row=0, column=1, sticky="ew")
 
         ttk.Label(header, text="Timeout (seconds):").grid(row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 10))
+        
+        ttk.Label(header, text="Observation:").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=(10, 0),
+            pady=(0, 10),
+        )
+
+        observation_row = ttk.Frame(header)
+        observation_row.grid(
+            row=2,
+            column=1,
+            columnspan=2,
+            sticky="w",
+            padx=8,
+            pady=(0, 10),
+        )
+
+        ttk.Label(observation_row, text="Min:").pack(side="left")
+
+        ttk.Spinbox(
+            observation_row,
+            from_=0,
+            to=7200,
+            textvariable=self.minimum_observation_var,
+            width=8,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 14))
+
+        ttk.Label(observation_row, text="Post-exit:").pack(side="left")
+
+        ttk.Spinbox(
+            observation_row,
+            from_=0,
+            to=7200,
+            textvariable=self.post_exit_observation_var,
+            width=8,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 14))
+
+        ttk.Checkbutton(
+            observation_row,
+            text="Installer mode",
+            variable=self.installer_observation_mode_var,
+            style="Dark.TCheckbutton",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left")
 
         runtime_row = ttk.Frame(header)
         runtime_row.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(8, 10))
@@ -897,6 +957,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_procmon_enabled"] = bool(self.procmon_enabled_var.get())
         self.app.cfg["dynamic_procmon_path"] = self.procmon_path_var.get().strip()
         self.app.cfg["dynamic_procmon_config_path"] = self.procmon_config_var.get().strip()
+        self.app.cfg["dynamic_minimum_observation_seconds"] = int(self.minimum_observation_var.get())
+        self.app.cfg["dynamic_post_exit_observation_seconds"] = int(self.post_exit_observation_var.get())
+        self.app.cfg["dynamic_installer_observation_mode"] = bool(self.installer_observation_mode_var.get())
 
         config_path = self._project_root() / "config.json"
         config_path.write_text(json.dumps(self.app.cfg, indent=2), encoding="utf-8")
@@ -1436,9 +1499,9 @@ ul {{ margin-top: 8px; }}
         timeout_seconds = int(self.timeout_var.get())
         procmon_config = self.procmon_config_var.get().strip()
         
-        minimum_observation_seconds = 30
-        post_exit_observation_seconds = 120
-        installer_observation_mode = True
+        minimum_observation_seconds = int(self.minimum_observation_var.get())
+        post_exit_observation_seconds = int(self.post_exit_observation_var.get())
+        installer_observation_mode = bool(self.installer_observation_mode_var.get())
 
         if not self._warn_if_observation_settings_conflict(
             timeout_seconds=timeout_seconds,
