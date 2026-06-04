@@ -200,12 +200,41 @@ def _autoruns_table(summary: dict[str, Any]) -> str:
         "suspicious_new_entries": counts.get("suspicious_new_entries", 0),
         "suspicious_modified_entries": counts.get("suspicious_modified_entries", 0),
         "suspicious_new_or_modified": counts.get("suspicious_new_or_modified", 0),
+        "before_error": before_status.get("error", "") if isinstance(before_status, dict) else "",
+        "after_error": after_status.get("error", "") if isinstance(after_status, dict) else "",
     }
 
     suspicious = _to_int(data["suspicious_new_or_modified"], 0)
     badge_html = badge("Suspicious", suspicious)
 
     return _kv_table("Autoruns Persistence Diff", data, badge_html)
+    
+def _capture_configuration_table(summary: dict[str, Any]) -> str:
+    capture_quality = summary.get("capture_quality", {}) or {}
+    before_status = summary.get("autoruns_before_status", {}) or {}
+    after_status = summary.get("autoruns_after_status", {}) or {}
+
+    run_config = summary.get("run_config", {}) or {}
+
+    data = {
+        "run_profile": summary.get("run_profile", ""),
+        "cancelled": summary.get("cancelled", False),
+        "procmon_enabled": summary.get("procmon_enabled", False),
+        "procmon_capture_quality": capture_quality.get("status", ""),
+        "procmon_capture_score": capture_quality.get("score", ""),
+        "procmon_total_events": capture_quality.get("procmon_total_events", ""),
+        "autoruns_enabled": summary.get("autoruns_enabled", False),
+        "autoruns_deep_scan": summary.get("autoruns_deep_scan", False),
+        "autoruns_before_success": before_status.get("success", False) if isinstance(before_status, dict) else False,
+        "autoruns_before_error": before_status.get("error", "") if isinstance(before_status, dict) else "",
+        "autoruns_after_success": after_status.get("success", False) if isinstance(after_status, dict) else False,
+        "autoruns_after_error": after_status.get("error", "") if isinstance(after_status, dict) else "",
+        "installer_observation_mode": run_config.get("installer_observation_mode", summary.get("installer_observation_mode", "")),
+        "minimum_observation_seconds": run_config.get("minimum_observation_seconds", summary.get("minimum_observation_seconds", "")),
+        "post_exit_observation_seconds": run_config.get("post_exit_observation_seconds", summary.get("post_exit_observation_seconds", "")),
+    }
+
+    return _kv_table("Capture Configuration / Tool Status", data)
     
 def _autoruns_entry_table(
     title: str,
@@ -675,6 +704,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 
 <div class="grid">
   {_kv_table("Sample Metadata", sample)}
+  {_capture_configuration_table(summary)}
   {_kv_table("Procmon Summary", procmon)}
   {_kv_table("Interesting Procmon Summary", procmon_interesting)}
   {_kv_table("Findings Counts", findings_counts)}

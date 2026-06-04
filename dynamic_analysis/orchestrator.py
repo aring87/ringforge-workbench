@@ -327,6 +327,15 @@ def _build_capture_quality(
 
     passed_count = sum(1 for c in checks if c.get("passed"))
     score = int((passed_count / len(checks)) * 100) if checks else 0
+    
+    if not procmon_enabled:
+        return {
+            "score": score,
+            "status": "limited",
+            "procmon_total_events": 0,
+            "checks": checks,
+            "note": "Procmon was disabled by analyst. Process/file/registry/network telemetry was not collected.",
+        }
 
     if score >= 90:
         status = "good"
@@ -749,10 +758,20 @@ def calculate_dynamic_score(
     score += min(autoruns_new, 5) * 1
     score += min(autoruns_modified, 5) * 1
     score += autoruns_suspicious * 6
+    
+    has_persistence_diff_signal = (
+        suspicious_tasks > 0
+        or suspicious_services > 0
+        or autoruns_suspicious > 0
+    )
 
     if score <= 10:
-        severity = "Low"
-        verdict = "Benign / Clean Baseline"
+        if has_persistence_diff_signal:
+            severity = "Low"
+            verdict = "Low Suspicion"
+        else:
+            severity = "Low"
+            verdict = "Benign / Clean Baseline"
     elif score <= 45:
         severity = "Low"
         verdict = "Low Suspicion"
