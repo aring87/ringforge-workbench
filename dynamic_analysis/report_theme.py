@@ -201,6 +201,57 @@ li {
 .table-wrap {
   overflow-x: auto;
 }
+
+.subfile-table {
+  table-layout: auto;
+  min-width: 980px;
+}
+
+.subfile-table th {
+  width: auto;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.subfile-table td {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.subfile-table th:nth-child(1),
+.subfile-table td:nth-child(1) {
+  min-width: 220px;
+}
+
+.subfile-table th:nth-child(2),
+.subfile-table td:nth-child(2) {
+  width: 80px;
+  text-align: center;
+}
+
+.subfile-table th:nth-child(3),
+.subfile-table td:nth-child(3) {
+  width: 130px;
+}
+
+.subfile-table th:nth-child(4),
+.subfile-table td:nth-child(4) {
+  width: 130px;
+}
+
+.subfile-table th:nth-child(5),
+.subfile-table td:nth-child(5),
+.subfile-table th:nth-child(6),
+.subfile-table td:nth-child(6) {
+  width: 100px;
+  text-align: center;
+}
+
+.subfile-table th:nth-child(7),
+.subfile-table td:nth-child(7) {
+  min-width: 320px;
+}
+
 .badge {
   display: inline-block;
   padding: 6px 10px;

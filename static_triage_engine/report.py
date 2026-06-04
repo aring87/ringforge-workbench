@@ -481,6 +481,92 @@ def _list_section(title: str, items: list[str], emphasize: bool = False) -> str:
       {body}
     </section>
     """
+    
+def _subfiles_section(data: dict[str, Any]) -> str:
+    subfiles = data.get("subfiles") if isinstance(data.get("subfiles"), dict) else {}
+    top = subfiles.get("top", []) if isinstance(subfiles.get("top"), list) else []
+    attn = subfiles.get("attn", []) if isinstance(subfiles.get("attn"), list) else []
+    crit = subfiles.get("crit", {}) if isinstance(subfiles.get("crit"), dict) else {}
+
+    if not top and not attn:
+        return ""
+
+    rows = []
+    seen = set()
+
+    for item in attn + top:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get("name") or item.get("filename") or "-")
+        if name in seen:
+            continue
+        seen.add(name)
+
+        score = item.get("score", "-")
+        verdict = item.get("verdict", "-")
+        confidence = item.get("confidence", "-")
+        signed_ok = item.get("signed_ok", "-")
+        signer = item.get("signer", "") or "-"
+        trust_override = item.get("trust_override", False)
+
+        rows.append(
+            "<tr>"
+            f"<td>{_safe(name)}</td>"
+            f"<td>{_safe(score)}</td>"
+            f"<td>{_safe(verdict)}</td>"
+            f"<td>{_safe(confidence)}</td>"
+            f"<td>{_safe(signed_ok)}</td>"
+            f"<td>{_safe(trust_override)}</td>"
+            f"<td>{_safe(signer)}</td>"
+            "</tr>"
+        )
+
+    table_rows = "".join(rows) if rows else "<tr><td colspan='7' class='muted'>No subfiles required attention.</td></tr>"
+
+    criteria_bits = []
+    if crit:
+        if "score_ge" in crit:
+            criteria_bits.append(f"score >= {crit.get('score_ge')}")
+        if "unsigned_or_unverified" in crit:
+            criteria_bits.append(f"unsigned/unverified = {crit.get('unsigned_or_unverified')}")
+        if "trust_override" in crit:
+            criteria_bits.append(f"trust override = {crit.get('trust_override')}")
+
+    criteria_text = ", ".join(criteria_bits) if criteria_bits else "Default subfile attention criteria."
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Subfile Triage</h2>
+        {badge("Attention", len(attn))}
+      </div>
+      <p class="muted">
+        Extracted subfiles were analyzed separately. Installer helper DLLs may contain process,
+        shell, file, compression, or setup-related capabilities that should be reviewed in context
+        of the parent installer signature, VirusTotal result, YARA results, and source provenance.
+      </p>
+      <p class="muted"><b>Attention criteria:</b> {_safe(criteria_text)}</p>
+      <div class="table-wrap">
+        <table class="subfile-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Score</th>
+              <th>Verdict</th>
+              <th>Conf</th>
+              <th>Signed</th>
+              <th>Trust</th>
+              <th>Signer</th>
+            </tr>
+          </thead>
+          <tbody>
+            {table_rows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    """
 
 
 def _summary_tiles(data: dict[str, Any]) -> str:
@@ -904,6 +990,7 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         emphasize=True,
     ) if evidence else ""
 
+    subfiles_section = _subfiles_section(data)
     subtitle = f"Generated (UTC): {_safe(data.get('generated_utc', ''))}"
 
     body_html = f"""
@@ -924,6 +1011,7 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
 {yara_rules_section}
 {capa_rules_section}
 {capa_notes_section}
+{subfiles_section}
 {evidence_section}
 {spec_notes_section}
 {suspicious_section}
