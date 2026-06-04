@@ -134,10 +134,19 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.summary_status_var = tk.StringVar(value="Ready")
         self.summary_sample_var = tk.StringVar(value=Path(main_sample).name if main_sample else "-")
         self.summary_case_var = tk.StringVar(value=Path(self.case_dir_var.get()).name)
-        self.summary_output_var = tk.StringVar(value=str(self.dynamic_output_dir_var.get()))
+        self.summary_output_var = tk.StringVar(
+            value=self._short_display_path(self.dynamic_output_dir_var.get(), keep_parts=2)
+        )
         self.summary_procmon_var = tk.StringVar(value="Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var = tk.StringVar(value=f"{self.timeout_var.get()} sec")
         self.summary_report_var = tk.StringVar(value="-")
+        self.summary_observation_var = tk.StringVar(
+            value=(
+                f"Min {self.minimum_observation_var.get()} sec | "
+                f"Post-exit {self.post_exit_observation_var.get()} sec | "
+                f"{'Installer mode' if self.installer_observation_mode_var.get() else 'Standard mode'}"
+            )
+        )
 
         self.metric_score_var = tk.StringVar(value="-")
         self.metric_process_var = tk.StringVar(value="-")
@@ -759,6 +768,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             ("Output:", self.summary_output_var),
             ("Procmon:", self.summary_procmon_var),
             ("Timeout:", self.summary_timeout_var),
+            ("Observation:", self.summary_observation_var),
             ("Latest Report:", self.summary_report_var),
         ]
 
@@ -943,9 +953,14 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self.summary_sample_var.set(Path(sample_text).name if sample_text else "-")
         self.summary_case_var.set(case_home.name if str(case_home).strip() else "-")
-        self.summary_output_var.set(str(dynamic_output))
+        self.summary_output_var.set(self._short_display_path(dynamic_output, keep_parts=2))
         self.summary_procmon_var.set("Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var.set(f"{self.timeout_var.get()} sec")
+        self.summary_observation_var.set(
+            f"Min {self.minimum_observation_var.get()}s | "
+            f"Post {self.post_exit_observation_var.get()}s | "
+            f"{'Installer' if self.installer_observation_mode_var.get() else 'Standard'}"
+        )
 
     def _save_cfg(self):
         if not hasattr(self.app, "cfg") or not isinstance(self.app.cfg, dict):
@@ -1110,6 +1125,23 @@ class DynamicAnalysisWindow(tk.Toplevel):
         if chosen:
             self.procmon_config_var.set(str(Path(chosen)))
             self._save_cfg()
+    
+    def _short_display_path(self, path_value, keep_parts: int = 2) -> str:
+        if not path_value:
+            return "-"
+
+        try:
+            p = Path(path_value)
+            parts = p.parts
+
+            if len(parts) <= keep_parts:
+                return str(p)
+
+            tail = Path(*parts[-keep_parts:])
+            return f"...\\{tail}"
+        except Exception:
+            text = str(path_value)
+            return text if len(text) <= 80 else f"...{text[-77:]}"
 
     # -------------------------------------------------------------------------
     # Folder/report actions
@@ -1167,7 +1199,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 )
                 return None
 
-            self.summary_report_var.set(str(output_html))
+            self.summary_report_var.set(self._short_display_path(output_html, keep_parts=2))
             if open_after:
                 webbrowser.open(output_html.resolve().as_uri())
 
@@ -1239,7 +1271,7 @@ ul {{ margin-top: 8px; }}
                 messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
                 return
 
-            self.summary_report_var.set(str(html_path))
+            self.summary_report_var.set(self._short_display_path(html_path, keep_parts=2))
             webbrowser.open(html_path.resolve().as_uri())
         except Exception as e:
             messagebox.showerror("Open Report", str(e), parent=self)
@@ -1667,7 +1699,9 @@ ul {{ margin-top: 8px; }}
                 self.app.case_dir_detected = case_home
 
                 html_path = self._export_dynamic_report(open_after=False)
-                self.summary_report_var.set(str(html_path) if html_path and html_path.exists() else "-")
+                self.summary_report_var.set(
+                    self._short_display_path(html_path, keep_parts=2) if html_path and html_path.exists() else "-"
+                )
 
                 try:
                     combined_score_from_case_dir(
