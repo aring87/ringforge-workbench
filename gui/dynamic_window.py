@@ -1362,6 +1362,59 @@ ul {{ margin-top: 8px; }}
         self.output_q.put(
             "\n[cancel] Cancellation requested by analyst. Waiting for cleanup...\n"
         )
+        
+    def _warn_if_observation_settings_conflict(
+        self,
+        timeout_seconds: int,
+        minimum_observation_seconds: int,
+        post_exit_observation_seconds: int,
+    ) -> bool:
+        """
+        Warn when the configured post-exit observation target cannot fully fit
+        inside the hard sample observation timeout.
+
+        This is allowed, especially for quick baseline tests like Notepad, but the
+        analyst should know the timeout will win.
+        """
+        if timeout_seconds <= 0:
+            return True
+
+        if post_exit_observation_seconds <= 0:
+            return True
+
+        if post_exit_observation_seconds >= timeout_seconds:
+            return messagebox.askyesno(
+                "Observation Settings Notice",
+                "Post-exit observation is longer than or equal to the sample observation timeout.\n\n"
+                f"Sample observation timeout: {timeout_seconds} seconds\n"
+                f"Minimum observation: {minimum_observation_seconds} seconds\n"
+                f"Post-exit observation target: {post_exit_observation_seconds} seconds\n\n"
+                "The run can still continue, but RingForge will stop at the timeout before the full "
+                "post-exit observation window completes.\n\n"
+                "This is usually fine for quick baseline tests like Notepad. For larger installers, "
+                "increase the timeout.\n\n"
+                "Continue anyway?",
+                parent=self,
+            )
+
+        remaining_after_minimum = timeout_seconds - minimum_observation_seconds
+
+        if remaining_after_minimum > 0 and post_exit_observation_seconds > remaining_after_minimum:
+            return messagebox.askyesno(
+                "Observation Settings Notice",
+                "Post-exit observation may not fully fit after the minimum observation window.\n\n"
+                f"Sample observation timeout: {timeout_seconds} seconds\n"
+                f"Minimum observation: {minimum_observation_seconds} seconds\n"
+                f"Post-exit observation target: {post_exit_observation_seconds} seconds\n"
+                f"Maximum possible post-exit time after minimum observation: {remaining_after_minimum} seconds\n\n"
+                "The run can still continue, but RingForge may stop at the timeout before the full "
+                "post-exit observation window completes.\n\n"
+                "Continue anyway?",
+                parent=self,
+            )
+
+        return True
+    
     # -------------------------------------------------------------------------
     # Run dynamic analysis
     # -------------------------------------------------------------------------
@@ -1382,6 +1435,20 @@ ul {{ margin-top: 8px; }}
         procmon_path = Path(self.procmon_path_var.get().strip())
         timeout_seconds = int(self.timeout_var.get())
         procmon_config = self.procmon_config_var.get().strip()
+        
+        minimum_observation_seconds = 30
+        post_exit_observation_seconds = 120
+        installer_observation_mode = True
+
+        if not self._warn_if_observation_settings_conflict(
+            timeout_seconds=timeout_seconds,
+            minimum_observation_seconds=minimum_observation_seconds,
+            post_exit_observation_seconds=post_exit_observation_seconds,
+        ):
+            self._set_step("Pre-checks", 100, "cancelled")
+            self.status_var.set("Idle")
+            self.summary_status_var.set("Ready")
+            return
 
         self._reset_progress()
         self._set_step("Pre-checks", 50, "checking")
@@ -1406,9 +1473,9 @@ ul {{ margin-top: 8px; }}
             "case_dir": str(dynamic_output),
             "case_home_dir": str(case_home),
             "timeout_seconds": timeout_seconds,
-            "minimum_observation_seconds": 30,
-            "post_exit_observation_seconds": 120,
-            "installer_observation_mode": True,
+            "minimum_observation_seconds": minimum_observation_seconds,
+            "post_exit_observation_seconds": post_exit_observation_seconds,
+            "installer_observation_mode": installer_observation_mode,
             "procmon_enabled": bool(self.procmon_enabled_var.get()),
             "procmon_path": str(procmon_path),
             "procmon_config_path": procmon_config,
