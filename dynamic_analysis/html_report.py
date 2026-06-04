@@ -38,11 +38,22 @@ def _severity_class_for_score(score: Any, severity: Any = "") -> str:
     sev = str(severity or "").strip().lower()
     score_i = _to_int(score, 0)
 
-    if sev in {"critical", "high"} or score_i >= 60:
+    # Trust explicit orchestrator severity first.
+    if sev in {"critical", "high"}:
         return "sev-high"
-    if sev in {"medium", "moderate"} or score_i >= 25:
+    if sev in {"medium", "moderate"}:
         return "sev-med"
-    if sev in {"low"} or score_i >= 6:
+    if sev in {"low"}:
+        return "sev-low"
+    if sev in {"info", "none", "benign"}:
+        return "sev-none"
+
+    # Fallback only when severity is missing.
+    if score_i >= 120:
+        return "sev-high"
+    if score_i >= 45:
+        return "sev-med"
+    if score_i >= 10:
         return "sev-low"
     return "sev-none"
 
@@ -195,6 +206,70 @@ def _autoruns_table(summary: dict[str, Any]) -> str:
     badge_html = badge("Suspicious", suspicious)
 
     return _kv_table("Autoruns Persistence Diff", data, badge_html)
+    
+def _autoruns_entry_table(
+    title: str,
+    items: list[dict[str, Any]],
+    emphasize: bool = True,
+    empty_text: str = "None",
+    limit: int = 50,
+) -> str:
+    section_class = "card card-alert" if emphasize and items else "card"
+
+    if not items:
+        return f"""
+        <section class="{section_class}">
+          <div class="section-head">
+            <h2>{_esc(title)}</h2>
+            {_section_badge("Count", 0)}
+          </div>
+          <p class="muted">{_esc(empty_text)}</p>
+        </section>
+        """
+
+    visible = items[:limit]
+    rows = []
+
+    for item in visible:
+        rows.append(
+            "<tr>"
+            f"<td>{_esc(item.get('time', ''))}</td>"
+            f"<td>{_esc(item.get('category', ''))}</td>"
+            f"<td>{_esc(item.get('entry', ''))}</td>"
+            f"<td>{_esc(item.get('company', ''))}</td>"
+            f"<td>{_esc(item.get('image_path', ''))}</td>"
+            f"<td>{_esc(item.get('launch_string', ''))}</td>"
+            "</tr>"
+        )
+
+    truncated = ""
+    if len(items) > limit:
+        truncated = f"<p class='muted'>Showing first {limit} of {len(items)} rows.</p>"
+
+    return f"""
+    <section class="{section_class}">
+      <div class="section-head">
+        <h2>{_esc(title)}</h2>
+        {_section_badge("Count", len(items))}
+      </div>
+      {truncated}
+      <div class="table-wrap">
+        <table class="autoruns-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Category</th>
+              <th>Entry</th>
+              <th>Company</th>
+              <th>Image Path</th>
+              <th>Launch String</th>
+            </tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>
+    """
 
 
 def _autoruns_suspicious_sections(summary: dict[str, Any]) -> str:
@@ -209,7 +284,7 @@ def _autoruns_suspicious_sections(summary: dict[str, Any]) -> str:
 
     if suspicious_new:
         html_parts.append(
-            _dict_list_table(
+            _autoruns_entry_table(
                 "Suspicious New Autoruns Entries",
                 suspicious_new if isinstance(suspicious_new, list) else [],
                 emphasize=True,
@@ -224,8 +299,10 @@ def _autoruns_suspicious_sections(summary: dict[str, Any]) -> str:
             for item in suspicious_modified:
                 if not isinstance(item, dict):
                     continue
+
                 after = item.get("after", {}) if isinstance(item.get("after", {}), dict) else {}
                 before = item.get("before", {}) if isinstance(item.get("before", {}), dict) else {}
+
                 rows.append(
                     {
                         "entry": after.get("entry", before.get("entry", "")),
@@ -247,7 +324,133 @@ def _autoruns_suspicious_sections(summary: dict[str, Any]) -> str:
         )
 
     return "\n".join(html_parts)
+    
+def _spawned_processes_table(
+    title: str,
+    items: list[dict[str, Any]],
+    emphasize: bool = False,
+    empty_text: str = "No non-noise spawned processes were attributed to the sample.",
+    limit: int = 50,
+) -> str:
+    section_class = "card card-alert" if emphasize and items else "card"
 
+    if not items:
+        return f"""
+        <section class="{section_class}">
+          <div class="section-head">
+            <h2>{_esc(title)}</h2>
+            {_section_badge("Count", 0)}
+          </div>
+          <p class="muted">{_esc(empty_text)}</p>
+        </section>
+        """
+
+    visible = items[:limit]
+    rows = []
+
+    for item in visible:
+        rows.append(
+            "<tr>"
+            f"<td>{_esc(item.get('timestamp', ''))}</td>"
+            f"<td>{_esc(item.get('process_name', ''))}</td>"
+            f"<td>{_esc(item.get('child_process_name', ''))}</td>"
+            f"<td>{_esc(item.get('pid', ''))}</td>"
+            f"<td>{_esc(item.get('path', ''))}</td>"
+            f"<td>{_esc(item.get('detail', ''))}</td>"
+            f"<td>{_esc(item.get('is_lolbin', ''))}</td>"
+            "</tr>"
+        )
+
+    truncated = ""
+    if len(items) > limit:
+        truncated = f"<p class='muted'>Showing first {limit} of {len(items)} rows.</p>"
+
+    return f"""
+    <section class="{section_class}">
+      <div class="section-head">
+        <h2>{_esc(title)}</h2>
+        <span class="badge sev-low">Count: {_esc(len(items))}</span>
+      </div>
+      {truncated}
+      <div class="table-wrap">
+        <table class="process-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Parent Process</th>
+              <th>Child Process</th>
+              <th>PID</th>
+              <th>Path</th>
+              <th>Command / Detail</th>
+              <th>LOLBin</th>
+            </tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>
+    """
+def _event_hits_table(
+    title: str,
+    items: list[dict[str, Any]],
+    emphasize: bool = True,
+    empty_text: str = "None",
+    limit: int = 50,
+) -> str:
+    section_class = "card card-alert" if emphasize and items else "card"
+
+    if not items:
+        return f"""
+        <section class="{section_class}">
+          <div class="section-head">
+            <h2>{_esc(title)}</h2>
+            <span class="badge sev-none">Count: 0</span>
+          </div>
+          <p class="muted">{_esc(empty_text)}</p>
+        </section>
+        """
+
+    visible = items[:limit]
+    rows = []
+
+    for item in visible:
+        rows.append(
+            "<tr>"
+            f"<td>{_esc(item.get('timestamp', ''))}</td>"
+            f"<td>{_esc(item.get('process_name', ''))}</td>"
+            f"<td>{_esc(item.get('operation', ''))}</td>"
+            f"<td>{_esc(item.get('path', ''))}</td>"
+            f"<td>{_esc(item.get('detail', ''))}</td>"
+            "</tr>"
+        )
+
+    truncated = ""
+    if len(items) > limit:
+        truncated = f"<p class='muted'>Showing first {limit} of {len(items)} rows.</p>"
+
+    return f"""
+    <section class="{section_class}">
+      <div class="section-head">
+        <h2>{_esc(title)}</h2>
+        {_section_badge("Count", len(items))}
+      </div>
+      {truncated}
+      <div class="table-wrap">
+        <table class="event-hits-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Process</th>
+              <th>Operation</th>
+              <th>Path</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>
+    """
 
 def _derive_report_verdict(summary: dict[str, Any]) -> tuple[str, str]:
     """
@@ -306,6 +509,81 @@ def _clean_baseline_notes(summary: dict[str, Any]) -> list[str]:
 
     return notes
 
+def _installer_context_notes(summary: dict[str, Any]) -> list[str]:
+    """
+    Add analyst-friendly context for behavior that is common in legitimate
+    installers but still worth review.
+
+    This does not suppress findings. It explains why the final verdict may be
+    Needs Review instead of High.
+    """
+    sample = summary.get("sample", {}) or {}
+    sample_name = str(sample.get("sample_name", "") or "").lower()
+
+    findings = summary.get("findings", {}) or {}
+    counts = findings.get("counts", {}) or {}
+
+    task_diff = summary.get("task_diff_summary", {}) or {}
+    service_diff = summary.get("service_diff_summary", {}) or {}
+    autoruns = _autoruns_counts(summary)
+    autoruns_diff = summary.get("autoruns_diff", {}) or {}
+
+    notes: list[str] = []
+
+    suspicious_tasks = _to_int(task_diff.get("suspicious_new_or_modified", 0))
+    suspicious_services = _to_int(service_diff.get("suspicious_new_or_modified", 0))
+    suspicious_autoruns = _to_int(autoruns.get("suspicious_new_or_modified", 0))
+    lolbins = _to_int(counts.get("lolbin_processes", 0))
+    persistence_hits = _to_int(counts.get("persistence_hits", 0))
+
+    if suspicious_tasks or suspicious_services or suspicious_autoruns:
+        notes.append(
+            "Installer-style persistence activity was observed. This can be expected for software that installs drivers, services, scheduled tasks, auto-updaters, or packet-capture components, but it should still be reviewed."
+        )
+
+    if "wireshark" in sample_name:
+        notes.append(
+            "Wireshark commonly installs Npcap, which may create driver/service/task persistence. Treat Npcap-related entries as expected installer behavior when publisher, path, and source provenance are trusted."
+        )
+
+    # Generic Npcap context even if the sample name is not Wireshark.
+    suspicious_new = []
+    if isinstance(autoruns_diff, dict):
+        suspicious_new = autoruns_diff.get("suspicious_new_entries", []) or []
+
+    for row in suspicious_new:
+        if not isinstance(row, dict):
+            continue
+        combined = " ".join(
+            str(row.get(k, "") or "").lower()
+            for k in ("entry", "description", "company", "image_path", "launch_string")
+        )
+        if "npcap" in combined or "nmap software" in combined:
+            notes.append(
+                "Npcap-related Autoruns activity was detected. Npcap is expected for packet capture tools, but driver installation should be validated against vendor source, signature, and business need."
+            )
+            break
+
+    if lolbins:
+        notes.append(
+            f"LOLBin/helper process activity was observed ({lolbins} events). For installers, some use of PowerShell, cmd, conhost, msiexec, or setup helpers can be normal; review command lines for encoded commands, downloads, or unusual script execution."
+        )
+
+    if persistence_hits and suspicious_tasks == 0 and suspicious_services == 0 and suspicious_autoruns == 0:
+        notes.append(
+            "Procmon persistence-like events were observed, but no suspicious scheduled task, service, or Autoruns diff was confirmed. Treat these as lower-confidence persistence indicators."
+        )
+
+    # De-duplicate while preserving order.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for note in notes:
+        if note not in seen:
+            deduped.append(note)
+            seen.add(note)
+
+    return deduped
+
 
 def _analyst_notes(summary: dict[str, Any]) -> list[str]:
     score = _to_int(summary.get("score", summary.get("dynamic_score", 0)), 0)
@@ -317,6 +595,8 @@ def _analyst_notes(summary: dict[str, Any]) -> list[str]:
 
     clean_notes = _clean_baseline_notes(summary)
     notes.extend(clean_notes)
+    
+    notes.extend(_installer_context_notes(summary))
 
     autoruns = _autoruns_counts(summary)
     if _to_int(autoruns.get("new_entries", 0)) > 0 or _to_int(autoruns.get("modified_entries", 0)) > 0:
@@ -405,14 +685,15 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 </div>
 
 {_list_section("Analyst Notes", _analyst_notes(summary), emphasize=False)}
+{_list_section("Installer Context / Expected Behavior", _installer_context_notes(summary), emphasize=False, empty_text="No installer-specific context was identified.")}
 {_list_section("Clean Baseline Checks", _clean_baseline_notes(summary), emphasize=False, empty_text="No clean-baseline checks were available.")}
 {_list_section("Highlights", findings.get("highlights", []), emphasize=True, empty_text="No high-priority highlights were generated.")}
 {_autoruns_suspicious_sections(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}
 {_dict_list_table("Top Network Processes", findings.get("top_network_processes", []))}
-{_dict_list_table("Spawned Processes", findings.get("spawned_processes", []), empty_text="No non-noise spawned processes were attributed to the sample.")}
-{_dict_list_table("Suspicious Path Hits", findings.get("suspicious_path_hits", []), emphasize=True, empty_text="No suspicious path hits were identified.")}
-{_dict_list_table("Persistence Hits", findings.get("persistence_hits", []), emphasize=True, empty_text="No persistence hits were identified.")}
+{_spawned_processes_table("Spawned Processes", findings.get("spawned_processes", []), empty_text="No non-noise spawned processes were attributed to the sample.")}
+{_event_hits_table("Suspicious Path Hits", findings.get("suspicious_path_hits", []), emphasize=True, empty_text="No suspicious path hits were identified.")}
+{_event_hits_table("Persistence Hits", findings.get("persistence_hits", []), emphasize=True, empty_text="No persistence hits were identified.")}
 """
 
     return report_page(title, subtitle, verdict, verdict_class, body_html)
