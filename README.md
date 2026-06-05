@@ -8,9 +8,9 @@
 
 **Static insight. Dynamic visibility. Structured review.**
 
-RingForge Workbench is a Python/Tkinter software triage platform for structured static analysis, dynamic behavior review, API testing, API specification review, and browser extension analysis from one analyst-facing interface.
+RingForge Workbench is a Python/Tkinter software triage workbench for structured static analysis, dynamic behavior review, API testing, API specification review, and browser extension analysis from one analyst-facing interface.
 
-The project is designed for malware analysts, SOC analysts, detection engineers, and security practitioners who want a practical Windows-focused workbench for reviewing software behavior, organizing case artifacts, and producing consistent reports.
+It is designed for malware analysts, SOC analysts, detection engineers, and security practitioners who want a practical Windows-focused workflow for reviewing software behavior, organizing case artifacts, and producing consistent analyst-readable reports.
 
 ---
 
@@ -19,7 +19,7 @@ The project is designed for malware analysts, SOC analysts, detection engineers,
 | Field | Value |
 |---|---|
 | Version | `v1.7` |
-| Release Name | Dynamic Analysis Polish |
+| Release Name | Static + Dynamic Analysis Polish |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
 | License | MIT |
@@ -28,9 +28,17 @@ The project is designed for malware analysts, SOC analysts, detection engineers,
 
 ## Project Summary
 
-RingForge Workbench organizes software review into case-based workflows. Each case can contain static results, dynamic runtime results, supporting artifacts, and analyst-readable reports.
+RingForge Workbench provides a modular case-based workflow for analyzing software samples and related artifacts. It supports static triage, dynamic runtime collection, API review, OpenAPI/Swagger specification review, and browser extension inspection.
 
-The tool is not intended to replace a full malware sandbox or reverse-engineering suite. It is a practical triage workbench that helps an analyst collect repeatable evidence, reduce noise, and produce readable static and dynamic reports.
+The workbench emphasizes practical analyst outcomes:
+
+- repeatable case folders
+- structured JSON artifacts
+- readable HTML/Markdown reports
+- scoring and verdict logic
+- baseline/noise reduction
+- workflow-specific review screens
+- unified reporting support
 
 ---
 
@@ -49,9 +57,11 @@ Static Analysis supports Windows executable and package triage, including:
 - Signature validation
 - VirusTotal enrichment when configured
 - Static scoring and verdicting
-- Subfile extraction and subfile triage
-- HTML and Markdown reporting
-- Optional PDF reporting when supported by the environment
+- Markdown and HTML reporting
+- PDF reporting when optional PDF dependencies are available
+- Extracted subfile triage
+- Subfile scoring and report visibility
+- Deep triage warnings and progress visibility
 
 ### Dynamic Analysis
 
@@ -63,22 +73,23 @@ Current dynamic capabilities include:
 - Parsed runtime event review
 - Interesting event filtering
 - Process creation tracking
-- Dropped-file candidate review
+- Dropped-file summary
 - Scheduled task before/after diffing
 - Service before/after diffing
 - Autoruns before/after persistence diffing
-- Capture quality scoring
+- Installer-aware observation settings
+- Post-exit observation for installer handoff behavior
+- Cancellation handling with partial summaries
 - Dynamic scoring and verdicting
-- Installer-aware observation mode
-- Analyst cancellation support
 - HTML dynamic report generation
+- Capture quality reporting
 - Clean baseline checks
-- Installer context notes
-- Noise filtering for RingForge tools, Procmon, Autorunsc, and common Windows helper behavior
+- Analyst notes
+- Noise filtering for RingForge tools, Procmon, Autorunsc, Windows helper activity, and common clean-baseline behavior
 
 ### API Analysis
 
-The API Analysis workflow supports manual analyst testing of API endpoints and application or service behavior.
+The API Analysis workflow supports manual analyst testing of API endpoints and application/service behavior.
 
 It focuses on:
 
@@ -132,105 +143,287 @@ Browser extension review includes:
 
 ## What’s New in v1.7
 
-`v1.7` focuses on dynamic analysis polish, report clarity, installer behavior, cancellation handling, and cleaner analyst-facing report names.
+`v1.7` focuses on polishing both the static and dynamic analysis workflows. This release improves analyst usability, report clarity, cancellation behavior, installer observation, scoring context, case/output handling, and report naming.
 
-### Added
+### Static Analysis Updates
 
-- Added editable dynamic observation settings:
-  - Sample observation timeout
-  - Minimum observation time
-  - Post-exit observation time
-  - Installer observation mode
-- Added installer-aware post-exit observation so Procmon does not stop too early when an installer launcher exits before background installation activity finishes.
-- Added observation-setting warning when post-exit observation is longer than or equal to the sample timeout.
-- Added capture quality notes for GUI applications that remain open and hit the configured timeout.
-- Added sample-specific report filenames:
+- Improved static analysis stability.
+- Fixed static cancellation behavior.
+- Fixed false static cancellation behavior.
+- Improved process-tree cleanup after static runs.
+- Advanced settings are now greyed out unless override is enabled.
+- Added clearer deep triage warning behavior.
+- Added subfile progress visibility.
+- Added subfile report section.
+- Improved subfile triage presentation.
+- Cleaned up VirusTotal status handling.
+- Converted PKCS9/TSTInfo parsing noise into a friendlier warning.
+- Added sample-specific static report filenames:
   - `<sample>_static_report.html`
   - `<sample>_static_report.md`
-  - `<sample>_dynamic_report.html`
 - Kept compatibility report copies:
   - `report.html`
   - `report.md`
+
+### Dynamic Analysis Updates
+
+- Added editable observation settings in the Dynamic Analysis window:
+  - sample timeout
+  - minimum observation seconds
+  - post-exit observation seconds
+  - installer observation mode
+- Added installer-aware post-exit observation so Procmon does not stop too early when installer launchers hand off to child processes.
+- Added warning for constrained observation settings.
+- Improved dynamic cancellation handling.
+- Cancelled runs now write clear partial summaries with:
+  - `cancelled: true`
+  - `exit_code: -2`
+  - `verdict: Cancelled`
+  - cancellation reason
+- Added timeout explanation for GUI applications that remain open.
+- Exit code `-1` is now explained as an observation timeout when appropriate.
+- Improved Procmon disabled, missing, skipped, and cancelled states.
+- Improved Autorunsc disabled, missing, skipped, and cancelled states.
+- Improved dynamic preflight checks.
+- Improved dynamic progress/status messages.
+- Added case/output folder synchronization to reduce cross-case result mixups.
+- Added sample-specific dynamic report filenames:
+  - `<sample>_dynamic_report.html`
+- Kept compatibility report copy:
   - `dynamic_report.html`
 
-### Improved
+### Dynamic Reporting Improvements
 
-- Improved Dynamic Analysis cancellation behavior.
-- Improved cancelled dynamic run summary/report state.
-- Improved dynamic GUI quick status details.
-- Improved dynamic GUI sizing and report-action layout.
-- Improved dynamic case/output folder synchronization to reduce cross-case result mixups.
-- Improved dynamic report readability for:
-  - Autoruns entries
-  - Spawned processes
-  - Suspicious path hits
-  - Persistence hits
-- Improved Procmon disabled/missing handling.
-- Improved Autorunsc disabled/missing/skipped handling.
-- Improved service-diff false positive handling for normal Windows runtime state changes.
-- Improved Wireshark/Npcap installer context and scoring behavior.
-- Improved Notepad clean-baseline behavior for Windows GUI observation.
+- Improved Capture Configuration / Tool Status section.
+- Added timeout, minimum observation, post-exit observation, installer mode, and capture quality to reports.
+- Improved cancelled and partial dynamic run reporting.
+- Improved Autoruns report readability.
+- Improved Spawned Processes table readability.
+- Improved Suspicious Path Hits and Persistence Hits table readability.
+- Improved report layout and column sizing.
+- Improved clean-baseline reporting for Notepad-style GUI applications.
+- Improved installer context notes for installer/helper behavior.
 
-### Fixed
+### Scoring and Noise Reduction
 
-- Fixed dynamic cancellation where the GUI displayed cancelled but the orchestrator could continue running.
-- Fixed dynamic report wording for cancelled runs.
-- Fixed sample observation behavior for launchers/installers that exit early.
-- Fixed dynamic report tables where long column names could crush table layout.
-- Fixed output/report status paths being too long and cutting off UI controls.
-- Fixed dynamic output/case folder mismatch behavior.
-- Fixed static and dynamic reports to use sample-specific names while maintaining compatibility report names.
-- Fixed friendly timeout handling for Notepad-style GUI apps that remain open.
+- Improved installer-aware dynamic scoring.
+- Reduced false positives from normal Windows service state changes.
+- Reduced noise from RingForge-generated files and dynamic run metadata.
+- Reduced Procmon/Autorunsc/RingForge tool noise.
+- Reduced clean baseline noise from Windows helper behavior.
+- Improved Wireshark/Npcap installer context handling.
+- Improved interpretation of installer helper processes and LOLBin-like activity in context.
 
 ---
 
-## Current Validation
+## Validation Summary
 
-`v1.7` was validated with both clean baseline and installer-style dynamic tests.
+`v1.7` was validated with:
 
-### Notepad Static Baseline
+- Notepad static smoke test.
+- Notepad dynamic smoke test.
+- Notepad dynamic timeout behavior.
+- Notepad dynamic cancellation during Autoruns before snapshot.
+- Notepad dynamic cancellation during sample observation.
+- Procmon disabled scenario.
+- Procmon missing scenario.
+- Autorunsc missing scenario.
+- Wireshark static smoke test.
+- Wireshark installer dynamic smoke test.
+- Static sample-specific report filename validation.
+- Dynamic sample-specific report filename validation.
+- Clean source package validation with old release folders removed from the archive.
 
-Expected result:
-
-```text
-Static verdict: benign or low risk
-Signature: Microsoft verified
-VirusTotal: clean or no malicious/suspicious signal
-Report opens successfully
-```
-
-### Notepad Dynamic Baseline
-
-Expected result:
-
-```text
-Dynamic verdict: Benign / Clean Baseline or Low Suspicion
-Capture quality: good or timed_out with explanation
-Scheduled task suspicious: 0
-Service diff suspicious: 0
-Autoruns suspicious: 0
-Suspicious paths: 0
-Persistence hits: 0
-Dropped files suspicious: 0
-```
-
-For GUI applications that remain open, an exit code of `-1` can be normal if the configured observation timeout is reached. The dynamic report should show a capture note explaining that the sample did not exit before timeout.
-
-### Wireshark Installer Dynamic Test
-
-Expected result:
+Expected clean Notepad dynamic indicators:
 
 ```text
-Capture quality: good
-Installer mode: enabled
-Procmon: enabled
-Autoruns: enabled
-Wireshark/Npcap context appears in report
-No suspicious Autoruns false positive
-No suspicious service/task false positive
-Report tables remain readable
-Verdict: Low Suspicion or Needs Review depending on observed installer behavior
+Dynamic Score: Low / Clean Baseline
+Spawned Processes: 0 non-noise attributed
+Suspicious Paths: 0
+Persistence Hits: 0
+Autoruns Suspicious: 0
+Scheduled Task Suspicious: 0
+Service Diff Suspicious: 0
+Dropped Files Suspicious: 0
 ```
+
+Expected Wireshark installer dynamic behavior:
+
+```text
+Capture Quality: good
+Verdict: Low Suspicion or Needs Review depending on observed activity
+Npcap/Wireshark installer context visible
+Autoruns suspicious new/modified entries: 0 for trusted clean install behavior
+Service/task findings reviewed in installer context
+```
+
+---
+
+## External Tooling Notice
+
+The `v1.7` source package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
+
+Users must download and configure external tools themselves.
+
+This keeps the release package cleaner and avoids redistributing external software that should be obtained from original vendors or official project sources.
+
+### Not Included in the Release Package
+
+The following are not bundled in the `v1.7` source ZIP:
+
+- Sysinternals Procmon
+- Sysinternals Autorunsc
+- capa executable
+- capa rules
+- capa signatures
+- FLOSS executable
+- YARA executable
+- YARA rules
+- VirusTotal API key
+- Generated case folders
+- Static analysis outputs
+- Dynamic analysis outputs
+- Procmon `.pml` captures
+- Old release folders
+- PyInstaller build folders
+- Python virtual environment
+
+### Recommended Tools to Download Separately
+
+#### Dynamic Analysis Tools
+
+For full dynamic analysis functionality:
+
+- **Procmon / Procmon64**
+  - Used for runtime process, file, registry, and network event capture.
+  - Recommended path:
+
+```text
+tools/Procmon64.exe
+```
+
+or:
+
+```text
+tools/Procmon.exe
+```
+
+- **Autorunsc / Autorunsc64**
+  - Used for Autoruns before/after persistence snapshots.
+  - Recommended path:
+
+```text
+tools/autorunsc64.exe
+```
+
+or:
+
+```text
+tools/autorunsc.exe
+```
+
+#### Static Analysis Tools
+
+For stronger static analysis:
+
+- **capa**
+  - Used for capability and behavior rule matching.
+  - Recommended path:
+
+```text
+tools/capa/capa.exe
+```
+
+- **capa rules**
+  - Required for capa rule matching.
+  - Recommended path:
+
+```text
+tools/capa/rules/
+```
+
+- **capa signatures**
+  - Used by capa for richer binary analysis.
+  - Recommended path:
+
+```text
+tools/capa/sigs/
+```
+
+- **FLOSS**
+  - Used for decoded-string recovery.
+  - Recommended path:
+
+```text
+tools/floss/floss.exe
+```
+
+- **YARA**
+  - Used for YARA rule scanning when configured.
+  - Recommended path:
+
+```text
+tools/yara/yara64.exe
+```
+
+or:
+
+```text
+tools/yara/yara.exe
+```
+
+- **YARA rules**
+  - User-provided rules for static scanning.
+  - Recommended path:
+
+```text
+tools/yara/rules/
+```
+
+#### Optional Services / Configuration
+
+- **VirusTotal API key**
+  - Required only if VirusTotal enrichment is enabled.
+  - Users must provide their own API key.
+  - Do not commit API keys to Git.
+
+- **WeasyPrint**
+  - Optional Python dependency for direct PDF report generation.
+  - If unavailable, use the HTML report and browser print-to-PDF.
+
+### Expected Local Tool Folder Example
+
+A fully configured local analysis environment may look like:
+
+```text
+tools/
+  Procmon64.exe
+  autorunsc64.exe
+
+  capa/
+    capa.exe
+    rules/
+    sigs/
+
+  floss/
+    floss.exe
+
+  yara/
+    yara64.exe
+    rules/
+
+  procmon-configs/
+    dynamic_default.pmc
+```
+
+RingForge can still run with some tools missing, but functionality will be reduced:
+
+- Without Procmon, dynamic runtime telemetry is not collected.
+- Without Autorunsc, Autoruns persistence diffing is skipped.
+- Without capa, static capability analysis is reduced.
+- Without FLOSS, decoded-string recovery is reduced.
+- Without YARA rules, YARA scanning is skipped or reported as incomplete.
+- Without a VirusTotal API key, VirusTotal enrichment is unavailable.
 
 ---
 
@@ -245,7 +438,7 @@ RingForge opens into a launcher that provides access to:
 - Browser Extension Analysis
 - Unified Report
 
-The launcher keeps workflows separated while allowing related analysis modules to contribute to the same case.
+The launcher is designed to keep workflows separated while allowing related analysis modules to contribute to the same case.
 
 ---
 
@@ -261,6 +454,10 @@ cases/
     case_metadata.json
     combined_score.json
 
+    metadata/
+      static_run_summary.json
+      combined_score.json
+
     static_analysis/
       <sample>_static_report.html
       <sample>_static_report.md
@@ -268,6 +465,7 @@ cases/
       report.md
       summary.json
       runlog.json
+      analysis.log
       iocs.json
       iocs.csv
       strings.txt
@@ -319,25 +517,7 @@ cases/
             dynamic_findings.json
 ```
 
-### Report Naming
-
-RingForge now writes sample-specific report names for easier review:
-
-```text
-<sample>_static_report.html
-<sample>_static_report.md
-<sample>_dynamic_report.html
-```
-
-It also keeps legacy compatibility copies:
-
-```text
-report.html
-report.md
-dynamic_report.html
-```
-
-Those compatibility copies are retained so existing buttons, workflows, scripts, and unified-report lookups continue to work.
+Note: some compatibility report names are intentionally retained so older GUI buttons and unified report paths continue to work.
 
 ---
 
@@ -366,9 +546,10 @@ Important folders:
 | `gui/` | Tkinter GUI windows, launcher, controllers, and styles |
 | `scripts/` | Entry points and helper scripts |
 | `static_triage_engine/` | Static analysis engine, scoring, and reporting |
-| `tools/` | Local helper resources such as capa signatures, Procmon config, and optional external tools |
+| `tools/` | Local helper tool paths and configuration folders |
+| `triage_inbox.py` | Helper entry point / inbox workflow |
 
-Release, build, and packaging outputs should not be committed into source control. Keep local build artifacts in ignored folders such as `dist/`, `build/`, or `release/`.
+The release archive is intended to contain the source tree only. Local folders such as `dist/`, `build/`, `release/`, `.venv/`, and generated `cases/` should not be included in the source package.
 
 ---
 
@@ -392,32 +573,6 @@ Common packages include:
 - `pyinstaller`
 - `weasyprint` optional for direct PDF generation
 
-### Optional External Tools
-
-For best results, place external tools under the `tools/` folder.
-
-Recommended dynamic tools:
-
-```text
-tools/
-  Procmon64.exe
-  Procmon.exe
-  autorunsc64.exe
-  autorunsc.exe
-```
-
-Recommended static resources:
-
-```text
-tools/
-  capa/
-    sigs/
-  yara/
-    rules/
-```
-
-Procmon and Autorunsc are Sysinternals tools and should be downloaded separately from Microsoft. Do not include third-party tools in a release package unless their license allows redistribution.
-
 ---
 
 ## Windows Setup
@@ -432,12 +587,6 @@ python -m venv .venv
 
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-If needed:
-
-```powershell
-pip install lief
 ```
 
 Optional PDF support:
@@ -466,18 +615,20 @@ python .\scripts\static_triage_gui.py
 
 1. Launch RingForge.
 2. Open **Static Analysis**.
-3. Select a Windows sample such as an EXE, DLL, or installer.
+3. Select a Windows sample such as an EXE or DLL.
 4. Enter or confirm the case name.
 5. Run static analysis.
-6. Review score, verdict, confidence, VirusTotal context, capa output, signature status, and report artifacts.
+6. Review score, verdict, confidence, VirusTotal context, subfile context, and report artifacts.
 7. Open the static report from the Artifacts section.
 
-Expected report locations:
+Expected static report locations:
 
 ```text
 cases/<case_name>/static_analysis/<sample>_static_report.html
 cases/<case_name>/static_analysis/report.html
 ```
+
+`report.html` is kept as a compatibility copy.
 
 ---
 
@@ -488,35 +639,13 @@ Dynamic analysis should be run inside an isolated Windows VM.
 1. Launch RingForge.
 2. Open **Dynamic Analysis**.
 3. Select the sample.
-4. Confirm the case output folder.
+4. Confirm the case directory and dynamic output directory.
 5. Confirm Procmon and Autorunsc paths.
-6. Set observation options.
+6. Configure timeout, minimum observation, post-exit observation, and installer mode.
 7. Run Dynamic Analysis.
 8. Allow the sample to execute under observation.
-9. For installers, complete the installer normally and allow post-exit observation to continue.
+9. For installers, complete the installer normally and allow first-run behavior to occur.
 10. Review the dynamic findings summary and HTML report.
-
-Recommended quick baseline settings:
-
-```text
-Timeout: 30-60 seconds
-Minimum observation: 10 seconds
-Post-exit observation: 10 seconds
-Installer mode: enabled
-Procmon: enabled
-Autoruns: enabled
-```
-
-Recommended installer settings:
-
-```text
-Timeout: 300-600 seconds
-Minimum observation: 30 seconds
-Post-exit observation: 60-120 seconds
-Installer mode: enabled
-Procmon: enabled
-Autoruns: enabled
-```
 
 Expected dynamic report locations:
 
@@ -524,6 +653,8 @@ Expected dynamic report locations:
 cases/<case_name>/dynamic_analysis/reports/<sample>_dynamic_report.html
 cases/<case_name>/dynamic_analysis/reports/dynamic_report.html
 ```
+
+`dynamic_report.html` is kept as a compatibility copy.
 
 ---
 
@@ -534,8 +665,8 @@ A dynamic run may produce:
 | Artifact | Description |
 |---|---|
 | `dynamic_run_summary.json` | Main structured dynamic summary |
-| `run_config.json` | Runtime configuration used for the dynamic run |
-| `sample_info.json` | Sample metadata and hashes |
+| `run_config.json` | Resolved dynamic run configuration |
+| `sample_info.json` | Sample hash and metadata information |
 | `raw.pml` | Raw Procmon capture |
 | `export.csv` | Exported Procmon CSV |
 | `parsed_events.json` | Parsed Procmon events |
@@ -549,10 +680,10 @@ A dynamic run may produce:
 | `autoruns_before.csv` | Autoruns snapshot before execution |
 | `autoruns_after.csv` | Autoruns snapshot after execution |
 | `autoruns_diff.json` | Autoruns persistence diff |
-| `dropped_files.json` | Dropped-file candidate details |
+| `dropped_files.json` | Dropped-file candidates |
 | `dropped_files_summary.json` | Dropped-file summary |
 | `<sample>_dynamic_report.html` | Analyst-readable dynamic report |
-| `dynamic_report.html` | Compatibility copy of the latest dynamic report |
+| `dynamic_report.html` | Compatibility copy of the dynamic report |
 
 ---
 
@@ -593,46 +724,21 @@ RingForge is a triage and analyst workflow tool. It does not replace a full malw
 
 ---
 
-## Packaging a Release
-
-A clean source package can be created from a Git tag:
-
-```powershell
-git tag -a v1.7 -m "Release v1.7 dynamic polish"
-git push origin v1.7
-
-New-Item -ItemType Directory -Force .\dist | Out-Null
-git archive --format zip --output .\dist\RingForge-Workbench-v1.7-source.zip v1.7
-```
-
-The source ZIP should not include:
-
-```text
-cases/
-dist/
-build/
-release/
-.venv/
-old release folders
-large Procmon captures
-```
-
----
-
 ## Version History
 
-### v1.7 — Dynamic Analysis Polish
+### v1.7 — Static + Dynamic Analysis Polish
 
-- Added installer-aware dynamic observation settings.
-- Added editable timeout, minimum observation, post-exit observation, and installer mode.
-- Improved dynamic cancellation handling and cancelled report state.
-- Added capture-quality timeout explanation for GUI apps that remain open.
-- Improved Procmon and Autorunsc disabled, missing, skipped, and cancelled states.
-- Improved dynamic report readability for Autoruns, spawned processes, suspicious path hits, and persistence hits.
-- Reduced service-diff false positives from normal Windows runtime state changes.
-- Added case/output folder synchronization to prevent cross-case dynamic result mixups.
-- Added sample-specific static and dynamic report filenames while keeping compatibility report copies.
-- Validated Notepad static/dynamic baseline and Wireshark installer dynamic workflow.
+- Polished static analysis stability, cancellation handling, deep triage warning behavior, subfile progress, subfile reporting, VirusTotal status handling, and friendly PKCS9/TSTInfo warning behavior.
+- Added sample-specific static report names while keeping `report.html` and `report.md` compatibility copies.
+- Added editable dynamic observation settings.
+- Improved installer-aware dynamic observation and post-exit capture.
+- Improved dynamic cancellation and partial-summary behavior.
+- Added timeout explanation for GUI applications that remain open.
+- Improved Procmon/Autorunsc disabled, missing, skipped, and cancelled states.
+- Improved dynamic report readability and table formatting.
+- Reduced dynamic false positives from normal Windows service state changes and installer helper behavior.
+- Added sample-specific dynamic report names while keeping `dynamic_report.html` compatibility copy.
+- Cleaned release packaging so old release folders are not included.
 
 ### v1.6.2 — Dynamic Analysis Stabilization + Autoruns Baseline
 
@@ -686,7 +792,8 @@ Key engineering areas represented:
 - Analyst workflow design
 - Case-based output organization
 - False-positive reduction and baseline tuning
-- Release packaging and documentation
+- Installer-aware runtime observation
+- Report usability and workflow polish
 
 ---
 
@@ -694,15 +801,15 @@ Key engineering areas represented:
 
 Planned future improvements:
 
-- Cleaner long-term case artifact organization
-- Dynamic run comparison
-- Network snapshot support
-- Service-diff tuning profiles
-- Tool health dashboard
-- Improved dynamic baseline profiles
-- More screenshots and usage examples
-- Additional report templates
-- Expanded API and browser extension analysis depth
+- Cleaner v1.8 case artifact organization.
+- Dynamic profile presets.
+- More dynamic baseline profiles.
+- Additional service and network noise tuning.
+- Optional network snapshot support.
+- Improved unified report integration with sample-specific report names.
+- Additional report templates.
+- Expanded API and browser extension analysis depth.
+- Improved packaged release workflow.
 
 ---
 
