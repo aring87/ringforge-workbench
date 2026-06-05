@@ -1006,6 +1006,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 ("Executable Files", "*.exe *.dll *.msi *.bat *.cmd *.ps1 *.vbs"),
                 ("All Files", "*.*"),
             ],
+            parent=self,
         )
         if chosen:
             sample = Path(chosen)
@@ -1125,6 +1126,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             title="Select Procmon executable",
             initialdir=str(start),
             filetypes=[("Executable", "*.exe"), ("All Files", "*.*")],
+            parent=self,
         )
         if chosen:
             self.procmon_path_var.set(str(Path(chosen)))
@@ -1137,6 +1139,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             title="Select Procmon config (.pmc)",
             initialdir=str(start),
             filetypes=[("Procmon Config", "*.pmc"), ("All Files", "*.*")],
+            parent=self,
         )
         if chosen:
             self.procmon_config_var.set(str(Path(chosen)))

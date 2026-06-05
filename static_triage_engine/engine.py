@@ -1126,6 +1126,9 @@ def run_case(
             iocs_sf = _load_json(sub_dir / "iocs.json")
             pe_sf = _load_json(sub_dir / "pe_metadata.json")
             lief_sf = _load_json(sub_dir / "lief_metadata.json")
+            api_sf = _load_json(sub_dir / "api_analysis.json")
+
+            sub_summary["api_analysis"] = api_sf
 
             sf_score, sf_susp, sf_ben = score_risk(sub_summary, iocs_sf, pe_sf, lief_sf)
             sf_verdict, sf_conf = _classify_verdict_compat(sf_score, sub_summary)
@@ -1197,6 +1200,9 @@ def run_case(
     iocs = _load_json(case_dir / "iocs.json")
     pe_meta = _load_json(case_dir / "pe_metadata.json")
     lief_meta = _load_json(case_dir / "lief_metadata.json")
+    api_analysis = _load_json(case_dir / "api_analysis.json")
+
+    summary["api_analysis"] = api_analysis
 
     score, suspicious, benign = score_risk(summary, iocs, pe_meta, lief_meta)
     verdict, confidence = _classify_verdict_compat(score, summary)

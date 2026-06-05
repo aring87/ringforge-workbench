@@ -925,15 +925,30 @@ def score_risk(
     pe_meta: dict[str, Any],
     lief_meta: dict[str, Any],
 ) -> Tuple[int, list[str], list[str]]:
-    static_score, evidence, _ = score_static(summary, iocs, pe_meta, lief_meta, None)
+    case_dir = _get_case_dir(summary)
+
+    api_analysis = summary.get("api_analysis")
+    if not isinstance(api_analysis, dict) or not api_analysis:
+        api_analysis = _load_api_analysis(case_dir)
+
+    static_score, evidence, _ = score_static(
+        summary,
+        iocs,
+        pe_meta,
+        lief_meta,
+        api_analysis,
+    )
+
     suspicious = [e.message for e in evidence if e.points > 0]
     benign = [e.message for e in evidence if e.points <= 0]
+
     if static_score < STATIC_SUSPICIOUS_THRESHOLD:
         benign.append("Low overall heuristic score")
     elif static_score < STATIC_MALICIOUS_THRESHOLD:
         benign.append("Moderate overall heuristic score")
     else:
         suspicious.append("High overall heuristic score")
+
     return static_score, suspicious, benign
 
 

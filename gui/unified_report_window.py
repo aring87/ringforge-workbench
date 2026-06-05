@@ -179,11 +179,13 @@ class UnifiedReportWindow(tk.Toplevel):
         widget.configure(state="disabled")
 
     def _browse_case_dir(self):
-        path = filedialog.askdirectory(title="Select case folder", parent=self)
+        path = filedialog.askdirectory(
+            title="Select case folder",
+            parent=self,
+        )
         if path:
             p = self._normalize_case_dir(Path(path))
             self.case_path_var.set(str(p))
-        self._bring_to_front()
 
     def _bring_to_front(self):
         try:
@@ -506,38 +508,73 @@ class UnifiedReportWindow(tk.Toplevel):
             req = data.get("request", {}) if isinstance(data.get("request"), dict) else {}
             resp = data.get("response", {}) if isinstance(data.get("response"), dict) else {}
 
+            module_name = data.get("module") or data.get("tool")
+            if module_name:
+                findings["api"].append(f"Tool: {module_name}")
+
+            saved_at = data.get("saved_at")
+            if saved_at:
+                findings["api"].append(f"Saved at: {saved_at}")
+
+            redaction = data.get("redaction")
+            if redaction:
+                findings["api"].append(f"Redaction: {redaction}")
+
             if "method" in req:
                 findings["api"].append(f"Method: {req['method']}")
+
             if "url" in req:
                 findings["api"].append(f"URL: {req['url']}")
-            if "status_code" in resp:
-                findings["api"].append(f"HTTP status: {resp['status_code']}")
+
+            if "verify_ssl" in req:
+                findings["api"].append(f"Verify SSL: {req['verify_ssl']}")
+
+            if "timeout_seconds" in req:
+                findings["api"].append(f"Timeout: {req['timeout_seconds']} seconds")
+
+            # Support both old and new Manual API Tester schemas.
+            status_value = resp.get("status", resp.get("status_code"))
+            if status_value not in (None, ""):
+                findings["api"].append(f"HTTP status: {status_value}")
+
             if "reason" in resp and resp.get("reason"):
                 findings["api"].append(f"Reason: {resp['reason']}")
-            break
 
-        for p in spec_paths:
-            data = self._load_json_if_exists(p)
-            if not isinstance(data, dict):
-                continue
+            content_type = resp.get("content_type")
+            if content_type:
+                findings["api"].append(f"Content-Type: {content_type}")
 
-            if "score" in data:
-                findings["spec"].append(f"Score: {data['score']}")
-            if "verdict" in data:
-                findings["spec"].append(f"Verdict: {data['verdict']}")
-            if "confidence" in data:
-                findings["spec"].append(f"Confidence: {data['confidence']}")
+            elapsed = resp.get("elapsed")
+            if elapsed:
+                findings["api"].append(f"Elapsed: {elapsed}")
 
-            summary = data.get("summary", {})
-            if isinstance(summary, dict) and "endpoint_count" in summary:
-                findings["spec"].append(f"Endpoints: {summary['endpoint_count']}")
+            size = resp.get("size")
+            if size:
+                findings["api"].append(f"Response size: {size}")
 
-            if "auth_summary" in data:
-                findings["spec"].append("Authentication summary present")
+            analysis = data.get("analysis")
+            if isinstance(analysis, str) and analysis.strip():
+                analysis_lines = []
+                for line in analysis.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("[") or line.lower().startswith("note:"):
+                        analysis_lines.append(line)
 
-            detections = data.get("detections", [])
-            if isinstance(detections, list):
-                findings["spec"].append(f"Spec detections: {len(detections)}")
+                if analysis_lines:
+                    findings["api"].append("Analysis findings:")
+                    for line in analysis_lines[:12]:
+                        findings["api"].append(f"  {line}")
+
+            html_report = data.get("html_report")
+            if html_report:
+                findings["api"].append(f"Latest HTML: {html_report}")
+
+            user_saved_html = data.get("user_saved_html_report")
+            if user_saved_html:
+                findings["api"].append(f"Exported HTML: {user_saved_html}")
+
             break
 
         for p in extension_paths:
@@ -598,7 +635,7 @@ class UnifiedReportWindow(tk.Toplevel):
                 if item not in seen:
                     seen.add(item)
                     deduped.append(item)
-            findings[key] = deduped or ["No detailed findings extracted."]
+            findings[key] = deduped
 
         return findings
 
@@ -726,9 +763,28 @@ class UnifiedReportWindow(tk.Toplevel):
         }
 
         for module_name, key in module_map.items():
+            items = [
+                str(item).strip()
+                for item in findings.get(key, [])
+                if str(item).strip()
+            ]
+
+            if not items:
+                continue
+
             summary_lines.append(f"{module_name}:")
-            for item in findings.get(key, []):
-                summary_lines.append(f"  - {item}")
+            for item in items:
+                lower_item = item.lower().rstrip(":")
+
+                if lower_item in {"analysis findings", "severity summary", "risk notes", "top findings", "evidence"}:
+                    summary_lines.append(f"  {item}")
+                elif item.startswith("Note:"):
+                    summary_lines.append(f"    {item}")
+                elif item.startswith("["):
+                    summary_lines.append(f"    - {item}")
+                else:
+                    summary_lines.append(f"  - {item}")
+
             summary_lines.append("")
 
         self._set_text(self.artifacts_text, "\n".join(artifact_lines) if artifact_lines else "No artifacts detected.")
@@ -822,13 +878,67 @@ class UnifiedReportWindow(tk.Toplevel):
             return "-" if value is None else html.escape(str(value))
 
         def list_section(title: str, items: list[str]) -> str:
-            body = "<ul>" + "".join(f"<li>{html.escape(str(x))}</li>" for x in items) + "</ul>" if items else "<p>-</p>"
+            body = "<ul>" + "".join(
+                f"<li>{html.escape(str(x))}</li>" for x in items
+            ) + "</ul>" if items else "<p>-</p>"
+
             return f"""
-  <section class="card">
-    <h2>{html.escape(title)}</h2>
-    {body}
-  </section>
-"""
+      <section class="card">
+        <h2>{html.escape(title)}</h2>
+        {body}
+      </section>
+    """
+
+        def optional_list_section(title: str, items: list[str]) -> str:
+            clean_items = [
+                str(x).strip()
+                for x in (items or [])
+                if str(x).strip()
+            ]
+
+            if not clean_items:
+                return ""
+
+            if len(clean_items) == 1 and clean_items[0].lower() in {
+                "no detailed findings extracted.",
+                "no findings extracted.",
+                "-",
+            }:
+                return ""
+
+            rendered_items = []
+
+            for item in clean_items:
+                item_text = str(item).strip()
+                lower_item = item_text.lower().rstrip(":")
+
+                if lower_item in {"analysis findings", "severity summary", "risk notes", "top findings", "evidence"}:
+                    rendered_items.append(
+                        f"<li style='list-style:none;margin-top:10px;margin-left:-18px;'>"
+                        f"<strong>{html.escape(item_text)}</strong>"
+                        f"</li>"
+                    )
+                elif item_text.startswith("Note:"):
+                    rendered_items.append(
+                        f"<li style='list-style:none;margin-top:8px;margin-left:0;'>"
+                        f"<em>{html.escape(item_text)}</em>"
+                        f"</li>"
+                    )
+                elif item_text.startswith("["):
+                    rendered_items.append(
+                        f"<li style='margin-left:18px;'>{html.escape(item_text)}</li>"
+                    )
+                else:
+                    rendered_items.append(f"<li>{html.escape(item_text)}</li>")
+
+            body = "<ul>" + "".join(rendered_items) + "</ul>"
+
+            return f"""
+      <section class="card">
+        <h2>{html.escape(title)}</h2>
+        {body}
+      </section>
+    """
 
         rows = []
         for module_name, meta in modules.items():
@@ -841,132 +951,132 @@ class UnifiedReportWindow(tk.Toplevel):
         rows_html = "\n".join(rows) if rows else "<tr><td colspan='3'>No module data found.</td></tr>"
 
         return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Unified RingForge Report</title>
-<style>
-:root {{
-  --bg: #0A0A0A;
-  --panel: #101726;
-  --border: #22314F;
-  --text: #F3F6FB;
-  --muted: #A9B7D0;
-  --blue: #6EA8FF;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  font-family: Segoe UI, Arial, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  margin: 0;
-  padding: 24px;
-}}
-.container {{
-  max-width: 1200px;
-  margin: 0 auto;
-}}
-.banner {{
-  background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
-  border: 1px solid #22314F;
-  border-radius: 18px;
-  padding: 22px;
-  margin-bottom: 20px;
-}}
-h1 {{
-  margin: 0 0 8px 0;
-  font-size: 30px;
-  color: var(--blue);
-}}
-h2 {{
-  color: var(--text);
-  margin-top: 0;
-}}
-.subtitle {{
-  color: var(--muted);
-  margin-top: 6px;
-  font-size: 14px;
-}}
-.card {{
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 18px;
-  margin-bottom: 18px;
-}}
-table {{
-  width: 100%;
-  border-collapse: collapse;
-}}
-th, td {{
-  text-align: left;
-  padding: 10px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-  word-break: break-word;
-}}
-th {{
-  width: 24%;
-  color: #cbd5e1;
-}}
-ul {{
-  margin: 0;
-  padding-left: 20px;
-}}
-li {{
-  margin-bottom: 6px;
-}}
-.footer {{
-  margin-top: 20px;
-  color: var(--muted);
-  font-size: 12px;
-  text-align: right;
-}}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="banner">
-    <h1>Unified RingForge Report</h1>
-    <div class="subtitle">Generated by RingForge Workbench</div>
-  </div>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unified RingForge Report</title>
+    <style>
+    :root {{
+      --bg: #0A0A0A;
+      --panel: #101726;
+      --border: #22314F;
+      --text: #F3F6FB;
+      --muted: #A9B7D0;
+      --blue: #6EA8FF;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+    }}
+    .container {{
+      max-width: 1200px;
+      margin: 0 auto;
+    }}
+    .banner {{
+      background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
+      border: 1px solid #22314F;
+      border-radius: 18px;
+      padding: 22px;
+      margin-bottom: 20px;
+    }}
+    h1 {{
+      margin: 0 0 8px 0;
+      font-size: 30px;
+      color: var(--blue);
+    }}
+    h2 {{
+      color: var(--text);
+      margin-top: 0;
+    }}
+    .subtitle {{
+      color: var(--muted);
+      margin-top: 6px;
+      font-size: 14px;
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      word-break: break-word;
+    }}
+    th {{
+      width: 24%;
+      color: #cbd5e1;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 20px;
+    }}
+    li {{
+      margin-bottom: 6px;
+    }}
+    .footer {{
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }}
+    </style>
+    </head>
+    <body>
+    <div class="container">
+      <div class="banner">
+        <h1>Unified RingForge Report</h1>
+        <div class="subtitle">Generated by RingForge Workbench</div>
+      </div>
 
-  <section class="card">
-    <h2>Case Overview</h2>
-    <table>
-      <tr><th>Case Name</th><td>{case_name}</td></tr>
-      <tr><th>Case Path</th><td>{case_path}</td></tr>
-      <tr><th>Combined Score</th><td>{fmt_score(combined_score)}</td></tr>
-      <tr><th>Static Score</th><td>{fmt_score(static_score)}</td></tr>
-      <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score)}</td></tr>
-      <tr><th>Spec Score</th><td>{fmt_score(spec_score)}</td></tr>
-      <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
-    </table>
-  </section>
+      <section class="card">
+        <h2>Case Overview</h2>
+        <table>
+          <tr><th>Case Name</th><td>{case_name}</td></tr>
+          <tr><th>Case Path</th><td>{case_path}</td></tr>
+          <tr><th>Combined Score</th><td>{fmt_score(combined_score)}</td></tr>
+          <tr><th>Static Score</th><td>{fmt_score(static_score)}</td></tr>
+          <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score)}</td></tr>
+          <tr><th>Spec Score</th><td>{fmt_score(spec_score)}</td></tr>
+          <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
+        </table>
+      </section>
 
-  <section class="card">
-    <h2>Detected Modules</h2>
-    <table>
-      <tr>
-        <th>Module</th>
-        <th>Found</th>
-        <th>Artifacts</th>
-      </tr>
-      {rows_html}
-    </table>
-  </section>
+      <section class="card">
+        <h2>Detected Modules</h2>
+        <table>
+          <tr>
+            <th>Module</th>
+            <th>Found</th>
+            <th>Artifacts</th>
+          </tr>
+          {rows_html}
+        </table>
+      </section>
 
-  {list_section("Combined Score Summary", findings.get("combined", []))}
-  {list_section("Static Analysis Summary", findings.get("static", []))}
-  {list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
-  {list_section("Manual API Tester Summary", findings.get("api", []))}
-  {list_section("Spec Analysis Summary", findings.get("spec", []))}
-  {list_section("Browser Extension Analysis Summary", findings.get("extension", []))}
+      {optional_list_section("Combined Score Summary", findings.get("combined", []))}
+      {optional_list_section("Static Analysis Summary", findings.get("static", []))}
+      {optional_list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
+      {optional_list_section("Manual API Tester Summary", findings.get("api", []))}
+      {optional_list_section("Spec Analysis Summary", findings.get("spec", []))}
+      {optional_list_section("Browser Extension Analysis Summary", findings.get("extension", []))}
 
-  <div class="footer">Generated by RingForge Workbench • Unified Report</div>
-</div>
-</body>
-</html>"""
+      <div class="footer">Generated by RingForge Workbench • Unified Report</div>
+    </div>
+    </body>
+    </html>"""
 
     def _open_report_folder(self):
         if self.case_dir is None:

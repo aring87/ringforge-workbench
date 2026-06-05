@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -149,9 +151,16 @@ class APIAnalysisWindow(tk.Toplevel):
 
     def __init__(self, master: tk.Misc | None = None) -> None:
         super().__init__(master)
+
+        if master is not None:
+            try:
+                self.transient(master)
+            except Exception:
+                pass
+
         self.title("Manual API Tester")
-        self.geometry("1560x1080")
-        self.minsize(1360, 920)
+        self.geometry("1680x1080")
+        self.minsize(1400, 960)
         self.configure(bg="#05070B")
 
         self.latest_report_path: Path | None = None
@@ -165,10 +174,19 @@ class APIAnalysisWindow(tk.Toplevel):
         self.verify_ssl_var = tk.BooleanVar(value=True)
         self.timeout_var = tk.IntVar(value=60)
         self.preset_var = tk.StringVar(value="HTTPBin GET Test")
+        self.redact_report_var = tk.BooleanVar(value=True)
+        self.active_case_var = tk.StringVar(value="-")
 
         self._configure_styles()
         self._build_ui()
         self._load_preset()
+        self._refresh_active_case_display()
+        
+        try:
+            self.lift()
+            self.focus_set()
+        except Exception:
+            pass
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
@@ -282,17 +300,27 @@ class APIAnalysisWindow(tk.Toplevel):
         style.map("TCheckbutton", background=[("active", bg)], foreground=[("active", text)])
 
         style.configure("TNotebook", background=bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        
         style.configure(
-            "TNotebook.Tab",
+            "Api.TNotebook",
+            background=bg,
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 0),
+        )
+        
+        style.configure(
+            "Api.TNotebook.Tab",
             background=tab_bg,
             foreground=text,
-            padding=(16, 9),
+            padding=(18, 9),
             font=("Segoe UI", 10, "bold"),
         )
+
         style.map(
-            "TNotebook.Tab",
+            "Api.TNotebook.Tab",
             background=[("selected", accent), ("active", "#1D3F86")],
             foreground=[("selected", "#FFFFFF"), ("active", "#FFFFFF")],
+            padding=[("selected", (18, 9)), ("!selected", (18, 9))],
         )
 
         self.colors = {
@@ -318,7 +346,7 @@ class APIAnalysisWindow(tk.Toplevel):
         content.rowconfigure(0, weight=0)
         content.rowconfigure(1, weight=0)
         content.rowconfigure(2, weight=0)
-        content.rowconfigure(3, weight=1)
+        content.rowconfigure(3, weight=5)
 
         self._build_request_setup(content)
         self._build_request_editors(content)
@@ -464,6 +492,31 @@ class APIAnalysisWindow(tk.Toplevel):
         )
         self.preset_notes.grid(row=4, column=1, sticky="ew", padx=field_padx, pady=(6, 10))
         self.preset_notes.configure(state="disabled")
+        
+        ttk.Label(frame, text="Active Case", style="Field.TLabel").grid(
+            row=5,
+            column=0,
+            sticky="w",
+            padx=label_padx,
+            pady=(0, 10),
+        )
+
+        case_row = ttk.Frame(frame)
+        case_row.grid(row=5, column=1, sticky="ew", padx=field_padx, pady=(0, 10))
+        case_row.columnconfigure(0, weight=1)
+
+        ttk.Entry(
+            case_row,
+            textvariable=self.active_case_var,
+            state="readonly",
+        ).grid(row=0, column=0, sticky="ew")
+
+        ttk.Button(
+            case_row,
+            text="Open Case API Folder",
+            style="Secondary.TButton",
+            command=self.open_case_api_folder,
+        ).grid(row=0, column=1, sticky="e", padx=(10, 0))
 
     def _build_request_editors(self, parent: tk.Misc) -> None:
         frame = ttk.LabelFrame(parent, text="Request", style="Section.TLabelframe")
@@ -477,27 +530,73 @@ class APIAnalysisWindow(tk.Toplevel):
 
         self.headers_text = self._build_textbox(frame, row=1, column=0)
         self.body_text = self._build_textbox(frame, row=1, column=1)
+        
+        self.headers_text.configure(height=7)
+        self.body_text.configure(height=7)
 
-    def _build_action_bar(self, parent: tk.Misc) -> None:
+    def _build_action_bar(self, parent):
         bar = ttk.Frame(parent, style="App.TFrame")
-        bar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        bar.grid(row=2, column=0, sticky="ew", padx=10, pady=(6, 6))
         bar.columnconfigure(0, weight=1)
         bar.columnconfigure(1, weight=0)
 
         left = ttk.Frame(bar, style="App.TFrame")
         left.grid(row=0, column=0, sticky="w")
-        ttk.Button(left, text="Send Request", style="Action.TButton", command=self.send_request).grid(row=0, column=0, padx=(0, 6))
-        ttk.Button(left, text="Clear", style="Secondary.TButton", command=self.clear_form).grid(row=0, column=1, padx=(0, 6))
-        ttk.Button(left, text="Copy Response", style="Secondary.TButton", command=self.copy_response).grid(row=0, column=2, padx=(0, 6))
+
+        ttk.Button(
+            left,
+            text="Send Request",
+            style="Action.TButton",
+            command=self.send_request,
+        ).grid(row=0, column=0, padx=(0, 6))
+
+        ttk.Button(
+            left,
+            text="Clear",
+            style="Secondary.TButton",
+            command=self.clear_form,
+        ).grid(row=0, column=1, padx=(0, 6))
+
+        ttk.Button(
+            left,
+            text="Copy Response",
+            style="Secondary.TButton",
+            command=self.copy_response,
+        ).grid(row=0, column=2, padx=(0, 6))
+
+        ttk.Button(
+            left,
+            text="Pretty JSON",
+            style="Secondary.TButton",
+            command=self.pretty_json_response,
+        ).grid(row=0, column=3)
 
         right = ttk.Frame(bar, style="App.TFrame")
         right.grid(row=0, column=1, sticky="e")
-        ttk.Button(right, text="Save HTML Report", style="Secondary.TButton", command=self.save_html_report).grid(row=0, column=0, padx=(0, 6))
-        ttk.Button(right, text="Open HTML Report", style="Secondary.TButton", command=self.open_html_report).grid(row=0, column=1)
+
+        ttk.Checkbutton(
+            right,
+            text="Redact report",
+            variable=self.redact_report_var,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        ttk.Button(
+            right,
+            text="Save HTML Report",
+            style="Secondary.TButton",
+            command=self.save_html_report,
+        ).grid(row=0, column=1, padx=(0, 6))
+
+        ttk.Button(
+            right,
+            text="Open HTML Report",
+            style="Secondary.TButton",
+            command=self.open_html_report,
+        ).grid(row=0, column=2)
 
     def _build_response_section(self, parent: tk.Misc) -> None:
         outer = ttk.LabelFrame(parent, text="Response", style="Section.TLabelframe")
-        outer.grid(row=3, column=0, sticky="nsew")
+        outer.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(1, weight=1)
 
@@ -516,21 +615,33 @@ class APIAnalysisWindow(tk.Toplevel):
         self.type_value = self.type_card[1]
         self.size_value = self.size_card[1]
 
-        self.response_notebook = ttk.Notebook(outer)
+        self.response_notebook = ttk.Notebook(outer, style="Api.TNotebook")
         self.response_notebook.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
+        self.analysis_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
         self.body_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
         self.headers_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
         self.raw_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
+
+        self.response_notebook.add(self.analysis_tab, text="Analysis")
         self.response_notebook.add(self.body_tab, text="Body")
         self.response_notebook.add(self.headers_tab, text="Headers")
         self.response_notebook.add(self.raw_tab, text="Raw")
 
+        self.response_analysis_text = self._build_textbox(self.analysis_tab, row=0, column=0, outer_pad=0)
         self.response_body_text = self._build_textbox(self.body_tab, row=0, column=0, outer_pad=0)
         self.response_headers_text = self._build_textbox(self.headers_tab, row=0, column=0, outer_pad=0)
         self.response_raw_text = self._build_textbox(self.raw_tab, row=0, column=0, outer_pad=0)
+        
+        for widget in (
+            self.response_analysis_text,
+            self.response_body_text,
+            self.response_headers_text,
+            self.response_raw_text,
+        ):
+            widget.configure(height=20)
 
-        for tab in (self.body_tab, self.headers_tab, self.raw_tab):
+        for tab in (self.analysis_tab, self.body_tab, self.headers_tab, self.raw_tab):
             tab.columnconfigure(0, weight=1)
             tab.rowconfigure(0, weight=1)
 
@@ -573,7 +684,10 @@ class APIAnalysisWindow(tk.Toplevel):
         return text
 
     def _browse_file(self) -> None:
-        path = filedialog.askopenfilename(title="Select file to upload")
+        path = filedialog.askopenfilename(
+            title="Select file to upload",
+            parent=self,
+        )
         if path:
             self.upload_file_var.set(path)
 
@@ -679,9 +793,359 @@ class APIAnalysisWindow(tk.Toplevel):
                 return f"{int(value)} {unit}" if unit == "B" else f"{value:.2f} {unit}"
             value /= 1024
         return f"{size} B"
+        
+    def _analyze_response(
+        self,
+        *,
+        method: str,
+        url: str,
+        status: str,
+        content_type: str,
+        headers: str,
+        body: str,
+        raw: str,
+        elapsed: str,
+        size: str,
+    ) -> str:
+        findings: list[str] = []
+
+        url_l = (url or "").strip().lower()
+        headers_l = (headers or "").lower()
+        body_l = (body or "").lower()
+        raw_l = (raw or "").lower()
+        content_type_l = (content_type or "").lower()
+
+        findings.append("RingForge API Response Analysis")
+        findings.append("=" * 34)
+        findings.append("")
+        findings.append(f"Method: {method or '-'}")
+        findings.append(f"URL: {url or '-'}")
+        findings.append(f"Status: {status or '-'}")
+        findings.append(f"Elapsed: {elapsed or '-'}")
+        findings.append(f"Content-Type: {content_type or '-'}")
+        findings.append(f"Size: {size or '-'}")
+        findings.append("")
+
+        # Status review
+        try:
+            status_i = int(str(status).strip().split()[0])
+        except Exception:
+            status_i = 0
+
+        if 200 <= status_i < 300:
+            findings.append("[Info] Successful HTTP response received.")
+        elif 300 <= status_i < 400:
+            findings.append("[Low] Redirect response received. Review Location header and destination host.")
+        elif status_i in {401, 403}:
+            findings.append("[Info] Endpoint returned an authentication/authorization denial.")
+        elif 400 <= status_i < 500:
+            findings.append("[Medium] Client error response received. Review request structure, authentication, and endpoint behavior.")
+        elif status_i >= 500:
+            findings.append("[Medium] Server error response received. Check whether verbose errors or stack traces were exposed.")
+        else:
+            findings.append("[Info] HTTP status could not be classified.")
+
+        # Transport review
+        if url_l.startswith("https://"):
+            findings.append("[Info] HTTPS transport used.")
+        elif url_l.startswith("http://"):
+            findings.append("[Medium] Cleartext HTTP transport used. Sensitive data may be exposed in transit.")
+        else:
+            findings.append("[Info] URL scheme was not identified as HTTP or HTTPS.")
+
+        # Content type review
+        if "application/json" in content_type_l:
+            findings.append("[Info] JSON response detected.")
+        elif "text/html" in content_type_l:
+            findings.append("[Info] HTML response detected.")
+        elif content_type_l and content_type_l != "—":
+            findings.append(f"[Info] Response content type observed: {content_type}.")
+        else:
+            findings.append("[Info] Response content type was not provided.")
+
+        # Header checks
+        if "server:" in headers_l:
+            findings.append("[Low] Server header disclosed backend/server information.")
+
+        if "x-powered-by:" in headers_l:
+            findings.append("[Low] X-Powered-By header disclosed framework or runtime information.")
+
+        if "access-control-allow-origin: *" in headers_l:
+            findings.append("[Low] Wildcard CORS origin observed. Review whether this is expected for the endpoint.")
+
+        if "set-cookie:" in headers_l:
+            findings.append("[Medium] Set-Cookie header observed. Review cookie attributes such as Secure, HttpOnly, and SameSite.")
+
+        if "strict-transport-security:" not in headers_l and url_l.startswith("https://"):
+            findings.append("[Low] HSTS header was not observed. This may be acceptable for non-browser API endpoints but should be reviewed.")
+
+        # Verbose error checks
+        verbose_error_terms = [
+            "traceback",
+            "stack trace",
+            "exception",
+            "nullreferenceexception",
+            "sqlexception",
+            "syntaxerror",
+            "debug",
+            "line ",
+            "internal server error",
+        ]
+        if any(term in body_l or term in raw_l for term in verbose_error_terms):
+            findings.append("[Medium] Verbose error/debug content may be present in the response.")
+
+        # Sensitive value checks
+        sensitive_terms = [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "client_secret",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "authorization",
+            "bearer ",
+            "private_key",
+            "set-cookie",
+        ]
+        if any(term in body_l or term in raw_l or term in headers_l for term in sensitive_terms):
+            findings.append("[High] Token, credential, cookie, or secret-like content may be present. Use redaction before sharing reports.")
+
+        if not findings:
+            findings.append("[Info] No response findings generated.")
+            
+        severity_counts = {
+            "High": sum(1 for x in findings if x.startswith("[High]")),
+            "Medium": sum(1 for x in findings if x.startswith("[Medium]")),
+            "Low": sum(1 for x in findings if x.startswith("[Low]")),
+            "Info": sum(1 for x in findings if x.startswith("[Info]")),
+        }
+
+        findings.append("")
+        findings.append("Severity Summary:")
+        findings.append(f"- High: {severity_counts['High']}")
+        findings.append(f"- Medium: {severity_counts['Medium']}")
+        findings.append(f"- Low: {severity_counts['Low']}")
+        findings.append(f"- Info: {severity_counts['Info']}")
+
+        findings.append("")
+        findings.append("Note: These findings are heuristic indicators for analyst review. They do not prove a vulnerability by themselves.")
+
+        return "\n".join(findings)
+
+
+    def _refresh_response_analysis(self) -> None:
+        method = self.method_var.get().strip()
+        url = self.url_var.get().strip()
+        status = self.status_value.cget("text")
+        elapsed = self.time_value.cget("text")
+        content_type = self.type_value.cget("text")
+        size = self.size_value.cget("text")
+        headers = self._get_text(self.response_headers_text)
+        body = self._get_text(self.response_body_text)
+        raw = self._get_text(self.response_raw_text)
+
+        analysis = self._analyze_response(
+            method=method,
+            url=url,
+            status=status,
+            content_type=content_type,
+            headers=headers,
+            body=body,
+            raw=raw,
+            elapsed=elapsed,
+            size=size,
+        )
+
+        self._set_text(self.response_analysis_text, analysis)
 
     def _escape_html(self, value: str) -> str:
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        
+    def _redact_secrets(self, value: Any) -> str:
+        """
+        Redact common API secrets before displaying or exporting reports.
+
+        This protects exported HTML reports from accidentally storing bearer tokens,
+        API keys, cookies, passwords, client secrets, and similar values.
+        """
+        text = "" if value is None else str(value)
+
+        patterns = [
+            # HTTP headers
+            (r"(?im)^(Authorization\s*:\s*Bearer\s+)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(Authorization\s*:\s*Basic\s+)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(Authorization\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(X-Api-Key\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(Api-Key\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(Cookie\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(Set-Cookie\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+
+            # JSON-style secrets
+            (r'(?i)("?(?:api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd)"?\s*:\s*")[^"]+(")', r"\1[REDACTED]\2"),
+            (r"(?i)('?(?:api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd)'?\s*:\s*')[^']+(')", r"\1[REDACTED]\2"),
+
+            # Query-string or form-style secrets
+            (r"(?i)\b(api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd)=([^&\s]+)", r"\1=[REDACTED]"),
+
+            # Bearer tokens appearing inside body/raw output
+            (r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]"),
+            
+            # Reflected public IP/origin fields from test APIs like HTTPBin
+            (r'(?i)("origin"\s*:\s*")[^"]+(")', r"\1[REDACTED]\2"),
+            (r"(?im)^(X-Forwarded-For\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+            (r"(?im)^(X-Real-IP\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
+        ]
+
+        for pattern, replacement in patterns:
+            text = re.sub(pattern, replacement, text)
+
+        return text
+        
+    def _get_active_case_dir(self) -> Path:
+        """
+        Resolve the current RingForge case folder from the parent app context.
+
+        Expected structure:
+            cases\<case_name>\api_analysis\
+                manual_api_latest.json
+                manual_api_latest.html
+        """
+        project_root = Path(__file__).resolve().parents[1]
+
+        case_root = project_root / "cases"
+        case_name = ""
+
+        app = getattr(self, "master", None)
+
+        if app is not None:
+            case_root_var = getattr(app, "case_root_var", None)
+            if case_root_var is not None:
+                try:
+                    raw_case_root = case_root_var.get().strip()
+                    if raw_case_root:
+                        case_root = Path(raw_case_root)
+                except Exception:
+                    pass
+
+            case_var = getattr(app, "case_var", None)
+            if case_var is not None:
+                try:
+                    case_name = case_var.get().strip()
+                except Exception:
+                    case_name = ""
+
+            sample_var = getattr(app, "sample_var", None)
+            if not case_name and sample_var is not None:
+                try:
+                    sample_path = sample_var.get().strip()
+                    if sample_path:
+                        case_name = Path(sample_path).stem
+                except Exception:
+                    pass
+
+            detected = getattr(app, "case_dir_detected", None)
+            if detected:
+                try:
+                    detected_path = Path(detected)
+                    if detected_path.name in {"static_analysis", "dynamic_analysis", "spec_analysis", "api_analysis", "extension_analysis"}:
+                        return detected_path.parent
+                    return detected_path
+                except Exception:
+                    pass
+
+        if not case_name:
+            case_name = "api_case"
+
+        safe_case_name = "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in case_name).strip("._")
+        if not safe_case_name:
+            safe_case_name = "api_case"
+
+        return case_root / safe_case_name
+        
+    def _refresh_active_case_display(self) -> None:
+        try:
+            self.active_case_var.set(str(self._get_active_case_dir()))
+        except Exception:
+            self.active_case_var.set("-")
+            
+    def open_case_api_folder(self) -> None:
+        try:
+            case_api_dir = self._get_active_case_dir() / "api_analysis"
+            case_api_dir.mkdir(parents=True, exist_ok=True)
+
+            if hasattr(webbrowser, "open"):
+                webbrowser.open(case_api_dir.resolve().as_uri())
+            else:
+                messagebox.showinfo(
+                    "Open Case API Folder",
+                    f"Case API folder:\n{case_api_dir}",
+                    parent=self,
+                )
+        except Exception as e:
+            messagebox.showerror(
+                "Open Case API Folder",
+                f"Could not open case API folder:\n{e}",
+                parent=self,
+            )
+        
+    def _save_latest_case_api_report(
+        self,
+        *,
+        html_text: str,
+        request_headers: str,
+        request_body: str,
+        response_headers: str,
+        response_body: str,
+        raw_output: str,
+        analysis: str,
+        redaction_status: str,
+        output_html_path: Path,
+    ) -> None:
+        case_dir = self._get_active_case_dir()
+        api_dir = case_dir / "api_analysis"
+        api_dir.mkdir(parents=True, exist_ok=True)
+
+        latest_html = api_dir / "manual_api_latest.html"
+        latest_json = api_dir / "manual_api_latest.json"
+
+        latest_html.write_text(html_text, encoding="utf-8", errors="replace")
+
+        data = {
+            "module": "manual_api_tester",
+            "tool": "RingForge Manual API Tester",
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "redaction": redaction_status,
+            "html_report": str(latest_html),
+            "user_saved_html_report": str(output_html_path),
+            "request": {
+                "method": self.method_var.get().strip(),
+                "url": self.url_var.get().strip(),
+                "verify_ssl": bool(self.verify_ssl_var.get()),
+                "timeout_seconds": int(self.timeout_var.get() or 0),
+                "headers": request_headers,
+                "body": request_body,
+                "upload_file": self.upload_file_var.get().strip(),
+                "file_field": self.file_field_var.get().strip(),
+            },
+            "response": {
+                "status": self.status_value.cget("text"),
+                "elapsed": self.time_value.cget("text"),
+                "content_type": self.type_value.cget("text"),
+                "size": self.size_value.cget("text"),
+                "headers": response_headers,
+                "body": response_body,
+                "raw": raw_output,
+            },
+            "analysis": analysis,
+        }
+
+        latest_json.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+            errors="replace",
+        )
 
     def clear_form(self) -> None:
         self.preset_var.set("HTTPBin GET Test")
@@ -703,10 +1167,82 @@ class APIAnalysisWindow(tk.Toplevel):
         self.preset_notes.configure(state="disabled")
 
         self._update_response_ui("Waiting", "—", "—", "—", "", "", "", False)
+        
+    def pretty_json_response(self) -> None:
+        body = self._get_text(self.response_body_text).strip()
+        raw = self._get_text(self.response_raw_text).strip()
+
+        if not body and not raw:
+            messagebox.showinfo(
+                "Pretty JSON",
+                "There is no response body to format.",
+                parent=self,
+            )
+            return
+
+        try:
+            # Prefer formatting the Body tab.
+            if body:
+                parsed = json.loads(body)
+                pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+                self._set_text(self.response_body_text, pretty)
+
+                # Also update Raw if it has an HTTP/header section followed by JSON body.
+                if "\n\n" in raw:
+                    head, raw_body = raw.split("\n\n", 1)
+                    try:
+                        json.loads(raw_body.strip())
+                        self._set_text(self.response_raw_text, f"{head}\n\n{pretty}")
+                    except Exception:
+                        pass
+
+                self.response_notebook.select(self.body_tab)
+                self._refresh_response_analysis()
+
+                messagebox.showinfo(
+                    "Pretty JSON",
+                    "Response body formatted as pretty JSON.",
+                    parent=self,
+                )
+                return
+
+            # Fallback: try formatting JSON from the Raw tab only.
+            if "\n\n" in raw:
+                head, raw_body = raw.split("\n\n", 1)
+                parsed = json.loads(raw_body.strip())
+                pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+                self._set_text(self.response_raw_text, f"{head}\n\n{pretty}")
+                self.response_notebook.select(self.raw_tab)
+
+                messagebox.showinfo(
+                    "Pretty JSON",
+                    "Raw response JSON body formatted.",
+                    parent=self,
+                )
+                return
+
+            parsed = json.loads(raw)
+            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+            self._set_text(self.response_raw_text, pretty)
+            self.response_notebook.select(self.raw_tab)
+
+            messagebox.showinfo(
+                "Pretty JSON",
+                "Raw response formatted as pretty JSON.",
+                parent=self,
+            )
+
+        except Exception as exc:
+            messagebox.showwarning(
+                "Pretty JSON",
+                f"Response body is not valid JSON:\n{exc}",
+                parent=self,
+            )
 
     def copy_response(self) -> None:
         current_tab = self.response_notebook.select()
         widget = {
+            str(self.analysis_tab): self.response_analysis_text,
             str(self.body_tab): self.response_body_text,
             str(self.headers_tab): self.response_headers_text,
             str(self.raw_tab): self.response_raw_text,
@@ -714,28 +1250,48 @@ class APIAnalysisWindow(tk.Toplevel):
 
         text = self._get_text(widget)
         if not text:
-            messagebox.showinfo("Copy Response", "There is no response content to copy.")
+            messagebox.showinfo(
+                "Copy Response",
+                "There is no response content to copy.",
+                parent=self,
+            )
             return
         self.clipboard_clear()
         self.clipboard_append(text)
 
     def send_request(self) -> None:
         if requests is None:
-            messagebox.showerror("Missing Dependency", "The 'requests' package is not installed in this environment.")
+            messagebox.showerror(
+                "Missing Dependency",
+                "The 'requests' package is not installed in this environment.",
+                parent=self,
+            )
             return
         if self._request_thread and self._request_thread.is_alive():
-            messagebox.showinfo("Request In Progress", "A request is already running.")
+            messagebox.showinfo(
+                "Request In Progress",
+                "A request is already running.",
+                parent=self,
+            )
             return
 
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showwarning("Missing URL", "Please enter a URL.")
+            messagebox.showwarning(
+                "Missing URL",
+                "Please enter a URL.",
+                parent=self,
+            )
             return
 
         try:
             self._normalize_headers(self._safe_parse_json(self._get_text(self.headers_text), "Headers"))
         except ValueError as exc:
-            messagebox.showerror("Invalid Input", str(exc))
+            messagebox.showerror(
+                "Invalid Input",
+                str(exc),
+                parent=self,
+            )
             return
 
         self._update_response_ui("Sending...", "—", "—", "—", "", "", "", False)
@@ -854,6 +1410,10 @@ class APIAnalysisWindow(tk.Toplevel):
         self._set_text(self.response_headers_text, headers)
         self._set_text(self.response_raw_text, raw)
         self.response_notebook.select(self.body_tab)
+        try:
+            self._refresh_response_analysis()
+        except Exception as e:
+            self._set_text(self.response_analysis_text, f"Analysis unavailable: {type(e).__name__}: {e}")
 
     def save_html_report(self) -> None:
         method = self.method_var.get().strip()
@@ -862,19 +1422,46 @@ class APIAnalysisWindow(tk.Toplevel):
         elapsed = self.time_value.cget("text")
         content_type = self.type_value.cget("text")
         size = self.size_value.cget("text")
+        redaction_status = "Enabled" if self.redact_report_var.get() else "Disabled / Full Evidence"
+
+        request_headers = self._get_text(self.headers_text)
+        request_body = self._get_text(self.body_text)
+
         headers = self._get_text(self.response_headers_text)
         body = self._get_text(self.response_body_text)
         raw = self._get_text(self.response_raw_text)
+        analysis = self._get_text(self.response_analysis_text)
+
+        if self.redact_report_var.get():
+            request_headers = self._redact_secrets(request_headers)
+            request_body = self._redact_secrets(request_body)
+            headers = self._redact_secrets(headers)
+            body = self._redact_secrets(body)
+            raw = self._redact_secrets(raw)
+            analysis = self._redact_secrets(analysis)
+        else:
+            proceed = messagebox.askyesno(
+                "Save Unredacted Report",
+                "This report may contain API keys, tokens, cookies, IP addresses, or other sensitive values.\n\nSave unredacted report anyway?",
+                parent=self,
+            )
+            if not proceed:
+                return
 
         if not body and not raw:
-            messagebox.showinfo("Save HTML Report", "There is no response to save yet.")
+            messagebox.showinfo(
+                "Save HTML Report",
+                "There is no response to save yet.",
+                parent=self,
+            )
             return
 
         path = filedialog.asksaveasfilename(
             title="Save HTML Report",
             defaultextension=".html",
-            initialfile="api_test_report.html",
+            initialfile=f"api_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
             filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
+            parent=self,
         )
         if not path:
             return
@@ -903,8 +1490,12 @@ pre {{ white-space: pre-wrap; word-break: break-word; background: #0D1A33; borde
         <div class=\"label\">Time</div><div>{self._escape_html(elapsed)}</div>
         <div class=\"label\">Type</div><div>{self._escape_html(content_type)}</div>
         <div class=\"label\">Size</div><div>{self._escape_html(size)}</div>
+        <div class=\"label\">Redaction</div><div>{self._escape_html(redaction_status)}</div>
     </div>
 </div>
+<div class=\"card\"><h2>Response Analysis</h2><pre>{self._escape_html(analysis)}</pre></div>
+<div class=\"card\"><h2>Request Headers</h2><pre>{self._escape_html(request_headers)}</pre></div>
+<div class=\"card\"><h2>Request Body</h2><pre>{self._escape_html(request_body)}</pre></div>
 <div class=\"card\"><h2>Response Body</h2><pre>{self._escape_html(body)}</pre></div>
 <div class=\"card\"><h2>Response Headers</h2><pre>{self._escape_html(headers)}</pre></div>
 <div class=\"card\"><h2>Raw Output</h2><pre>{self._escape_html(raw)}</pre></div>
@@ -912,16 +1503,50 @@ pre {{ white-space: pre-wrap; word-break: break-word; background: #0D1A33; borde
 </html>
 """
         out_path = Path(path)
-        out_path.write_text(html, encoding="utf-8")
+        out_path.write_text(html, encoding="utf-8", errors="replace")
         self.latest_report_path = out_path
-        messagebox.showinfo("Save HTML Report", f"Saved report to:\n{out_path}")
+
+        try:
+            self._save_latest_case_api_report(
+                html_text=html,
+                request_headers=request_headers,
+                request_body=request_body,
+                response_headers=headers,
+                response_body=body,
+                raw_output=raw,
+                analysis=analysis,
+                redaction_status=redaction_status,
+                output_html_path=out_path,
+            )
+        except Exception as e:
+            messagebox.showwarning(
+                "Save Case API Report",
+                f"HTML report was saved, but the latest case API report could not be written:\n{e}",
+                parent=self,
+            )
+
+        self._refresh_active_case_display()
+        case_api_dir = self._get_active_case_dir() / "api_analysis"
+
+        messagebox.showinfo(
+            "Save HTML Report",
+            f"Saved export report to:\n{out_path}\n\n"
+            f"Updated latest case API artifacts under:\n{case_api_dir}\n\n"
+            f"Case files:\n"
+            f"- manual_api_latest.html\n"
+            f"- manual_api_latest.json",
+            parent=self,
+        )
 
     def open_html_report(self) -> None:
         if self.latest_report_path and self.latest_report_path.exists():
             webbrowser.open(self.latest_report_path.resolve().as_uri())
             return
-        messagebox.showinfo("Open HTML Report", "No saved HTML report is available yet.")
-
+        messagebox.showinfo(
+            "Open HTML Report",
+            "No saved HTML report is available yet.",
+            parent=self,
+        )
 
 ApiWindow = APIAnalysisWindow
 

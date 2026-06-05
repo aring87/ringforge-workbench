@@ -529,6 +529,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             title="Select API spec",
             initialdir=str(start),
             filetypes=[("API Specs", "*.json *.yaml *.yml"), ("All Files", "*.*")],
+            parent=self,
         )
         if chosen:
             self.spec_path_var.set(str(Path(chosen)))
