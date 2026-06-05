@@ -576,6 +576,66 @@ class UnifiedReportWindow(tk.Toplevel):
                 findings["api"].append(f"Exported HTML: {user_saved_html}")
 
             break
+            
+        for p in spec_paths:
+            data = self._load_json_if_exists(p)
+            if not isinstance(data, dict):
+                continue
+
+            title = data.get("title")
+            version = data.get("version")
+            spec_type = data.get("spec_type")
+            fmt = data.get("format")
+            confidence = data.get("confidence")
+
+            if title:
+                findings["spec"].append(f"Spec title: {title}")
+            if version:
+                findings["spec"].append(f"Spec version: {version}")
+            if spec_type:
+                findings["spec"].append(f"Spec type: {spec_type}")
+            if fmt:
+                findings["spec"].append(f"Format: {fmt}")
+            if confidence:
+                findings["spec"].append(f"Parser confidence: {confidence}")
+
+            summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
+            scoring = data.get("scoring", {}) if isinstance(data.get("scoring"), dict) else {}
+
+            if summary:
+                findings["spec"].append(f"Endpoints: {summary.get('endpoint_count', 0)}")
+                findings["spec"].append(f"Unauthenticated endpoints: {summary.get('unauthenticated_endpoint_count', 0)}")
+                findings["spec"].append(f"Sensitive unauthenticated endpoints: {summary.get('sensitive_unauthenticated_endpoint_count', 0)}")
+                findings["spec"].append(f"High-risk endpoints: {summary.get('high_risk_endpoint_count', 0)}")
+                findings["spec"].append(f"Medium-risk endpoints: {summary.get('medium_risk_endpoint_count', 0)}")
+                findings["spec"].append(f"Schema issue endpoints: {summary.get('schema_issue_endpoint_count', 0)}")
+
+            if scoring:
+                findings["spec"].append(f"HTTP server detected: {scoring.get('http_server_detected', False)}")
+                findings["spec"].append(f"File upload endpoints: {scoring.get('file_upload_endpoints', 0)}")
+                findings["spec"].append(f"Auth gap count: {scoring.get('auth_gap_count', 0)}")
+
+            auth_summary = data.get("auth_summary", [])
+            if isinstance(auth_summary, list):
+                findings["spec"].append("Auth schemes: " + (", ".join(str(x) for x in auth_summary) if auth_summary else "none"))
+
+            risk_notes = data.get("risk_notes", [])
+            if isinstance(risk_notes, list) and risk_notes:
+                findings["spec"].append("Risk notes:")
+                for note in risk_notes[:10]:
+                    findings["spec"].append(f"  - {note}")
+
+            top_risky = data.get("top_risky_endpoints", [])
+            if isinstance(top_risky, list) and top_risky:
+                findings["spec"].append("Notable endpoints:")
+                for ep in top_risky[:8]:
+                    if isinstance(ep, dict):
+                        findings["spec"].append(
+                            f"  - {ep.get('method', '')} {ep.get('path', '')} "
+                            f"[{ep.get('risk_level', '')} | score={ep.get('risk_score', 0)}]"
+                        )
+
+            break
 
         for p in extension_paths:
             path = Path(p)
@@ -610,6 +670,7 @@ class UnifiedReportWindow(tk.Toplevel):
             total = data.get("total_score", data.get("score"))
             severity = data.get("severity")
             verdict = data.get("verdict")
+
             if total is not None:
                 findings["combined"].append(f"Total score: {total}")
             if severity:
@@ -617,15 +678,23 @@ class UnifiedReportWindow(tk.Toplevel):
             if verdict:
                 findings["combined"].append(f"Verdict: {verdict}")
 
-            static_score = data.get("static_score")
-            dynamic_score = data.get("dynamic_score")
-            spec_score = data.get("spec_score")
+            subscores = data.get("subscores", {})
+            if isinstance(subscores, dict):
+                static_score = subscores.get("static")
+                dynamic_score = subscores.get("dynamic")
+                spec_score = subscores.get("spec")
+            else:
+                static_score = data.get("static_score")
+                dynamic_score = data.get("dynamic_score")
+                spec_score = data.get("spec_score")
+
             if static_score is not None:
                 findings["combined"].append(f"Static score: {static_score}")
             if dynamic_score is not None:
                 findings["combined"].append(f"Dynamic score: {dynamic_score}")
             if spec_score is not None:
                 findings["combined"].append(f"Spec score: {spec_score}")
+
             break
 
         for key in findings:
@@ -682,6 +751,52 @@ class UnifiedReportWindow(tk.Toplevel):
         ])
         data = self._load_json_if_exists(p) if p else None
         return data if isinstance(data, dict) else None
+        
+    def _derive_spec_score_and_verdict(self, spec_summary: dict | None) -> tuple[int | None, str | None]:
+        """
+        Derive a display score/verdict for spec-only or spec-heavy cases.
+
+        This is intentionally separate from malware/static/dynamic scoring so API
+        spec risk does not sound like endpoint malware behavior.
+        """
+        if not isinstance(spec_summary, dict):
+            return None, None
+
+        summary = spec_summary.get("summary", {}) if isinstance(spec_summary.get("summary"), dict) else {}
+        scoring = spec_summary.get("scoring", {}) if isinstance(spec_summary.get("scoring"), dict) else {}
+
+        high_count = int(summary.get("high_risk_endpoint_count", 0) or 0)
+        medium_count = int(summary.get("medium_risk_endpoint_count", 0) or 0)
+        sensitive_unauth = int(summary.get("sensitive_unauthenticated_endpoint_count", 0) or 0)
+        auth_gap_count = int(summary.get("auth_gap_count", scoring.get("auth_gap_count", 0)) or 0)
+        schema_issue_count = int(summary.get("schema_issue_endpoint_count", scoring.get("schema_issue_endpoint_count", 0)) or 0)
+        file_upload_count = int(summary.get("file_upload_endpoint_count", scoring.get("file_upload_endpoints", 0)) or 0)
+
+        http_server = bool(scoring.get("http_server_detected", False))
+
+        score = 0
+        score += min(30, high_count * 10)
+        score += min(18, medium_count * 3)
+        score += min(12, sensitive_unauth * 3)
+        score += min(8, auth_gap_count)
+        score += min(6, schema_issue_count)
+        score += min(6, file_upload_count * 3)
+
+        if http_server:
+            score += 5
+
+        score = max(0, min(100, score))
+
+        if score >= 60:
+            verdict = "High API Spec Risk"
+        elif score >= 35:
+            verdict = "Medium API Spec Risk"
+        elif score >= 15:
+            verdict = "Low API Spec Risk"
+        else:
+            verdict = "Informational API Spec Review"
+
+        return score, verdict
 
     def _derive_overall_verdict(self, artifacts: dict) -> str:
         combined = self._combined_summary()
@@ -708,6 +823,23 @@ class UnifiedReportWindow(tk.Toplevel):
             return "Moderate Risk"
         if "benign" in joined or "low suspicion" in joined or "low risk" in joined:
             return "Low Risk"
+
+        spec_found = artifacts.get("Spec Analysis", {}).get("found", False)
+        other_modules_found = any(
+            artifacts.get(name, {}).get("found", False)
+            for name in [
+                "Static Analysis",
+                "Dynamic Analysis",
+                "Manual API Tester",
+                "Browser Extension Analysis",
+                "Combined Score",
+            ]
+        )
+
+        if spec_found and not other_modules_found:
+            spec_score, spec_verdict = self._derive_spec_score_and_verdict(self._latest_spec_summary())
+            if spec_verdict:
+                return spec_verdict
 
         count = sum(1 for meta in artifacts.values() if meta.get("found"))
         if count >= 2:
@@ -807,14 +939,23 @@ class UnifiedReportWindow(tk.Toplevel):
 
         static_score = None
         dynamic_score = None
+        api_score = None
         spec_score = None
+        extension_score = None
         combined_score = None
 
         if isinstance(combined_summary, dict):
             combined_score = combined_summary.get("total_score", combined_summary.get("score"))
-            static_score = combined_summary.get("static_score")
-            dynamic_score = combined_summary.get("dynamic_score")
-            spec_score = combined_summary.get("spec_score")
+
+            subscores = combined_summary.get("subscores", {})
+            if isinstance(subscores, dict):
+                static_score = subscores.get("static")
+                dynamic_score = subscores.get("dynamic")
+                spec_score = subscores.get("spec")
+            else:
+                static_score = combined_summary.get("static_score")
+                dynamic_score = combined_summary.get("dynamic_score")
+                spec_score = combined_summary.get("spec_score")
 
         if static_score is None and isinstance(static_summary, dict):
             static_score = static_summary.get("score") or static_summary.get("static_score")
@@ -825,6 +966,18 @@ class UnifiedReportWindow(tk.Toplevel):
         if spec_score is None and isinstance(spec_summary, dict):
             spec_score = spec_summary.get("score") or spec_summary.get("spec_score")
 
+            if spec_score is None:
+                derived_spec_score, _derived_spec_verdict = self._derive_spec_score_and_verdict(spec_summary)
+                spec_score = derived_spec_score
+        
+        api_findings = findings.get("api", [])
+        if api_findings:
+            api_score = "Present"
+
+        extension_findings = findings.get("extension", [])
+        if extension_findings:
+            extension_score = "Present"
+
         data = {
             "case_name": self.case_dir.name,
             "case_path": str(self.case_dir),
@@ -832,7 +985,9 @@ class UnifiedReportWindow(tk.Toplevel):
             "combined_score": combined_score,
             "static_score": static_score,
             "dynamic_score": dynamic_score,
+            "api_score": api_score,
             "spec_score": spec_score,
+            "extension_score": extension_score,
             "modules": self.detected_artifacts,
             "findings": findings,
         }
@@ -870,12 +1025,14 @@ class UnifiedReportWindow(tk.Toplevel):
         combined_score = data.get("combined_score")
         static_score = data.get("static_score")
         dynamic_score = data.get("dynamic_score")
+        api_score = data.get("api_score")
         spec_score = data.get("spec_score")
+        extension_score = data.get("extension_score")
         modules = data.get("modules", {}) or {}
         findings = data.get("findings", {}) or {}
 
-        def fmt_score(value):
-            return "-" if value is None else html.escape(str(value))
+        def fmt_score(value, missing_label="Not run"):
+            return html.escape(missing_label) if value is None else html.escape(str(value))
 
         def list_section(title: str, items: list[str]) -> str:
             body = "<ul>" + "".join(
@@ -1046,10 +1203,12 @@ class UnifiedReportWindow(tk.Toplevel):
         <table>
           <tr><th>Case Name</th><td>{case_name}</td></tr>
           <tr><th>Case Path</th><td>{case_path}</td></tr>
-          <tr><th>Combined Score</th><td>{fmt_score(combined_score)}</td></tr>
-          <tr><th>Static Score</th><td>{fmt_score(static_score)}</td></tr>
-          <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score)}</td></tr>
-          <tr><th>Spec Score</th><td>{fmt_score(spec_score)}</td></tr>
+          <tr><th>Combined Score</th><td>{fmt_score(combined_score, "Not generated")}</td></tr>
+          <tr><th>Static Score</th><td>{fmt_score(static_score, "Not run")}</td></tr>
+          <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score, "Not run")}</td></tr>
+          <tr><th>API Analysis</th><td>{fmt_score(api_score, "Not run")}</td></tr>
+          <tr><th>Spec Score</th><td>{fmt_score(spec_score, "Not run")}</td></tr>
+          <tr><th>Browser Extension Analysis</th><td>{fmt_score(extension_score, "Not run")}</td></tr>
           <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
         </table>
       </section>

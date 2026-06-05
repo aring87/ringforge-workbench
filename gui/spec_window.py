@@ -1,10 +1,12 @@
 from __future__ import annotations
-
+import re
+import urllib.request
+import urllib.parse
 import json
 import shutil
 import tkinter as tk
 import webbrowser
-
+import os
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -198,7 +200,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         case_dir = case_root / self._current_case_name()
         case_dir.mkdir(parents=True, exist_ok=True)
 
-        spec_dir = case_dir / "spec"
+        spec_dir = case_dir / "spec_analysis"
         spec_dir.mkdir(parents=True, exist_ok=True)
 
         self.last_spec_dir = spec_dir
@@ -338,7 +340,7 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         ttk.Button(
             btns,
-            text="Open HTML Report",
+            text="Open Latest Report",
             style="Secondary.TButton",
             command=self._open_html_report,
         ).pack(side="left", padx=(0, 8))
@@ -829,7 +831,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             <div class="tile"><div class="tile-label">Version</div><div class="tile-value" style="font-size:18px;">{escape(version)}</div></div>
             <div class="tile"><div class="tile-label">Endpoints</div><div class="tile-value">{summary.get("endpoint_count", 0)}</div></div>
             <div class="tile"><div class="tile-label">Auth</div><div class="tile-value" style="font-size:18px;">{escape(auth_txt)}</div></div>
-            <div class="tile"><div class="tile-label">Top Risky</div><div class="tile-value">{summary.get("top_risky_endpoint_count", 0)}</div></div>
+            <div class="tile"><div class="tile-label">Notable</div><div class="tile-value">{summary.get("top_risky_endpoint_count", 0)}</div></div>
             <div class="tile"><div class="tile-label">Confidence</div><div class="tile-value" style="font-size:18px;">{escape(str(confidence))}</div></div>
             <div class="tile"><div class="tile-label">Unresolved Refs</div><div class="tile-value">{result.get("unresolved_refs_count", 0)}</div></div>
         </div>
@@ -862,7 +864,7 @@ class SpecAnalysisWindow(tk.Toplevel):
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px;">
             <div class="card">
-                <div class="section-head"><h2>Top Risky Endpoints</h2></div>
+                <div class="section-head"><h2>Notable Endpoints</h2></div>
                 {top_risky_html}
             </div>
             <div class="card">
@@ -896,7 +898,53 @@ class SpecAnalysisWindow(tk.Toplevel):
             verdict_class=verdict_class,
             body_html=body_html,
         )
+    
+    def _is_url(self, value: str) -> bool:
+        text = (value or "").strip().lower()
+        return text.startswith("http://") or text.startswith("https://")
 
+
+    def _download_spec_url(self, url: str, spec_dir: Path) -> Path:
+        """
+        Download an OpenAPI/Swagger spec URL into the current spec_analysis folder
+        and return the local file path.
+        """
+        spec_dir.mkdir(parents=True, exist_ok=True)
+
+        parsed = urllib.parse.urlparse(url)
+        name = Path(parsed.path).name or "downloaded_openapi_spec.json"
+
+        # Preserve a useful extension when possible.
+        if not Path(name).suffix:
+            name = f"{name}.json"
+
+        # Keep filename safe for Windows.
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._-")
+        if not safe_name:
+            safe_name = "downloaded_openapi_spec.json"
+
+        output_dir = spec_dir / "downloaded_specs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        output_path = output_dir / safe_name
+
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "RingForge-Workbench/1.0",
+                "Accept": "application/json, application/yaml, text/yaml, */*",
+            },
+        )
+
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content = response.read()
+
+        if not content:
+            raise ValueError("Downloaded spec was empty.")
+
+        output_path.write_bytes(content)
+        return output_path
+    
     def _save_report_files(self, result: dict[str, Any]) -> tuple[Path, Path]:
         spec_dir = self._ensure_spec_dir()
 
@@ -906,29 +954,78 @@ class SpecAnalysisWindow(tk.Toplevel):
         safe_spec_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in spec_name)
         safe_spec_name = safe_spec_name.strip("_") or "spec"
 
-        json_path = spec_dir / f"spec_inventory_{safe_spec_name}_{timestamp}.json"
-        html_path = spec_dir / f"spec_inventory_{safe_spec_name}_{timestamp}.html"
-
-        latest_json = spec_dir / f"spec_inventory_latest_{safe_spec_name}.json"
-        latest_html = spec_dir / f"spec_inventory_latest_{safe_spec_name}.html"
-
-        generic_latest_json = spec_dir / "spec_inventory_latest.json"
-        generic_latest_html = spec_dir / "spec_inventory_latest.html"
-
-        _safe_json_write(json_path, result)
-        _safe_json_write(latest_json, result)
-        _safe_json_write(generic_latest_json, result)
-
         html_text = self._render_html(result)
-        html_path.write_text(html_text, encoding="utf-8")
-        latest_html.write_text(html_text, encoding="utf-8")
-        generic_latest_html.write_text(html_text, encoding="utf-8")
 
+        # ------------------------------------------------------------------
+        # Canonical latest outputs used by Spec window, Unified Report, scoring,
+        # and other readers.
+        # ------------------------------------------------------------------
+        api_spec_json = spec_dir / "api_spec_analysis.json"
+        latest_json = spec_dir / "spec_inventory_latest.json"
+        latest_html = spec_dir / "spec_inventory_latest.html"
+
+        _safe_json_write(api_spec_json, result)
+        _safe_json_write(latest_json, result)
+        latest_html.write_text(html_text, encoding="utf-8")
+
+        # Optional latest-by-spec-name outputs. These are useful when testing
+        # multiple specs in one case but still avoid timestamp clutter.
+        named_latest_json = spec_dir / f"spec_inventory_latest_{safe_spec_name}.json"
+        named_latest_html = spec_dir / f"spec_inventory_latest_{safe_spec_name}.html"
+
+        _safe_json_write(named_latest_json, result)
+        named_latest_html.write_text(html_text, encoding="utf-8")
+
+        # ------------------------------------------------------------------
+        # Metadata copy for compatibility with Unified Report/module detection.
+        # ------------------------------------------------------------------
+        metadata_dir = spec_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        _safe_json_write(metadata_dir / "api_spec_analysis.json", result)
+
+        # ------------------------------------------------------------------
+        # Historical run folder. This keeps old runs without cluttering root.
+        # ------------------------------------------------------------------
+        runs_dir = spec_dir / "runs"
+        run_dir = runs_dir / f"{timestamp}_{safe_spec_name}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        run_json = run_dir / "api_spec_analysis.json"
+        run_inventory_json = run_dir / "spec_inventory.json"
+        run_inventory_html = run_dir / "spec_inventory.html"
+
+        _safe_json_write(run_json, result)
+        _safe_json_write(run_inventory_json, result)
+        run_inventory_html.write_text(html_text, encoding="utf-8")
+
+        # ------------------------------------------------------------------
+        # Preserve source spec.
+        # Keep latest original in spec_analysis\originals and per-run copy in runs.
+        # ------------------------------------------------------------------
         if src.exists():
             try:
-                shutil.copy2(src, spec_dir / f"original_{safe_spec_name}{src.suffix.lower()}")
+                originals_dir = spec_dir / "originals"
+                originals_dir.mkdir(parents=True, exist_ok=True)
+
+                original_name = f"original_{safe_spec_name}{src.suffix.lower()}"
+                shutil.copy2(src, originals_dir / original_name)
+                shutil.copy2(src, run_dir / original_name)
             except Exception:
                 pass
+
+        # ------------------------------------------------------------------
+        # Legacy compatibility copies.
+        # Keep only latest files here so old readers/releases still work.
+        # ------------------------------------------------------------------
+        case_dir = spec_dir.parent
+        legacy_spec_dir = case_dir / "spec"
+        legacy_spec_dir.mkdir(parents=True, exist_ok=True)
+
+        _safe_json_write(legacy_spec_dir / "api_spec_analysis.json", result)
+        _safe_json_write(legacy_spec_dir / "spec_inventory_latest.json", result)
+        (legacy_spec_dir / "spec_inventory_latest.html").write_text(html_text, encoding="utf-8")
+
+        _safe_json_write(case_dir / "api_spec_analysis.json", result)
 
         self.last_json_report = latest_json
         self.last_html_report = latest_html
@@ -939,44 +1036,84 @@ class SpecAnalysisWindow(tk.Toplevel):
     # -------------------------------------------------------------------------
 
     def _parse_spec(self) -> None:
-        spec_path = Path(self.spec_path_var.get().strip())
-        if spec_path.suffix.lower() not in {".json", ".yaml", ".yml"}:
-            messagebox.showerror(
+        raw_input = self.spec_path_var.get().strip()
+
+        if not raw_input:
+            messagebox.showwarning(
                 "Spec Analysis",
-                "API Spec Analysis only accepts .json, .yaml, or .yml files.",
+                "Select or enter an API spec file first.",
                 parent=self,
             )
-            self.status_var.set("Invalid spec file type")
+            self.status_var.set("No spec selected")
             return
 
-        self.status_var.set("Analyzing spec...")
-        self.update_idletasks()
+        try:
+            spec_dir = self._ensure_spec_dir()
 
-        result = engine_analyze_api_spec(spec_path, self._ensure_spec_dir())
-        if result.get("returncode") != 0:
+            if self._is_url(raw_input):
+                self.status_var.set("Downloading API spec URL...")
+                self.update_idletasks()
+
+                spec_path = self._download_spec_url(raw_input, spec_dir)
+                self.spec_path_var.set(str(spec_path))
+            else:
+                spec_path = Path(raw_input)
+
+            if spec_path.suffix.lower() not in {".json", ".yaml", ".yml"}:
+                messagebox.showerror(
+                    "Spec Analysis",
+                    "API Spec Analysis only accepts .json, .yaml, or .yml files.",
+                    parent=self,
+                )
+                self.status_var.set("Invalid spec file type")
+                return
+
+            if not spec_path.exists():
+                messagebox.showerror(
+                    "Spec Analysis",
+                    f"Spec file not found:\n{spec_path}",
+                    parent=self,
+                )
+                self.status_var.set("Spec file not found")
+                return
+
+            self.status_var.set("Analyzing spec...")
+            self.update_idletasks()
+
+            result = engine_analyze_api_spec(spec_path, spec_dir)
+
+            if result.get("returncode") != 0:
+                messagebox.showerror(
+                    "Spec Analysis",
+                    result.get("error", "Unknown error"),
+                    parent=self,
+                )
+                self.status_var.set("Parse failed")
+                return
+
+            self.last_result = result
+            self.app.latest_spec_result = result if isinstance(result, dict) else {}
+            self._populate_result(result)
+            self._save_report_files(result)
+
+            project_root = Path(__file__).resolve().parents[1]
+            case_root = (
+                Path(self.app.case_root_var.get().strip())
+                if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
+                else (project_root / "cases")
+            )
+            case_dir = case_root / self._current_case_name()
+            self.app.case_dir_detected = case_dir
+
+            self.status_var.set(f"Parsed {result.get('summary', {}).get('endpoint_count', 0)} endpoints")
+
+        except Exception as e:
             messagebox.showerror(
                 "Spec Analysis",
-                result.get("error", "Unknown error"),
+                f"Could not analyze spec:\n{e}",
                 parent=self,
             )
-            self.status_var.set("Parse failed")
-            return
-
-        self.last_result = result
-        self.app.latest_spec_result = result if isinstance(result, dict) else {}
-        self._populate_result(result)
-        self._save_report_files(result)
-
-        project_root = Path(__file__).resolve().parents[1]
-        case_root = (
-            Path(self.app.case_root_var.get().strip())
-            if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
-            else (project_root / "cases")
-        )
-        case_dir = case_root / self._current_case_name()
-        self.app.case_dir_detected = case_dir
-
-        self.status_var.set(f"Parsed {result.get('summary', {}).get('endpoint_count', 0)} endpoints")
+            self.status_var.set("Spec analysis failed")
 
     def _save_html_report(self) -> None:
         if not self.last_result:
@@ -996,36 +1133,44 @@ class SpecAnalysisWindow(tk.Toplevel):
         )
 
     def _open_html_report(self) -> None:
-        report_path = None
+        """
+        Open the latest canonical Spec Analysis HTML report.
 
-        if self.last_html_report:
-            candidate = Path(self.last_html_report)
-            if candidate.exists():
-                report_path = candidate
+        Historical reports are stored under:
+            spec_analysis/runs/<timestamp>_<spec_name>/spec_inventory.html
 
-        if report_path is None:
+        The button should always open:
+            spec_analysis/spec_inventory_latest.html
+        """
+        spec_dir = self.last_spec_dir
+
+        if spec_dir is None:
             spec_dir = self._ensure_spec_dir()
-            src = Path(self.spec_path_var.get().strip())
-            if src.exists():
-                spec_name = src.stem
-                safe_spec_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in spec_name)
-                safe_spec_name = safe_spec_name.strip("_") or "spec"
 
-                candidate = spec_dir / f"spec_inventory_latest_{safe_spec_name}.html"
-                if candidate.exists():
-                    report_path = candidate
+        latest_html = Path(spec_dir) / "spec_inventory_latest.html"
 
-        if report_path is None:
-            spec_dir = self._ensure_spec_dir()
-            candidate = spec_dir / "spec_inventory_latest.html"
-            if candidate.exists():
-                report_path = candidate
+        if self.last_html_report and Path(self.last_html_report).exists():
+            latest_html = Path(self.last_html_report)
 
-        if report_path and report_path.exists():
-            webbrowser.open(report_path.resolve().as_uri())
-            self.status_var.set(f"Opened HTML report: {report_path.name}")
-        else:
-            messagebox.showinfo("Open HTML Report", "No saved HTML report found yet.", parent=self)
+        if not latest_html.exists():
+            messagebox.showinfo(
+                "Open HTML Report",
+                "No Spec Analysis HTML report was found yet. Run Analyze Spec first.",
+                parent=self,
+            )
+            self.status_var.set("No HTML report found")
+            return
+
+        try:
+            webbrowser.open(latest_html.resolve().as_uri())
+            self.status_var.set(f"Opened HTML report: {latest_html}")
+        except Exception as e:
+            messagebox.showerror(
+                "Open HTML Report",
+                f"Could not open HTML report:\n{latest_html}\n\n{e}",
+                parent=self,
+            )
+            self.status_var.set("Could not open HTML report")
 
     def _open_case_files(self) -> None:
         spec_dir = self.last_spec_dir
@@ -1037,7 +1182,22 @@ class SpecAnalysisWindow(tk.Toplevel):
             messagebox.showinfo("Open Case Files", "No spec case folder was found yet.", parent=self)
             return
 
-        self.app._open_path(spec_dir)
+        try:
+            if hasattr(self.app, "_open_path"):
+                self.app._open_path(spec_dir)
+            elif os.name == "nt":
+                os.startfile(str(spec_dir))
+            else:
+                webbrowser.open(spec_dir.resolve().as_uri())
+
+            self.status_var.set(f"Opened case files: {spec_dir}")
+
+        except Exception as e:
+            messagebox.showerror(
+                "Open Case Files",
+                f"Could not open spec case folder:\n{spec_dir}\n\n{e}",
+                parent=self,
+            )
 
     def _open_manual_api_tester(self) -> None:
         APIAnalysisWindow(self.app)
