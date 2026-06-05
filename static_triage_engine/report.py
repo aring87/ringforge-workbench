@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import shutil
 import html
 import json
 import re
@@ -586,9 +586,18 @@ def _summary_tiles(data: dict[str, Any]) -> str:
         for label, value in tiles
     ) + "</section>"
 
+def _safe_report_stem(sample_name: str) -> str:
+    stem = Path(sample_name or "").stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem)
+    stem = stem.strip("._-")
+    return stem or "sample"
 
 def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
-    report_md = case_dir / "report.md"
+    sample_name = str(data.get("filename", "") or "sample")
+    sample_stem = _safe_report_stem(sample_name)
+
+    report_md = case_dir / f"{sample_stem}_static_report.md"
+    compat_report_md = case_dir / "report.md"
     lines: list[str] = []
 
     lines.append("# Static Triage Ticket")
@@ -767,11 +776,19 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     lines.append("")
 
     report_md.write_text("\n".join(lines), encoding="utf-8", errors="replace")
+    
+    if report_md.exists():
+        shutil.copy2(report_md, compat_report_md)
+        
     return report_md
 
 
 def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
-    report_html = case_dir / "report.html"
+    sample_name = str(data.get("filename", "") or "sample")
+    sample_stem = _safe_report_stem(sample_name)
+
+    report_html = case_dir / f"{sample_stem}_static_report.html"
+    compat_report_html = case_dir / "report.html"
 
     combined = data.get("combined", {}) or {}
     verdict_rationale = data.get("verdict_rationale", {}) or {}
@@ -1037,6 +1054,10 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
     )
 
     report_html.write_text(html_doc, encoding="utf-8", errors="replace")
+
+    if report_html.exists():
+        shutil.copy2(report_html, compat_report_html)
+
     return report_html
 
 

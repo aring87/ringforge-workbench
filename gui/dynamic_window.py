@@ -1,6 +1,8 @@
 import html
 import json
 import os
+import re
+import shutil
 import queue
 import re
 import subprocess
@@ -1139,6 +1141,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         if chosen:
             self.procmon_config_var.set(str(Path(chosen)))
             self._save_cfg()
+            
+    def _safe_report_stem(self, sample_name: str) -> str:
+        stem = Path(sample_name or "").stem
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem)
+        stem = stem.strip("._-")
+        return stem or "sample"
     
     def _short_display_path(self, path_value, keep_parts: int = 2) -> str:
         if not path_value:
@@ -1193,17 +1201,31 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
             reports_dir = dynamic_output / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
-
+            
             summary_path, summary_candidates = self._find_latest_dynamic_summary(case_home, dynamic_output)
             findings_path, findings_candidates = self._find_latest_dynamic_findings(case_home, dynamic_output)
 
-            output_html = reports_dir / "dynamic_report.html"
+            sample_name = Path(self.sample_var.get().strip()).name
+            sample_stem = self._safe_report_stem(sample_name)
+
+            output_html = reports_dir / f"{sample_stem}_dynamic_report.html"
+            compat_html = reports_dir / "dynamic_report.html"
 
             if summary_path:
                 write_dynamic_html_report(summary_path, output_html)
+
+                # Compatibility copy for existing buttons/workflows that expect dynamic_report.html.
+                if output_html.exists():
+                    shutil.copy2(output_html, compat_html)
+
             elif findings_path:
                 data = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
                 self._write_fallback_dynamic_html(data, output_html, case_home)
+
+                # Compatibility copy for existing buttons/workflows that expect dynamic_report.html.
+                if output_html.exists():
+                    shutil.copy2(output_html, compat_html)
+
             else:
                 checked = [str(p) for p in summary_candidates + findings_candidates]
                 messagebox.showerror(
@@ -1212,6 +1234,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                     parent=self,
                 )
                 return None
+            
 
             self.summary_report_var.set(self._short_display_path(output_html, keep_parts=2))
             if open_after:
