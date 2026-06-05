@@ -1054,6 +1054,7 @@ def run_dynamic_analysis(
 
     ended_at = utc_now_iso()
     duration_seconds = _seconds_between(started_at, ended_at)
+    timed_out = bool(exit_code == -1 and not cancelled)
 
     capture_quality = _build_capture_quality(
         procmon_enabled=procmon_enabled,
@@ -1066,6 +1067,12 @@ def run_dynamic_analysis(
     if cancelled:
         capture_quality["status"] = "cancelled"
         capture_quality["note"] = cancellation_reason or "Dynamic analysis was cancelled before full telemetry collection completed."
+    elif timed_out:
+        capture_quality["status"] = "timed_out"
+        capture_quality["note"] = (
+            "Sample observation reached the configured timeout before the sample exited. "
+            "This can be normal for GUI applications that remain open."
+        )
 
     behavior_summary = _build_behavior_summary(
         findings_summary=findings_summary,
@@ -1105,6 +1112,7 @@ def run_dynamic_analysis(
         "duration_seconds": duration_seconds,
         "exit_code": exit_code,
         "cancelled": bool(cancelled),
+        "timed_out": timed_out,
         "cancellation_reason": cancellation_reason,
         "procmon_enabled": procmon_enabled,
         "autoruns_enabled": autoruns_enabled,

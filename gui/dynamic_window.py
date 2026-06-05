@@ -294,6 +294,20 @@ class DynamicAnalysisWindow(tk.Toplevel):
         case_home = self._get_case_home_dir()
         dynamic_output = self._get_dynamic_output_dir()
 
+        # If the dynamic output folder points to a case's dynamic_analysis folder,
+        # infer the case home from that output path. This prevents mismatches like:
+        #   case_home = cases/notepad
+        #   dynamic_output = cases/wireshark/dynamic_analysis
+        if dynamic_output.name.lower() == "dynamic_analysis":
+            inferred_case_home = dynamic_output.parent
+            if inferred_case_home.name:
+                case_home = inferred_case_home
+
+        # Keep dynamic output aligned under the resolved case home.
+        expected_dynamic_output = case_home / "dynamic_analysis"
+        if dynamic_output != expected_dynamic_output:
+            dynamic_output = expected_dynamic_output
+
         case_home.mkdir(parents=True, exist_ok=True)
 
         # Create module folders.

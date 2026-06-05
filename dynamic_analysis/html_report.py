@@ -243,6 +243,7 @@ def _capture_configuration_table(summary: dict[str, Any]) -> str:
         "procmon_capture_quality": capture_quality.get("status", ""),
         "procmon_capture_score": capture_quality.get("score", ""),
         "procmon_total_events": capture_quality.get("procmon_total_events", ""),
+        "capture_note": capture_quality.get("note", ""),
         "autoruns_enabled": summary.get("autoruns_enabled", False),
         "autoruns_deep_scan": summary.get("autoruns_deep_scan", False),
         "autoruns_before_success": before_status.get("success", False) if isinstance(before_status, dict) else False,
