@@ -1,145 +1,271 @@
 # RingForge Workbench
 
-<p align="center">
-  <img alt="RingForge Workbench" src="https://img.shields.io/badge/RingForge-Workbench-blue?style=for-the-badge">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.7.2-blue?style=for-the-badge">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-lightgrey?style=for-the-badge">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-green?style=for-the-badge">
-  <img alt="Status" src="https://img.shields.io/badge/status-active-success?style=for-the-badge">
-</p>
+[![Release](https://img.shields.io/badge/release-v1.7.2-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
+[![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
+[![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
+[![Status](https://img.shields.io/badge/status-active%20development-brightgreen)](https://github.com/aring87/ringforge-workbench)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-<p align="center">
-  <b>Static, dynamic, API, browser extension, and unified software-analysis workbench for security review, malware triage, and analyst reporting.</b>
-</p>
+**Static insight. Dynamic visibility. API evidence. Structured review.**
 
----
+RingForge Workbench is a Python/Tkinter software triage workbench for structured static analysis, dynamic behavior review, manual API testing, API specification review, browser extension analysis, and unified reporting from one analyst-facing interface.
 
-## Overview
-
-RingForge Workbench is a Windows-focused security analysis workbench designed to help analysts organize and review software, installers, executables, API specifications, browser extensions, and dynamic-analysis results inside a single case-based workflow.
-
-The project is built for practical security review. It focuses on producing useful analyst output instead of raw tool dumps. RingForge organizes results into case folders, generates HTML/JSON/Markdown reports, supports static and dynamic workflows, and now includes polished API Spec Analysis with direct OpenAPI/Swagger URL support.
-
-Version **v1.7.2** focuses on **API Spec Analysis polish** and better Unified Report integration.
+It is designed for malware analysts, SOC analysts, detection engineers, and security practitioners who want a practical Windows-focused workflow for reviewing software behavior, organizing case artifacts, and producing consistent analyst-readable reports.
 
 ---
 
 ## Current Release
 
-**RingForge Workbench v1.7.2 — API Spec Analysis Polish**
-
-This release improves the API Spec Analysis workflow, report layout, case-folder organization, and Unified Report integration.
-
-### v1.7.2 Highlights
-
-- Added direct OpenAPI/Swagger URL support for API Spec Analysis.
-- Standardized API spec outputs under `cases/<case>/spec_analysis/`.
-- Added clean historical run folders under `spec_analysis/runs/`.
-- Added latest report files for quick access:
-  - `spec_inventory_latest.html`
-  - `spec_inventory_latest.json`
-  - `api_spec_analysis.json`
-- Added compatibility copies for older report readers.
-- Improved API spec report wording from **Top Risky Endpoints** to **Notable Endpoints**.
-- Improved recommended-test wording to emphasize runtime validation instead of declaring vulnerabilities from the specification alone.
-- Added API-specific spec score and verdict support in the Unified Report.
-- Added API Analysis and Browser Extension Analysis rows to the Unified Report overview.
-- Improved missing-module display with clear labels such as **Not run** and **Not generated**.
-- Improved spec-only Unified Report verdicts such as:
-  - `Medium API Spec Risk`
-  - `High API Spec Risk`
-  - `Informational API Spec Review`
+| Field | Value |
+|---|---|
+| Version | `v1.7.2` |
+| Release Name | API Spec Analysis Polish + Unified Report Integration |
+| Release Type | Maintenance / polish release |
+| Platform Focus | Windows analysis environment |
+| Language | Python |
+| License | MIT |
 
 ---
 
-## Core Features
+## Project Summary
+
+RingForge Workbench provides a modular case-based workflow for analyzing software samples and related artifacts. It supports static triage, dynamic runtime collection, manual API review, OpenAPI/Swagger specification review, browser extension inspection, and unified reporting.
+
+The workbench emphasizes practical analyst outcomes:
+
+- repeatable case folders
+- structured JSON artifacts
+- readable HTML/Markdown reports
+- scoring and verdict logic
+- baseline/noise reduction
+- workflow-specific review screens
+- API response review and evidence capture
+- case-aware artifact saving
+- unified reporting support
+
+---
+
+## Core Capabilities
 
 ### Static Analysis
 
-RingForge performs structured static triage against executables, installers, and extracted subfiles.
+Static Analysis supports Windows executable and package triage, including:
 
-Static analysis can include:
-
-- PE metadata collection
-- LIEF metadata collection
-- YARA scanning
-- Capa capability analysis
-- Authenticode signature review
-- Hashing and file identification
-- String extraction
-- Installer/subfile extraction
-- Subfile triage and scoring
-- Suspicious capability grouping
-- Analyst-friendly static HTML and Markdown reports
-
-The static-analysis workflow is designed to reduce noise and present findings in a way that helps analysts make a risk decision.
-
----
+- File hashing
+- PE metadata extraction
+- LIEF-based enrichment
+- Strings review
+- capa capability analysis
+- IOC extraction
+- Signature validation
+- VirusTotal enrichment when configured
+- Static scoring and verdicting
+- API import analysis
+- API behavior chain scoring
+- Markdown and HTML reporting
+- PDF reporting when optional PDF dependencies are available
+- Extracted subfile triage
+- Subfile scoring and report visibility
+- Deep triage warnings and progress visibility
 
 ### Dynamic Analysis
 
-RingForge supports dynamic-analysis case organization and reporting.
+Dynamic Analysis supports controlled runtime behavior review inside a Windows analysis VM.
 
-Dynamic-analysis workflows can include:
+Current dynamic capabilities include:
 
-- Dynamic run summaries
-- Process execution observations
-- Spawned process tracking
-- Procmon artifact organization
-- Persistence artifact review
-- File activity review
-- Dynamic findings JSON
-- Dynamic HTML report generation
-- Unified report integration
+- Procmon-backed event collection
+- Parsed runtime event review
+- Interesting event filtering
+- Process creation tracking
+- Dropped-file summary
+- Scheduled task before/after diffing
+- Service before/after diffing
+- Autoruns before/after persistence diffing
+- Installer-aware observation settings
+- Post-exit observation for installer handoff behavior
+- Cancellation handling with partial summaries
+- Dynamic scoring and verdicting
+- HTML dynamic report generation
+- Capture quality reporting
+- Clean baseline checks
+- Analyst notes
+- Noise filtering for RingForge tools, Procmon, Autorunsc, Windows helper activity, and common clean-baseline behavior
 
-Dynamic analysis is organized under the shared case-home structure so static, dynamic, API, spec, and extension findings can be reviewed together.
+### Manual API Tester
+
+The Manual API Tester supports analyst-driven endpoint testing and response review.
+
+Current API testing capabilities include:
+
+- GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS support
+- Built-in HTTPBin request presets
+- VirusTotal file lookup preset placeholder
+- JSON header editing
+- JSON or raw body editing
+- Multipart file upload testing
+- SSL verification toggle
+- Timeout configuration
+- Response body, headers, and raw response review
+- Pretty JSON response formatting
+- Response Analysis tab
+- Severity Summary counts
+- Redacted report mode for safer sharing
+- Unredacted full-evidence mode with warning confirmation
+- Timestamped default HTML report names
+- Active case display
+- Open Case API Folder button
+- Automatic latest API artifact saving into the active case folder
+
+Manual API Tester case artifacts include:
+
+```text
+cases/<case_name>/api_analysis/manual_api_latest.html
+cases/<case_name>/api_analysis/manual_api_latest.json
+```
+
+### API Specification Analysis
+
+Spec Analysis supports OpenAPI and Swagger-style definition review for local files and direct specification URLs.
+
+Supported inputs include:
+
+- Local `.json`, `.yaml`, and `.yml` OpenAPI/Swagger files
+- Direct OpenAPI/Swagger URLs such as `https://petstore3.swagger.io/api/v3/openapi.json`
+
+When a URL is provided, RingForge downloads the specification into the active case folder and analyzes the local copy.
+
+Spec Analysis can help identify:
+
+- Endpoint inventory
+- HTTP methods
+- Declared authentication schemes such as API key, bearer token, and OAuth2
+- Endpoints that do not declare an explicit auth requirement in the spec
+- Destructive or update-oriented methods such as `DELETE`, `PUT`, and `PATCH`
+- File upload endpoints
+- Sensitive-looking parameters
+- PII-like schema fields
+- Schema quality issues
+- Unresolved references
+- Notable endpoints for analyst review
+- Recommended manual runtime validation tests
+- HTML and JSON inventory reports
+
+Spec Analysis findings are treated as review indicators, not confirmed runtime vulnerabilities. The generated recommendations use analyst-focused wording such as:
+
+```text
+Validate whether authorization is enforced at runtime, even if the spec does not declare auth.
+```
+
+Spec Analysis case artifacts include:
+
+```text
+cases/<case_name>/spec_analysis/api_spec_analysis.json
+cases/<case_name>/spec_analysis/spec_inventory_latest.html
+cases/<case_name>/spec_analysis/spec_inventory_latest.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/
+```
+
+### Browser Extension Analysis
+
+Browser Extension Analysis supports static review of Chrome, Edge, and Chromium-style browser extensions.
+
+Supported inputs include:
+
+- Unpacked extension folders
+- ZIP extension packages
+- CRX packages
+
+Browser extension review includes:
+
+- Manifest parsing
+- Permission review
+- Host permission review
+- Background script and service worker review
+- Content script review
+- Web-accessible resource review
+- File inventory
+- File preview
+- Risk notes
+- Risk scoring
+- HTML and JSON export
+
+### Unified Report
+
+The Unified Report module combines available case artifacts into one report.
+
+Supported module summaries include:
+
+- Static Analysis
+- Dynamic Analysis
+- Manual API Tester
+- API Specification Analysis
+- Browser Extension Analysis
+- Combined Score
+
+The Unified Report now summarizes Manual API Tester findings, API Spec Analysis findings, Browser Extension Analysis status, and available static/dynamic results. It also uses clearer labels such as `Not run` and `Not generated` when a module has no artifacts in the selected case.
 
 ---
 
-### API Spec Analysis
+## What's New in v1.7.2
 
-RingForge Workbench includes an API Spec Analysis module for reviewing OpenAPI and Swagger definitions. The module parses API specifications, builds an endpoint inventory, reviews declared authentication models, identifies notable endpoint patterns, and exports analyst-ready HTML and JSON reports.
+`v1.7.2` focuses on API Spec Analysis workflow polish, cleaner spec case organization, direct OpenAPI/Swagger URL support, and better Unified Report integration.
 
-#### Supported Inputs
+### API Spec Analysis Updates
 
-- Local OpenAPI/Swagger files:
-  - `.json`
-  - `.yaml`
-  - `.yml`
-- Direct OpenAPI/Swagger URLs:
-  - Example: `https://petstore3.swagger.io/api/v3/openapi.json`
+- Added direct OpenAPI/Swagger URL support.
+- Added support for analyzing downloaded spec URLs from the active case folder.
+- Standardized API spec outputs under:
+  - `spec_analysis\api_spec_analysis.json`
+  - `spec_analysis\spec_inventory_latest.html`
+  - `spec_analysis\spec_inventory_latest.json`
+- Added clean historical run folders under:
+  - `spec_analysis\runs\<timestamp>_<spec_name>\`
+- Added source-spec preservation under:
+  - `spec_analysis\originals\`
+  - each historical run folder
+- Added downloaded URL source storage under:
+  - `spec_analysis\downloaded_specs\`
+- Kept compatibility copies for older readers and report paths.
+- Improved report wording from **Top Risky Endpoints** to **Notable Endpoints**.
+- Improved parser warning language so auth gaps are tied to the specification, not assumed runtime behavior.
+- Improved recommended-test wording to emphasize runtime validation instead of declaring vulnerabilities from the spec alone.
 
-When a URL is provided, RingForge downloads the specification into the case folder and analyzes the local copy.
+### Unified Report Updates
 
-#### API Spec Analysis Capabilities
+- Added API Spec Analysis summary extraction to the Unified Report.
+- Added Spec Score display in the Case Overview section.
+- Added API-specific spec-only verdicts such as:
+  - `High API Spec Risk`
+  - `Medium API Spec Risk`
+  - `Low API Spec Risk`
+  - `Informational API Spec Review`
+- Added API Analysis and Browser Extension Analysis rows to the Unified Report overview.
+- Replaced blank score placeholders with clearer labels:
+  - `Not generated`
+  - `Not run`
+- Improved spec-only case reporting so API spec results are not described with malware/dynamic-analysis language.
 
-- Parses OpenAPI/Swagger metadata, version, servers, paths, methods, and schemas
-- Builds an endpoint inventory with method, route, summary, auth source, and risk level
-- Detects declared authentication schemes such as API key, bearer token, and OAuth2
-- Identifies endpoints that do not declare explicit authentication requirements
-- Flags destructive or update-oriented methods such as `DELETE`, `PUT`, and `PATCH`
-- Highlights file upload endpoints
-- Detects sensitive-looking parameters
-- Detects PII-like schema fields
-- Identifies schema quality issues
-- Identifies unresolved references
-- Generates recommended manual validation tests
-- Produces analyst-ready HTML and JSON reports
-- Integrates with the Unified Report
+### Spec Output Layout
 
-#### Spec Output Layout
-
-API Spec Analysis results are saved under the case folder using the RingForge case layout:
+New API Spec Analysis output layout:
 
 ```text
 cases/<case_name>/spec_analysis/
   api_spec_analysis.json
   spec_inventory_latest.html
   spec_inventory_latest.json
+
   downloaded_specs/
+    <downloaded_spec_file>
+
   metadata/
     api_spec_analysis.json
+
   originals/
+    original_<spec_name>.<ext>
+
   runs/
     <timestamp>_<spec_name>/
       api_spec_analysis.json
@@ -148,345 +274,1064 @@ cases/<case_name>/spec_analysis/
       original_<spec_name>.<ext>
 ```
 
-The latest files remain at the root of `spec_analysis` for quick access and Unified Report integration. Historical runs are preserved under `spec_analysis/runs/` to keep the case folder organized.
+The latest files stay at the root of `spec_analysis` for quick access and Unified Report integration. Historical runs are kept under `spec_analysis/runs/` to avoid cluttering the main case folder.
 
-#### API Spec Review Language
+---
 
-RingForge treats API specification findings as **review indicators**, not confirmed vulnerabilities.
+## What's New in v1.7.1
 
-For example, the tool recommends:
+`v1.7.1` focuses on Manual API Tester improvements, API reporting workflow polish, Unified Report integration, and GUI behavior fixes.
+
+### Manual API Tester Updates
+
+- Added a dedicated **Response Analysis** tab.
+- Added automatic API response findings for:
+  - HTTP status review
+  - HTTPS / cleartext HTTP review
+  - JSON / HTML response detection
+  - Server header disclosure
+  - X-Powered-By disclosure
+  - Wildcard CORS detection
+  - Set-Cookie observation
+  - Missing HSTS observation
+  - Verbose error/debug response indicators
+  - Token, cookie, credential, or secret-like content detection
+- Added **Severity Summary** counts for API findings:
+  - High
+  - Medium
+  - Low
+  - Info
+- Added **Pretty JSON** formatting for response bodies.
+- Added timestamped default names for exported API HTML reports.
+- Added **Redact report** mode for safer sharing.
+- Added **Unredacted full-evidence report** mode with confirmation warning.
+- Added redaction status to exported API reports.
+- Added reflected origin/IP redaction for test APIs such as HTTPBin.
+- Added active case display inside the Manual API Tester.
+- Added **Open Case API Folder** button.
+- Added latest Manual API Tester case artifacts:
+  - `api_analysis\manual_api_latest.html`
+  - `api_analysis\manual_api_latest.json`
+
+### Manual API Tester Reporting Updates
+
+- API HTML reports now include:
+  - Method
+  - URL
+  - Status
+  - Response time
+  - Content type
+  - Response size
+  - Redaction status
+  - Response analysis
+  - Request headers
+  - Request body
+  - Response body
+  - Response headers
+  - Raw output
+- Exported reports can be saved anywhere the analyst chooses.
+- A latest case copy is also saved automatically under the active case folder for Unified Report integration.
+- Success popups now explain both save locations:
+  - user-selected export path
+  - active case API artifact path
+
+### Unified Report Updates
+
+- Integrated Manual API Tester findings into the Unified Report.
+- Added API method, URL, HTTP status, content type, response size, redaction status, and response analysis findings to the Unified Report.
+- Added latest API HTML/JSON artifact detection.
+- Hid empty module sections when no findings are present.
+- Improved Unified Report preview formatting.
+- Improved generated Manual API Tester Summary formatting.
+- Added better formatting for:
+  - Analysis findings
+  - Severity Summary
+  - Notes
+
+### Static/API Scoring Updates
+
+- Wired API import analysis into the static scoring flow.
+- Ensured `api_analysis.json` can contribute to static scoring evidence.
+- Added support for API analysis scoring in primary sample and subfile flows.
+- API scoring remains context-aware so imports and API chains contribute evidence without overpowering the overall verdict.
+
+### GUI Fixes
+
+- Fixed API Tester dialog and messagebox parent behavior.
+- Reduced main-window focus jumping when browsing or saving files.
+- Improved Manual API Tester response area sizing.
+- Stabilized API Tester tab styling so selected tabs highlight without shrinking.
+- Added `parent=self` behavior to key browse/save/messagebox actions across relevant windows.
+
+---
+
+## What's New in v1.7
+
+`v1.7` focused on polishing both the static and dynamic analysis workflows. This release improved analyst usability, report clarity, cancellation behavior, installer observation, scoring context, case/output handling, and report naming.
+
+### Static Analysis Updates
+
+- Improved static analysis stability.
+- Fixed static cancellation behavior.
+- Fixed false static cancellation behavior.
+- Improved process-tree cleanup after static runs.
+- Advanced settings are now greyed out unless override is enabled.
+- Added clearer deep triage warning behavior.
+- Added subfile progress visibility.
+- Added subfile report section.
+- Improved subfile triage presentation.
+- Cleaned up VirusTotal status handling.
+- Converted PKCS9/TSTInfo parsing noise into a friendlier warning.
+- Added sample-specific static report filenames:
+  - `<sample>_static_report.html`
+  - `<sample>_static_report.md`
+- Kept compatibility report copies:
+  - `report.html`
+  - `report.md`
+
+### Dynamic Analysis Updates
+
+- Added editable observation settings in the Dynamic Analysis window:
+  - sample timeout
+  - minimum observation seconds
+  - post-exit observation seconds
+  - installer observation mode
+- Added installer-aware post-exit observation so Procmon does not stop too early when installer launchers hand off to child processes.
+- Added warning for constrained observation settings.
+- Improved dynamic cancellation handling.
+- Cancelled runs now write clear partial summaries with:
+  - `cancelled: true`
+  - `exit_code: -2`
+  - `verdict: Cancelled`
+  - cancellation reason
+- Added timeout explanation for GUI applications that remain open.
+- Exit code `-1` is now explained as an observation timeout when appropriate.
+- Improved Procmon disabled, missing, skipped, and cancelled states.
+- Improved Autorunsc disabled, missing, skipped, and cancelled states.
+- Improved dynamic preflight checks.
+- Improved dynamic progress/status messages.
+- Added case/output folder synchronization to reduce cross-case result mixups.
+- Added sample-specific dynamic report filenames:
+  - `<sample>_dynamic_report.html`
+- Kept compatibility report copy:
+  - `dynamic_report.html`
+
+### Dynamic Reporting Improvements
+
+- Improved Capture Configuration / Tool Status section.
+- Added timeout, minimum observation, post-exit observation, installer mode, and capture quality to reports.
+- Improved cancelled and partial dynamic run reporting.
+- Improved Autoruns report readability.
+- Improved Spawned Processes table readability.
+- Improved Suspicious Path Hits and Persistence Hits table readability.
+- Improved report layout and column sizing.
+- Improved clean-baseline reporting for Notepad-style GUI applications.
+- Improved installer context notes for installer/helper behavior.
+
+### Scoring and Noise Reduction
+
+- Improved installer-aware dynamic scoring.
+- Reduced false positives from normal Windows service state changes.
+- Reduced noise from RingForge-generated files and dynamic run metadata.
+- Reduced Procmon/Autorunsc/RingForge tool noise.
+- Reduced clean baseline noise from Windows helper behavior.
+- Improved Wireshark/Npcap installer context handling.
+- Improved interpretation of installer helper processes and LOLBin-like activity in context.
+
+---
+
+## Validation Summary
+
+`v1.7.2` was validated with API Spec Analysis and Unified Report workflows.
+
+Validated Spec Analysis checks:
+
+- Risky local OpenAPI YAML test
+- Lower-risk local OpenAPI YAML test
+- Public Swagger Petstore OpenAPI JSON test
+- Direct URL input test using `https://petstore3.swagger.io/api/v3/openapi.json`
+- Downloaded spec storage under `spec_analysis\downloaded_specs\`
+- Latest spec report opening from `spec_inventory_latest.html`
+- Historical run folder creation under `spec_analysis\runs\`
+- Source spec preservation under `spec_analysis\originals\`
+- Unified Report Spec Analysis artifact detection
+- Unified Report Spec Score display
+- Unified Report API-specific verdict display
+- Unified Report `Not run` and `Not generated` labels for missing modules
+
+Expected API Spec Analysis artifact output:
 
 ```text
-Validate whether authorization is enforced at runtime, even if the spec does not declare auth.
+cases/<case_name>/spec_analysis/api_spec_analysis.json
+cases/<case_name>/spec_analysis/spec_inventory_latest.html
+cases/<case_name>/spec_analysis/spec_inventory_latest.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/api_spec_analysis.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/spec_inventory.html
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/spec_inventory.json
 ```
 
-This avoids overstating risk from the specification alone.
+Expected API Spec Analysis Summary fields in Unified Report:
+
+```text
+Spec title: <spec title>
+Spec version: <version>
+Spec type: openapi
+Format: json or yaml
+Parser confidence: high
+Endpoints: <count>
+Unauthenticated endpoints: <count>
+Sensitive unauthenticated endpoints: <count>
+High-risk endpoints: <count>
+Medium-risk endpoints: <count>
+Schema issue endpoints: <count>
+File upload endpoints: <count>
+Auth gap count: <count>
+Auth schemes: <schemes>
+Risk notes:
+Notable endpoints:
+```
+
+`v1.7.1` was validated with Manual API Tester and Unified Report workflows.
+
+Validated API workflow checks:
+
+- HTTPBin GET request test
+- HTTPBin reflected header test
+- Redacted report export
+- Unredacted full-evidence report export
+- Redaction warning confirmation
+- Reflected origin/IP redaction
+- Response Analysis tab output
+- Severity Summary output
+- Pretty JSON response formatting
+- Timestamped default report filename
+- Latest API HTML/JSON artifact saving
+- Active case display
+- Open Case API Folder button
+- Unified Report API artifact detection
+- Unified Report Manual API Tester summary
+- Empty Unified Report section hiding
+- Unified Report preview formatting
+
+Expected Manual API Tester artifact output:
+
+```text
+cases/<case_name>/api_analysis/manual_api_latest.html
+cases/<case_name>/api_analysis/manual_api_latest.json
+```
+
+Expected Manual API Tester Summary fields in Unified Report:
+
+```text
+Tool: manual_api_tester
+Saved at: <timestamp>
+Redaction: Enabled or Disabled / Full Evidence
+Method: GET
+URL: <tested endpoint>
+Verify SSL: True
+Timeout: 60 seconds
+HTTP status: 200
+Content-Type: application/json
+Elapsed: <seconds>
+Response size: <size>
+Analysis findings:
+  [Info] Successful HTTP response received.
+  [Info] HTTPS transport used.
+  [Info] JSON response detected.
+Severity Summary:
+  High: <count>
+  Medium: <count>
+  Low: <count>
+  Info: <count>
+```
+
+`v1.7` was validated with static and dynamic smoke tests.
+
+Validated static/dynamic checks included:
+
+- Notepad static smoke test
+- Notepad dynamic smoke test
+- Notepad dynamic timeout behavior
+- Notepad dynamic cancellation during Autoruns before snapshot
+- Notepad dynamic cancellation during sample observation
+- Procmon disabled scenario
+- Procmon missing scenario
+- Autorunsc missing scenario
+- Wireshark static smoke test
+- Wireshark installer dynamic smoke test
+- Static sample-specific report filename validation
+- Dynamic sample-specific report filename validation
+- Clean source package validation with old release folders removed from the archive
+
+Expected clean Notepad dynamic indicators:
+
+```text
+Dynamic Score: Low / Clean Baseline
+Spawned Processes: 0 non-noise attributed
+Suspicious Paths: 0
+Persistence Hits: 0
+Autoruns Suspicious: 0
+Scheduled Task Suspicious: 0
+Service Diff Suspicious: 0
+Dropped Files Suspicious: 0
+```
+
+Expected Wireshark installer dynamic behavior:
+
+```text
+Capture Quality: good
+Verdict: Low Suspicion or Needs Review depending on observed activity
+Npcap/Wireshark installer context visible
+Autoruns suspicious new/modified entries: 0 for trusted clean install behavior
+Service/task findings reviewed in installer context
+```
 
 ---
 
-### Manual API Tester
+## External Tooling Notice
 
-RingForge includes Manual API Tester support for saving request/response review artifacts into the case folder.
+The `v1.7.2` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
 
-Manual API Tester output can include:
+Users must download and configure external tools themselves.
 
-- Request method
-- URL
-- SSL verification setting
-- Timeout
-- HTTP response status
-- Reason phrase
-- Content type
-- Elapsed time
-- Response size
-- Saved HTML and JSON artifacts
-- Unified Report integration
+This keeps the release package cleaner and avoids redistributing external software that should be obtained from original vendors or official project sources.
+
+### Not Included in the Release Package
+
+The following are not bundled in the `v1.7.2` release ZIP:
+
+- Sysinternals Procmon
+- Sysinternals Autorunsc
+- capa executable
+- capa rules
+- capa signatures
+- FLOSS executable
+- YARA executable
+- YARA rules
+- VirusTotal API key
+- Generated case folders
+- Static analysis outputs
+- Dynamic analysis outputs
+- Manual API Tester outputs
+- API Spec outputs
+- Browser Extension outputs
+- Procmon `.pml` captures
+- Old release folders
+- PyInstaller build folders
+- Python virtual environment
+
+### Recommended Tools to Download Separately
+
+#### Dynamic Analysis Tools
+
+For full dynamic analysis functionality:
+
+- **Procmon / Procmon64**
+  - Used for runtime process, file, registry, and network event capture.
+  - Recommended path:
+
+```text
+tools/Procmon64.exe
+```
+
+or:
+
+```text
+tools/Procmon.exe
+```
+
+- **Autorunsc / Autorunsc64**
+  - Used for Autoruns before/after persistence snapshots.
+  - Recommended path:
+
+```text
+tools/autorunsc64.exe
+```
+
+or:
+
+```text
+tools/autorunsc.exe
+```
+
+#### Static Analysis Tools
+
+For stronger static analysis:
+
+- **capa**
+  - Used for capability and behavior rule matching.
+  - Recommended path:
+
+```text
+tools/capa/capa.exe
+```
+
+- **capa rules**
+  - Required for capa rule matching.
+  - Recommended path:
+
+```text
+tools/capa/rules/
+```
+
+- **capa signatures**
+  - Used by capa for richer binary analysis.
+  - Recommended path:
+
+```text
+tools/capa/sigs/
+```
+
+- **FLOSS**
+  - Used for decoded-string recovery.
+  - Recommended path:
+
+```text
+tools/floss/floss.exe
+```
+
+- **YARA**
+  - Used for YARA rule scanning when configured.
+  - Recommended path:
+
+```text
+tools/yara/yara64.exe
+```
+
+or:
+
+```text
+tools/yara/yara.exe
+```
+
+- **YARA rules**
+  - User-provided rules for static scanning.
+  - Recommended path:
+
+```text
+tools/yara/rules/
+```
+
+#### Optional Services / Configuration
+
+- **VirusTotal API key**
+  - Required only if VirusTotal enrichment is enabled.
+  - Users must provide their own API key.
+  - Do not commit API keys to Git.
+
+- **WeasyPrint**
+  - Optional Python dependency for direct PDF report generation.
+  - If unavailable, use the HTML report and browser print-to-PDF.
+
+### Expected Local Tool Folder Example
+
+A fully configured local analysis environment may look like:
+
+```text
+tools/
+  Procmon64.exe
+  autorunsc64.exe
+
+  capa/
+    capa.exe
+    rules/
+    sigs/
+
+  floss/
+    floss.exe
+
+  yara/
+    yara64.exe
+    rules/
+
+  procmon-configs/
+    dynamic_default.pmc
+```
+
+RingForge can still run with some tools missing, but functionality will be reduced:
+
+- Without Procmon, dynamic runtime telemetry is not collected.
+- Without Autorunsc, Autoruns persistence diffing is skipped.
+- Without capa, static capability analysis is reduced.
+- Without FLOSS, decoded-string recovery is reduced.
+- Without YARA rules, YARA scanning is skipped or reported as incomplete.
+- Without a VirusTotal API key, VirusTotal enrichment is unavailable.
 
 ---
 
-### Browser Extension Analysis
+## Workflow Launcher
 
-RingForge includes browser extension analysis support for reviewing extension packages and integrating findings into the Unified Report.
-
-Browser Extension Analysis can support:
-
-- Extension metadata review
-- File inventory
-- Risk scoring
-- Extension verdicts
-- Generated JSON reports
-- Unified Report detection and summary display
-
-Browser Extension Analysis is planned for additional polish in a future release.
-
----
-
-### Unified Report
-
-RingForge includes a Unified Report window that scans a case folder and detects available module artifacts.
-
-The Unified Report can detect and summarize:
+RingForge opens into a launcher that provides access to:
 
 - Static Analysis
 - Dynamic Analysis
 - Manual API Tester
-- API Spec Analysis
+- Spec Analysis
 - Browser Extension Analysis
-- Combined Score
+- Unified Report
 
-The Unified Report now includes API-specific spec scoring and verdicts. For spec-only cases, the report uses API-appropriate language instead of malware-analysis language.
-
-Example spec-only overview:
-
-```text
-Combined Score: Not generated
-Static Score: Not run
-Dynamic Score: Not run
-API Analysis: Not run
-Spec Score: 47
-Browser Extension Analysis: Not run
-Overall Verdict: Medium API Spec Risk
-```
+The launcher is designed to keep workflows separated while allowing related analysis modules to contribute to the same case.
 
 ---
 
-## Case Folder Layout
+## Output Structure
 
-RingForge uses a shared case-home layout:
+RingForge uses case-based output folders.
+
+A typical case may look like:
 
 ```text
-cases/<case_name>/
-  case_metadata.json
-  combined_score.json
-  metadata/
-    static_run_summary.json
+cases/
+  <case_name>/
+    case_metadata.json
     combined_score.json
 
-  static_analysis/
-    summary.json
-    iocs.json
-    pe_metadata.json
-    lief_metadata.json
-    report.html
-    report.md
     metadata/
       static_run_summary.json
+      combined_score.json
 
-  dynamic_analysis/
-    dynamic_runs/
-      <run_id>/
-        metadata/
-          dynamic_run_summary.json
-        procmon/
-        persistence/
-        files/
-        reports/
-          dynamic_findings.json
-    reports/
-      dynamic_report.html
+    static_analysis/
+      <sample>_static_report.html
+      <sample>_static_report.md
+      report.html
+      report.md
+      summary.json
+      runlog.json
+      analysis.log
+      api_analysis.json
+      iocs.json
+      iocs.csv
+      strings.txt
+      capa.json
+      pe_metadata.json
+      lief_metadata.json
+      signing.json
+      virustotal.json
+      extracted/
+      subfiles/
+      metadata/
 
-  api_analysis/
-    manual_api_latest.json
-    manual_api_latest.html
+    dynamic_analysis/
+      reports/
+        <sample>_dynamic_report.html
+        dynamic_report.html
 
-  spec_analysis/
-    api_spec_analysis.json
-    spec_inventory_latest.html
-    spec_inventory_latest.json
-    downloaded_specs/
-    metadata/
+      dynamic_runs/
+        <sample>_<timestamp>_<run_id>/
+          metadata/
+            dynamic_run_summary.json
+            run_config.json
+            sample_info.json
+
+          procmon/
+            raw.pml
+            export.csv
+            parsed_events.json
+            interesting_events.json
+
+          persistence/
+            tasks_before.json
+            tasks_after.json
+            task_diffs.json
+            services_before.json
+            services_after.json
+            service_diffs.json
+
+          autoruns/
+            autoruns_before.csv
+            autoruns_after.csv
+            autoruns_diff.json
+
+          files/
+            dropped_files.json
+            dropped_files_summary.json
+
+          reports/
+            dynamic_findings.json
+
+    api_analysis/
+      manual_api_latest.html
+      manual_api_latest.json
+
+    spec_analysis/
       api_spec_analysis.json
-    originals/
-    runs/
+      spec_inventory_latest.html
+      spec_inventory_latest.json
 
-  extension_analysis/
-    extension_analysis.json
-    reports/
+      downloaded_specs/
+        <downloaded_spec_file>
 
-  unified_report/
-    unified_report.json
-    unified_report.html
+      metadata/
+        api_spec_analysis.json
+
+      originals/
+        original_<spec_name>.<ext>
+
+      runs/
+        <timestamp>_<spec_name>/
+          api_spec_analysis.json
+          spec_inventory.html
+          spec_inventory.json
+          original_<spec_name>.<ext>
+
+    extension_analysis/
+      extension_analysis.json
+      reports/
+
+    unified_report/
+      unified_report.html
 ```
 
-Legacy paths are still supported where possible for compatibility with earlier releases.
+Note: some compatibility report names are intentionally retained so older GUI buttons and unified report paths continue to work.
 
 ---
 
-## External Tools
+## Repository Layout
 
-RingForge can integrate with several external security tools, but these tools are not bundled in releases. Users must download and configure them separately.
+```text
+ringforge-workbench/
+  assets/
+  dynamic_analysis/
+  gui/
+  scripts/
+  static_triage_engine/
+  tools/
+  triage_inbox.py
+  requirements.txt
+  README.md
+  LICENSE
+```
 
-Common external tools include:
+Important folders:
 
-- YARA
-- Capa
-- Capa rules
-- Capa signatures
-- LIEF
-- 7-Zip
-- Sigcheck
-- Procmon
-- Procmon configuration files
-- Any additional dynamic-analysis utilities required by the analyst workflow
+| Folder | Purpose |
+|---|---|
+| `assets/` | Branding and UI assets |
+| `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting |
+| `gui/` | Tkinter GUI windows, launcher, controllers, and styles |
+| `scripts/` | Entry points and helper scripts |
+| `static_triage_engine/` | Static analysis engine, scoring, and reporting |
+| `tools/` | Local helper tool paths and configuration folders |
+| `triage_inbox.py` | Helper entry point / inbox workflow |
 
-### Why External Tools Are Not Bundled
-
-RingForge does not bundle third-party security tools because:
-
-- Tool licenses may restrict redistribution.
-- Tool versions change frequently.
-- Some tools are large and would bloat releases.
-- Analysts may need to use organization-approved versions.
-- Keeping tools external makes RingForge easier to audit and maintain.
-- It avoids shipping stale or unauthorized binaries inside the project.
+The release archive is intended to contain the packaged application and documentation. Local folders such as `.venv/`, generated `cases/`, and temporary build artifacts should not be included in source archives.
 
 ---
 
-## Installation
+## Requirements
 
-### Requirements
+### Python
 
-- Windows 10 or Windows 11
-- Python 3.10 or newer
-- PowerShell
-- Git
-- Optional external analysis tools depending on the workflow
+Python `3.11` or `3.12` is recommended.
 
-### Clone the Repository
+### Python Packages
+
+Install dependencies from `requirements.txt`.
+
+Common packages include:
+
+- `requests`
+- `pefile`
+- `lief`
+- `pyyaml`
+- `pillow`
+- `pyinstaller`
+- `weasyprint` optional for direct PDF generation
+
+---
+
+## Windows Setup
+
+From PowerShell:
 
 ```powershell
-git clone https://github.com/<your-username>/<your-repo>.git
-cd Static-Software-Malware-Analysis
-```
+cd C:\RingForge_Analyzer\Static-Software-Malware-Analysis
 
-### Create a Virtual Environment
-
-```powershell
 python -m venv .venv
-.\.venv\Scripts\activate
-```
+.\.venv\Scripts\Activate.ps1
 
-### Install Dependencies
-
-```powershell
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+Optional PDF support:
+
+```powershell
+pip install weasyprint
+```
+
+If PDF dependencies are unavailable, open the HTML report and use the browser's print-to-PDF option.
+
 ---
 
-## Launching RingForge Workbench
+## Running the GUI
 
 From the project root:
 
 ```powershell
+cd C:\RingForge_Analyzer\Static-Software-Malware-Analysis
+.\.venv\Scripts\Activate.ps1
 python .\scripts\static_triage_gui.py
 ```
 
 ---
 
-## API Spec Analysis Quick Test
+## Basic Static Analysis Workflow
 
-Use the public Swagger Petstore OpenAPI definition:
+1. Launch RingForge.
+2. Open **Static Analysis**.
+3. Select a Windows sample such as an EXE or DLL.
+4. Enter or confirm the case name.
+5. Run static analysis.
+6. Review score, verdict, confidence, VirusTotal context, API import context, subfile context, and report artifacts.
+7. Open the static report from the Artifacts section.
+
+Expected static report locations:
+
+```text
+cases/<case_name>/static_analysis/<sample>_static_report.html
+cases/<case_name>/static_analysis/report.html
+```
+
+`report.html` is kept as a compatibility copy.
+
+---
+
+## Basic Dynamic Analysis Workflow
+
+Dynamic analysis should be run inside an isolated Windows VM.
+
+1. Launch RingForge.
+2. Open **Dynamic Analysis**.
+3. Select the sample.
+4. Confirm the case directory and dynamic output directory.
+5. Confirm Procmon and Autorunsc paths.
+6. Configure timeout, minimum observation, post-exit observation, and installer mode.
+7. Run Dynamic Analysis.
+8. Allow the sample to execute under observation.
+9. For installers, complete the installer normally and allow first-run behavior to occur.
+10. Review the dynamic findings summary and HTML report.
+
+Expected dynamic report locations:
+
+```text
+cases/<case_name>/dynamic_analysis/reports/<sample>_dynamic_report.html
+cases/<case_name>/dynamic_analysis/reports/dynamic_report.html
+```
+
+`dynamic_report.html` is kept as a compatibility copy.
+
+---
+
+## Basic Manual API Tester Workflow
+
+1. Launch RingForge.
+2. Open **Manual API Tester**.
+3. Select a preset or enter a custom method and URL.
+4. Add request headers as JSON.
+5. Add a request body if needed.
+6. Optionally select a file for multipart upload testing.
+7. Click **Send Request**.
+8. Review:
+   - Analysis
+   - Body
+   - Headers
+   - Raw
+9. Use **Pretty JSON** if the body is valid JSON and needs formatting.
+10. Choose whether to keep **Redact report** enabled.
+11. Save the HTML report.
+
+When saving, RingForge writes:
+
+- an analyst-selected export report
+- a latest case copy for Unified Report integration
+
+Expected API artifact locations:
+
+```text
+cases/<case_name>/api_analysis/manual_api_latest.html
+cases/<case_name>/api_analysis/manual_api_latest.json
+```
+
+---
+
+## Basic API Spec Analysis Workflow
+
+1. Launch RingForge.
+2. Open **Spec Analysis**.
+3. Select a local OpenAPI/Swagger file or paste a direct specification URL.
+4. Click **Analyze Spec**.
+5. Review:
+   - Overview tiles
+   - Authentication summary
+   - Risk notes
+   - Notable endpoints
+   - Recommended manual tests
+   - Endpoint inventory
+6. Use **Open Latest Report** to open the latest HTML report.
+7. Use **Open Case Files** to review generated JSON/HTML artifacts.
+8. Open the Unified Report for the same case to confirm Spec Score and API-specific verdict integration.
+
+Example test URL:
 
 ```text
 https://petstore3.swagger.io/api/v3/openapi.json
 ```
 
-Steps:
-
-1. Open RingForge Workbench.
-2. Open API Spec Analysis.
-3. Paste the URL into the API Spec field.
-4. Click Analyze Spec.
-5. Open the latest HTML report.
-6. Open the Unified Report for the same case folder.
-7. Confirm the Spec Analysis Summary and Spec Score appear.
-
-Expected outputs:
+Expected API Spec Analysis artifact locations:
 
 ```text
-cases/<case>/spec_analysis/api_spec_analysis.json
-cases/<case>/spec_analysis/spec_inventory_latest.html
-cases/<case>/spec_analysis/spec_inventory_latest.json
-cases/<case>/spec_analysis/runs/<timestamp>_<spec_name>/
+cases/<case_name>/spec_analysis/api_spec_analysis.json
+cases/<case_name>/spec_analysis/spec_inventory_latest.html
+cases/<case_name>/spec_analysis/spec_inventory_latest.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/
 ```
 
 ---
 
-## Git Hygiene
+## Dynamic Analysis Artifacts
 
-Do not commit generated analysis artifacts unless intentionally adding test samples.
+A dynamic run may produce:
 
-Avoid committing:
-
-```text
-cases/
-release/
-dist/
-build/
-.venv/
-__pycache__/
-*.pyc
-```
-
-Stage source files directly instead of using `git add .`:
-
-```powershell
-git add .\gui\spec_window.py
-git add .\gui\unified_report_window.py
-git add .\static_triage_engine\api_spec_analysis.py
-git add .\README.md
-```
+| Artifact | Description |
+|---|---|
+| `dynamic_run_summary.json` | Main structured dynamic summary |
+| `run_config.json` | Resolved dynamic run configuration |
+| `sample_info.json` | Sample hash and metadata information |
+| `raw.pml` | Raw Procmon capture |
+| `export.csv` | Exported Procmon CSV |
+| `parsed_events.json` | Parsed Procmon events |
+| `interesting_events.json` | Filtered interesting runtime events |
+| `tasks_before.json` | Scheduled tasks before execution |
+| `tasks_after.json` | Scheduled tasks after execution |
+| `task_diffs.json` | Scheduled task diff |
+| `services_before.json` | Services before execution |
+| `services_after.json` | Services after execution |
+| `service_diffs.json` | Service diff |
+| `autoruns_before.csv` | Autoruns snapshot before execution |
+| `autoruns_after.csv` | Autoruns snapshot after execution |
+| `autoruns_diff.json` | Autoruns persistence diff |
+| `dropped_files.json` | Dropped-file candidates |
+| `dropped_files_summary.json` | Dropped-file summary |
+| `<sample>_dynamic_report.html` | Analyst-readable dynamic report |
+| `dynamic_report.html` | Compatibility copy of the dynamic report |
 
 ---
 
-## Release Notes
+## Manual API Tester Artifacts
 
-### v1.7.2 — API Spec Analysis Polish
+The Manual API Tester may produce:
+
+| Artifact | Description |
+|---|---|
+| `manual_api_latest.html` | Latest case-linked API HTML report |
+| `manual_api_latest.json` | Latest case-linked structured API result |
+| `api_test_report_<timestamp>.html` | User-selected exported API report |
+
+The structured JSON artifact includes request metadata, response metadata, response analysis, redaction status, and report paths.
+
+---
+
+## API Spec Analysis Artifacts
+
+The API Spec Analysis module may produce:
+
+| Artifact | Description |
+|---|---|
+| `api_spec_analysis.json` | Latest canonical structured API spec result |
+| `spec_inventory_latest.html` | Latest analyst-readable API spec HTML report |
+| `spec_inventory_latest.json` | Latest structured API spec inventory |
+| `metadata/api_spec_analysis.json` | Compatibility/latest metadata copy |
+| `downloaded_specs/` | Downloaded OpenAPI/Swagger files when a URL is provided |
+| `originals/` | Preserved latest source specifications |
+| `runs/<timestamp>_<spec_name>/` | Historical spec run folder |
+| `runs/<timestamp>_<spec_name>/spec_inventory.html` | Historical run HTML report |
+| `runs/<timestamp>_<spec_name>/spec_inventory.json` | Historical run JSON report |
+
+---
+
+## Reporting
+
+RingForge produces module-specific reports and supports a unified report workflow.
+
+Current report types include:
+
+- Static HTML report
+- Static Markdown report
+- Dynamic HTML report
+- Manual API Tester HTML report
+- API Spec report
+- Browser Extension report
+- Unified report
+
+Reports are designed to be readable by analysts and suitable for review, documentation, and portfolio demonstration.
+
+---
+
+## Safety Notes
+
+Dynamic analysis should only be performed inside an isolated, revertible analysis VM.
+
+Do not run unknown or suspicious samples on a daily-use host.
+
+Recommended safety practices:
+
+- Use a dedicated Windows VM.
+- Take a snapshot before testing.
+- Disable shared clipboard and shared folders when testing unknown malware.
+- Use a host-only or isolated network when appropriate.
+- Revert the VM after risky testing.
+- Treat all unknown binaries, installers, scripts, and extensions as potentially unsafe.
+
+API testing can also expose sensitive information.
+
+Recommended API testing practices:
+
+- Avoid using production API keys unless required.
+- Prefer test keys and controlled endpoints.
+- Keep **Redact report** enabled for shareable reports.
+- Use unredacted full-evidence reports only when intentionally preserving evidence.
+- Treat exported reports as sensitive if they contain URLs, tokens, cookies, headers, IP addresses, or file paths.
+
+RingForge is a triage and analyst workflow tool. It does not replace a full malware sandbox, EDR, SIEM, API security scanner, or reverse-engineering suite.
+
+---
+
+## Version History
+
+### v1.7.2 — API Spec Analysis Polish + Unified Report Integration
 
 - Added direct URL support for OpenAPI/Swagger specifications.
-- Improved API Spec Analysis output organization.
-- Added clean historical spec run folders.
-- Improved Spec Analysis report wording.
-- Added API-specific spec score and verdict support.
-- Improved Unified Report module overview.
-- Added clearer missing-module labels.
-- Improved spec-only case reporting.
+- Added downloaded spec storage under the active case folder.
+- Standardized API Spec Analysis output under `spec_analysis/`.
+- Added `spec_inventory_latest.html`, `spec_inventory_latest.json`, and `api_spec_analysis.json` as latest/canonical artifacts.
+- Added clean historical run folders under `spec_analysis/runs/`.
+- Added source spec preservation under `spec_analysis/originals/`.
+- Improved Spec Analysis wording from **Top Risky Endpoints** to **Notable Endpoints**.
+- Improved auth-gap wording so findings are tied to declared spec behavior.
+- Improved recommended-test language to emphasize runtime validation.
+- Added Spec Score and API-specific verdict support to the Unified Report.
+- Added API Analysis and Browser Extension Analysis rows to the Unified Report overview.
+- Added clearer `Not run` and `Not generated` labels for missing modules.
 
-### v1.7.1 — Release and Documentation Polish
+### v1.7.1 — Manual API Tester Polish + Unified Report Integration
 
-- Updated release documentation.
-- Improved README structure.
-- Clarified external tool requirements.
-- Clarified that releases do not bundle third-party tools.
-- Improved packaging guidance.
+- Added Manual API Tester Response Analysis tab.
+- Added API response severity summary counts.
+- Added Pretty JSON response formatting.
+- Added timestamped default API report names.
+- Added redacted report mode and unredacted evidence mode.
+- Added redaction status to API reports.
+- Added reflected origin/IP redaction for test APIs such as HTTPBin.
+- Added active case display and Open Case API Folder button.
+- Saved latest Manual API Tester HTML/JSON artifacts into the active case folder.
+- Integrated Manual API Tester findings into the Unified Report.
+- Hid empty Unified Report sections.
+- Improved Unified Report preview formatting.
+- Improved Manual API Tester Summary formatting in generated reports.
+- Fixed API Tester dialog/messagebox parent behavior.
+- Improved Manual API Tester response area sizing.
+- Stabilized API Tester tab styling.
+- Wired API import analysis into static scoring.
 
-### v1.7.0 — Static and Dynamic Analysis Polish
+### v1.7 — Static + Dynamic Analysis Polish
 
-- Improved static-analysis reporting.
-- Improved dynamic-analysis reporting.
-- Improved subfile triage presentation.
-- Improved case-folder organization.
-- Improved report readability and analyst workflow.
+- Polished static analysis stability, cancellation handling, deep triage warning behavior, subfile progress, subfile reporting, VirusTotal status handling, and friendly PKCS9/TSTInfo warning behavior.
+- Added sample-specific static report names while keeping `report.html` and `report.md` compatibility copies.
+- Added editable dynamic observation settings.
+- Improved installer-aware dynamic observation and post-exit capture.
+- Improved dynamic cancellation and partial-summary behavior.
+- Added timeout explanation for GUI applications that remain open.
+- Improved Procmon/Autorunsc disabled, missing, skipped, and cancelled states.
+- Improved dynamic report readability and table formatting.
+- Reduced dynamic false positives from normal Windows service state changes and installer helper behavior.
+- Added sample-specific dynamic report names while keeping `dynamic_report.html` compatibility copy.
+- Cleaned release packaging so old release folders are not included.
+
+### v1.6.2 — Dynamic Analysis Stabilization + Autoruns Baseline
+
+- Added Autorunsc before/after persistence diffing.
+- Added Autoruns section to the dynamic report.
+- Fixed static report path handling for the newer folder structure.
+- Improved dynamic report verdict alignment.
+- Improved analyzer noise filtering.
+- Improved Windows 11 Notepad baseline filtering.
+- Improved Dynamic Analysis GUI auto-sizing.
+- Improved unified report compatibility.
+
+### v1.6 — Startup, Launcher, and Browser Extension Analysis
+
+- Added branded splash screen.
+- Added launcher/home workflow selector.
+- Added Browser Extension Analysis.
+- Added support for unpacked, ZIP, and CRX extension analysis.
+- Added extension manifest parsing, file inventory, risk notes, and HTML/JSON export.
+
+### v1.5 — GUI Modularization
+
+- Split major GUI windows into dedicated modules.
+- Moved styling into reusable GUI style logic.
+- Improved maintainability and future workflow expansion.
+
+### v1.4 — Analysis Quality and False Positive Reduction
+
+- Improved dynamic scoring.
+- Improved signature handling.
+- Added capa timeout and large-file handling.
+- Improved YARA/report visibility.
+- Hardened API Spec Analysis context.
 
 ---
 
-## Development Notes
+## Interview / Portfolio Summary
 
-Recommended syntax checks before committing:
+RingForge Workbench demonstrates practical Python development applied to security analysis workflows.
 
-```powershell
-python -m py_compile .\gui\spec_window.py
-python -m py_compile .\gui\unified_report_window.py
-python -m py_compile .\static_triage_engine\api_spec_analysis.py
-```
+Key engineering areas represented:
 
-Recommended Git flow:
-
-```powershell
-git status
-git diff --cached --name-only
-git commit -m "Polish API spec analysis workflow"
-git push
-```
-
-Create a version tag:
-
-```powershell
-git tag -a v1.7.2 -m "v1.7.2 - API Spec Analysis polish"
-git push origin v1.7.2
-```
-
----
-
-## Disclaimer
-
-RingForge Workbench is an analyst-assist tool. Findings should be reviewed and validated by a qualified analyst. API specification findings indicate review areas and possible exposure patterns; they do not prove runtime vulnerabilities without manual validation or authenticated testing.
+- Python GUI development
+- Static malware/software triage
+- Dynamic behavior collection
+- Procmon parsing and event filtering
+- Autoruns persistence diffing
+- Manual API testing workflow design
+- API response evidence reporting
+- API specification parsing and report generation
+- OpenAPI/Swagger URL ingestion
+- API import analysis and scoring
+- JSON artifact generation
+- HTML report generation
+- Scoring and verdict logic
+- Analyst workflow design
+- Case-based output organization
+- False-positive reduction and baseline tuning
+- Installer-aware runtime observation
+- Report usability and workflow polish
 
 ---
 
-## Status
+## Roadmap
 
-Current release: **v1.7.2**
+Planned future improvements:
 
-Next planned polish area: **Browser Extension Analysis**
+- Browser Extension Analysis polish
+- Additional API Spec Analysis depth and rule tuning
+- Cleaner v1.8 case artifact organization
+- Dynamic profile presets
+- More dynamic baseline profiles
+- Additional service and network noise tuning
+- Optional network snapshot support
+- Improved unified report integration with sample-specific report names
+- Additional report templates
+- Expanded API and browser extension analysis depth
+- Improved packaged release workflow
+- Request history and custom API tester presets
+- Enhanced severity scoring across module reports
+
+---
+
+## License
+
+This project is licensed under the MIT License.
+
+See `LICENSE` for details.
