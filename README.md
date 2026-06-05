@@ -1,6 +1,6 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.7.1-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.7.2-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
@@ -19,8 +19,8 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.7.1` |
-| Release Name | Manual API Tester Polish + Unified Report Integration |
+| Version | `v1.7.2` |
+| Release Name | API Spec Analysis Polish + Unified Report Integration |
 | Release Type | Maintenance / polish release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
@@ -127,17 +127,45 @@ cases/<case_name>/api_analysis/manual_api_latest.json
 
 ### API Specification Analysis
 
-Spec Analysis supports OpenAPI and Swagger-style definition review.
+Spec Analysis supports OpenAPI and Swagger-style definition review for local files and direct specification URLs.
 
-It can help identify:
+Supported inputs include:
+
+- Local `.json`, `.yaml`, and `.yml` OpenAPI/Swagger files
+- Direct OpenAPI/Swagger URLs such as `https://petstore3.swagger.io/api/v3/openapi.json`
+
+When a URL is provided, RingForge downloads the specification into the active case folder and analyzes the local copy.
+
+Spec Analysis can help identify:
 
 - Endpoint inventory
 - HTTP methods
-- Authentication-related patterns
-- Potentially sensitive routes
-- Risk-oriented API surface review
-- Follow-up test ideas
-- HTML inventory reports
+- Declared authentication schemes such as API key, bearer token, and OAuth2
+- Endpoints that do not declare an explicit auth requirement in the spec
+- Destructive or update-oriented methods such as `DELETE`, `PUT`, and `PATCH`
+- File upload endpoints
+- Sensitive-looking parameters
+- PII-like schema fields
+- Schema quality issues
+- Unresolved references
+- Notable endpoints for analyst review
+- Recommended manual runtime validation tests
+- HTML and JSON inventory reports
+
+Spec Analysis findings are treated as review indicators, not confirmed runtime vulnerabilities. The generated recommendations use analyst-focused wording such as:
+
+```text
+Validate whether authorization is enforced at runtime, even if the spec does not declare auth.
+```
+
+Spec Analysis case artifacts include:
+
+```text
+cases/<case_name>/spec_analysis/api_spec_analysis.json
+cases/<case_name>/spec_analysis/spec_inventory_latest.html
+cases/<case_name>/spec_analysis/spec_inventory_latest.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/
+```
 
 ### Browser Extension Analysis
 
@@ -176,7 +204,77 @@ Supported module summaries include:
 - Browser Extension Analysis
 - Combined Score
 
-The Unified Report now hides empty module sections when no findings are present and summarizes Manual API Tester findings when API artifacts exist.
+The Unified Report now summarizes Manual API Tester findings, API Spec Analysis findings, Browser Extension Analysis status, and available static/dynamic results. It also uses clearer labels such as `Not run` and `Not generated` when a module has no artifacts in the selected case.
+
+---
+
+## What's New in v1.7.2
+
+`v1.7.2` focuses on API Spec Analysis workflow polish, cleaner spec case organization, direct OpenAPI/Swagger URL support, and better Unified Report integration.
+
+### API Spec Analysis Updates
+
+- Added direct OpenAPI/Swagger URL support.
+- Added support for analyzing downloaded spec URLs from the active case folder.
+- Standardized API spec outputs under:
+  - `spec_analysis\api_spec_analysis.json`
+  - `spec_analysis\spec_inventory_latest.html`
+  - `spec_analysis\spec_inventory_latest.json`
+- Added clean historical run folders under:
+  - `spec_analysis\runs\<timestamp>_<spec_name>\`
+- Added source-spec preservation under:
+  - `spec_analysis\originals\`
+  - each historical run folder
+- Added downloaded URL source storage under:
+  - `spec_analysis\downloaded_specs\`
+- Kept compatibility copies for older readers and report paths.
+- Improved report wording from **Top Risky Endpoints** to **Notable Endpoints**.
+- Improved parser warning language so auth gaps are tied to the specification, not assumed runtime behavior.
+- Improved recommended-test wording to emphasize runtime validation instead of declaring vulnerabilities from the spec alone.
+
+### Unified Report Updates
+
+- Added API Spec Analysis summary extraction to the Unified Report.
+- Added Spec Score display in the Case Overview section.
+- Added API-specific spec-only verdicts such as:
+  - `High API Spec Risk`
+  - `Medium API Spec Risk`
+  - `Low API Spec Risk`
+  - `Informational API Spec Review`
+- Added API Analysis and Browser Extension Analysis rows to the Unified Report overview.
+- Replaced blank score placeholders with clearer labels:
+  - `Not generated`
+  - `Not run`
+- Improved spec-only case reporting so API spec results are not described with malware/dynamic-analysis language.
+
+### Spec Output Layout
+
+New API Spec Analysis output layout:
+
+```text
+cases/<case_name>/spec_analysis/
+  api_spec_analysis.json
+  spec_inventory_latest.html
+  spec_inventory_latest.json
+
+  downloaded_specs/
+    <downloaded_spec_file>
+
+  metadata/
+    api_spec_analysis.json
+
+  originals/
+    original_<spec_name>.<ext>
+
+  runs/
+    <timestamp>_<spec_name>/
+      api_spec_analysis.json
+      spec_inventory.html
+      spec_inventory.json
+      original_<spec_name>.<ext>
+```
+
+The latest files stay at the root of `spec_analysis` for quick access and Unified Report integration. Historical runs are kept under `spec_analysis/runs/` to avoid cluttering the main case folder.
 
 ---
 
@@ -344,6 +442,55 @@ The Unified Report now hides empty module sections when no findings are present 
 
 ## Validation Summary
 
+`v1.7.2` was validated with API Spec Analysis and Unified Report workflows.
+
+Validated Spec Analysis checks:
+
+- Risky local OpenAPI YAML test
+- Lower-risk local OpenAPI YAML test
+- Public Swagger Petstore OpenAPI JSON test
+- Direct URL input test using `https://petstore3.swagger.io/api/v3/openapi.json`
+- Downloaded spec storage under `spec_analysis\downloaded_specs\`
+- Latest spec report opening from `spec_inventory_latest.html`
+- Historical run folder creation under `spec_analysis\runs\`
+- Source spec preservation under `spec_analysis\originals\`
+- Unified Report Spec Analysis artifact detection
+- Unified Report Spec Score display
+- Unified Report API-specific verdict display
+- Unified Report `Not run` and `Not generated` labels for missing modules
+
+Expected API Spec Analysis artifact output:
+
+```text
+cases/<case_name>/spec_analysis/api_spec_analysis.json
+cases/<case_name>/spec_analysis/spec_inventory_latest.html
+cases/<case_name>/spec_analysis/spec_inventory_latest.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/api_spec_analysis.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/spec_inventory.html
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/spec_inventory.json
+```
+
+Expected API Spec Analysis Summary fields in Unified Report:
+
+```text
+Spec title: <spec title>
+Spec version: <version>
+Spec type: openapi
+Format: json or yaml
+Parser confidence: high
+Endpoints: <count>
+Unauthenticated endpoints: <count>
+Sensitive unauthenticated endpoints: <count>
+High-risk endpoints: <count>
+Medium-risk endpoints: <count>
+Schema issue endpoints: <count>
+File upload endpoints: <count>
+Auth gap count: <count>
+Auth schemes: <schemes>
+Risk notes:
+Notable endpoints:
+```
+
 `v1.7.1` was validated with Manual API Tester and Unified Report workflows.
 
 Validated API workflow checks:
@@ -443,7 +590,7 @@ Service/task findings reviewed in installer context
 
 ## External Tooling Notice
 
-The `v1.7.1` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
+The `v1.7.2` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
 
 Users must download and configure external tools themselves.
 
@@ -451,7 +598,7 @@ This keeps the release package cleaner and avoids redistributing external softwa
 
 ### Not Included in the Release Package
 
-The following are not bundled in the `v1.7.1` release ZIP:
+The following are not bundled in the `v1.7.2` release ZIP:
 
 - Sysinternals Procmon
 - Sysinternals Autorunsc
@@ -708,8 +855,24 @@ cases/
 
     spec_analysis/
       api_spec_analysis.json
+      spec_inventory_latest.html
       spec_inventory_latest.json
-      reports/
+
+      downloaded_specs/
+        <downloaded_spec_file>
+
+      metadata/
+        api_spec_analysis.json
+
+      originals/
+        original_<spec_name>.<ext>
+
+      runs/
+        <timestamp>_<spec_name>/
+          api_spec_analysis.json
+          spec_inventory.html
+          spec_inventory.json
+          original_<spec_name>.<ext>
 
     extension_analysis/
       extension_analysis.json
@@ -892,6 +1055,40 @@ cases/<case_name>/api_analysis/manual_api_latest.json
 
 ---
 
+## Basic API Spec Analysis Workflow
+
+1. Launch RingForge.
+2. Open **Spec Analysis**.
+3. Select a local OpenAPI/Swagger file or paste a direct specification URL.
+4. Click **Analyze Spec**.
+5. Review:
+   - Overview tiles
+   - Authentication summary
+   - Risk notes
+   - Notable endpoints
+   - Recommended manual tests
+   - Endpoint inventory
+6. Use **Open Latest Report** to open the latest HTML report.
+7. Use **Open Case Files** to review generated JSON/HTML artifacts.
+8. Open the Unified Report for the same case to confirm Spec Score and API-specific verdict integration.
+
+Example test URL:
+
+```text
+https://petstore3.swagger.io/api/v3/openapi.json
+```
+
+Expected API Spec Analysis artifact locations:
+
+```text
+cases/<case_name>/spec_analysis/api_spec_analysis.json
+cases/<case_name>/spec_analysis/spec_inventory_latest.html
+cases/<case_name>/spec_analysis/spec_inventory_latest.json
+cases/<case_name>/spec_analysis/runs/<timestamp>_<spec_name>/
+```
+
+---
+
 ## Dynamic Analysis Artifacts
 
 A dynamic run may produce:
@@ -932,6 +1129,24 @@ The Manual API Tester may produce:
 | `api_test_report_<timestamp>.html` | User-selected exported API report |
 
 The structured JSON artifact includes request metadata, response metadata, response analysis, redaction status, and report paths.
+
+---
+
+## API Spec Analysis Artifacts
+
+The API Spec Analysis module may produce:
+
+| Artifact | Description |
+|---|---|
+| `api_spec_analysis.json` | Latest canonical structured API spec result |
+| `spec_inventory_latest.html` | Latest analyst-readable API spec HTML report |
+| `spec_inventory_latest.json` | Latest structured API spec inventory |
+| `metadata/api_spec_analysis.json` | Compatibility/latest metadata copy |
+| `downloaded_specs/` | Downloaded OpenAPI/Swagger files when a URL is provided |
+| `originals/` | Preserved latest source specifications |
+| `runs/<timestamp>_<spec_name>/` | Historical spec run folder |
+| `runs/<timestamp>_<spec_name>/spec_inventory.html` | Historical run HTML report |
+| `runs/<timestamp>_<spec_name>/spec_inventory.json` | Historical run JSON report |
 
 ---
 
@@ -983,6 +1198,21 @@ RingForge is a triage and analyst workflow tool. It does not replace a full malw
 ---
 
 ## Version History
+
+### v1.7.2 — API Spec Analysis Polish + Unified Report Integration
+
+- Added direct URL support for OpenAPI/Swagger specifications.
+- Added downloaded spec storage under the active case folder.
+- Standardized API Spec Analysis output under `spec_analysis/`.
+- Added `spec_inventory_latest.html`, `spec_inventory_latest.json`, and `api_spec_analysis.json` as latest/canonical artifacts.
+- Added clean historical run folders under `spec_analysis/runs/`.
+- Added source spec preservation under `spec_analysis/originals/`.
+- Improved Spec Analysis wording from **Top Risky Endpoints** to **Notable Endpoints**.
+- Improved auth-gap wording so findings are tied to declared spec behavior.
+- Improved recommended-test language to emphasize runtime validation.
+- Added Spec Score and API-specific verdict support to the Unified Report.
+- Added API Analysis and Browser Extension Analysis rows to the Unified Report overview.
+- Added clearer `Not run` and `Not generated` labels for missing modules.
 
 ### v1.7.1 — Manual API Tester Polish + Unified Report Integration
 
@@ -1066,6 +1296,8 @@ Key engineering areas represented:
 - Autoruns persistence diffing
 - Manual API testing workflow design
 - API response evidence reporting
+- API specification parsing and report generation
+- OpenAPI/Swagger URL ingestion
 - API import analysis and scoring
 - JSON artifact generation
 - HTML report generation
@@ -1082,8 +1314,8 @@ Key engineering areas represented:
 
 Planned future improvements:
 
-- Spec Analysis polish
 - Browser Extension Analysis polish
+- Additional API Spec Analysis depth and rule tuning
 - Cleaner v1.8 case artifact organization
 - Dynamic profile presets
 - More dynamic baseline profiles
