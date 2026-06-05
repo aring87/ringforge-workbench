@@ -1,14 +1,15 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.7-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.7.1-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
 [![Status](https://img.shields.io/badge/status-active%20development-brightgreen)](https://github.com/aring87/ringforge-workbench)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Static insight. Dynamic visibility. Structured review.**
+**Static insight. Dynamic visibility. API evidence. Structured review.**
 
-RingForge Workbench is a Python/Tkinter software triage workbench for structured static analysis, dynamic behavior review, API testing, API specification review, and browser extension analysis from one analyst-facing interface.
+RingForge Workbench is a Python/Tkinter software triage workbench for structured static analysis, dynamic behavior review, manual API testing, API specification review, browser extension analysis, and unified reporting from one analyst-facing interface.
 
 It is designed for malware analysts, SOC analysts, detection engineers, and security practitioners who want a practical Windows-focused workflow for reviewing software behavior, organizing case artifacts, and producing consistent analyst-readable reports.
 
@@ -18,8 +19,9 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.7` |
-| Release Name | Static + Dynamic Analysis Polish |
+| Version | `v1.7.1` |
+| Release Name | Manual API Tester Polish + Unified Report Integration |
+| Release Type | Maintenance / polish release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
 | License | MIT |
@@ -28,7 +30,7 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 ## Project Summary
 
-RingForge Workbench provides a modular case-based workflow for analyzing software samples and related artifacts. It supports static triage, dynamic runtime collection, API review, OpenAPI/Swagger specification review, and browser extension inspection.
+RingForge Workbench provides a modular case-based workflow for analyzing software samples and related artifacts. It supports static triage, dynamic runtime collection, manual API review, OpenAPI/Swagger specification review, browser extension inspection, and unified reporting.
 
 The workbench emphasizes practical analyst outcomes:
 
@@ -38,6 +40,8 @@ The workbench emphasizes practical analyst outcomes:
 - scoring and verdict logic
 - baseline/noise reduction
 - workflow-specific review screens
+- API response review and evidence capture
+- case-aware artifact saving
 - unified reporting support
 
 ---
@@ -57,6 +61,8 @@ Static Analysis supports Windows executable and package triage, including:
 - Signature validation
 - VirusTotal enrichment when configured
 - Static scoring and verdicting
+- API import analysis
+- API behavior chain scoring
 - Markdown and HTML reporting
 - PDF reporting when optional PDF dependencies are available
 - Extracted subfile triage
@@ -87,19 +93,37 @@ Current dynamic capabilities include:
 - Analyst notes
 - Noise filtering for RingForge tools, Procmon, Autorunsc, Windows helper activity, and common clean-baseline behavior
 
-### API Analysis
+### Manual API Tester
 
-The API Analysis workflow supports manual analyst testing of API endpoints and application/service behavior.
+The Manual API Tester supports analyst-driven endpoint testing and response review.
 
-It focuses on:
+Current API testing capabilities include:
 
-- Manual request testing
-- HTTP status review
-- Response time review
-- Content type review
-- Response size review
-- Response body inspection
-- Structured analyst workflow through the API window
+- GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS support
+- Built-in HTTPBin request presets
+- VirusTotal file lookup preset placeholder
+- JSON header editing
+- JSON or raw body editing
+- Multipart file upload testing
+- SSL verification toggle
+- Timeout configuration
+- Response body, headers, and raw response review
+- Pretty JSON response formatting
+- Response Analysis tab
+- Severity Summary counts
+- Redacted report mode for safer sharing
+- Unredacted full-evidence mode with warning confirmation
+- Timestamped default HTML report names
+- Active case display
+- Open Case API Folder button
+- Automatic latest API artifact saving into the active case folder
+
+Manual API Tester case artifacts include:
+
+```text
+cases/<case_name>/api_analysis/manual_api_latest.html
+cases/<case_name>/api_analysis/manual_api_latest.json
+```
 
 ### API Specification Analysis
 
@@ -139,11 +163,113 @@ Browser extension review includes:
 - Risk scoring
 - HTML and JSON export
 
+### Unified Report
+
+The Unified Report module combines available case artifacts into one report.
+
+Supported module summaries include:
+
+- Static Analysis
+- Dynamic Analysis
+- Manual API Tester
+- API Specification Analysis
+- Browser Extension Analysis
+- Combined Score
+
+The Unified Report now hides empty module sections when no findings are present and summarizes Manual API Tester findings when API artifacts exist.
+
 ---
 
-## What’s New in v1.7
+## What's New in v1.7.1
 
-`v1.7` focuses on polishing both the static and dynamic analysis workflows. This release improves analyst usability, report clarity, cancellation behavior, installer observation, scoring context, case/output handling, and report naming.
+`v1.7.1` focuses on Manual API Tester improvements, API reporting workflow polish, Unified Report integration, and GUI behavior fixes.
+
+### Manual API Tester Updates
+
+- Added a dedicated **Response Analysis** tab.
+- Added automatic API response findings for:
+  - HTTP status review
+  - HTTPS / cleartext HTTP review
+  - JSON / HTML response detection
+  - Server header disclosure
+  - X-Powered-By disclosure
+  - Wildcard CORS detection
+  - Set-Cookie observation
+  - Missing HSTS observation
+  - Verbose error/debug response indicators
+  - Token, cookie, credential, or secret-like content detection
+- Added **Severity Summary** counts for API findings:
+  - High
+  - Medium
+  - Low
+  - Info
+- Added **Pretty JSON** formatting for response bodies.
+- Added timestamped default names for exported API HTML reports.
+- Added **Redact report** mode for safer sharing.
+- Added **Unredacted full-evidence report** mode with confirmation warning.
+- Added redaction status to exported API reports.
+- Added reflected origin/IP redaction for test APIs such as HTTPBin.
+- Added active case display inside the Manual API Tester.
+- Added **Open Case API Folder** button.
+- Added latest Manual API Tester case artifacts:
+  - `api_analysis\manual_api_latest.html`
+  - `api_analysis\manual_api_latest.json`
+
+### Manual API Tester Reporting Updates
+
+- API HTML reports now include:
+  - Method
+  - URL
+  - Status
+  - Response time
+  - Content type
+  - Response size
+  - Redaction status
+  - Response analysis
+  - Request headers
+  - Request body
+  - Response body
+  - Response headers
+  - Raw output
+- Exported reports can be saved anywhere the analyst chooses.
+- A latest case copy is also saved automatically under the active case folder for Unified Report integration.
+- Success popups now explain both save locations:
+  - user-selected export path
+  - active case API artifact path
+
+### Unified Report Updates
+
+- Integrated Manual API Tester findings into the Unified Report.
+- Added API method, URL, HTTP status, content type, response size, redaction status, and response analysis findings to the Unified Report.
+- Added latest API HTML/JSON artifact detection.
+- Hid empty module sections when no findings are present.
+- Improved Unified Report preview formatting.
+- Improved generated Manual API Tester Summary formatting.
+- Added better formatting for:
+  - Analysis findings
+  - Severity Summary
+  - Notes
+
+### Static/API Scoring Updates
+
+- Wired API import analysis into the static scoring flow.
+- Ensured `api_analysis.json` can contribute to static scoring evidence.
+- Added support for API analysis scoring in primary sample and subfile flows.
+- API scoring remains context-aware so imports and API chains contribute evidence without overpowering the overall verdict.
+
+### GUI Fixes
+
+- Fixed API Tester dialog and messagebox parent behavior.
+- Reduced main-window focus jumping when browsing or saving files.
+- Improved Manual API Tester response area sizing.
+- Stabilized API Tester tab styling so selected tabs highlight without shrinking.
+- Added `parent=self` behavior to key browse/save/messagebox actions across relevant windows.
+
+---
+
+## What's New in v1.7
+
+`v1.7` focused on polishing both the static and dynamic analysis workflows. This release improved analyst usability, report clarity, cancellation behavior, installer observation, scoring context, case/output handling, and report naming.
 
 ### Static Analysis Updates
 
@@ -218,21 +344,77 @@ Browser extension review includes:
 
 ## Validation Summary
 
-`v1.7` was validated with:
+`v1.7.1` was validated with Manual API Tester and Unified Report workflows.
 
-- Notepad static smoke test.
-- Notepad dynamic smoke test.
-- Notepad dynamic timeout behavior.
-- Notepad dynamic cancellation during Autoruns before snapshot.
-- Notepad dynamic cancellation during sample observation.
-- Procmon disabled scenario.
-- Procmon missing scenario.
-- Autorunsc missing scenario.
-- Wireshark static smoke test.
-- Wireshark installer dynamic smoke test.
-- Static sample-specific report filename validation.
-- Dynamic sample-specific report filename validation.
-- Clean source package validation with old release folders removed from the archive.
+Validated API workflow checks:
+
+- HTTPBin GET request test
+- HTTPBin reflected header test
+- Redacted report export
+- Unredacted full-evidence report export
+- Redaction warning confirmation
+- Reflected origin/IP redaction
+- Response Analysis tab output
+- Severity Summary output
+- Pretty JSON response formatting
+- Timestamped default report filename
+- Latest API HTML/JSON artifact saving
+- Active case display
+- Open Case API Folder button
+- Unified Report API artifact detection
+- Unified Report Manual API Tester summary
+- Empty Unified Report section hiding
+- Unified Report preview formatting
+
+Expected Manual API Tester artifact output:
+
+```text
+cases/<case_name>/api_analysis/manual_api_latest.html
+cases/<case_name>/api_analysis/manual_api_latest.json
+```
+
+Expected Manual API Tester Summary fields in Unified Report:
+
+```text
+Tool: manual_api_tester
+Saved at: <timestamp>
+Redaction: Enabled or Disabled / Full Evidence
+Method: GET
+URL: <tested endpoint>
+Verify SSL: True
+Timeout: 60 seconds
+HTTP status: 200
+Content-Type: application/json
+Elapsed: <seconds>
+Response size: <size>
+Analysis findings:
+  [Info] Successful HTTP response received.
+  [Info] HTTPS transport used.
+  [Info] JSON response detected.
+Severity Summary:
+  High: <count>
+  Medium: <count>
+  Low: <count>
+  Info: <count>
+```
+
+`v1.7` was validated with static and dynamic smoke tests.
+
+Validated static/dynamic checks included:
+
+- Notepad static smoke test
+- Notepad dynamic smoke test
+- Notepad dynamic timeout behavior
+- Notepad dynamic cancellation during Autoruns before snapshot
+- Notepad dynamic cancellation during sample observation
+- Procmon disabled scenario
+- Procmon missing scenario
+- Autorunsc missing scenario
+- Wireshark static smoke test
+- Wireshark installer dynamic smoke test
+- Static sample-specific report filename validation
+- Dynamic sample-specific report filename validation
+- Clean source package validation with old release folders removed from the archive
 
 Expected clean Notepad dynamic indicators:
 
@@ -261,7 +443,7 @@ Service/task findings reviewed in installer context
 
 ## External Tooling Notice
 
-The `v1.7` source package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
+The `v1.7.1` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
 
 Users must download and configure external tools themselves.
 
@@ -269,7 +451,7 @@ This keeps the release package cleaner and avoids redistributing external softwa
 
 ### Not Included in the Release Package
 
-The following are not bundled in the `v1.7` source ZIP:
+The following are not bundled in the `v1.7.1` release ZIP:
 
 - Sysinternals Procmon
 - Sysinternals Autorunsc
@@ -283,6 +465,9 @@ The following are not bundled in the `v1.7` source ZIP:
 - Generated case folders
 - Static analysis outputs
 - Dynamic analysis outputs
+- Manual API Tester outputs
+- API Spec outputs
+- Browser Extension outputs
 - Procmon `.pml` captures
 - Old release folders
 - PyInstaller build folders
@@ -433,7 +618,7 @@ RingForge opens into a launcher that provides access to:
 
 - Static Analysis
 - Dynamic Analysis
-- API Analysis
+- Manual API Tester
 - Spec Analysis
 - Browser Extension Analysis
 - Unified Report
@@ -466,6 +651,7 @@ cases/
       summary.json
       runlog.json
       analysis.log
+      api_analysis.json
       iocs.json
       iocs.csv
       strings.txt
@@ -515,6 +701,22 @@ cases/
 
           reports/
             dynamic_findings.json
+
+    api_analysis/
+      manual_api_latest.html
+      manual_api_latest.json
+
+    spec_analysis/
+      api_spec_analysis.json
+      spec_inventory_latest.json
+      reports/
+
+    extension_analysis/
+      extension_analysis.json
+      reports/
+
+    unified_report/
+      unified_report.html
 ```
 
 Note: some compatibility report names are intentionally retained so older GUI buttons and unified report paths continue to work.
@@ -549,7 +751,7 @@ Important folders:
 | `tools/` | Local helper tool paths and configuration folders |
 | `triage_inbox.py` | Helper entry point / inbox workflow |
 
-The release archive is intended to contain the source tree only. Local folders such as `dist/`, `build/`, `release/`, `.venv/`, and generated `cases/` should not be included in the source package.
+The release archive is intended to contain the packaged application and documentation. Local folders such as `.venv/`, generated `cases/`, and temporary build artifacts should not be included in source archives.
 
 ---
 
@@ -595,7 +797,7 @@ Optional PDF support:
 pip install weasyprint
 ```
 
-If PDF dependencies are unavailable, open the HTML report and use the browser’s print-to-PDF option.
+If PDF dependencies are unavailable, open the HTML report and use the browser's print-to-PDF option.
 
 ---
 
@@ -618,7 +820,7 @@ python .\scripts\static_triage_gui.py
 3. Select a Windows sample such as an EXE or DLL.
 4. Enter or confirm the case name.
 5. Run static analysis.
-6. Review score, verdict, confidence, VirusTotal context, subfile context, and report artifacts.
+6. Review score, verdict, confidence, VirusTotal context, API import context, subfile context, and report artifacts.
 7. Open the static report from the Artifacts section.
 
 Expected static report locations:
@@ -658,6 +860,38 @@ cases/<case_name>/dynamic_analysis/reports/dynamic_report.html
 
 ---
 
+## Basic Manual API Tester Workflow
+
+1. Launch RingForge.
+2. Open **Manual API Tester**.
+3. Select a preset or enter a custom method and URL.
+4. Add request headers as JSON.
+5. Add a request body if needed.
+6. Optionally select a file for multipart upload testing.
+7. Click **Send Request**.
+8. Review:
+   - Analysis
+   - Body
+   - Headers
+   - Raw
+9. Use **Pretty JSON** if the body is valid JSON and needs formatting.
+10. Choose whether to keep **Redact report** enabled.
+11. Save the HTML report.
+
+When saving, RingForge writes:
+
+- an analyst-selected export report
+- a latest case copy for Unified Report integration
+
+Expected API artifact locations:
+
+```text
+cases/<case_name>/api_analysis/manual_api_latest.html
+cases/<case_name>/api_analysis/manual_api_latest.json
+```
+
+---
+
 ## Dynamic Analysis Artifacts
 
 A dynamic run may produce:
@@ -687,6 +921,20 @@ A dynamic run may produce:
 
 ---
 
+## Manual API Tester Artifacts
+
+The Manual API Tester may produce:
+
+| Artifact | Description |
+|---|---|
+| `manual_api_latest.html` | Latest case-linked API HTML report |
+| `manual_api_latest.json` | Latest case-linked structured API result |
+| `api_test_report_<timestamp>.html` | User-selected exported API report |
+
+The structured JSON artifact includes request metadata, response metadata, response analysis, redaction status, and report paths.
+
+---
+
 ## Reporting
 
 RingForge produces module-specific reports and supports a unified report workflow.
@@ -696,7 +944,7 @@ Current report types include:
 - Static HTML report
 - Static Markdown report
 - Dynamic HTML report
-- API test report
+- Manual API Tester HTML report
 - API Spec report
 - Browser Extension report
 - Unified report
@@ -720,11 +968,41 @@ Recommended safety practices:
 - Revert the VM after risky testing.
 - Treat all unknown binaries, installers, scripts, and extensions as potentially unsafe.
 
-RingForge is a triage and analyst workflow tool. It does not replace a full malware sandbox, EDR, SIEM, or reverse-engineering suite.
+API testing can also expose sensitive information.
+
+Recommended API testing practices:
+
+- Avoid using production API keys unless required.
+- Prefer test keys and controlled endpoints.
+- Keep **Redact report** enabled for shareable reports.
+- Use unredacted full-evidence reports only when intentionally preserving evidence.
+- Treat exported reports as sensitive if they contain URLs, tokens, cookies, headers, IP addresses, or file paths.
+
+RingForge is a triage and analyst workflow tool. It does not replace a full malware sandbox, EDR, SIEM, API security scanner, or reverse-engineering suite.
 
 ---
 
 ## Version History
+
+### v1.7.1 — Manual API Tester Polish + Unified Report Integration
+
+- Added Manual API Tester Response Analysis tab.
+- Added API response severity summary counts.
+- Added Pretty JSON response formatting.
+- Added timestamped default API report names.
+- Added redacted report mode and unredacted evidence mode.
+- Added redaction status to API reports.
+- Added reflected origin/IP redaction for test APIs such as HTTPBin.
+- Added active case display and Open Case API Folder button.
+- Saved latest Manual API Tester HTML/JSON artifacts into the active case folder.
+- Integrated Manual API Tester findings into the Unified Report.
+- Hid empty Unified Report sections.
+- Improved Unified Report preview formatting.
+- Improved Manual API Tester Summary formatting in generated reports.
+- Fixed API Tester dialog/messagebox parent behavior.
+- Improved Manual API Tester response area sizing.
+- Stabilized API Tester tab styling.
+- Wired API import analysis into static scoring.
 
 ### v1.7 — Static + Dynamic Analysis Polish
 
@@ -786,6 +1064,9 @@ Key engineering areas represented:
 - Dynamic behavior collection
 - Procmon parsing and event filtering
 - Autoruns persistence diffing
+- Manual API testing workflow design
+- API response evidence reporting
+- API import analysis and scoring
 - JSON artifact generation
 - HTML report generation
 - Scoring and verdict logic
@@ -801,15 +1082,19 @@ Key engineering areas represented:
 
 Planned future improvements:
 
-- Cleaner v1.8 case artifact organization.
-- Dynamic profile presets.
-- More dynamic baseline profiles.
-- Additional service and network noise tuning.
-- Optional network snapshot support.
-- Improved unified report integration with sample-specific report names.
-- Additional report templates.
-- Expanded API and browser extension analysis depth.
-- Improved packaged release workflow.
+- Spec Analysis polish
+- Browser Extension Analysis polish
+- Cleaner v1.8 case artifact organization
+- Dynamic profile presets
+- More dynamic baseline profiles
+- Additional service and network noise tuning
+- Optional network snapshot support
+- Improved unified report integration with sample-specific report names
+- Additional report templates
+- Expanded API and browser extension analysis depth
+- Improved packaged release workflow
+- Request history and custom API tester presets
+- Enhanced severity scoring across module reports
 
 ---
 
