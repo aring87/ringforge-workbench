@@ -985,7 +985,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             "clipboardRead": 10,
             "clipboardWrite": 6,
             "declarativeNetRequest": 6,
-            "storage": 3,
+            "storage": 1,
             "activeTab": 3,
             "identity": 8,
             "geolocation": 8,
@@ -1038,7 +1038,22 @@ class ExtensionAnalysisWindow(tk.Toplevel):
                 "- Host permissions include wildcard URL patterns: "
                 + ", ".join(sorted(set(wildcard_host_hits[:5])))
             )
-            score += 15
+
+            broadish_wildcards = [
+                host for host in wildcard_host_hits
+                if isinstance(host, str)
+                and (
+                    host.startswith("*://")
+                    or host.startswith("http://*")
+                    or host.startswith("https://*")
+                    or "://*." in host
+                )
+            ]
+
+            if broadish_wildcards:
+                score += 15
+            else:
+                score += 5
 
         # ------------------------------------------------------------------
         # Manifest behavior scoring.
@@ -1131,7 +1146,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             ("XMLHttpRequest", "Use of XMLHttpRequest found", 5),
             ("fetch(", "Use of fetch() found", 5),
             ("http://", "Plain HTTP URL found", 10),
-            ("https://", "Remote HTTPS URL found", 3),
+            ("https://", "Remote HTTPS URL found", 1),
         ]
 
         matched_messages = set()
