@@ -951,59 +951,159 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         content_scripts = manifest.get("content_scripts", []) or []
         web_resources = manifest.get("web_accessible_resources", []) or []
 
-        high_risk_perms = {
-            "tabs", "cookies", "history", "webRequest", "webRequestBlocking",
-            "debugger", "downloads", "nativeMessaging", "management", "proxy",
-            "scripting", "declarativeNetRequest", "declarativeNetRequestWithHostAccess",
-            "clipboardRead", "clipboardWrite", "desktopCapture",
+        if not isinstance(permissions, list):
+            permissions = [permissions]
+
+        if not isinstance(host_permissions, list):
+            host_permissions = [host_permissions]
+
+        # Manifest v2 may place host patterns directly in permissions.
+        permission_host_patterns = [
+            p for p in permissions
+            if isinstance(p, str) and ("://" in p or p == "<all_urls>")
+        ]
+
+        all_host_permissions = list(host_permissions) + permission_host_patterns
+
+        # ------------------------------------------------------------------
+        # Permission scoring, normalized toward 100.
+        # ------------------------------------------------------------------
+        permission_weights = {
+            "debugger": 25,
+            "nativeMessaging": 25,
+            "proxy": 20,
+            "webRequestBlocking": 20,
+            "webRequest": 15,
+            "cookies": 15,
+            "management": 15,
+            "declarativeNetRequestWithHostAccess": 15,
+            "desktopCapture": 15,
+            "tabs": 10,
+            "history": 10,
+            "downloads": 10,
+            "scripting": 10,
+            "clipboardRead": 10,
+            "clipboardWrite": 6,
+            "declarativeNetRequest": 6,
+            "storage": 3,
+            "activeTab": 3,
+            "identity": 8,
+            "geolocation": 8,
+            "bookmarks": 6,
+            "notifications": 2,
         }
 
-        found_high = sorted([p for p in permissions if p in high_risk_perms])
-        if found_high:
-            notes.append(f"- Elevated/sensitive permissions present: {', '.join(found_high)}")
-            score += min(len(found_high) * 2, 10)
+        found_sensitive = []
+        for permission in permissions:
+            if not isinstance(permission, str):
+                continue
 
-        if "<all_urls>" in host_permissions:
-            notes.append("- Host permissions include <all_urls>, which is broad access across websites.")
-            score += 4
+            if permission in permission_weights:
+                found_sensitive.append(permission)
+                score += permission_weights[permission]
 
-        if any(isinstance(item, str) and "://" in item and "*" in item for item in host_permissions):
-            notes.append("- Host permissions include wildcard URL patterns.")
-            score += 2
+        if found_sensitive:
+            notes.append(
+                "- Elevated/sensitive permissions present: "
+                + ", ".join(sorted(found_sensitive))
+            )
 
+        # ------------------------------------------------------------------
+        # Host permission scoring.
+        # ------------------------------------------------------------------
+        broad_hosts = {"<all_urls>", "*://*/*", "http://*/*", "https://*/*"}
+
+        broad_host_hits = [
+            host for host in all_host_permissions
+            if isinstance(host, str) and host in broad_hosts
+        ]
+
+        wildcard_host_hits = [
+            host for host in all_host_permissions
+            if isinstance(host, str)
+            and "://" in host
+            and "*" in host
+            and host not in broad_hosts
+        ]
+
+        if broad_host_hits:
+            notes.append(
+                "- Host permissions include broad access patterns: "
+                + ", ".join(sorted(set(broad_host_hits)))
+            )
+            score += 25
+
+        if wildcard_host_hits:
+            notes.append(
+                "- Host permissions include wildcard URL patterns: "
+                + ", ".join(sorted(set(wildcard_host_hits[:5])))
+            )
+            score += 15
+
+        # ------------------------------------------------------------------
+        # Manifest behavior scoring.
+        # ------------------------------------------------------------------
         if background:
             notes.append("- Background execution is enabled via background page or service worker.")
-            score += 1
+            score += 8
 
         if content_scripts:
             notes.append("- Content scripts are present and can interact with page content.")
-            score += 2
+            score += 10
+
+            for script in content_scripts:
+                if not isinstance(script, dict):
+                    continue
+
+                matches = script.get("matches", []) or []
+                if not isinstance(matches, list):
+                    matches = [matches]
+
+                if any(isinstance(match, str) and match in broad_hosts for match in matches):
+                    notes.append("- Content scripts run on broad match patterns such as <all_urls> or *://*/*.")
+                    score += 15
+                    break
 
         if web_resources:
             notes.append("- Web-accessible resources are exposed to web pages or other extension contexts.")
-            score += 1
+            score += 5
 
         if externally_connectable:
             notes.append("- externally_connectable is configured, allowing outside pages or apps to communicate with the extension.")
-            score += 2
+            score += 12
+
+            if isinstance(externally_connectable, dict):
+                matches = externally_connectable.get("matches", []) or []
+                if not isinstance(matches, list):
+                    matches = [matches]
+
+                if any(isinstance(match, str) and match in broad_hosts for match in matches):
+                    notes.append("- externally_connectable allows broad external origins.")
+                    score += 20
 
         if update_url:
             notes.append("- update_url is defined. Review whether updates are expected from a trusted source.")
-            score += 1
+            score += 8
 
         csp = manifest.get("content_security_policy")
         if isinstance(csp, str) and "unsafe-eval" in csp:
             notes.append("- CSP contains unsafe-eval.")
-            score += 3
+            score += 20
         elif isinstance(csp, dict):
             csp_text = json.dumps(csp)
             if "unsafe-eval" in csp_text:
                 notes.append("- CSP contains unsafe-eval.")
-                score += 3
+                score += 20
 
+        # ------------------------------------------------------------------
+        # Source file scan scoring.
+        # ------------------------------------------------------------------
         code_hits, code_score = self._scan_source_files(working_dir)
         notes.extend(code_hits)
         score += code_score
+
+        # Normalize to /100.
+        score = max(0, min(score, 100))
 
         if not notes:
             notes.append("- No obvious high-risk indicators were found from the manifest or quick file scan.")
@@ -1020,18 +1120,18 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         score = 0
 
         patterns = [
-            ("eval(", "Use of eval() found", 3),
-            ("new Function(", "Use of new Function() found", 3),
-            ("XMLHttpRequest", "Use of XMLHttpRequest found", 1),
-            ("fetch(", "Use of fetch() found", 1),
-            ("document.cookie", "Access to document.cookie found", 3),
-            ("chrome.cookies", "Use of chrome.cookies API found", 3),
-            ("chrome.tabs", "Use of chrome.tabs API found", 1),
-            ("chrome.scripting", "Use of chrome.scripting API found", 2),
-            ("chrome.webRequest", "Use of chrome.webRequest API found", 3),
-            ("chrome.runtime.sendMessage", "Runtime messaging found", 1),
-            ("http://", "Plain HTTP URL found", 4),
-            ("https://", "Remote HTTPS URL found", 1),
+            ("eval(", "Use of eval() found", 15),
+            ("new Function(", "Use of new Function() found", 15),
+            ("document.cookie", "Access to document.cookie found", 15),
+            ("chrome.cookies", "Use of chrome.cookies API found", 15),
+            ("chrome.webRequest", "Use of chrome.webRequest API found", 12),
+            ("chrome.scripting", "Use of chrome.scripting API found", 8),
+            ("chrome.tabs", "Use of chrome.tabs API found", 6),
+            ("chrome.runtime.sendMessage", "Runtime messaging found", 5),
+            ("XMLHttpRequest", "Use of XMLHttpRequest found", 5),
+            ("fetch(", "Use of fetch() found", 5),
+            ("http://", "Plain HTTP URL found", 10),
+            ("https://", "Remote HTTPS URL found", 3),
         ]
 
         matched_messages = set()
@@ -1321,7 +1421,10 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
         verdict = str(summary.get("risk_verdict", "-")).strip().upper()
         verdict_class = "sev-none"
-        if verdict == "HIGH":
+
+        if verdict == "CRITICAL":
+            verdict_class = "sev-critical"
+        elif verdict == "HIGH":
             verdict_class = "sev-high"
         elif verdict == "MEDIUM":
             verdict_class = "sev-med"
@@ -1569,6 +1672,11 @@ li {{
   color: #fde68a;
   border-color: rgba(245,158,11,0.35);
 }}
+.sev-critical {{
+  background: rgba(127,29,29,0.35);
+  color: #fecaca;
+  border-color: rgba(239,68,68,0.75);
+}}
 .sev-high {{
   background: rgba(239,68,68,0.12);
   color: #fecaca;
@@ -1674,9 +1782,11 @@ pre {{
             messagebox.showerror("Open Reports", f"Could not open report folder:\n{e}")
 
     def _get_risk_verdict(self, score: int) -> str:
-        if score >= 7:
+        if score >= 80:
+            return "Critical"
+        if score >= 50:
             return "High"
-        if score >= 3:
+        if score >= 20:
             return "Medium"
         return "Low"
 
@@ -1687,7 +1797,11 @@ pre {{
         badge_border = self.BORDER_SOFT
         text_color = self.TEXT
 
-        if verdict_l == "high":
+        if verdict_l == "critical":
+            badge_bg = "#3A0A0A"
+            badge_border = self.DANGER
+            text_color = "#FCA5A5"
+        elif verdict_l == "high":
             badge_bg = "#3A1218"
             badge_border = self.DANGER
             text_color = "#FECACA"
@@ -1711,7 +1825,7 @@ pre {{
             self.risk_verdict_text.configure(bg=badge_bg, fg=text_color)
 
         if self.score_value_label is not None:
-            self.score_value_label.configure(fg=text_color if verdict_l in {"high", "medium", "low"} else self.TEXT)
+            self.score_value_label.configure(fg=text_color if verdict_l in {"critical", "high", "medium", "low"} else self.TEXT)
 
         if self.score_card is not None:
             self.score_card.configure(
