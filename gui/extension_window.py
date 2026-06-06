@@ -766,10 +766,16 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             if manifest_path is None:
                 raise FileNotFoundError("manifest.json was not found in the selected extension source.")
 
+            # If the user selected a parent folder and we found a manifest deeper inside,
+            # treat the manifest's parent as the actual extension root. This keeps reports,
+            # file inventory, and source scanning focused on the extension itself.
+            if source_path.is_dir() and manifest_path.parent != working_dir:
+                working_dir = manifest_path.parent
+
             with manifest_path.open("r", encoding="utf-8") as f:
                 manifest = json.load(f)
 
-            self.current_source = source_path
+            self.current_source = working_dir if source_path.is_dir() else source_path
             self.current_working_dir = working_dir
             self.current_manifest_path = manifest_path
             self.current_manifest = manifest
@@ -841,9 +847,19 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         direct = root / "manifest.json"
         if direct.exists():
             return direct
-        for path in root.rglob("manifest.json"):
-            return path
-        return None
+
+        matches = sorted(root.rglob("manifest.json"))
+
+        if not matches:
+            return None
+
+        if len(matches) == 1:
+            return matches[0]
+
+        # Prefer the shallowest manifest if multiple are found.
+        # This avoids randomly picking a deeply nested test/helper manifest.
+        matches.sort(key=lambda p: (len(p.relative_to(root).parts), str(p).lower()))
+        return matches[0]
 
     def _populate_summary(self, manifest: dict):
         name = manifest.get("name", "-")

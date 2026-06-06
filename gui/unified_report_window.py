@@ -249,6 +249,19 @@ class UnifiedReportWindow(tk.Toplevel):
         if not existing:
             return None
         return sorted(existing, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        
+    def _latest_child_dir(self, parent_dir: Path) -> Path | None:
+        try:
+            if not parent_dir.exists() or not parent_dir.is_dir():
+                return None
+
+            dirs = [p for p in parent_dir.iterdir() if p.is_dir()]
+            if not dirs:
+                return None
+
+            return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        except Exception:
+            return None
 
     def _dynamic_summary_candidates(self, case_dir: Path) -> list[Path]:
         candidates = []
@@ -333,26 +346,11 @@ class UnifiedReportWindow(tk.Toplevel):
         ]
         
         extension_runs_dir = case_dir / "browser_extension_analysis" / "runs"
+        latest_extension_run_dir = self._latest_child_dir(extension_runs_dir)
 
         extension_run_candidates = []
-        if extension_runs_dir.exists():
-            try:
-                extension_run_candidates.extend(
-                    sorted(
-                        extension_runs_dir.glob("*/browser_extension_analysis.json"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                )
-                extension_run_candidates.extend(
-                    sorted(
-                        extension_runs_dir.glob("*/browser_extension_report.html"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                )
-            except Exception:
-                pass
+        if latest_extension_run_dir is not None:
+            extension_run_candidates.append(latest_extension_run_dir)
         
         checks = {
             "Static Analysis": static_candidates,
@@ -375,12 +373,10 @@ class UnifiedReportWindow(tk.Toplevel):
                 case_dir / "reports" / "api_spec_analysis.json",
             ],
             "Browser Extension Analysis": [
-                # New canonical browser extension analysis paths
                 case_dir / "browser_extension_analysis" / "browser_extension_analysis.json",
                 case_dir / "browser_extension_analysis" / "browser_extension_report.html",
                 case_dir / "browser_extension_analysis" / "metadata" / "browser_extension_analysis.json",
 
-                # Historical run outputs
                 *extension_run_candidates,
 
                 # Legacy compatibility paths
@@ -694,15 +690,39 @@ class UnifiedReportWindow(tk.Toplevel):
                         findings["extension"].append(f"Externally connectable: {summary.get('externally_connectable', '-')}")
                         findings["extension"].append(f"Update URL: {summary.get('update_url', '-')}")
                         findings["extension"].append(f"CSP: {summary.get('csp', '-')}")
-                        break
+                        
+                        risk_notes = data.get("risk_notes", [])
+                        if isinstance(risk_notes, list) and risk_notes:
+                            findings["extension"].append("Risk notes:")
+                            for note in risk_notes[:12]:
+                                findings["extension"].append(f"  {note}")
             else:
                 data = self._load_json_if_exists(str(path))
                 if isinstance(data, dict):
                     summary = data.get("summary", {})
                     if isinstance(summary, dict):
+                        findings["extension"].append(f"Extension name: {summary.get('name', '-')}")
+                        findings["extension"].append(f"Extension version: {summary.get('version', '-')}")
+                        findings["extension"].append(f"Manifest version: {summary.get('manifest_version', '-')}")
                         findings["extension"].append(f"Extension verdict: {summary.get('risk_verdict', '-')}")
                         findings["extension"].append(f"Extension risk score: {summary.get('risk_score', '0')}")
                         findings["extension"].append(f"Files found: {summary.get('files_found', '0')}")
+                        findings["extension"].append(f"Permissions: {summary.get('permissions', '-')}")
+                        findings["extension"].append(f"Host permissions: {summary.get('host_permissions', '-')}")
+                        findings["extension"].append(f"Background: {summary.get('background', '-')}")
+                        findings["extension"].append(f"Content scripts: {summary.get('content_scripts', '-')}")
+                        findings["extension"].append(f"Web resources: {summary.get('web_resources', '-')}")
+                        findings["extension"].append(f"Externally connectable: {summary.get('externally_connectable', '-')}")
+                        findings["extension"].append(f"Update URL: {summary.get('update_url', '-')}")
+                        findings["extension"].append(f"CSP: {summary.get('csp', '-')}")
+
+                    risk_notes = data.get("risk_notes", [])
+                    if isinstance(risk_notes, list) and risk_notes:
+                        findings["extension"].append("Risk notes:")
+                        for note in risk_notes[:12]:
+                            findings["extension"].append(f"  {note}")
+
+                    break
 
         for p in combined_paths:
             data = self._load_json_if_exists(p)
@@ -783,6 +803,34 @@ class UnifiedReportWindow(tk.Toplevel):
         p = self._latest_path(candidates)
         data = self._load_json_if_exists(p) if p else None
         return data if isinstance(data, dict) else None
+        
+    def _latest_extension_summary(self) -> dict | None:
+        if not self.case_dir:
+            return None
+
+        candidates = [
+            self.case_dir / "browser_extension_analysis" / "browser_extension_analysis.json",
+            self.case_dir / "browser_extension_analysis" / "metadata" / "browser_extension_analysis.json",
+            self.case_dir / "extension_analysis" / "extension_analysis.json",
+            self.case_dir / "extension_analysis.json",
+        ]
+
+        runs_dir = self.case_dir / "browser_extension_analysis" / "runs"
+        if runs_dir.exists():
+            try:
+                candidates.extend(
+                    sorted(
+                        runs_dir.glob("*/browser_extension_analysis.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            except Exception:
+                pass
+
+        p = self._latest_path(candidates)
+        data = self._load_json_if_exists(p) if p else None
+        return data if isinstance(data, dict) else None
 
     def _combined_summary(self) -> dict | None:
         if not self.case_dir:
@@ -839,6 +887,42 @@ class UnifiedReportWindow(tk.Toplevel):
             verdict = "Informational API Spec Review"
 
         return score, verdict
+        
+    def _derive_extension_score_and_verdict(self, extension_summary: dict | None) -> tuple[int | None, str | None]:
+        """
+        Derive a display score/verdict for browser-extension-only cases.
+        This keeps extension risk separate from static/dynamic malware scoring.
+        """
+        if not isinstance(extension_summary, dict):
+            return None, None
+
+        summary = extension_summary.get("summary", {})
+        if not isinstance(summary, dict):
+            return None, None
+
+        raw_score = summary.get("risk_score")
+        raw_verdict = str(summary.get("risk_verdict", "") or "").strip().lower()
+
+        try:
+            score = int(raw_score)
+        except Exception:
+            score = None
+
+        if raw_verdict == "high":
+            return score, "High Browser Extension Risk"
+        if raw_verdict == "medium":
+            return score, "Medium Browser Extension Risk"
+        if raw_verdict == "low":
+            return score, "Low Browser Extension Risk"
+
+        if score is not None:
+            if score >= 7:
+                return score, "High Browser Extension Risk"
+            if score >= 3:
+                return score, "Medium Browser Extension Risk"
+            return score, "Low Browser Extension Risk"
+
+        return None, None
 
     def _derive_overall_verdict(self, artifacts: dict) -> str:
         combined = self._combined_summary()
@@ -867,7 +951,9 @@ class UnifiedReportWindow(tk.Toplevel):
             return "Low Risk"
 
         spec_found = artifacts.get("Spec Analysis", {}).get("found", False)
-        other_modules_found = any(
+        extension_found = artifacts.get("Browser Extension Analysis", {}).get("found", False)
+
+        other_modules_for_spec = any(
             artifacts.get(name, {}).get("found", False)
             for name in [
                 "Static Analysis",
@@ -878,10 +964,26 @@ class UnifiedReportWindow(tk.Toplevel):
             ]
         )
 
-        if spec_found and not other_modules_found:
+        other_modules_for_extension = any(
+            artifacts.get(name, {}).get("found", False)
+            for name in [
+                "Static Analysis",
+                "Dynamic Analysis",
+                "Manual API Tester",
+                "Spec Analysis",
+                "Combined Score",
+            ]
+        )
+
+        if spec_found and not other_modules_for_spec:
             spec_score, spec_verdict = self._derive_spec_score_and_verdict(self._latest_spec_summary())
             if spec_verdict:
                 return spec_verdict
+
+        if extension_found and not other_modules_for_extension:
+            extension_score, extension_verdict = self._derive_extension_score_and_verdict(self._latest_extension_summary())
+            if extension_verdict:
+                return extension_verdict
 
         count = sum(1 for meta in artifacts.values() if meta.get("found"))
         if count >= 2:
@@ -1016,9 +1118,15 @@ class UnifiedReportWindow(tk.Toplevel):
         if api_findings:
             api_score = "Present"
 
-        extension_findings = findings.get("extension", [])
-        if extension_findings:
-            extension_score = "Present"
+        extension_summary = self._latest_extension_summary()
+
+        if isinstance(extension_summary, dict):
+            derived_extension_score, _derived_extension_verdict = self._derive_extension_score_and_verdict(extension_summary)
+            extension_score = derived_extension_score if derived_extension_score is not None else "Present"
+        else:
+            extension_findings = findings.get("extension", [])
+            if extension_findings:
+                extension_score = "Present"
 
         data = {
             "case_name": self.case_dir.name,
@@ -1212,8 +1320,16 @@ class UnifiedReportWindow(tk.Toplevel):
       padding: 10px;
       border-bottom: 1px solid var(--border);
       vertical-align: top;
-      word-break: break-word;
+      word-break: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
     }}
+    
+    td:nth-child(3) {{
+    font-size: 13px;
+    color: #cbd5e1;
+    }}
+    
     th {{
       width: 24%;
       color: #cbd5e1;
