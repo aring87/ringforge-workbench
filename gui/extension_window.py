@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -34,9 +35,9 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         self.parent = parent
         self.current_file_inventory = []
 
-        self.title("Extension Analysis")
-        self.geometry("1280x900+120+80")
-        self.minsize(1120, 780)
+        self.title("Browser Extension Analysis")
+        self.geometry("1500x1050+80+40")
+        self.minsize(1350, 940)
         self.configure(bg=self.BG)
         self.transient(parent)
 
@@ -71,9 +72,19 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         self.score_value_label = None
         self.score_card = None
         self._file_listbox_widget = None
+        
+        self.preview_text = None
+        self.manifest_text = None
+        self.risk_text = None
 
         self._configure_styles()
         self._build_ui()
+
+        self.update_idletasks()
+        self._autosize_to_screen()
+        self.lift()
+        self.focus_force()
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _configure_styles(self):
@@ -263,7 +274,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
         tk.Label(
             banner,
-            text="Extension Analysis",
+            text="Browser Extension Analysis",
             bg=panel_bg,
             fg=accent,
             font=("Segoe UI", 18, "bold"),
@@ -308,13 +319,14 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         save_btns = ttk.Frame(bottom, style="Card.TFrame")
         save_btns.grid(row=0, column=1, sticky="e")
 
-        ttk.Button(save_btns, text="Save JSON", style="Secondary.TButton", command=self._export_json_as).pack(side="left", padx=(0, 4))
-        ttk.Button(save_btns, text="Save HTML", style="Secondary.TButton", command=self._export_html_as).pack(side="left", padx=(0, 4))
-        ttk.Button(save_btns, text="Open Reports", style="Secondary.TButton", command=self._open_report_folder).pack(side="left")
+        ttk.Button(save_btns, text="Save JSON As", style="Secondary.TButton", command=self._export_json_as).pack(side="left", padx=(0, 4))
+        ttk.Button(save_btns, text="Save HTML As", style="Secondary.TButton", command=self._export_html_as).pack(side="left", padx=(0, 4))
+        ttk.Button(save_btns, text="Open Latest Report", style="Secondary.TButton", command=self._open_latest_report).pack(side="left", padx=(0, 4))
+        ttk.Button(save_btns, text="Open Case Files", style="Secondary.TButton", command=self._open_report_folder).pack(side="left")
 
     def _build_summary_card(self, parent):
         summary = ttk.LabelFrame(parent, text="Summary", style="App.TLabelframe")
-        summary.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        summary.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         summary.columnconfigure(0, weight=7)
         summary.columnconfigure(1, weight=3)
 
@@ -503,28 +515,45 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
     def _build_workspace(self, parent):
         workspace = ttk.Frame(parent, style="App.TFrame")
-        workspace.grid(row=3, column=0, sticky="nsew")
+        workspace.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
         workspace.columnconfigure(0, weight=2)
         workspace.columnconfigure(1, weight=6)
         workspace.columnconfigure(2, weight=4)
         workspace.rowconfigure(0, weight=1)
 
+        # ------------------------------------------------------------------
+        # Left: File inventory
+        # ------------------------------------------------------------------
         files_panel = ttk.Frame(workspace, style="App.TFrame")
         files_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         files_panel.columnconfigure(0, weight=1)
         files_panel.rowconfigure(1, weight=1)
 
-        ttk.Label(files_panel, text="File Inventory", style="SectionHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(
+            files_panel,
+            text="File Inventory",
+            style="SectionHeader.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
         self.file_list = self._make_listbox(files_panel)
         self.file_list.grid(row=1, column=0, sticky="nsew")
-        self._file_listbox_widget.bind("<<ListboxSelect>>", self._on_file_selected)
 
+        if self._file_listbox_widget is not None:
+            self._file_listbox_widget.bind("<<ListboxSelect>>", self._on_file_selected)
+
+        # ------------------------------------------------------------------
+        # Center: Preview notebook
+        # ------------------------------------------------------------------
         center_panel = ttk.Frame(workspace, style="App.TFrame")
         center_panel.grid(row=0, column=1, sticky="nsew", padx=8)
         center_panel.columnconfigure(0, weight=1)
         center_panel.rowconfigure(1, weight=1)
 
-        ttk.Label(center_panel, text="Preview", style="SectionHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(
+            center_panel,
+            text="Preview",
+            style="SectionHeader.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
         notebook = ttk.Notebook(center_panel)
         notebook.grid(row=1, column=0, sticky="nsew")
@@ -542,21 +571,38 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
         self.preview_text = self._make_text(preview_tab)
         self.preview_text.grid(row=0, column=0, sticky="nsew")
-        self._set_text(self.preview_text, "Select a file on the left to preview its contents.")
+        self._set_text(
+            self.preview_text,
+            "Select a file on the left to preview its contents.",
+        )
 
         self.manifest_text = self._make_text(manifest_tab)
         self.manifest_text.grid(row=0, column=0, sticky="nsew")
-        self._set_text(self.manifest_text, "Manifest contents will appear here after loading an extension.")
+        self._set_text(
+            self.manifest_text,
+            "Manifest contents will appear here after loading an extension.",
+        )
 
+        # ------------------------------------------------------------------
+        # Right: Findings
+        # ------------------------------------------------------------------
         notes_panel = ttk.Frame(workspace, style="App.TFrame")
         notes_panel.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         notes_panel.columnconfigure(0, weight=1)
         notes_panel.rowconfigure(1, weight=1)
 
-        ttk.Label(notes_panel, text="Findings", style="SectionHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(
+            notes_panel,
+            text="Findings",
+            style="SectionHeader.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
         self.risk_text = self._make_text(notes_panel)
         self.risk_text.grid(row=1, column=0, sticky="nsew")
-        self._set_text(self.risk_text, "Findings and risk notes will appear here after analysis.")
+        self._set_text(
+            self.risk_text,
+            "Findings and risk notes will appear here after analysis.",
+        )
 
     def _build_footer(self, parent):
         footer = ttk.Frame(parent, style="App.TFrame")
@@ -568,6 +614,33 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         ttk.Label(footer, textvariable=self.status_var, style="Footer.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(footer, textvariable=self.loaded_name_var, style="Footer.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 12))
         ttk.Label(footer, textvariable=self.risk_verdict_var, style="Footer.TLabel").grid(row=0, column=2, sticky="e")
+        
+    def _autosize_to_screen(self):
+        """
+        Open large enough to show all major browser extension analysis sections.
+        Prefer maximized window state; fallback to near-fullscreen geometry.
+        """
+        try:
+            self.state("zoomed")
+            return
+        except Exception:
+            pass
+
+        try:
+            self.attributes("-zoomed", True)
+            return
+        except Exception:
+            pass
+
+        try:
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            target_w = max(self.minsize()[0], min(screen_w - 40, 1900))
+            target_h = max(self.minsize()[1], min(screen_h - 80, 1180))
+            self.geometry(f"{target_w}x{target_h}+20+20")
+        except Exception:
+            pass
+
 
     def _make_listbox(self, parent):
         frame = tk.Frame(
@@ -622,6 +695,9 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         return tk.Text(parent, **common_kwargs)
 
     def _set_text(self, widget, text):
+        if widget is None:
+            return
+
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
@@ -703,14 +779,20 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             self.file_count_var.set("0")
             self.loaded_name_var.set(source_path.name)
 
-            self._set_text(self.preview_text, "Select a file on the left to preview its contents.")
-            self._set_text(self.risk_text, "Findings and risk notes will appear here after analysis.")
-            self._set_text(self.manifest_text, "Manifest contents will appear here after loading an extension.")
+            if self.preview_text is not None:
+                self._set_text(self.preview_text, "Select a file on the left to preview its contents.")
+
+            if self.risk_text is not None:
+                self._set_text(self.risk_text, "Findings and risk notes will appear here after analysis.")
+
+            if self.manifest_text is not None:
+                self._set_text(self.manifest_text, "Manifest contents will appear here after loading an extension.")
 
             self._populate_summary(manifest)
             self._populate_file_inventory(working_dir)
             self._populate_risk_notes(manifest, working_dir)
             self._populate_manifest_text(manifest)
+            self._save_latest_to_case()
 
             self.status_var.set(f"Analyzed: {source_path}")
             self._bring_to_front()
@@ -1010,6 +1092,66 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             return
 
         self._preview_file(selected_rel)
+        
+    def _save_latest_to_case(self):
+        if not self.current_manifest:
+            return
+
+        report_dir = self._get_report_dir()
+        data = self._build_export_data()
+        html_text = self._build_html_report(data)
+
+        latest_json = report_dir / "browser_extension_analysis.json"
+        latest_html = report_dir / "browser_extension_report.html"
+
+        with open(latest_json, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        latest_html.write_text(html_text, encoding="utf-8")
+
+        metadata_dir = report_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(metadata_dir / "browser_extension_analysis.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = report_dir / "runs" / f"{timestamp}_{self._get_report_basename()}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(run_dir / "browser_extension_analysis.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        (run_dir / "browser_extension_report.html").write_text(html_text, encoding="utf-8")
+
+        try:
+            self.parent.latest_extension_result = data
+        except Exception:
+            pass
+
+        return latest_json, latest_html
+        
+    def _open_latest_report(self):
+        html_path = self._get_report_dir() / "browser_extension_report.html"
+
+        if not html_path.exists():
+            messagebox.showinfo(
+                "Open Latest Report",
+                "No browser extension HTML report was found yet. Analyze an extension first.",
+                parent=self,
+            )
+            return
+
+        try:
+            import webbrowser
+            webbrowser.open(html_path.resolve().as_uri())
+            self.status_var.set(f"Opened latest report: {html_path}")
+        except Exception as e:
+            messagebox.showerror(
+                "Open Latest Report",
+                f"Could not open report:\n{html_path}\n\n{e}",
+                parent=self,
+            )
 
     def _build_export_data(self):
         manifest_text = ""
@@ -1092,7 +1234,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             messagebox.showwarning("Save JSON", "Analyze an extension first.")
             return
 
-        path = self._get_report_dir() / f"{self._get_report_basename()}_extension_analysis.json"
+        path = self._get_report_dir() / "browser_extension_analysis.json"
 
         try:
             data = self._build_export_data()
@@ -1137,7 +1279,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             messagebox.showwarning("Save HTML", "Analyze an extension first.")
             return
 
-        path = self._get_report_dir() / f"{self._get_report_basename()}_extension_analysis.html"
+        path = self._get_report_dir() / "browser_extension_report.html"
 
         try:
             data = self._build_export_data()
@@ -1450,17 +1592,45 @@ pre {{
 </body>
 </html>"""
 
-    def _get_report_dir(self) -> Path:
-        base = None
-        if self.current_source:
-            source_path = Path(self.current_source)
-            base = source_path if source_path.is_dir() else source_path.parent
-        if base is None and self.current_working_dir:
-            base = Path(self.current_working_dir)
-        if base is None:
-            base = Path.cwd()
+    def _current_case_name(self) -> str:
+        case_name = self.parent.case_var.get().strip() if hasattr(self.parent, "case_var") else ""
+        if case_name:
+            return case_name
 
-        report_dir = base / "ringforge_extension_reports"
+        sample = self.parent.sample_var.get().strip() if hasattr(self.parent, "sample_var") else ""
+        if sample:
+            return Path(sample).stem[:64]
+
+        if self.current_source:
+            return Path(self.current_source).stem[:64]
+
+        return "extension_case"
+
+
+    def _get_case_dir(self) -> Path:
+        project_root = Path(__file__).resolve().parents[1]
+
+        case_root = (
+            Path(self.parent.case_root_var.get().strip())
+            if hasattr(self.parent, "case_root_var") and self.parent.case_root_var.get().strip()
+            else project_root / "cases"
+        )
+
+        case_root.mkdir(parents=True, exist_ok=True)
+
+        case_dir = case_root / self._current_case_name()
+        case_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self.parent.case_dir_detected = case_dir
+        except Exception:
+            pass
+
+        return case_dir
+
+
+    def _get_report_dir(self) -> Path:
+        report_dir = self._get_case_dir() / "browser_extension_analysis"
         report_dir.mkdir(parents=True, exist_ok=True)
         return report_dir
 

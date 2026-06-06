@@ -129,6 +129,14 @@ def build_bottom_actions(app, workspace):
         width=22,
         command=app._open_dynamic_window,
     ).pack(side="left", padx=(0, 8))
+    
+    ttk.Button(
+        row,
+        text="Open Extension Analysis",
+        style="Action.TButton",
+        width=24,
+        command=app.open_extension_analysis_window,
+    ).pack(side="left", padx=(0, 8))
 
     ttk.Label(row, textvariable=app.running_var, anchor="e").pack(side="right")
 

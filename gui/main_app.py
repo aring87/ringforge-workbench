@@ -9,7 +9,7 @@ from typing import Optional, Tuple
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
-
+from gui.extension_window import ExtensionAnalysisWindow
 from gui.controllers import StaticAnalysisController, ResultController, PathActionsController
 from gui.api_window import APIAnalysisWindow
 from gui.dynamic_window import DynamicAnalysisWindow
@@ -108,11 +108,13 @@ class App(tk.Tk):
             self.dynamic_window = None
             self.spec_window = None
             self.api_window = None
+            self.extension_window = None
 
             # Keep latest module results for other windows / unified report usage
             self.latest_static_result = {}
             self.latest_dynamic_result = {}
             self.latest_spec_result = {}
+            self.latest_extension_result = {}
 
             self.output_q = queue.Queue()
             self.worker_thread = None
@@ -150,6 +152,21 @@ class App(tk.Tk):
             import traceback
             traceback.print_exc()
             raise
+
+    def open_extension_analysis_window(self):
+        if self.extension_window is not None and self.extension_window.winfo_exists():
+            self.extension_window.lift()
+            self.extension_window.focus_force()
+            return
+
+        self.extension_window = ExtensionAnalysisWindow(self)
+        self.extension_window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda win=self.extension_window: (
+                win._on_close() if hasattr(win, "_on_close") else win.destroy(),
+                setattr(self, "extension_window", None),
+            ),
+        )
 
     def _autosize_to_screen(self):
         """

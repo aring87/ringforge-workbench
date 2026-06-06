@@ -331,7 +331,29 @@ class UnifiedReportWindow(tk.Toplevel):
             *self._dynamic_findings_candidates(case_dir),
             case_dir / "dynamic_analysis" / "reports" / "dynamic_report.html",
         ]
+        
+        extension_runs_dir = case_dir / "browser_extension_analysis" / "runs"
 
+        extension_run_candidates = []
+        if extension_runs_dir.exists():
+            try:
+                extension_run_candidates.extend(
+                    sorted(
+                        extension_runs_dir.glob("*/browser_extension_analysis.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+                extension_run_candidates.extend(
+                    sorted(
+                        extension_runs_dir.glob("*/browser_extension_report.html"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            except Exception:
+                pass
+        
         checks = {
             "Static Analysis": static_candidates,
             "Dynamic Analysis": dynamic_candidates,
@@ -353,6 +375,15 @@ class UnifiedReportWindow(tk.Toplevel):
                 case_dir / "reports" / "api_spec_analysis.json",
             ],
             "Browser Extension Analysis": [
+                # New canonical browser extension analysis paths
+                case_dir / "browser_extension_analysis" / "browser_extension_analysis.json",
+                case_dir / "browser_extension_analysis" / "browser_extension_report.html",
+                case_dir / "browser_extension_analysis" / "metadata" / "browser_extension_analysis.json",
+
+                # Historical run outputs
+                *extension_run_candidates,
+
+                # Legacy compatibility paths
                 case_dir / "extension_analysis" / "extension_analysis.json",
                 case_dir / "extension_analysis" / "reports" / "extension_analysis.json",
                 case_dir / "ringforge_extension_reports",
@@ -649,9 +680,20 @@ class UnifiedReportWindow(tk.Toplevel):
 
                     summary = data.get("summary", {})
                     if isinstance(summary, dict):
+                        findings["extension"].append(f"Extension name: {summary.get('name', '-')}")
+                        findings["extension"].append(f"Extension version: {summary.get('version', '-')}")
+                        findings["extension"].append(f"Manifest version: {summary.get('manifest_version', '-')}")
                         findings["extension"].append(f"Extension verdict: {summary.get('risk_verdict', '-')}")
                         findings["extension"].append(f"Extension risk score: {summary.get('risk_score', '0')}")
                         findings["extension"].append(f"Files found: {summary.get('files_found', '0')}")
+                        findings["extension"].append(f"Permissions: {summary.get('permissions', '-')}")
+                        findings["extension"].append(f"Host permissions: {summary.get('host_permissions', '-')}")
+                        findings["extension"].append(f"Background: {summary.get('background', '-')}")
+                        findings["extension"].append(f"Content scripts: {summary.get('content_scripts', '-')}")
+                        findings["extension"].append(f"Web resources: {summary.get('web_resources', '-')}")
+                        findings["extension"].append(f"Externally connectable: {summary.get('externally_connectable', '-')}")
+                        findings["extension"].append(f"Update URL: {summary.get('update_url', '-')}")
+                        findings["extension"].append(f"CSP: {summary.get('csp', '-')}")
                         break
             else:
                 data = self._load_json_if_exists(str(path))
