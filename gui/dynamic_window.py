@@ -1,9 +1,12 @@
 import html
 import json
 import os
+import re
+import shutil
 import queue
 import re
 import subprocess
+import ctypes
 import sys
 import threading
 import tkinter as tk
@@ -21,7 +24,7 @@ from static_triage_engine.scoring import combined_score_from_case_dir
 
 
 class DynamicAnalysisWindow(tk.Toplevel):
-    """
+    r"""
     RingForge Dynamic Analysis window.
 
     Folder model used by this window:
@@ -50,6 +53,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app = app
         self.title("RingForge Workbench - Dynamic Analysis")
         self.configure(bg="#05070B")
+        self.resizable(True, True)
         self._autosize_window()
 
         cfg = getattr(app, "cfg", {}) or {}
@@ -106,6 +110,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self.timeout_var = tk.IntVar(value=int(cfg.get("dynamic_timeout_seconds", 30)))
         self.procmon_enabled_var = tk.BooleanVar(value=bool(cfg.get("dynamic_procmon_enabled", True)))
+        
+        self.minimum_observation_var = tk.IntVar(
+            value=int(cfg.get("dynamic_minimum_observation_seconds", 30))
+        )
+        self.post_exit_observation_var = tk.IntVar(
+            value=int(cfg.get("dynamic_post_exit_observation_seconds", 120))
+        )
+        self.installer_observation_mode_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_installer_observation_mode", True))
+        )
 
         project_root = Path(__file__).resolve().parents[1]
         self.procmon_path_var = tk.StringVar(
@@ -122,10 +136,19 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.summary_status_var = tk.StringVar(value="Ready")
         self.summary_sample_var = tk.StringVar(value=Path(main_sample).name if main_sample else "-")
         self.summary_case_var = tk.StringVar(value=Path(self.case_dir_var.get()).name)
-        self.summary_output_var = tk.StringVar(value=str(self.dynamic_output_dir_var.get()))
+        self.summary_output_var = tk.StringVar(
+            value=self._short_display_path(self.dynamic_output_dir_var.get(), keep_parts=2)
+        )
         self.summary_procmon_var = tk.StringVar(value="Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var = tk.StringVar(value=f"{self.timeout_var.get()} sec")
         self.summary_report_var = tk.StringVar(value="-")
+        self.summary_observation_var = tk.StringVar(
+            value=(
+                f"Min {self.minimum_observation_var.get()} sec | "
+                f"Post-exit {self.post_exit_observation_var.get()} sec | "
+                f"{'Installer mode' if self.installer_observation_mode_var.get() else 'Standard mode'}"
+            )
+        )
 
         self.metric_score_var = tk.StringVar(value="-")
         self.metric_process_var = tk.StringVar(value="-")
@@ -140,72 +163,97 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.brand_logo_img = None
         self.output_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
+        self.cancel_event = threading.Event()
 
         self._build_ui()
         self._reset_progress()
         self._refresh_summary_from_inputs()
         self.after(150, self._drain_output)
 
-        self.transient(app)
         self.grab_set()
 
 
+    def _get_work_area(self) -> tuple[int, int, int, int]:
+        """
+        Return the usable desktop work area as (left, top, width, height).
+
+        On Windows this excludes the taskbar, which prevents the bottom of the
+        Dynamic Analysis window from being hidden behind the taskbar in VMs or
+        high-DPI displays. Other platforms fall back to Tk screen dimensions.
+        """
+        screen_w = int(self.winfo_screenwidth())
+        screen_h = int(self.winfo_screenheight())
+
+        if os.name == "nt":
+            try:
+                class RECT(ctypes.Structure):
+                    _fields_ = [
+                        ("left", ctypes.c_long),
+                        ("top", ctypes.c_long),
+                        ("right", ctypes.c_long),
+                        ("bottom", ctypes.c_long),
+                    ]
+
+                rect = RECT()
+                SPI_GETWORKAREA = 0x0030
+                if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+                    return (
+                        int(rect.left),
+                        int(rect.top),
+                        int(rect.right - rect.left),
+                        int(rect.bottom - rect.top),
+                    )
+            except Exception:
+                pass
+
+        return 0, 0, screen_w, screen_h
+
     def _autosize_window(self):
         """
-        Size the Dynamic Analysis window based on the current screen.
+        Size the Dynamic Analysis window based on the usable screen area.
 
-        This avoids hard-coded window heights like 1200px, which can cut off
-        the bottom of the UI on laptops, VMware consoles, Linux desktops, or
-        systems using Windows display scaling.
+        The previous approach maximized the window on Windows. That can still
+        cause clipping on VMware consoles, taskbar-heavy desktops, or scaled
+        displays. This version uses the work area, leaves a small safety margin,
+        and enables compact layout rules when vertical space is limited.
         """
         try:
             self.update_idletasks()
-            screen_w = int(self.winfo_screenwidth())
-            screen_h = int(self.winfo_screenheight())
 
-            # Compact mode helps VMware/laptop screens where vertical space is tight.
-            self._compact_ui = screen_h < 1000
+            work_x, work_y, work_w, work_h = self._get_work_area()
 
-            width_pct = 0.94
-            height_pct = 0.90 if self._compact_ui else 0.88
+            # Compact mode reduces banner, padding, and text-area height on
+            # smaller VM/laptop displays.
+            self._compact_ui = work_h < 980
 
-            width = int(screen_w * width_pct)
-            height = int(screen_h * height_pct)
+            width_pct = 0.97
+            height_pct = 0.96 if self._compact_ui else 0.94
+            safety_x = 20
+            safety_y = 36 if os.name == "nt" else 28
 
-            # Keep sane lower bounds, but never force a window taller than the screen.
-            min_w = min(1180, max(980, screen_w - 80))
-            min_h = min(760, max(640, screen_h - 120))
+            width = min(int(work_w * width_pct), max(900, work_w - safety_x))
+            height = min(int(work_h * height_pct), max(640, work_h - safety_y))
+
+            min_w = min(1120, max(940, work_w - 80))
+            min_h = min(720, max(620, work_h - 100))
 
             width = max(width, min_w)
             height = max(height, min_h)
 
-            width = min(width, max(900, screen_w - 40))
-            height = min(height, max(640, screen_h - 80))
-
-            x = max((screen_w - width) // 2, 0)
-            y = max((screen_h - height) // 2, 0)
+            x = work_x + max((work_w - width) // 2, 0)
+            y = work_y + max((work_h - height) // 2, 0)
 
             self.geometry(f"{width}x{height}+{x}+{y}")
             self.minsize(min_w, min_h)
 
-            # Windows: maximize when possible. This gives the best fit on most VMs.
-            if os.name == "nt":
-                try:
-                    self.state("zoomed")
-                except Exception:
-                    pass
-
-            # Linux: some window managers support this.
-            elif sys.platform.startswith("linux"):
-                try:
-                    self.attributes("-zoomed", True)
-                except Exception:
-                    pass
+            # Do not force zoomed/maximized here. Keeping the window inside the
+            # calculated work area avoids clipping behind the Windows taskbar.
+            # Users can still maximize manually if desired.
 
         except Exception:
-            self._compact_ui = False
-            self.geometry("1360x860")
-            self.minsize(1100, 720)
+            self._compact_ui = True
+            self.geometry("1280x780")
+            self.minsize(1040, 660)
 
 
     # -------------------------------------------------------------------------
@@ -248,6 +296,20 @@ class DynamicAnalysisWindow(tk.Toplevel):
         case_home = self._get_case_home_dir()
         dynamic_output = self._get_dynamic_output_dir()
 
+        # If the dynamic output folder points to a case's dynamic_analysis folder,
+        # infer the case home from that output path. This prevents mismatches like:
+        #   case_home = cases/notepad
+        #   dynamic_output = cases/wireshark/dynamic_analysis
+        if dynamic_output.name.lower() == "dynamic_analysis":
+            inferred_case_home = dynamic_output.parent
+            if inferred_case_home.name:
+                case_home = inferred_case_home
+
+        # Keep dynamic output aligned under the resolved case home.
+        expected_dynamic_output = case_home / "dynamic_analysis"
+        if dynamic_output != expected_dynamic_output:
+            dynamic_output = expected_dynamic_output
+
         case_home.mkdir(parents=True, exist_ok=True)
 
         # Create module folders.
@@ -264,7 +326,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
     def _sync_dynamic_output_to_case(self):
         """
         Updates the dynamic output folder to:
-            <case_home>\dynamic_analysis
+            <case_home>/dynamic_analysis
 
         This is used when the selected sample or case folder changes.
         """
@@ -363,7 +425,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_ui(self):
         compact = bool(getattr(self, "_compact_ui", False))
-        outer = {"padx": 10 if compact else 12, "pady": 5 if compact else 8}
+        outer = {"padx": 6 if compact else 10, "pady": 3 if compact else 6}
 
         self._build_top_banner(outer)
 
@@ -405,6 +467,56 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ).grid(row=0, column=1, sticky="ew")
 
         ttk.Label(header, text="Timeout (seconds):").grid(row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 10))
+        
+        ttk.Label(header, text="Observation:").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=(10, 0),
+            pady=(0, 10),
+        )
+
+        observation_row = ttk.Frame(header)
+        observation_row.grid(
+            row=2,
+            column=1,
+            columnspan=2,
+            sticky="w",
+            padx=8,
+            pady=(0, 10),
+        )
+
+        ttk.Label(observation_row, text="Min:").pack(side="left")
+
+        ttk.Spinbox(
+            observation_row,
+            from_=0,
+            to=7200,
+            textvariable=self.minimum_observation_var,
+            width=8,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 14))
+
+        ttk.Label(observation_row, text="Post-exit:").pack(side="left")
+
+        ttk.Spinbox(
+            observation_row,
+            from_=0,
+            to=7200,
+            textvariable=self.post_exit_observation_var,
+            width=8,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 14))
+
+        ttk.Checkbutton(
+            observation_row,
+            text="Installer mode",
+            variable=self.installer_observation_mode_var,
+            style="Dark.TCheckbutton",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left")
 
         runtime_row = ttk.Frame(header)
         runtime_row.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(8, 10))
@@ -428,8 +540,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ).pack(side="left", padx=(14, 0))
 
         workspace = ttk.Frame(frm)
-        workspace.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        workspace.columnconfigure(0, weight=3)
+        workspace.grid(row=1, column=0, sticky="nsew", pady=(6 if compact else 8, 0))
+        workspace.columnconfigure(0, weight=4)
         workspace.columnconfigure(1, weight=2)
 
         # Top row contains settings/status. Bottom row contains output/actions.
@@ -449,12 +561,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self._build_run_status_section(right_top)
 
         left_bottom = ttk.Frame(workspace)
-        left_bottom.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(10, 0))
+        left_bottom.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(6 if compact else 8, 0))
         left_bottom.columnconfigure(0, weight=1)
         left_bottom.rowconfigure(0, weight=1)
 
         right_bottom = ttk.Frame(workspace)
-        right_bottom.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(10, 0))
+        right_bottom.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(6 if compact else 8, 0))
         right_bottom.columnconfigure(0, weight=1)
         right_bottom.rowconfigure(0, weight=1)
 
@@ -469,12 +581,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         text_main = "#F7FAFF"
         text_soft = "#B8C7E6"
 
-        logo_size = 72 if compact else 96
-        title_font = 20 if compact else 24
-        module_font = 15 if compact else 18
-        logo_pad_y = 8 if compact else 14
-        banner_title_pad = 10 if compact else 16
-        banner_bottom_pad = 10 if compact else 16
+        logo_size = 52 if compact else 82
+        title_font = 17 if compact else 22
+        module_font = 13 if compact else 17
+        logo_pad_y = 4 if compact else 10
+        banner_title_pad = 6 if compact else 12
+        banner_bottom_pad = 6 if compact else 12
 
         banner_wrap = ttk.Frame(self)
         banner_wrap.pack(fill="x", **outer)
@@ -595,17 +707,25 @@ class DynamicAnalysisWindow(tk.Toplevel):
         notes.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
         notes.columnconfigure(0, weight=1)
 
-        note_text = (
-            "• Use a VM snapshot before execution.\n"
-            "• Run elevated when Procmon capture requires it.\n"
-            "• Prefer isolated networking for unknown samples.\n"
-            "• Output is stored under the case home folder in dynamic_analysis."
-        )
-        ttk.Label(notes, text=note_text, justify="left").grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        compact = bool(getattr(self, "_compact_ui", False))
+        if compact:
+            note_text = (
+                "• Snapshot VM before execution.  "
+                "• Run elevated for best Procmon/Autoruns capture.  "
+                "• Use isolated networking for unknown samples."
+            )
+        else:
+            note_text = (
+                "• Use a VM snapshot before execution.\n"
+                "• Run elevated when Procmon capture requires it.\n"
+                "• Prefer isolated networking for unknown samples.\n"
+                "• Output is stored under the case home folder in dynamic_analysis."
+            )
+        ttk.Label(notes, text=note_text, justify="left", wraplength=980).grid(row=0, column=0, sticky="w", padx=8, pady=(4 if compact else 6))
 
         actions = ttk.Frame(settings)
         actions.grid(row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
-        actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=1)
 
         self.run_btn = ttk.Button(
             actions,
@@ -616,11 +736,20 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.run_btn.grid(row=0, column=0, sticky="w")
 
+        self.cancel_btn = ttk.Button(
+            actions,
+            text="Cancel Analysis",
+            style="Side.Action.TButton",
+            command=self._cancel_dynamic_analysis,
+            state="disabled",
+        )
+        self.cancel_btn.grid(row=0, column=1, sticky="w", padx=(10, 0))
+
         ttk.Label(
             actions,
             textvariable=self.status_var,
             anchor="e",
-        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
 
     def _build_run_status_section(self, parent):
         panel = ttk.LabelFrame(parent, text="Run Status")
@@ -655,12 +784,13 @@ class DynamicAnalysisWindow(tk.Toplevel):
             ("Output:", self.summary_output_var),
             ("Procmon:", self.summary_procmon_var),
             ("Timeout:", self.summary_timeout_var),
+            ("Observation:", self.summary_observation_var),
             ("Latest Report:", self.summary_report_var),
         ]
 
         for idx, (label, var) in enumerate(rows):
             ttk.Label(summary, text=label).grid(row=idx, column=0, sticky="w", pady=(0 if idx == 0 else 6, 0))
-            ttk.Label(summary, textvariable=var, wraplength=300, justify="left").grid(
+            ttk.Label(summary, textvariable=var, wraplength=260 if getattr(self, "_compact_ui", False) else 340, justify="left").grid(
                 row=idx, column=1, sticky="w", padx=(8, 0), pady=(0 if idx == 0 else 6, 0)
             )
 
@@ -704,6 +834,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         panel = ttk.LabelFrame(parent, text="Findings Summary")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(1, weight=1)
+        panel.rowconfigure(8, weight=1)
 
         metrics = [
             ("Score:", self.metric_score_var),
@@ -748,21 +879,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
             text="Open Case Folder",
             style="Action.TButton",
             command=self._open_case_folder,
-        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6), ipady=2)
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(6 if getattr(self, "_compact_ui", False) else 10, 4), ipady=1)
 
         ttk.Button(
             report_actions,
             text="Open Dynamic Output Folder",
             style="Action.TButton",
             command=self._open_dynamic_output_folder,
-        ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6), ipady=2)
+        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4), ipady=1)
 
         ttk.Button(
             report_actions,
             text="Open Latest Report",
             style="Action.TButton",
             command=self._open_latest_dynamic_html,
-        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10), ipady=2)
+        ).grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6 if getattr(self, "_compact_ui", False) else 10), ipady=1)
 
     # -------------------------------------------------------------------------
     # Progress
@@ -838,9 +969,14 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self.summary_sample_var.set(Path(sample_text).name if sample_text else "-")
         self.summary_case_var.set(case_home.name if str(case_home).strip() else "-")
-        self.summary_output_var.set(str(dynamic_output))
+        self.summary_output_var.set(self._short_display_path(dynamic_output, keep_parts=2))
         self.summary_procmon_var.set("Enabled" if self.procmon_enabled_var.get() else "Disabled")
         self.summary_timeout_var.set(f"{self.timeout_var.get()} sec")
+        self.summary_observation_var.set(
+            f"Min {self.minimum_observation_var.get()}s | "
+            f"Post {self.post_exit_observation_var.get()}s | "
+            f"{'Installer' if self.installer_observation_mode_var.get() else 'Standard'}"
+        )
 
     def _save_cfg(self):
         if not hasattr(self.app, "cfg") or not isinstance(self.app.cfg, dict):
@@ -852,6 +988,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_procmon_enabled"] = bool(self.procmon_enabled_var.get())
         self.app.cfg["dynamic_procmon_path"] = self.procmon_path_var.get().strip()
         self.app.cfg["dynamic_procmon_config_path"] = self.procmon_config_var.get().strip()
+        self.app.cfg["dynamic_minimum_observation_seconds"] = int(self.minimum_observation_var.get())
+        self.app.cfg["dynamic_post_exit_observation_seconds"] = int(self.post_exit_observation_var.get())
+        self.app.cfg["dynamic_installer_observation_mode"] = bool(self.installer_observation_mode_var.get())
 
         config_path = self._project_root() / "config.json"
         config_path.write_text(json.dumps(self.app.cfg, indent=2), encoding="utf-8")
@@ -867,6 +1006,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 ("Executable Files", "*.exe *.dll *.msi *.bat *.cmd *.ps1 *.vbs"),
                 ("All Files", "*.*"),
             ],
+            parent=self,
         )
         if chosen:
             sample = Path(chosen)
@@ -986,6 +1126,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             title="Select Procmon executable",
             initialdir=str(start),
             filetypes=[("Executable", "*.exe"), ("All Files", "*.*")],
+            parent=self,
         )
         if chosen:
             self.procmon_path_var.set(str(Path(chosen)))
@@ -998,10 +1139,34 @@ class DynamicAnalysisWindow(tk.Toplevel):
             title="Select Procmon config (.pmc)",
             initialdir=str(start),
             filetypes=[("Procmon Config", "*.pmc"), ("All Files", "*.*")],
+            parent=self,
         )
         if chosen:
             self.procmon_config_var.set(str(Path(chosen)))
             self._save_cfg()
+            
+    def _safe_report_stem(self, sample_name: str) -> str:
+        stem = Path(sample_name or "").stem
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem)
+        stem = stem.strip("._-")
+        return stem or "sample"
+    
+    def _short_display_path(self, path_value, keep_parts: int = 2) -> str:
+        if not path_value:
+            return "-"
+
+        try:
+            p = Path(path_value)
+            parts = p.parts
+
+            if len(parts) <= keep_parts:
+                return str(p)
+
+            tail = Path(*parts[-keep_parts:])
+            return f"...\\{tail}"
+        except Exception:
+            text = str(path_value)
+            return text if len(text) <= 80 else f"...{text[-77:]}"
 
     # -------------------------------------------------------------------------
     # Folder/report actions
@@ -1039,17 +1204,31 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
             reports_dir = dynamic_output / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
-
+            
             summary_path, summary_candidates = self._find_latest_dynamic_summary(case_home, dynamic_output)
             findings_path, findings_candidates = self._find_latest_dynamic_findings(case_home, dynamic_output)
 
-            output_html = reports_dir / "dynamic_report.html"
+            sample_name = Path(self.sample_var.get().strip()).name
+            sample_stem = self._safe_report_stem(sample_name)
+
+            output_html = reports_dir / f"{sample_stem}_dynamic_report.html"
+            compat_html = reports_dir / "dynamic_report.html"
 
             if summary_path:
                 write_dynamic_html_report(summary_path, output_html)
+
+                # Compatibility copy for existing buttons/workflows that expect dynamic_report.html.
+                if output_html.exists():
+                    shutil.copy2(output_html, compat_html)
+
             elif findings_path:
                 data = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
                 self._write_fallback_dynamic_html(data, output_html, case_home)
+
+                # Compatibility copy for existing buttons/workflows that expect dynamic_report.html.
+                if output_html.exists():
+                    shutil.copy2(output_html, compat_html)
+
             else:
                 checked = [str(p) for p in summary_candidates + findings_candidates]
                 messagebox.showerror(
@@ -1058,8 +1237,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
                     parent=self,
                 )
                 return None
+            
 
-            self.summary_report_var.set(str(output_html))
+            self.summary_report_var.set(self._short_display_path(output_html, keep_parts=2))
             if open_after:
                 webbrowser.open(output_html.resolve().as_uri())
 
@@ -1131,11 +1311,245 @@ ul {{ margin-top: 8px; }}
                 messagebox.showerror("Open Report", f"HTML report not found:\n{html_path}", parent=self)
                 return
 
-            self.summary_report_var.set(str(html_path))
+            self.summary_report_var.set(self._short_display_path(html_path, keep_parts=2))
             webbrowser.open(html_path.resolve().as_uri())
         except Exception as e:
             messagebox.showerror("Open Report", str(e), parent=self)
 
+
+    # -------------------------------------------------------------------------
+    # Dynamic preflight checks
+    # -------------------------------------------------------------------------
+
+    def _is_running_as_admin(self) -> bool:
+        """
+        Return True when RingForge is running with Administrator privileges.
+
+        Procmon, service snapshots, scheduled task snapshots, and Autoruns
+        collection are more reliable when the GUI is elevated.
+        """
+        if os.name != "nt":
+            return False
+
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+    def _find_autorunsc_path(self) -> Optional[Path]:
+        """
+        Locate Autorunsc in the local tools folder.
+
+        Autorunsc is optional for Dynamic Analysis, so this is a warning-only
+        preflight item. The orchestrator can still run without Autoruns support.
+        """
+        tools_dir = self._project_root() / "tools"
+        candidates = [
+            tools_dir / "autorunsc64.exe",
+            tools_dir / "Autorunsc64.exe",
+            tools_dir / "autorunsc.exe",
+            tools_dir / "Autorunsc.exe",
+        ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        return None
+
+    def _check_case_folder_writable(self, folder: Path) -> tuple[bool, str]:
+        """
+        Confirm that the selected case/output folder can be created and written.
+        """
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            test_file = folder / ".ringforge_write_test"
+            test_file.write_text("ringforge write test", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
+            return True, ""
+        except Exception as error:
+            return False, str(error)
+            
+    def _confirm_case_sample_match(self, sample: Path, case_home: Path) -> bool:
+        sample_stem = self._safe_case_name(sample.stem).lower()
+        case_name = self._safe_case_name(case_home.name).lower()
+
+        generic_case_names = {"sample", "dynamic_case", "notepad"}
+
+        if not sample_stem or not case_name:
+            return True
+
+        if case_name == sample_stem:
+            return True
+
+        if sample_stem in case_name or case_name in sample_stem:
+            return True
+
+        proceed = messagebox.askyesno(
+            "Case Folder Mismatch",
+            "The selected sample name does not appear to match the selected case folder.\n\n"
+            f"Sample:\n{sample.name}\n\n"
+            f"Case folder:\n{case_home}\n\n"
+            "This may mix dynamic results into the wrong case.\n\n"
+            "Continue anyway?",
+            parent=self,
+        )
+
+        return bool(proceed)
+
+    def _run_dynamic_preflight_checks(
+        self,
+        sample: Path,
+        case_home: Path,
+        dynamic_output: Path,
+        procmon_path: Path,
+        procmon_config: str,
+    ) -> bool:
+        """
+        Professional preflight validation before starting Dynamic Analysis.
+
+        Blocking issues stop the run. Warnings allow the analyst to continue.
+        """
+        issues: list[str] = []
+        warnings: list[str] = []
+
+        if not sample.exists():
+            issues.append(f"Sample file not found:\n{sample}")
+
+        if sample.exists() and not sample.is_file():
+            issues.append(f"Selected sample path is not a file:\n{sample}")
+
+        case_ok, case_error = self._check_case_folder_writable(case_home)
+        if not case_ok:
+            issues.append(f"Case folder is not writable:\n{case_home}\n\n{case_error}")
+
+        dynamic_ok, dynamic_error = self._check_case_folder_writable(dynamic_output)
+        if not dynamic_ok:
+            issues.append(f"Dynamic output folder is not writable:\n{dynamic_output}\n\n{dynamic_error}")
+
+        if self.procmon_enabled_var.get():
+            if not procmon_path.exists():
+                issues.append(f"Procmon is enabled but the executable was not found:\n{procmon_path}")
+            elif not procmon_path.is_file():
+                issues.append(f"Procmon path is not a file:\n{procmon_path}")
+
+        if procmon_config:
+            procmon_config_path = Path(procmon_config)
+            if not procmon_config_path.exists():
+                warnings.append(
+                    "Procmon config file was not found. RingForge will continue, "
+                    "but Procmon may run with default capture behavior:\n"
+                    f"{procmon_config_path}"
+                )
+
+        autorunsc_path = self._find_autorunsc_path()
+        if autorunsc_path is None:
+            warnings.append(
+                "Autorunsc was not found in the local tools folder. "
+                "Autoruns persistence diffing may be skipped.\n\n"
+                "Expected one of:\n"
+                f"{self._project_root() / 'tools' / 'autorunsc64.exe'}\n"
+                f"{self._project_root() / 'tools' / 'autorunsc.exe'}"
+            )
+
+        if os.name == "nt" and not self._is_running_as_admin():
+            warnings.append(
+                "RingForge is not running as Administrator. Procmon capture, "
+                "service snapshots, scheduled task snapshots, and Autoruns collection "
+                "may be incomplete."
+            )
+
+        if issues:
+            messagebox.showerror(
+                "Dynamic Preflight Failed",
+                "Dynamic Analysis cannot start until these issues are fixed:\n\n"
+                + "\n\n".join(issues),
+                parent=self,
+            )
+            self._set_step("Pre-checks", 100, "failed")
+            return False
+
+        if warnings:
+            proceed = messagebox.askyesno(
+                "Dynamic Preflight Warnings",
+                "Dynamic Analysis can start, but these warnings were found:\n\n"
+                + "\n\n".join(warnings)
+                + "\n\nContinue anyway?",
+                parent=self,
+            )
+            if not proceed:
+                self._set_step("Pre-checks", 100, "cancelled")
+                return False
+
+        return True
+
+    def _cancel_dynamic_analysis(self):
+        if not self.worker_thread or not self.worker_thread.is_alive():
+            return
+
+        self.cancel_event.set()
+        self.status_var.set("Cancelling...")
+        self.summary_status_var.set("Cancelling")
+
+        if self.cancel_btn is not None:
+            self.cancel_btn.configure(state="disabled")
+
+        self.output_q.put(
+            "\n[cancel] Cancellation requested by analyst. Waiting for cleanup...\n"
+        )
+        
+    def _warn_if_observation_settings_conflict(
+        self,
+        timeout_seconds: int,
+        minimum_observation_seconds: int,
+        post_exit_observation_seconds: int,
+    ) -> bool:
+        """
+        Warn when the configured post-exit observation target cannot fully fit
+        inside the hard sample observation timeout.
+
+        This is allowed, especially for quick baseline tests like Notepad, but the
+        analyst should know the timeout will win.
+        """
+        if timeout_seconds <= 0:
+            return True
+
+        if post_exit_observation_seconds <= 0:
+            return True
+
+        if post_exit_observation_seconds >= timeout_seconds:
+            return messagebox.askyesno(
+                "Observation Settings Notice",
+                "Post-exit observation is longer than or equal to the sample observation timeout.\n\n"
+                f"Sample observation timeout: {timeout_seconds} seconds\n"
+                f"Minimum observation: {minimum_observation_seconds} seconds\n"
+                f"Post-exit observation target: {post_exit_observation_seconds} seconds\n\n"
+                "The run can still continue, but RingForge will stop at the timeout before the full "
+                "post-exit observation window completes.\n\n"
+                "This is usually fine for quick baseline tests like Notepad. For larger installers, "
+                "increase the timeout.\n\n"
+                "Continue anyway?",
+                parent=self,
+            )
+
+        remaining_after_minimum = timeout_seconds - minimum_observation_seconds
+
+        if remaining_after_minimum > 0 and post_exit_observation_seconds > remaining_after_minimum:
+            return messagebox.askyesno(
+                "Observation Settings Notice",
+                "Post-exit observation may not fully fit after the minimum observation window.\n\n"
+                f"Sample observation timeout: {timeout_seconds} seconds\n"
+                f"Minimum observation: {minimum_observation_seconds} seconds\n"
+                f"Post-exit observation target: {post_exit_observation_seconds} seconds\n"
+                f"Maximum possible post-exit time after minimum observation: {remaining_after_minimum} seconds\n\n"
+                "The run can still continue, but RingForge may stop at the timeout before the full "
+                "post-exit observation window completes.\n\n"
+                "Continue anyway?",
+                parent=self,
+            )
+
+        return True
+    
     # -------------------------------------------------------------------------
     # Run dynamic analysis
     # -------------------------------------------------------------------------
@@ -1145,20 +1559,45 @@ ul {{ margin-top: 8px; }}
             return
 
         sample = Path(self.sample_var.get().strip())
-        if not sample.exists():
-            messagebox.showerror("Dynamic Analysis failed", f"Sample not found:\n{sample}", parent=self)
-            return
-
         case_home, dynamic_output = self._ensure_case_layout()
-        self._write_case_metadata(case_home, dynamic_output, sample)
-
-        procmon_path = Path(self.procmon_path_var.get().strip())
-        if self.procmon_enabled_var.get() and not procmon_path.exists():
-            messagebox.showerror("Dynamic Analysis failed", f"Procmon not found:\n{procmon_path}", parent=self)
+        
+        if not self._confirm_case_sample_match(sample, case_home):
+            self._set_step("Pre-checks", 100, "cancelled")
+            self.status_var.set("Idle")
+            self.summary_status_var.set("Ready")
             return
-
+    
+        procmon_path = Path(self.procmon_path_var.get().strip())
         timeout_seconds = int(self.timeout_var.get())
         procmon_config = self.procmon_config_var.get().strip()
+        
+        minimum_observation_seconds = int(self.minimum_observation_var.get())
+        post_exit_observation_seconds = int(self.post_exit_observation_var.get())
+        installer_observation_mode = bool(self.installer_observation_mode_var.get())
+
+        if not self._warn_if_observation_settings_conflict(
+            timeout_seconds=timeout_seconds,
+            minimum_observation_seconds=minimum_observation_seconds,
+            post_exit_observation_seconds=post_exit_observation_seconds,
+        ):
+            self._set_step("Pre-checks", 100, "cancelled")
+            self.status_var.set("Idle")
+            self.summary_status_var.set("Ready")
+            return
+
+        self._reset_progress()
+        self._set_step("Pre-checks", 50, "checking")
+
+        if not self._run_dynamic_preflight_checks(
+            sample=sample,
+            case_home=case_home,
+            dynamic_output=dynamic_output,
+            procmon_path=procmon_path,
+            procmon_config=procmon_config,
+        ):
+            return
+
+        self._write_case_metadata(case_home, dynamic_output, sample)
 
         # Important:
         # The orchestrator receives dynamic_output as its case_dir.
@@ -1169,17 +1608,22 @@ ul {{ margin-top: 8px; }}
             "case_dir": str(dynamic_output),
             "case_home_dir": str(case_home),
             "timeout_seconds": timeout_seconds,
+            "minimum_observation_seconds": minimum_observation_seconds,
+            "post_exit_observation_seconds": post_exit_observation_seconds,
+            "installer_observation_mode": installer_observation_mode,
             "procmon_enabled": bool(self.procmon_enabled_var.get()),
             "procmon_path": str(procmon_path),
             "procmon_config_path": procmon_config,
         }
 
         self._save_cfg()
-        self._reset_progress()
         self._refresh_summary_from_inputs()
         self.summary_status_var.set("Running")
+        self.cancel_event.clear()
         self.status_var.set("Running dynamic...")
         self.run_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        self.update_idletasks()
 
         self._set_step("Pre-checks", 100, "done")
         self._set_step("Procmon start", 25, "running")
@@ -1190,7 +1634,11 @@ ul {{ margin-top: 8px; }}
         self.output.insert("end", f"  case_home={case_home}\n")
         self.output.insert("end", f"  dynamic_output={dynamic_output}\n")
         self.output.insert("end", f"  timeout_seconds={timeout_seconds}\n")
-        self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n\n")
+        self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n")
+        self.output.insert("end", f"  procmon_path={procmon_path}\n")
+        self.output.insert("end", f"  procmon_config={procmon_config or '-'}\n")
+        self.output.insert("end", f"  autorunsc_path={self._find_autorunsc_path() or 'not found'}\n")
+        self.output.insert("end", f"  admin={self._is_running_as_admin()}\n\n")
         self.output.see("end")
 
         def worker():
@@ -1198,6 +1646,7 @@ ul {{ margin-top: 8px; }}
                 summary = run_dynamic_analysis(
                     config,
                     status_cb=lambda msg: self.output_q.put(f"[status] {msg}\n"),
+                    cancel_event=self.cancel_event,
                 )
 
                 findings = summary.get("findings", {}) if isinstance(summary, dict) else {}
@@ -1275,8 +1724,12 @@ ul {{ margin-top: 8px; }}
         self.metric_persistence_var.set(str(counts.get("persistence_hits", 0)))
 
         self.run_btn.configure(state="normal")
+        self.cancel_btn.configure(state="disabled")
         self.status_var.set("Idle")
-        self.summary_status_var.set("Completed")
+        if isinstance(summary, dict) and summary.get("cancelled"):
+            self.summary_status_var.set("Cancelled")
+        else:
+            self.summary_status_var.set("Completed")
 
         def finalize_refresh():
             case_home = self._get_case_home_dir()
@@ -1286,7 +1739,9 @@ ul {{ margin-top: 8px; }}
                 self.app.case_dir_detected = case_home
 
                 html_path = self._export_dynamic_report(open_after=False)
-                self.summary_report_var.set(str(html_path) if html_path and html_path.exists() else "-")
+                self.summary_report_var.set(
+                    self._short_display_path(html_path, keep_parts=2) if html_path and html_path.exists() else "-"
+                )
 
                 try:
                     combined_score_from_case_dir(
@@ -1305,8 +1760,19 @@ ul {{ margin-top: 8px; }}
                     self.app.refresh_combined_score()
 
             exit_code = summary.get("exit_code") if isinstance(summary, dict) else None
-            if exit_code == 0:
-                messagebox.showinfo("Completed", "Dynamic analysis completed successfully.", parent=self)
+
+            if isinstance(summary, dict) and summary.get("cancelled"):
+                messagebox.showwarning(
+                    "Cancelled",
+                    summary.get("cancellation_reason", "Dynamic analysis cancelled by analyst."),
+                    parent=self,
+                )
+            elif exit_code == 0:
+                messagebox.showinfo(
+                    "Completed",
+                    "Dynamic analysis completed successfully.",
+                    parent=self,
+                )
             else:
                 messagebox.showwarning(
                     "Completed",
@@ -1318,6 +1784,8 @@ ul {{ margin-top: 8px; }}
 
     def _on_error(self, err: str):
         self.run_btn.configure(state="normal")
+        if self.cancel_btn is not None:
+            self.cancel_btn.configure(state="disabled")
         self.status_var.set("Idle")
         self.summary_status_var.set("Error")
         self._set_step("Procmon start", 100, "failed")

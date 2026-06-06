@@ -7,6 +7,16 @@ from typing import Any
 
 
 KNOWN_NOISE_PROCESSES = {
+    "windowspackagemanagerserver.exe",
+    "microsoftedgeupdate.exe",
+    "softlandingtask.exe",
+    "taskhostw.exe",
+    "sppsvc.exe",
+    "deviceenroller.exe",
+    "securityhealthservice.exe",
+    "mssense.exe",
+    "senseir.exe",
+    "vssvc.exe",
     "spotify.exe",
     "chrome.exe",
     "steamwebhelper.exe",
@@ -65,6 +75,11 @@ KNOWN_NOISE_PROCESSES = {
 }
 
 KNOWN_NOISE_PATH_SUBSTRINGS = (
+    r"\windows\system32\tasks\microsoft\windows\flighting\onesettings\refreshcache",
+    r"\windows\system32\tasks\microsoft\windows\softwareprotectionplatform\svcrestarttask",
+    r"\program files\windowsapps\microsoft.desktopappinstaller_",
+    r"\program files (x86)\microsoft\edgeupdate\\",
+    r"\systemapps\microsoftwindows.client.cbs_",
     r"\onedrive\logs\\",
     r"\google\chrome\user data\\",
     r"\razer\gamemanager3\logs\\",
@@ -426,6 +441,40 @@ def _looks_persistence(value: object) -> bool:
     lowered = _normalize_text_lower(value)
     return any(part in lowered for part in PERSISTENCE_KEYWORDS)
 
+def _is_low_confidence_persistence_dll_load(path: object, operation: object, process_name: object = None) -> bool:
+    """
+    Loading task scheduler DLLs is not persistence by itself.
+
+    Procmon frequently records normal Windows components loading taskschd.dll
+    or TaskSchdPS.dll. These should not count as persistence unless there is
+    also a real task/service/Run-key write elsewhere.
+    """
+    op_l = _normalize_text_lower(operation)
+    path_l = _normalize_text_lower(path).replace("/", "\\")
+    proc_l = _normalize_process_name(process_name)
+
+    if "load image" not in op_l:
+        return False
+
+    low_confidence_dlls = (
+        r"\windows\system32\taskschd.dll",
+        r"\windows\system32\taskschdps.dll",
+    )
+
+    if any(dll in path_l for dll in low_confidence_dlls):
+        return True
+
+    if proc_l in {
+        "taskhostw.exe",
+        "softlandingtask.exe",
+        "sppsvc.exe",
+        "deviceenroller.exe",
+        "svchost.exe",
+    } and "taskschd" in path_l:
+        return True
+
+    return False
+
 
 def _path_is_user_writable(value: object) -> bool:
     lowered = _normalize_text_lower(value)
@@ -569,6 +618,12 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
         is_windows_baseline = _is_windows_baseline_process_create(process_name, path, detail)
         is_benign_registry = _is_benign_registry_noise(path, operation, detail)
         is_defender_or_wbem = _is_defender_or_wbem_noise(path, process_name, detail)
+        
+        is_low_confidence_persistence_load = _is_low_confidence_persistence_dll_load(
+            path,
+            operation,
+            process_name,
+        )
 
         if "process" in operation and "create" in operation:
             record = _build_process_create_record(event)
@@ -604,6 +659,7 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
                 and not is_windows_baseline
                 and not is_benign_registry
                 and not is_defender_or_wbem
+                and not is_low_confidence_persistence_load
             ):
                 suspicious_path_hits.append(
                     {
@@ -623,6 +679,7 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
                 and not is_windows_baseline
                 and not is_benign_registry
                 and not is_defender_or_wbem
+                and not is_low_confidence_persistence_load
             ):
                 persistence_hits.append(
                     {

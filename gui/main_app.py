@@ -417,17 +417,23 @@ class App(tk.Tk):
         self._save_cfg()
 
     def _sync_adv_state(self):
-        advanced_on = self.adv_enabled_var.get()
+        advanced_on = bool(self.adv_enabled_var.get())
+        state = "normal" if advanced_on else "disabled"
+
         for child in self.adv_body.winfo_children():
             try:
-                if isinstance(child, ttk.Label):
+                if child is getattr(self, "subfile_limit_label", None):
+                    # Keep ttk label normal so it does not get a white disabled background.
+                    # Only change text color to make it appear disabled.
                     child.configure(state="normal")
-                elif child is getattr(self, "subfile_limit_spin", None):
-                    child.configure(state="normal" if advanced_on else "readonly")
+                    child.configure(foreground="#E5E7EB" if advanced_on else "#6B7280")
+                elif isinstance(child, ttk.Label):
+                    child.configure(state="normal")
                 else:
-                    child.configure(state="normal" if advanced_on else "disabled")
+                    child.configure(state=state)
             except tk.TclError:
                 pass
+
         self._update_effective_label()
 
     def _on_strings_mode_changed(self):

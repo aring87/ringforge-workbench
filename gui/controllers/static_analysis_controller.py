@@ -29,6 +29,21 @@ from gui.gui_utils import (
 
 from static_triage_engine.scoring import combined_score_from_case_dir
 
+SUBFILE_TRIAGE_RE = re.compile(
+    r"^\[subfile:triage\]\s+selected=(?P<selected>\d+)\s+limit=(?P<limit>\d+)",
+    re.I,
+)
+
+SUBFILE_START_RE = re.compile(
+    r"^\[subfile:start\]\s+(?P<idx>\d+)/(?P<total>\d+)\s+(?P<name>.+)$",
+    re.I,
+)
+
+SUBFILE_DONE_RE = re.compile(
+    r"^\[subfile:done\]\s+(?P<idx>\d+)/(?P<total>\d+)\s+(?P<rest>.+)$",
+    re.I,
+)
+
 
 class StaticAnalysisController:
     """
@@ -233,6 +248,21 @@ class StaticAnalysisController:
             return
 
         extract, subfiles, limit, sm = app._effective_settings()
+        
+        if subfiles and int(limit) >= 15:
+            proceed = messagebox.askyesno(
+                "Deep Triage Notice",
+                (
+                    "This analysis may take several minutes.\n\n"
+                    f"RingForge is configured to analyze up to {limit} extracted subfiles. "
+                    "Large installers can appear idle while each extracted EXE/DLL is processed.\n\n"
+                    "The Output window will show [subfile:start] and [subfile:done] progress messages.\n\n"
+                    "Continue?"
+                ),
+            )
+            if not proceed:
+                app.running_var.set("Idle")
+                return
 
         # Important:
         # We want the CLI to write to cases\\<case>\\static_analysis.
@@ -264,6 +294,13 @@ class StaticAnalysisController:
 
         app._reset_progress()
         app._reset_result_summary()
+        try:
+            old_log = static_output_dir / "analysis.log"
+            if old_log.exists():
+                old_log.unlink()
+        except Exception:
+            pass
+            
         app.output.delete("1.0", "end")
         app.output.insert("end", "Starting analysis:\n")
         app.output.insert("end", f"  sample={sample}\n")
@@ -310,6 +347,18 @@ class StaticAnalysisController:
                         if self.cancel_event.is_set():
                             self._terminate_process(proc)
                             break
+
+                        line_lower = line.lower()
+
+                        # Suppress noisy Authenticode timestamp parser output.
+                        # This is usually a non-fatal timestamp parsing warning from a signing
+                        # parser, not a static-analysis failure.
+                        if "can't parse pkcs9 tstinfo" in line_lower or "pkcs9 tstinfo" in line_lower:
+                            app.output_q.put(
+                                "[warn] Authenticode timestamp metadata could not be fully parsed; continuing analysis.\n"
+                            )
+                            continue
+
                         app.output_q.put(line)
 
                 try:
@@ -319,8 +368,9 @@ class StaticAnalysisController:
                     proc.wait(timeout=5)
 
                 rc = proc.returncode if proc.returncode is not None else 1
+                was_cancelled = self.cancel_event.is_set()
 
-                if self.cancel_event.is_set():
+                if was_cancelled:
                     rc = -1
 
             except Exception as e:
@@ -328,10 +378,11 @@ class StaticAnalysisController:
                 rc = 1
             finally:
                 app.active_process = None
-                if rc == -1:
+                if self.cancel_event.is_set():
                     app.output_q.put("\n[cancelled] analysis cancelled by user\n")
+
                 app.output_q.put(f"\n[done] exit_code={rc}\n")
-                app.after(0, lambda: self.on_done(rc))
+                app.after(0, lambda cancelled=self.cancel_event.is_set(): self.on_done(rc, cancelled))
 
         app.worker_thread = threading.Thread(target=worker, daemon=True)
         app.worker_thread.start()
@@ -353,20 +404,43 @@ class StaticAnalysisController:
 
             if os.name == "nt":
                 try:
-                    proc.terminate()
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
                 except Exception:
-                    pass
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
                 time.sleep(0.5)
+
                 if proc.poll() is None:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
             else:
                 try:
                     proc.send_signal(signal.SIGTERM)
                 except Exception:
-                    proc.terminate()
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
                 time.sleep(0.5)
+
                 if proc.poll() is None:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
         except Exception:
             pass
 
@@ -374,7 +448,7 @@ class StaticAnalysisController:
     # Completion handling
     # ---------------------------------------------------------------------
 
-    def on_done(self, rc: int):
+    def on_done(self, rc: int, was_cancelled: bool = False):
         app = self.app
 
         app.stop_tail.set()
@@ -416,6 +490,10 @@ class StaticAnalysisController:
                 # of the app so dynamic/spec modules use the shared case folder.
                 if case_home_dir:
                     app.case_dir_detected = case_home_dir
+                    
+            subfiles_status = app.step_widgets.get("subfiles", {}).get("status")
+            if subfiles_status is not None and subfiles_status.cget("text") == "idle":
+                app._set_step("subfiles", 100, "skipped")
 
             app._set_step("finalize", 100, "done")
 
@@ -439,11 +517,14 @@ class StaticAnalysisController:
 
         if rc == 0:
             messagebox.showinfo("Completed", "Analysis completed successfully.")
-        elif rc == -1:
+        elif was_cancelled:
             app.status_var.set("Analysis cancelled.")
             messagebox.showinfo("Cancelled", "Analysis was cancelled.")
         else:
-            messagebox.showwarning("Completed", f"Analysis finished with exit code {rc}.\nCheck output for details.")
+            messagebox.showwarning(
+                "Completed",
+                f"Analysis finished with exit code {rc}.\nCheck output for details.",
+            )
 
     # ---------------------------------------------------------------------
     # Output/log handling
@@ -480,6 +561,41 @@ class StaticAnalysisController:
                     val = (mpdf.group("p") or "").strip()
                     if val.lower() != "none":
                         app._set_step("report", 100, "done")
+                        app._recalc_overall()
+                
+                m_sub_triage = SUBFILE_TRIAGE_RE.search(line)
+                if m_sub_triage:
+                    selected = int(m_sub_triage.group("selected"))
+                    limit = int(m_sub_triage.group("limit"))
+                    app.status_var.set(f"Subfile triage started: {selected} selected, limit {limit}")
+                    app.running_var.set(f"Subfile triage: 0/{selected}")
+                    app._set_step("subfiles", 15, "running")
+                    app._recalc_overall()
+
+                m_sub_start = SUBFILE_START_RE.search(line)
+                if m_sub_start:
+                    idx = int(m_sub_start.group("idx"))
+                    total = int(m_sub_start.group("total"))
+                    name = m_sub_start.group("name").strip()
+                    pct = int(round((idx / max(total, 1)) * 100))
+                    app.status_var.set(f"Subfile triage {idx}/{total}: {name}")
+                    app.running_var.set(f"Subfile triage: {idx}/{total}")
+                    app._set_step("subfiles", min(95, max(15, pct)), f"{idx}/{total}")
+                    app._recalc_overall()
+
+                m_sub_done = SUBFILE_DONE_RE.search(line)
+                if m_sub_done:
+                    idx = int(m_sub_done.group("idx"))
+                    total = int(m_sub_done.group("total"))
+                    pct = int(round((idx / max(total, 1)) * 100))
+                    app.running_var.set(f"Subfile triage: {idx}/{total}")
+                    app._set_step("subfiles", min(95, max(15, pct)), f"{idx}/{total}")
+                    app._recalc_overall()
+                    
+                    if idx >= total:
+                        app._set_step("subfiles", 100, "done")
+                        app.running_var.set("Running...")
+                        app.status_var.set("Subfile triage completed.")
                         app._recalc_overall()
 
                 app.output.insert("end", line)
@@ -559,7 +675,9 @@ class StaticAnalysisController:
                     line_lower = line.lower()
                     optional_na_steps = {"extract", "file", "filetype", "strings", "capa"}
 
-                    if (
+                    if "cancelled" in line_lower or "canceled" in line_lower:
+                        fail_label = "cancelled"
+                    elif (
                         os.name == "nt"
                         and step_key in optional_na_steps
                         and (

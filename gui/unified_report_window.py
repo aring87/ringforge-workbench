@@ -179,11 +179,13 @@ class UnifiedReportWindow(tk.Toplevel):
         widget.configure(state="disabled")
 
     def _browse_case_dir(self):
-        path = filedialog.askdirectory(title="Select case folder", parent=self)
+        path = filedialog.askdirectory(
+            title="Select case folder",
+            parent=self,
+        )
         if path:
             p = self._normalize_case_dir(Path(path))
             self.case_path_var.set(str(p))
-        self._bring_to_front()
 
     def _bring_to_front(self):
         try:
@@ -506,38 +508,133 @@ class UnifiedReportWindow(tk.Toplevel):
             req = data.get("request", {}) if isinstance(data.get("request"), dict) else {}
             resp = data.get("response", {}) if isinstance(data.get("response"), dict) else {}
 
+            module_name = data.get("module") or data.get("tool")
+            if module_name:
+                findings["api"].append(f"Tool: {module_name}")
+
+            saved_at = data.get("saved_at")
+            if saved_at:
+                findings["api"].append(f"Saved at: {saved_at}")
+
+            redaction = data.get("redaction")
+            if redaction:
+                findings["api"].append(f"Redaction: {redaction}")
+
             if "method" in req:
                 findings["api"].append(f"Method: {req['method']}")
+
             if "url" in req:
                 findings["api"].append(f"URL: {req['url']}")
-            if "status_code" in resp:
-                findings["api"].append(f"HTTP status: {resp['status_code']}")
+
+            if "verify_ssl" in req:
+                findings["api"].append(f"Verify SSL: {req['verify_ssl']}")
+
+            if "timeout_seconds" in req:
+                findings["api"].append(f"Timeout: {req['timeout_seconds']} seconds")
+
+            # Support both old and new Manual API Tester schemas.
+            status_value = resp.get("status", resp.get("status_code"))
+            if status_value not in (None, ""):
+                findings["api"].append(f"HTTP status: {status_value}")
+
             if "reason" in resp and resp.get("reason"):
                 findings["api"].append(f"Reason: {resp['reason']}")
-            break
 
+            content_type = resp.get("content_type")
+            if content_type:
+                findings["api"].append(f"Content-Type: {content_type}")
+
+            elapsed = resp.get("elapsed")
+            if elapsed:
+                findings["api"].append(f"Elapsed: {elapsed}")
+
+            size = resp.get("size")
+            if size:
+                findings["api"].append(f"Response size: {size}")
+
+            analysis = data.get("analysis")
+            if isinstance(analysis, str) and analysis.strip():
+                analysis_lines = []
+                for line in analysis.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("[") or line.lower().startswith("note:"):
+                        analysis_lines.append(line)
+
+                if analysis_lines:
+                    findings["api"].append("Analysis findings:")
+                    for line in analysis_lines[:12]:
+                        findings["api"].append(f"  {line}")
+
+            html_report = data.get("html_report")
+            if html_report:
+                findings["api"].append(f"Latest HTML: {html_report}")
+
+            user_saved_html = data.get("user_saved_html_report")
+            if user_saved_html:
+                findings["api"].append(f"Exported HTML: {user_saved_html}")
+
+            break
+            
         for p in spec_paths:
             data = self._load_json_if_exists(p)
             if not isinstance(data, dict):
                 continue
 
-            if "score" in data:
-                findings["spec"].append(f"Score: {data['score']}")
-            if "verdict" in data:
-                findings["spec"].append(f"Verdict: {data['verdict']}")
-            if "confidence" in data:
-                findings["spec"].append(f"Confidence: {data['confidence']}")
+            title = data.get("title")
+            version = data.get("version")
+            spec_type = data.get("spec_type")
+            fmt = data.get("format")
+            confidence = data.get("confidence")
 
-            summary = data.get("summary", {})
-            if isinstance(summary, dict) and "endpoint_count" in summary:
-                findings["spec"].append(f"Endpoints: {summary['endpoint_count']}")
+            if title:
+                findings["spec"].append(f"Spec title: {title}")
+            if version:
+                findings["spec"].append(f"Spec version: {version}")
+            if spec_type:
+                findings["spec"].append(f"Spec type: {spec_type}")
+            if fmt:
+                findings["spec"].append(f"Format: {fmt}")
+            if confidence:
+                findings["spec"].append(f"Parser confidence: {confidence}")
 
-            if "auth_summary" in data:
-                findings["spec"].append("Authentication summary present")
+            summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
+            scoring = data.get("scoring", {}) if isinstance(data.get("scoring"), dict) else {}
 
-            detections = data.get("detections", [])
-            if isinstance(detections, list):
-                findings["spec"].append(f"Spec detections: {len(detections)}")
+            if summary:
+                findings["spec"].append(f"Endpoints: {summary.get('endpoint_count', 0)}")
+                findings["spec"].append(f"Unauthenticated endpoints: {summary.get('unauthenticated_endpoint_count', 0)}")
+                findings["spec"].append(f"Sensitive unauthenticated endpoints: {summary.get('sensitive_unauthenticated_endpoint_count', 0)}")
+                findings["spec"].append(f"High-risk endpoints: {summary.get('high_risk_endpoint_count', 0)}")
+                findings["spec"].append(f"Medium-risk endpoints: {summary.get('medium_risk_endpoint_count', 0)}")
+                findings["spec"].append(f"Schema issue endpoints: {summary.get('schema_issue_endpoint_count', 0)}")
+
+            if scoring:
+                findings["spec"].append(f"HTTP server detected: {scoring.get('http_server_detected', False)}")
+                findings["spec"].append(f"File upload endpoints: {scoring.get('file_upload_endpoints', 0)}")
+                findings["spec"].append(f"Auth gap count: {scoring.get('auth_gap_count', 0)}")
+
+            auth_summary = data.get("auth_summary", [])
+            if isinstance(auth_summary, list):
+                findings["spec"].append("Auth schemes: " + (", ".join(str(x) for x in auth_summary) if auth_summary else "none"))
+
+            risk_notes = data.get("risk_notes", [])
+            if isinstance(risk_notes, list) and risk_notes:
+                findings["spec"].append("Risk notes:")
+                for note in risk_notes[:10]:
+                    findings["spec"].append(f"  - {note}")
+
+            top_risky = data.get("top_risky_endpoints", [])
+            if isinstance(top_risky, list) and top_risky:
+                findings["spec"].append("Notable endpoints:")
+                for ep in top_risky[:8]:
+                    if isinstance(ep, dict):
+                        findings["spec"].append(
+                            f"  - {ep.get('method', '')} {ep.get('path', '')} "
+                            f"[{ep.get('risk_level', '')} | score={ep.get('risk_score', 0)}]"
+                        )
+
             break
 
         for p in extension_paths:
@@ -573,6 +670,7 @@ class UnifiedReportWindow(tk.Toplevel):
             total = data.get("total_score", data.get("score"))
             severity = data.get("severity")
             verdict = data.get("verdict")
+
             if total is not None:
                 findings["combined"].append(f"Total score: {total}")
             if severity:
@@ -580,15 +678,23 @@ class UnifiedReportWindow(tk.Toplevel):
             if verdict:
                 findings["combined"].append(f"Verdict: {verdict}")
 
-            static_score = data.get("static_score")
-            dynamic_score = data.get("dynamic_score")
-            spec_score = data.get("spec_score")
+            subscores = data.get("subscores", {})
+            if isinstance(subscores, dict):
+                static_score = subscores.get("static")
+                dynamic_score = subscores.get("dynamic")
+                spec_score = subscores.get("spec")
+            else:
+                static_score = data.get("static_score")
+                dynamic_score = data.get("dynamic_score")
+                spec_score = data.get("spec_score")
+
             if static_score is not None:
                 findings["combined"].append(f"Static score: {static_score}")
             if dynamic_score is not None:
                 findings["combined"].append(f"Dynamic score: {dynamic_score}")
             if spec_score is not None:
                 findings["combined"].append(f"Spec score: {spec_score}")
+
             break
 
         for key in findings:
@@ -598,7 +704,7 @@ class UnifiedReportWindow(tk.Toplevel):
                 if item not in seen:
                     seen.add(item)
                     deduped.append(item)
-            findings[key] = deduped or ["No detailed findings extracted."]
+            findings[key] = deduped
 
         return findings
 
@@ -645,6 +751,52 @@ class UnifiedReportWindow(tk.Toplevel):
         ])
         data = self._load_json_if_exists(p) if p else None
         return data if isinstance(data, dict) else None
+        
+    def _derive_spec_score_and_verdict(self, spec_summary: dict | None) -> tuple[int | None, str | None]:
+        """
+        Derive a display score/verdict for spec-only or spec-heavy cases.
+
+        This is intentionally separate from malware/static/dynamic scoring so API
+        spec risk does not sound like endpoint malware behavior.
+        """
+        if not isinstance(spec_summary, dict):
+            return None, None
+
+        summary = spec_summary.get("summary", {}) if isinstance(spec_summary.get("summary"), dict) else {}
+        scoring = spec_summary.get("scoring", {}) if isinstance(spec_summary.get("scoring"), dict) else {}
+
+        high_count = int(summary.get("high_risk_endpoint_count", 0) or 0)
+        medium_count = int(summary.get("medium_risk_endpoint_count", 0) or 0)
+        sensitive_unauth = int(summary.get("sensitive_unauthenticated_endpoint_count", 0) or 0)
+        auth_gap_count = int(summary.get("auth_gap_count", scoring.get("auth_gap_count", 0)) or 0)
+        schema_issue_count = int(summary.get("schema_issue_endpoint_count", scoring.get("schema_issue_endpoint_count", 0)) or 0)
+        file_upload_count = int(summary.get("file_upload_endpoint_count", scoring.get("file_upload_endpoints", 0)) or 0)
+
+        http_server = bool(scoring.get("http_server_detected", False))
+
+        score = 0
+        score += min(30, high_count * 10)
+        score += min(18, medium_count * 3)
+        score += min(12, sensitive_unauth * 3)
+        score += min(8, auth_gap_count)
+        score += min(6, schema_issue_count)
+        score += min(6, file_upload_count * 3)
+
+        if http_server:
+            score += 5
+
+        score = max(0, min(100, score))
+
+        if score >= 60:
+            verdict = "High API Spec Risk"
+        elif score >= 35:
+            verdict = "Medium API Spec Risk"
+        elif score >= 15:
+            verdict = "Low API Spec Risk"
+        else:
+            verdict = "Informational API Spec Review"
+
+        return score, verdict
 
     def _derive_overall_verdict(self, artifacts: dict) -> str:
         combined = self._combined_summary()
@@ -671,6 +823,23 @@ class UnifiedReportWindow(tk.Toplevel):
             return "Moderate Risk"
         if "benign" in joined or "low suspicion" in joined or "low risk" in joined:
             return "Low Risk"
+
+        spec_found = artifacts.get("Spec Analysis", {}).get("found", False)
+        other_modules_found = any(
+            artifacts.get(name, {}).get("found", False)
+            for name in [
+                "Static Analysis",
+                "Dynamic Analysis",
+                "Manual API Tester",
+                "Browser Extension Analysis",
+                "Combined Score",
+            ]
+        )
+
+        if spec_found and not other_modules_found:
+            spec_score, spec_verdict = self._derive_spec_score_and_verdict(self._latest_spec_summary())
+            if spec_verdict:
+                return spec_verdict
 
         count = sum(1 for meta in artifacts.values() if meta.get("found"))
         if count >= 2:
@@ -726,9 +895,28 @@ class UnifiedReportWindow(tk.Toplevel):
         }
 
         for module_name, key in module_map.items():
+            items = [
+                str(item).strip()
+                for item in findings.get(key, [])
+                if str(item).strip()
+            ]
+
+            if not items:
+                continue
+
             summary_lines.append(f"{module_name}:")
-            for item in findings.get(key, []):
-                summary_lines.append(f"  - {item}")
+            for item in items:
+                lower_item = item.lower().rstrip(":")
+
+                if lower_item in {"analysis findings", "severity summary", "risk notes", "top findings", "evidence"}:
+                    summary_lines.append(f"  {item}")
+                elif item.startswith("Note:"):
+                    summary_lines.append(f"    {item}")
+                elif item.startswith("["):
+                    summary_lines.append(f"    - {item}")
+                else:
+                    summary_lines.append(f"  - {item}")
+
             summary_lines.append("")
 
         self._set_text(self.artifacts_text, "\n".join(artifact_lines) if artifact_lines else "No artifacts detected.")
@@ -751,14 +939,23 @@ class UnifiedReportWindow(tk.Toplevel):
 
         static_score = None
         dynamic_score = None
+        api_score = None
         spec_score = None
+        extension_score = None
         combined_score = None
 
         if isinstance(combined_summary, dict):
             combined_score = combined_summary.get("total_score", combined_summary.get("score"))
-            static_score = combined_summary.get("static_score")
-            dynamic_score = combined_summary.get("dynamic_score")
-            spec_score = combined_summary.get("spec_score")
+
+            subscores = combined_summary.get("subscores", {})
+            if isinstance(subscores, dict):
+                static_score = subscores.get("static")
+                dynamic_score = subscores.get("dynamic")
+                spec_score = subscores.get("spec")
+            else:
+                static_score = combined_summary.get("static_score")
+                dynamic_score = combined_summary.get("dynamic_score")
+                spec_score = combined_summary.get("spec_score")
 
         if static_score is None and isinstance(static_summary, dict):
             static_score = static_summary.get("score") or static_summary.get("static_score")
@@ -769,6 +966,18 @@ class UnifiedReportWindow(tk.Toplevel):
         if spec_score is None and isinstance(spec_summary, dict):
             spec_score = spec_summary.get("score") or spec_summary.get("spec_score")
 
+            if spec_score is None:
+                derived_spec_score, _derived_spec_verdict = self._derive_spec_score_and_verdict(spec_summary)
+                spec_score = derived_spec_score
+        
+        api_findings = findings.get("api", [])
+        if api_findings:
+            api_score = "Present"
+
+        extension_findings = findings.get("extension", [])
+        if extension_findings:
+            extension_score = "Present"
+
         data = {
             "case_name": self.case_dir.name,
             "case_path": str(self.case_dir),
@@ -776,7 +985,9 @@ class UnifiedReportWindow(tk.Toplevel):
             "combined_score": combined_score,
             "static_score": static_score,
             "dynamic_score": dynamic_score,
+            "api_score": api_score,
             "spec_score": spec_score,
+            "extension_score": extension_score,
             "modules": self.detected_artifacts,
             "findings": findings,
         }
@@ -814,21 +1025,77 @@ class UnifiedReportWindow(tk.Toplevel):
         combined_score = data.get("combined_score")
         static_score = data.get("static_score")
         dynamic_score = data.get("dynamic_score")
+        api_score = data.get("api_score")
         spec_score = data.get("spec_score")
+        extension_score = data.get("extension_score")
         modules = data.get("modules", {}) or {}
         findings = data.get("findings", {}) or {}
 
-        def fmt_score(value):
-            return "-" if value is None else html.escape(str(value))
+        def fmt_score(value, missing_label="Not run"):
+            return html.escape(missing_label) if value is None else html.escape(str(value))
 
         def list_section(title: str, items: list[str]) -> str:
-            body = "<ul>" + "".join(f"<li>{html.escape(str(x))}</li>" for x in items) + "</ul>" if items else "<p>-</p>"
+            body = "<ul>" + "".join(
+                f"<li>{html.escape(str(x))}</li>" for x in items
+            ) + "</ul>" if items else "<p>-</p>"
+
             return f"""
-  <section class="card">
-    <h2>{html.escape(title)}</h2>
-    {body}
-  </section>
-"""
+      <section class="card">
+        <h2>{html.escape(title)}</h2>
+        {body}
+      </section>
+    """
+
+        def optional_list_section(title: str, items: list[str]) -> str:
+            clean_items = [
+                str(x).strip()
+                for x in (items or [])
+                if str(x).strip()
+            ]
+
+            if not clean_items:
+                return ""
+
+            if len(clean_items) == 1 and clean_items[0].lower() in {
+                "no detailed findings extracted.",
+                "no findings extracted.",
+                "-",
+            }:
+                return ""
+
+            rendered_items = []
+
+            for item in clean_items:
+                item_text = str(item).strip()
+                lower_item = item_text.lower().rstrip(":")
+
+                if lower_item in {"analysis findings", "severity summary", "risk notes", "top findings", "evidence"}:
+                    rendered_items.append(
+                        f"<li style='list-style:none;margin-top:10px;margin-left:-18px;'>"
+                        f"<strong>{html.escape(item_text)}</strong>"
+                        f"</li>"
+                    )
+                elif item_text.startswith("Note:"):
+                    rendered_items.append(
+                        f"<li style='list-style:none;margin-top:8px;margin-left:0;'>"
+                        f"<em>{html.escape(item_text)}</em>"
+                        f"</li>"
+                    )
+                elif item_text.startswith("["):
+                    rendered_items.append(
+                        f"<li style='margin-left:18px;'>{html.escape(item_text)}</li>"
+                    )
+                else:
+                    rendered_items.append(f"<li>{html.escape(item_text)}</li>")
+
+            body = "<ul>" + "".join(rendered_items) + "</ul>"
+
+            return f"""
+      <section class="card">
+        <h2>{html.escape(title)}</h2>
+        {body}
+      </section>
+    """
 
         rows = []
         for module_name, meta in modules.items():
@@ -841,132 +1108,134 @@ class UnifiedReportWindow(tk.Toplevel):
         rows_html = "\n".join(rows) if rows else "<tr><td colspan='3'>No module data found.</td></tr>"
 
         return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Unified RingForge Report</title>
-<style>
-:root {{
-  --bg: #0A0A0A;
-  --panel: #101726;
-  --border: #22314F;
-  --text: #F3F6FB;
-  --muted: #A9B7D0;
-  --blue: #6EA8FF;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  font-family: Segoe UI, Arial, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  margin: 0;
-  padding: 24px;
-}}
-.container {{
-  max-width: 1200px;
-  margin: 0 auto;
-}}
-.banner {{
-  background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
-  border: 1px solid #22314F;
-  border-radius: 18px;
-  padding: 22px;
-  margin-bottom: 20px;
-}}
-h1 {{
-  margin: 0 0 8px 0;
-  font-size: 30px;
-  color: var(--blue);
-}}
-h2 {{
-  color: var(--text);
-  margin-top: 0;
-}}
-.subtitle {{
-  color: var(--muted);
-  margin-top: 6px;
-  font-size: 14px;
-}}
-.card {{
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 18px;
-  margin-bottom: 18px;
-}}
-table {{
-  width: 100%;
-  border-collapse: collapse;
-}}
-th, td {{
-  text-align: left;
-  padding: 10px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-  word-break: break-word;
-}}
-th {{
-  width: 24%;
-  color: #cbd5e1;
-}}
-ul {{
-  margin: 0;
-  padding-left: 20px;
-}}
-li {{
-  margin-bottom: 6px;
-}}
-.footer {{
-  margin-top: 20px;
-  color: var(--muted);
-  font-size: 12px;
-  text-align: right;
-}}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="banner">
-    <h1>Unified RingForge Report</h1>
-    <div class="subtitle">Generated by RingForge Workbench</div>
-  </div>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unified RingForge Report</title>
+    <style>
+    :root {{
+      --bg: #0A0A0A;
+      --panel: #101726;
+      --border: #22314F;
+      --text: #F3F6FB;
+      --muted: #A9B7D0;
+      --blue: #6EA8FF;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+    }}
+    .container {{
+      max-width: 1200px;
+      margin: 0 auto;
+    }}
+    .banner {{
+      background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
+      border: 1px solid #22314F;
+      border-radius: 18px;
+      padding: 22px;
+      margin-bottom: 20px;
+    }}
+    h1 {{
+      margin: 0 0 8px 0;
+      font-size: 30px;
+      color: var(--blue);
+    }}
+    h2 {{
+      color: var(--text);
+      margin-top: 0;
+    }}
+    .subtitle {{
+      color: var(--muted);
+      margin-top: 6px;
+      font-size: 14px;
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      word-break: break-word;
+    }}
+    th {{
+      width: 24%;
+      color: #cbd5e1;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 20px;
+    }}
+    li {{
+      margin-bottom: 6px;
+    }}
+    .footer {{
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }}
+    </style>
+    </head>
+    <body>
+    <div class="container">
+      <div class="banner">
+        <h1>Unified RingForge Report</h1>
+        <div class="subtitle">Generated by RingForge Workbench</div>
+      </div>
 
-  <section class="card">
-    <h2>Case Overview</h2>
-    <table>
-      <tr><th>Case Name</th><td>{case_name}</td></tr>
-      <tr><th>Case Path</th><td>{case_path}</td></tr>
-      <tr><th>Combined Score</th><td>{fmt_score(combined_score)}</td></tr>
-      <tr><th>Static Score</th><td>{fmt_score(static_score)}</td></tr>
-      <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score)}</td></tr>
-      <tr><th>Spec Score</th><td>{fmt_score(spec_score)}</td></tr>
-      <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
-    </table>
-  </section>
+      <section class="card">
+        <h2>Case Overview</h2>
+        <table>
+          <tr><th>Case Name</th><td>{case_name}</td></tr>
+          <tr><th>Case Path</th><td>{case_path}</td></tr>
+          <tr><th>Combined Score</th><td>{fmt_score(combined_score, "Not generated")}</td></tr>
+          <tr><th>Static Score</th><td>{fmt_score(static_score, "Not run")}</td></tr>
+          <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score, "Not run")}</td></tr>
+          <tr><th>API Analysis</th><td>{fmt_score(api_score, "Not run")}</td></tr>
+          <tr><th>Spec Score</th><td>{fmt_score(spec_score, "Not run")}</td></tr>
+          <tr><th>Browser Extension Analysis</th><td>{fmt_score(extension_score, "Not run")}</td></tr>
+          <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
+        </table>
+      </section>
 
-  <section class="card">
-    <h2>Detected Modules</h2>
-    <table>
-      <tr>
-        <th>Module</th>
-        <th>Found</th>
-        <th>Artifacts</th>
-      </tr>
-      {rows_html}
-    </table>
-  </section>
+      <section class="card">
+        <h2>Detected Modules</h2>
+        <table>
+          <tr>
+            <th>Module</th>
+            <th>Found</th>
+            <th>Artifacts</th>
+          </tr>
+          {rows_html}
+        </table>
+      </section>
 
-  {list_section("Combined Score Summary", findings.get("combined", []))}
-  {list_section("Static Analysis Summary", findings.get("static", []))}
-  {list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
-  {list_section("Manual API Tester Summary", findings.get("api", []))}
-  {list_section("Spec Analysis Summary", findings.get("spec", []))}
-  {list_section("Browser Extension Analysis Summary", findings.get("extension", []))}
+      {optional_list_section("Combined Score Summary", findings.get("combined", []))}
+      {optional_list_section("Static Analysis Summary", findings.get("static", []))}
+      {optional_list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
+      {optional_list_section("Manual API Tester Summary", findings.get("api", []))}
+      {optional_list_section("Spec Analysis Summary", findings.get("spec", []))}
+      {optional_list_section("Browser Extension Analysis Summary", findings.get("extension", []))}
 
-  <div class="footer">Generated by RingForge Workbench • Unified Report</div>
-</div>
-</body>
-</html>"""
+      <div class="footer">Generated by RingForge Workbench • Unified Report</div>
+    </div>
+    </body>
+    </html>"""
 
     def _open_report_folder(self):
         if self.case_dir is None:

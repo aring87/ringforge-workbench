@@ -485,7 +485,7 @@ def _score_endpoint(ep: dict[str, Any], http_server_detected: bool) -> dict[str,
 def _recommended_tests(ep: dict[str, Any]) -> list[str]:
     tests: list[str] = []
     if ep.get("auth_gap") or (ep.get("destructive_method") and not ep.get("auth_required")):
-        tests.append("Test unauthenticated access to confirm authorization is enforced.")
+        tests.append("Validate whether authorization is enforced at runtime, even if the spec does not declare auth.")
     if "admin" in ep.get("endpoint_classes", []) or ep.get("admin_like_route"):
         tests.append("Test role bypass with low-privileged credentials against admin/config operations.")
     if ep.get("file_upload"):
@@ -876,7 +876,7 @@ def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str,
         if schema_issue_endpoint_count > 0:
             warnings.append(f"Schema quality issues were detected on {schema_issue_endpoint_count} endpoint(s).")
         if auth_gap_count > 0:
-            warnings.append(f"{auth_gap_count} endpoint(s) have no explicit auth requirement applied.")
+            warnings.append(f"{auth_gap_count} endpoint(s) do not declare an explicit auth requirement in the spec.")
         if not result["title"]:
             warnings.append("Spec title is missing.")
         if not result["version"]:

@@ -76,6 +76,11 @@ Static_Triage_GUI_Release/
 scripts/Static_Triage_GUI_Release/
 dist/
 build/
+release/
+*.zip
+*.7z
+*.rar
+*.msi
 *.spec
 scripts/static_triage_gui_v2.py
 scripts/static_triage_gui_v3.py

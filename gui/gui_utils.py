@@ -39,6 +39,7 @@ STEP_DISPLAY_ORDER: List[str] = [
     "strings",
     "capa",
     "iocs",
+    "subfiles",
     "report",
     "finalize",
 ]
@@ -54,6 +55,7 @@ STEP_LABELS: Dict[str, str] = {
     "strings": "Strings (Linux tool / optional on Windows)",
     "capa": "CAPA",
     "iocs": "IOC Extraction",
+    "subfiles": "Subfile Triage",
     "report": "Report Generation (PDF optional on Windows)",
     "finalize": "Finalize",
 }
@@ -70,6 +72,9 @@ STEP_NAME_MAP: Dict[str, str] = {
     "strings": "strings",
     "capa": "capa",
     "iocs": "iocs",
+    "subfiles": "subfiles",
+    "subfile": "subfiles",
+    "subfile_triage": "subfiles",
     "report": "report",
     "finalize": "finalize",
 }

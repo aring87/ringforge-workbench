@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import contextlib
 import json
 import os
 import re
@@ -240,12 +242,17 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
         "times_submitted": 0,
         "permalink": f"https://www.virustotal.com/gui/file/{sha256}",
         "error": "",
+        "status": "unknown",
+        "lookup_status": "unknown",
         "last_analysis_stats": {},
         "last_analysis_results": {},
     }
 
     if not api_key:
         result["enabled"] = False
+        result["found"] = False
+        result["status"] = "skipped"
+        result["lookup_status"] = "skipped_no_api_key"
         result["error"] = "VT_API_KEY not set"
         return result
 
@@ -270,13 +277,14 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
             result["meaningful_name"] = attrs.get("meaningful_name", "") or ""
             result["type_description"] = attrs.get("type_description", "") or ""
             result["times_submitted"] = int(attrs.get("times_submitted", 0) or 0)
+            result["status"] = "done"
+            result["lookup_status"] = "found"
             result["last_analysis_stats"] = stats
             result["last_analysis_results"] = results
             return result
 
-        if r.status_code == 404:
-            result["error"] = "Hash not found in VirusTotal"
-            return result
+        result["status"] = "warning"
+        result["lookup_status"] = f"api_error_{r.status_code}"
 
         try:
             result["error"] = f"VirusTotal API error {r.status_code}: {r.json()}"
@@ -284,7 +292,19 @@ def vt_lookup_by_hash(sha256: str, api_key: str, timeout_sec: int = 30) -> dict[
             result["error"] = f"VirusTotal API error {r.status_code}: {r.text[:500]}"
         return result
 
+    except requests.exceptions.Timeout:
+        result["status"] = "warning"
+        result["lookup_status"] = "timeout"
+        result["error"] = f"VirusTotal lookup timed out after {timeout_sec}s"
+        return result
+    except requests.exceptions.RequestException as e:
+        result["status"] = "warning"
+        result["lookup_status"] = "request_error"
+        result["error"] = f"{type(e).__name__}: {e}"
+        return result
     except Exception as e:
+        result["status"] = "warning"
+        result["lookup_status"] = "error"
         result["error"] = f"{type(e).__name__}: {e}"
         return result
 
@@ -299,10 +319,40 @@ def write_virustotal_json(case_dir: Path, sha256: str, api_key: str = "") -> dic
 def _extract_first_match(pattern: str, text: str, flags: int = 0) -> str:
     m = re.search(pattern, text, flags)
     return m.group(1).strip() if m else ""
+    
+def _extract_signature_parse_warnings(raw: str) -> list[str]:
+    """
+    Normalize noisy signature/timestamp parser warnings.
+
+    Some signed Windows installers contain Authenticode timestamp structures
+    that osslsigncode cannot fully decode, for example:
+        Can't parse PKCS9 TSTInfo (pos=134)
+
+    This should be treated as a non-fatal timestamp parse warning, not as a
+    static-analysis failure.
+    """
+    text = raw or ""
+    warnings: list[str] = []
+
+    patterns = [
+        r"Can't parse PKCS9 TSTInfo[^\r\n]*",
+        r"PKCS9 TSTInfo[^\r\n]*",
+        r"TSTInfo[^\r\n]*",
+        r"timestamp[^\r\n]*parse[^\r\n]*",
+    ]
+
+    for pattern in patterns:
+        for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            warning = str(match).strip()
+            if warning and warning not in warnings:
+                warnings.append(warning)
+
+    return warnings
 
 
 def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
     text = raw or ""
+    parse_warnings = _extract_signature_parse_warnings(text)
 
     subject = _extract_first_match(
         r"Signer #0:\s*\n\s*Subject:\s*(.+)",
@@ -359,6 +409,8 @@ def _parse_osslsigncode_output(raw: str) -> dict[str, Any]:
         "issuer": issuer,
         "signing_time_utc": signing_time_utc,
         "timestamp_time_utc": timestamp_time_utc,
+        "warnings": parse_warnings,
+        "signature_parse_warning": " | ".join(parse_warnings),
         "parse_evidence": {
             "signature_verification_ok": signature_verification_ok,
             "verified_sig_count": verified_sig_count,
@@ -396,6 +448,8 @@ def _verify_authenticode_powershell(
         "timestamp_time_utc": "",
         "raw": "",
         "error": "",
+        "warnings": [],
+        "signature_parse_warning": "",
     }
 
     if not p.exists():
@@ -515,6 +569,8 @@ def verify_authenticode_cached(
         "timestamp_time_utc": "",
         "raw": "",
         "error": "",
+        "warnings": [],
+        "signature_parse_warning": "",
     }
 
     if not p.exists():
@@ -613,6 +669,8 @@ def _verify_authenticode_osslsigncode(
         "timestamp_time_utc": "",
         "raw": "",
         "error": "",
+        "warnings": [],
+        "signature_parse_warning": "",
     }
 
     if not p.exists():
@@ -654,6 +712,8 @@ def _verify_authenticode_osslsigncode(
         result["signing_time_utc"] = parsed.get("signing_time_utc", "") or ""
         result["timestamp_time_utc"] = parsed.get("timestamp_time_utc", "") or ""
         result["parse_evidence"] = parsed.get("parse_evidence", {})
+        result["warnings"] = parsed.get("warnings", []) or []
+        result["signature_parse_warning"] = parsed.get("signature_parse_warning", "") or ""
         result["signature_present"] = _signature_present_from_subject(result["subject"]) or bool(result["verify_ok"])
 
         if result["verify_ok"]:
@@ -664,7 +724,13 @@ def _verify_authenticode_osslsigncode(
             result["verification_status"] = "unsigned"
 
         if cp.returncode != 0 and not result["verify_ok"]:
-            result["error"] = f"osslsigncode verify returned {cp.returncode}"
+            if result.get("signature_parse_warning"):
+                result["error"] = ""
+                result["verification_status"] = (
+                    "signed_unverified" if result.get("signature_present") else "verification_warning"
+                )
+            else:
+                result["error"] = f"osslsigncode verify returned {cp.returncode}"
 
         return result
 
@@ -679,7 +745,36 @@ def _verify_authenticode_osslsigncode(
 
 
 def write_signing_json(case_dir: Path, sample_path: Path, cache: dict[str, Any]) -> dict[str, Any]:
-    signing = verify_authenticode_cached(sample_path, cache)
+    captured_stdout = io.StringIO()
+    captured_stderr = io.StringIO()
+
+    with contextlib.redirect_stdout(captured_stdout), contextlib.redirect_stderr(captured_stderr):
+        signing = verify_authenticode_cached(sample_path, cache)
+
+    captured_text = "\n".join(
+        x.strip()
+        for x in (captured_stdout.getvalue(), captured_stderr.getvalue())
+        if x and x.strip()
+    )
+
+    captured_warnings = _extract_signature_parse_warnings(captured_text)
+
+    if captured_warnings:
+        existing_warnings = signing.get("warnings", [])
+        if not isinstance(existing_warnings, list):
+            existing_warnings = [str(existing_warnings)]
+
+        for warning in captured_warnings:
+            if warning not in existing_warnings:
+                existing_warnings.append(warning)
+
+        signing["warnings"] = existing_warnings
+        signing["signature_parse_warning"] = " | ".join(existing_warnings)
+        signing["parser_status"] = "partial"
+
+        if not signing.get("error"):
+            signing["error"] = ""
+
     signing["generated_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     signing["parser_version"] = "signing-v2"
     _write_json(case_dir / "signing.json", signing)
@@ -943,13 +1038,18 @@ def run_case(
     if triage_extracted_pes and enable_payload_extraction and bool(payload_result.get("success", False)):
         targets = select_subfile_targets(payload_result, limit=subfile_limit)
         sub_rollup["count"] = len(targets)
+        print(f"[subfile:triage] selected={len(targets)} limit={subfile_limit}", flush=True)
 
         sub_results: list[dict[str, Any]] = []
         sub_base = case_dir / "subfiles"
         sub_base.mkdir(parents=True, exist_ok=True)
 
+        total_subfiles = len(targets)
+
         for idx, t in enumerate(targets, start=1):
             sub_name = f"{idx:02d}_{t.name}"
+            print(f"[subfile:start] {idx}/{total_subfiles} {sub_name}", flush=True)
+
             sub_dir = sub_base / sub_name
             sub_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1026,6 +1126,9 @@ def run_case(
             iocs_sf = _load_json(sub_dir / "iocs.json")
             pe_sf = _load_json(sub_dir / "pe_metadata.json")
             lief_sf = _load_json(sub_dir / "lief_metadata.json")
+            api_sf = _load_json(sub_dir / "api_analysis.json")
+
+            sub_summary["api_analysis"] = api_sf
 
             sf_score, sf_susp, sf_ben = score_risk(sub_summary, iocs_sf, pe_sf, lief_sf)
             sf_verdict, sf_conf = _classify_verdict_compat(sf_score, sub_summary)
@@ -1050,6 +1153,12 @@ def run_case(
                     "signer": sub_summary["signing"].get("subject", ""),
                     "trust_override": trust_override,
                 }
+            )
+            
+            print(
+                f"[subfile:done] {idx}/{total_subfiles} {sub_name} "
+                f"score={sf_score} verdict={sf_verdict}",
+                flush=True,
             )
 
         sub_results_sorted = sorted(sub_results, key=lambda x: int(x.get("score", 0)), reverse=True)
@@ -1091,6 +1200,9 @@ def run_case(
     iocs = _load_json(case_dir / "iocs.json")
     pe_meta = _load_json(case_dir / "pe_metadata.json")
     lief_meta = _load_json(case_dir / "lief_metadata.json")
+    api_analysis = _load_json(case_dir / "api_analysis.json")
+
+    summary["api_analysis"] = api_analysis
 
     score, suspicious, benign = score_risk(summary, iocs, pe_meta, lief_meta)
     verdict, confidence = _classify_verdict_compat(score, summary)

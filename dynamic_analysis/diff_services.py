@@ -21,6 +21,11 @@ SUSPICIOUS_SERVICE_NAME_HINTS = [
     "service",
 ]
 
+BENIGN_MODIFIED_SERVICE_FIELDS = {
+    "state",
+    "process_id",
+}
+
 
 def _norm(s: Any) -> str:
     return str(s or "").strip()
@@ -86,6 +91,89 @@ def _service_is_suspicious(service: dict[str, Any]) -> list[str]:
 
     return deduped
 
+def _changed_service_fields(before: dict[str, Any], after: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    keys = set(before.keys()) | set(after.keys())
+    changes: dict[str, dict[str, Any]] = {}
+
+    for key in sorted(keys):
+        if before.get(key) != after.get(key):
+            changes[key] = {
+                "before": before.get(key),
+                "after": after.get(key),
+            }
+
+    return changes
+
+
+def _meaningful_service_changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    changes = _changed_service_fields(before, after)
+
+    return {
+        key: value
+        for key, value in changes.items()
+        if key.lower() not in BENIGN_MODIFIED_SERVICE_FIELDS
+    }
+
+WINDOWS_SERVICE_ALLOWLIST = {
+    "bits",
+    "gpsvc",
+    "dcsvc",
+    "wuauserv",
+    "dosvc",
+    "cryptsvc",
+    "eventlog",
+    "schedule",
+    "trustedinstaller",
+    "appinfo",
+    "winmgmt",
+}
+
+def _modified_service_is_suspicious(
+    service: dict[str, Any],
+    meaningful_changes: dict[str, dict[str, Any]],
+) -> list[str]:
+    reasons: list[str] = []
+
+    service_name = _norm(service.get("service_name", "")).lower()
+    path_name = _norm(service.get("path_name", ""))
+    exe_path = _extract_executable_path(path_name)
+    exe_path_l = exe_path.lower()
+
+    changed_keys = {str(k).lower() for k in meaningful_changes.keys()}
+
+    # Existing core Windows services often change state/start behavior during
+    # normal OS maintenance, policy refresh, update, and background activity.
+    # Do not mark them suspicious unless their executable/account/path changes.
+    if service_name in WINDOWS_SERVICE_ALLOWLIST:
+        high_signal_changed = changed_keys & {"path_name", "start_name", "service_type"}
+        if not high_signal_changed:
+            return []
+
+    if "path_name" in changed_keys:
+        if exe_path and _path_is_suspicious(exe_path):
+            reasons.append("service_binary_changed_to_suspicious_path")
+
+        if exe_path:
+            base = _basename(exe_path)
+            if base in {"cmd.exe", "powershell.exe", "pwsh.exe", "rundll32.exe", "regsvr32.exe", "mshta.exe"}:
+                reasons.append(f"service_binary_changed_to_lolbin:{base}")
+
+    if "start_name" in changed_keys:
+        start_name = _norm(service.get("start_name", "")).lower()
+        if start_name not in {"localsystem", "localservice", "networkservice"} and start_name:
+            reasons.append("service_account_changed")
+
+    if "start_mode" in changed_keys:
+        before = _norm(meaningful_changes["start_mode"].get("before", "")).lower()
+        after = _norm(meaningful_changes["start_mode"].get("after", "")).lower()
+
+        # Only treat a start-mode change as suspicious if it becomes Auto and
+        # the binary path is not a normal Windows system service path.
+        if after == "auto" and before != "auto":
+            if exe_path_l and not exe_path_l.startswith("c:\\windows\\system32\\svchost.exe"):
+                reasons.append("service_changed_to_auto_start")
+
+    return reasons
 
 def diff_services(
     before: list[dict[str, Any]],
@@ -137,7 +225,11 @@ def diff_services(
         a = after_map[key]
 
         if b != a:
-            reasons = _service_is_suspicious(a)
+            changed_fields = _changed_service_fields(b, a)
+            meaningful_changes = _meaningful_service_changes(b, a)
+
+            reasons = _modified_service_is_suspicious(a, meaningful_changes) if meaningful_changes else []
+
             modified_services.append(
                 {
                     "identity": key,
@@ -145,6 +237,8 @@ def diff_services(
                     "display_name": a.get("display_name", ""),
                     "before": b,
                     "after": a,
+                    "changed_fields": changed_fields,
+                    "meaningful_changes": meaningful_changes,
                     "suspicious": len(reasons) > 0,
                     "reasons": reasons,
                 }
