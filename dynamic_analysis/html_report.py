@@ -161,10 +161,22 @@ def _dict_list_table(
     visible = items[:limit]
     headers = _ordered_headers(visible)
     thead = "".join(f"<th>{_esc(_pretty_key(h))}</th>" for h in headers)
+
+    # Short, atomic values (addresses, ports, PIDs, protocols) read badly when
+    # broken mid-token, so they are kept on one line.
+    nowrap_fields = {
+        "pid", "protocol", "port", "destination", "dst", "src", "source",
+        "process", "method", "event_id", "severity", "state", "count",
+    }
+
     rows = []
     for item in visible:
-        row = "".join(f"<td>{_esc(item.get(h, ''))}</td>" for h in headers)
-        rows.append(f"<tr>{row}</tr>")
+        cells = []
+        for header in headers:
+            value = _esc(item.get(header, ""))
+            css = " class=\"nowrap\"" if header.lower() in nowrap_fields else ""
+            cells.append(f"<td{css}>{value}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
 
     truncated = ""
     if len(items) > limit:
@@ -178,7 +190,7 @@ def _dict_list_table(
       </div>
       {truncated}
       <div class="table-wrap">
-        <table>
+        <table class="data-table">
           <thead><tr>{thead}</tr></thead>
           <tbody>{''.join(rows)}</tbody>
         </table>

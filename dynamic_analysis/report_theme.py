@@ -188,6 +188,29 @@ th {
 .kv th {
   width: 42%;
 }
+
+/* Generic multi-column tables.
+   The global "th { width: 35% }" above is sized for the two-column key/value
+   tables. Applied to a four-column table it claims 140% of the width and
+   crushes the final column to one character per line, so these opt out and
+   size to their content instead. */
+.data-table {
+  table-layout: auto;
+  width: 100%;
+}
+.data-table th {
+  width: auto;
+  white-space: nowrap;
+}
+.data-table td {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+/* Addresses, ports and identifiers should not be broken mid-token. */
+.data-table td.nowrap {
+  white-space: nowrap;
+}
+
 .muted {
   color: var(--muted);
 }
