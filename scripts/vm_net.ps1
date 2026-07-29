@@ -60,6 +60,26 @@ function Write-Ok($msg)   { Write-Host "[+] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
 function Write-Danger($msg) { Write-Host "[!] $msg" -ForegroundColor Red }
 
+function Test-RunningInGuest {
+  <#
+    True when this looks like the analysis VM rather than the host.
+
+    The repository is cloned in both places, so it is easy to run this script
+    in the guest, where VBoxManage does not exist and "not found" is a
+    misleading answer to the real mistake.
+  #>
+  $guestServices = @("VBoxService", "VBoxGuest", "VMTools", "VMwareTools", "qemu-ga")
+  foreach ($name in $guestServices) {
+    if ($null -ne (Get-Service -Name $name -ErrorAction SilentlyContinue)) { return $true }
+  }
+  try {
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    return (("{0} {1}" -f $cs.Manufacturer, $cs.Model) -match 'VirtualBox|VMware|QEMU|Xen|innotek')
+  } catch {
+    return $false
+  }
+}
+
 function Find-VBoxManage {
   param([string]$Configured)
 
@@ -145,7 +165,7 @@ function Show-State {
   Write-Host ""
   if ($live.Count -gt 0) {
     Write-Danger "NOT CONTAINED: the VM can reach the internet. Do not detonate."
-    Write-Warn   "Contain it with: .\scripts\vm_net.ps1 -Disarm -VM '$Name'"
+    Write-Warn   "Contain it with: .\scripts\vm_net.ps1 -Disarm -VMName '$Name'"
   } else {
     Write-Ok "CONTAINED: no internet-facing adapter is connected."
   }
@@ -154,6 +174,14 @@ function Show-State {
 try {
   if ($Arm -and $Disarm) {
     throw "Specify only one of -Arm or -Disarm."
+  }
+
+  # The repo is cloned on both host and guest, so catch the wrong one early.
+  if (Test-RunningInGuest) {
+    throw ("This script runs on the HOST, not inside the analysis VM. " +
+           "VBoxManage exists only on the host, and toggling the adapter from " +
+           "the host is what makes containment enforceable -- the guest can " +
+           "re-enable anything it disabled itself. Run it from the host clone.")
   }
 
   $exe = Find-VBoxManage -Configured $VBoxManagePath
