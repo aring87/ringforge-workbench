@@ -313,38 +313,63 @@ def _query(xpath: str, max_events: int, reverse: bool = False) -> list[dict[str,
     return parse_rendered_xml(result.stdout or "")
 
 
-def query_events(since_utc: str, max_events: int = 20000) -> list[dict[str, Any]]:
+def query_events(
+    since_utc: str,
+    max_events: int = 20000,
+    attempts_out: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Return normalised Sysmon events recorded since ``since_utc``.
 
-    Falls back through progressively less selective queries. An empty result is
-    indistinguishable from a filter that silently matched nothing, so an empty
-    first attempt is retried rather than trusted.
+    Tries progressively less selective queries. Each attempt is isolated: an
+    error in one must not abort the rest, or a single failing strategy takes
+    the whole collection down with it and the channel looks empty.
+
+    ``attempts_out`` receives a record of every strategy tried, so an empty
+    result can be explained rather than guessed at.
     """
     elapsed_ms = _elapsed_ms_since(since_utc)
-
-    events = _query(_timediff_query(elapsed_ms), max_events)
-    if events:
-        return events
-
-    # Some builds accept the literal-timestamp form but not timediff.
-    events = _query(_since_query(since_utc), max_events)
-    if events:
-        return events
-
-    # Last resort: pull the most recent events unfiltered and bound them here,
-    # so a quirk in the event-log XPath engine cannot hide real telemetry.
     started = _parse_event_time(since_utc)
-    recent = _query("*", max_events, reverse=True)
-    if not recent or started is None:
-        return recent
 
-    filtered = []
-    for event in recent:
-        stamp = _parse_event_time(event.get("timestamp", ""))
-        if stamp is None or stamp >= started:
-            filtered.append(event)
-    filtered.reverse()  # restore chronological order
-    return filtered
+    strategies = [
+        ("timediff", _timediff_query(elapsed_ms), max_events, False),
+        ("absolute-timestamp", _since_query(since_utc), max_events, False),
+        # Unfiltered is a diagnostic last resort. Keep the count modest: each
+        # rendered event is roughly a kilobyte of XML through a pipe, and a
+        # huge request times out, which is how this path failed before.
+        ("unfiltered-recent", "*", min(max_events, 3000), True),
+    ]
+
+    last_error = ""
+    for name, xpath, count, reverse in strategies:
+        record: dict[str, Any] = {"strategy": name, "events": 0, "error": ""}
+        try:
+            events = _query(xpath, count, reverse=reverse)
+        except SysmonError as error:
+            record["error"] = str(error)
+            last_error = str(error)
+            if attempts_out is not None:
+                attempts_out.append(record)
+            continue
+
+        if reverse and started is not None and events:
+            # The unfiltered query returns newest first and ignores the run
+            # window, so bound it here.
+            events = [
+                event for event in events
+                if (_parse_event_time(event.get("timestamp", "")) or started) >= started
+            ]
+            events.reverse()
+
+        record["events"] = len(events)
+        if attempts_out is not None:
+            attempts_out.append(record)
+
+        if events:
+            return events
+
+    if last_error:
+        raise SysmonError(last_error)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -555,40 +580,78 @@ def collect(
 
     status["evtx"] = export_evtx(evtx_path, since_utc)
     status["channel_records"] = channel_record_count()
+    status["elevated"] = is_elevated()
+
+    attempts: list[dict[str, Any]] = []
+    status["attempts"] = attempts
 
     try:
-        events = query_events(since_utc, max_events=max_events)
+        events = query_events(since_utc, max_events=max_events, attempts_out=attempts)
     except SysmonError as error:
         status["error"] = str(error)
-        status["diagnosis"] = _diagnose_empty(status["channel_records"], failed=True)
+        status["diagnosis"] = _diagnose_empty(
+            status["channel_records"], failed=True, attempts=attempts,
+            elevated=status["elevated"],
+        )
         return [], summarize_sysmon_events([]), status
 
     status["success"] = True
     if not events:
-        status["diagnosis"] = _diagnose_empty(status["channel_records"], failed=False)
+        status["diagnosis"] = _diagnose_empty(
+            status["channel_records"], failed=False, attempts=attempts,
+            elevated=status["elevated"],
+        )
 
     return events, summarize_sysmon_events(events), status
 
 
-def _diagnose_empty(channel_records: int, failed: bool) -> str:
+def is_elevated() -> bool:
+    """True when the current process has Administrator rights."""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _diagnose_empty(
+    channel_records: int,
+    failed: bool,
+    attempts: list[dict[str, Any]] | None = None,
+    elevated: bool = True,
+) -> str:
     """Explain an empty collection so it is actionable rather than mysterious."""
+    attempts = attempts or []
+    errors = [a for a in attempts if a.get("error")]
+
+    if not elevated:
+        return (
+            "The workbench is not running as Administrator. The Sysmon "
+            "Operational channel is readable only by administrators, so no "
+            "events can be collected. Relaunch the workbench elevated."
+        )
+
     if channel_records == -1:
         return (
-            "The Sysmon event channel could not be read. Reading it normally "
-            "requires elevation, so run the workbench as Administrator."
+            "The Sysmon event channel could not be read, though the service "
+            "appears installed. Confirm with "
+            "'wevtutil gli Microsoft-Windows-Sysmon/Operational'."
         )
     if channel_records == 0:
         return (
             "The Sysmon channel is empty: the service is installed but is not "
             "writing events. Reapply the configuration in the VM with "
-            "'sysmon64.exe -c sysmonconfig.xml' and confirm with "
-            "'wevtutil gli Microsoft-Windows-Sysmon/Operational'."
+            "'sysmon64.exe -c sysmonconfig.xml'."
         )
-    if failed:
+
+    if errors:
+        detail = "; ".join(f"{a['strategy']}: {a['error'][:160]}" for a in errors)
         return (
-            f"The channel holds {channel_records} records but the query failed. "
-            "This is usually a permissions problem; run as Administrator."
+            f"The channel holds {channel_records} records, but every query "
+            f"failed. {detail}"
         )
+
     return (
         f"The channel holds {channel_records} records, but none fall within this "
         "run's time window. Check that the guest clock is correct, since the "
