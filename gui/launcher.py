@@ -5,183 +5,274 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
+from gui import theme as T
+from gui.components import Badge, Card, EmptyState, HeaderBar, RoundedButton, SectionTitle
+
+#: The six analysis workflows, in launch order.
+#: (attribute on app, title, glyph, category accent, description)
+MODULES = [
+    (
+        "open_static_analysis",
+        "Static Analysis",
+        "◈",
+        "ultrasonic",
+        "Hash, PE metadata, capa capabilities, and VirusTotal enrichment for an executable.",
+    ),
+    (
+        "open_dynamic_analysis",
+        "Dynamic Analysis",
+        "▶",
+        "cyan",
+        "Capture runtime process, file, and registry behaviour inside an instrumented VM.",
+    ),
+    (
+        "open_api_analysis",
+        "API Analysis",
+        "⇄",
+        "sky",
+        "Send manual endpoint requests and score the responses for risk indicators.",
+    ),
+    (
+        "open_spec_analysis",
+        "Spec Analysis",
+        "▤",
+        "periwinkle",
+        "Review OpenAPI or Swagger definitions and surface risky or undocumented endpoints.",
+    ),
+    (
+        "open_extension_analysis",
+        "Browser Extension Analysis",
+        "◧",
+        "azure",
+        "Inspect Chrome and Edge extension manifests, permissions, and risk indicators.",
+    ),
+    (
+        "open_unified_report",
+        "Unified Report",
+        "▦",
+        "teal",
+        "Combine artifacts from any completed modules into one consolidated analyst report.",
+    ),
+]
+
+#: Column layout for the saved-tests table.
+TEST_COLUMNS = [
+    ("test_name", "Case", 200, "w"),
+    ("analysis_type", "Module", 110, "center"),
+    ("score", "Score", 90, "center"),
+    ("status", "Status", 120, "center"),
+    ("completed_at", "Completed", 190, "w"),
+    ("sample_path", "Sample", 460, "w"),
+]
+
 
 class LauncherWindow(ttk.Frame):
     def __init__(self, parent, app, *args, **kwargs):
-        super().__init__(parent, *args, **kwargs)
+        super().__init__(parent, style="App.TFrame", *args, **kwargs)
         self.app = app
-        self.configure(padding=18)
+        self.configure(padding=T.SPACE_XL)
 
-        self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
+        for col in range(3):
+            self.columnconfigure(col, weight=1, uniform="module")
         self.rowconfigure(4, weight=1)
 
         self.test_tree = None
+        self.empty_state = None
+        self.count_badge = None
         self._build()
 
+    # -- layout -----------------------------------------------------------
+
     def _build(self):
-        header = ttk.Frame(self)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-        header.columnconfigure(0, weight=1)
+        self._build_header()
 
-        ttk.Label(
-            header,
-            text="RingForge Workbench",
-            style="SectionHeader.TLabel",
-            font=("Segoe UI", 20, "bold"),
-        ).grid(row=0, column=0, sticky="w")
+        SectionTitle(
+            self,
+            "Analysis Modules",
+            eyebrow="Workflows",
+            subtitle="Pick a module to open it. Select a saved case below first to carry its context across.",
+            parent_bg=T.BG,
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(T.SPACE_XL, T.SPACE_MD))
 
-        ttk.Label(
-            header,
-            text="Choose the analysis workflow you want to launch.",
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-
-        self._card(
-            1, 0,
-            "Static Analysis",
-            "Run the current full static triage interface.",
-            self.app.open_static_analysis,
-        )
-        self._card(
-            1, 1,
-            "Dynamic Analysis",
-            "Launch runtime behavior capture and review.",
-            self.app.open_dynamic_analysis,
-        )
-        self._card(
-            2, 0,
-            "API Analysis",
-            "Run manual API testing and inspect responses.",
-            self.app.open_api_analysis,
-        )
-        self._card(
-            2, 1,
-            "Spec Analysis",
-            "Review OpenAPI or Swagger specs and risky endpoints.",
-            self.app.open_spec_analysis,
-        )
-        self._card(
-            3, 0,
-            "Browser Extension Analysis",
-            "Review Chrome/Edge browser extensions, manifests, permissions, and risk indicators.",
-            self.app.open_extension_analysis,
-        )
-        self._card(
-            3, 1,
-            "Unified Report",
-            "Generate one combined RingForge report from any completed case artifacts, regardless of which analysis modules were run.",
-            self.app.open_unified_report,
-        )
+        for index, (attr, title, glyph, category, desc) in enumerate(MODULES):
+            self._module_card(
+                row=2 + index // 3,
+                col=index % 3,
+                title=title,
+                glyph=glyph,
+                accent=T.CATEGORY[category],
+                desc=desc,
+                command=getattr(self.app, attr),
+            )
 
         self._build_recent_tests_panel()
+        self._build_footer()
 
-        footer = ttk.Frame(self)
-        footer.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        footer.columnconfigure(0, weight=1)
+    def _build_header(self):
+        logo = Path(getattr(self.app, "project_root", Path.cwd())) / "assets" / "anvil.png"
 
-        ttk.Button(
-            footer,
-            text="Refresh Saved Tests",
-            style="Action.TButton",
-            command=self._refresh_saved_tests_no_focus,
-            takefocus=False,
-        ).grid(row=0, column=0, sticky="w")
+        header = HeaderBar(
+            self,
+            "RingForge",
+            subtitle="Workbench",
+            description=(
+                "Unified software triage: static, dynamic, and behavioural analysis "
+                "with scoring and consolidated reporting."
+            ),
+            logo_path=logo if logo.exists() else None,
+            logo_size=72,
+            parent_bg=T.BG,
+        )
+        header.grid(row=0, column=0, columnspan=3, sticky="ew")
 
-        ttk.Button(
-            footer,
-            text="Exit",
-            style="Action.TButton",
+        RoundedButton(
+            header.actions,
+            "Exit",
             command=self.app.destroy,
-            takefocus=False,
-        ).grid(row=0, column=1, sticky="e")
+            variant="ghost",
+            parent_bg=T.SURFACE,
+        ).pack(side="right")
 
-    def _card(self, row, col, title, desc, command):
-        card = ttk.Frame(self, style="Card.TFrame", padding=16)
-        card.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
-        self.rowconfigure(row, weight=0)
-
-        ttk.Label(
-            card,
-            text=title,
-            style="TLabel",
-            font=("Segoe UI", 13, "bold"),
-        ).pack(anchor="w")
-
-        ttk.Label(
-            card,
-            text=desc,
-            style="Muted.TLabel",
-            wraplength=320,
-            justify="left",
-        ).pack(anchor="w", pady=(8, 14))
-
+    def _module_card(self, row, col, title, glyph, accent, desc, command):
         def launch():
             self.focus_set()
             self.after(50, self.focus_set)
             command()
 
-        ttk.Button(
-            card,
-            text=f"Open {title}",
-            style="Launcher.Action.TButton",
+        card = Card(
+            self,
+            accent=accent,
+            hover=True,
+            parent_bg=T.BG,
+            padding=(T.SPACE_LG + 4, T.SPACE_LG),
+        )
+        card.grid(row=row, column=col, sticky="nsew", padx=T.SPACE_SM, pady=T.SPACE_SM)
+        self.rowconfigure(row, weight=0)
+
+        body = card.body
+
+        title_row = tk.Frame(body, bg=T.SURFACE)
+        title_row.pack(fill="x")
+
+        # The glyph sits on a chip tinted with the module's own accent, which
+        # gives each card a spot of colour instead of a lone grey mark.
+        chip_fill = T.mix(T.SURFACE, accent, 0.14)
+        chip = Card(
+            title_row,
+            fill=chip_fill,
+            border=T.mix(T.SURFACE, accent, 0.42),
+            radius=T.RADIUS_SM,
+            padding=(T.SPACE_SM, T.SPACE_XS),
+            parent_bg=T.SURFACE,
+            highlight=False,
+        )
+        chip.pack(side="left", padx=(0, T.SPACE_MD))
+        tk.Label(
+            chip.body, text=glyph, bg=chip_fill, fg=accent, font=T.font(14),
+        ).pack()
+
+        tk.Label(
+            title_row, text=title, bg=T.SURFACE, fg=T.TEXT,
+            font=T.f_subheading(), anchor="w", justify="left",
+        ).pack(side="left", pady=(4, 0))
+
+        tk.Label(
+            body, text=desc, bg=T.SURFACE, fg=T.TEXT_MUTED, font=T.f_small(),
+            anchor="w", justify="left", wraplength=290,
+        ).pack(anchor="w", fill="x", pady=(T.SPACE_MD, T.SPACE_LG))
+
+        RoundedButton(
+            body,
+            "Open",
             command=launch,
-            takefocus=False,
+            variant="accent",
+            parent_bg=T.SURFACE,
+            min_width=110,
         ).pack(anchor="w")
-    
+
+        # The whole card is a click target, not just the button.
+        card.bind_click(launch)
+
+    def _build_footer(self):
+        footer = tk.Frame(self, bg=T.BG)
+        footer.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(T.SPACE_LG, 0))
+
+        RoundedButton(
+            footer,
+            "Refresh",
+            command=self._refresh_saved_tests_no_focus,
+            variant="secondary",
+            icon="↻",
+            parent_bg=T.BG,
+        ).pack(side="left")
+
+        tk.Label(
+            footer,
+            text="Cases are read from the configured case output root.",
+            bg=T.BG, fg=T.TEXT_MUTED, font=T.f_small(),
+        ).pack(side="left", padx=(T.SPACE_MD, 0))
+
     def _refresh_saved_tests_no_focus(self):
         self.focus_set()
         self.after(50, self.focus_set)
         self.refresh_saved_tests()
 
     def _build_recent_tests_panel(self):
-        panel = ttk.LabelFrame(self, text="Saved Tests and Scores")
-        panel.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=(12, 0))
-        panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(0, weight=1)
-
-        style = ttk.Style()
-        style.configure(
-            "SavedTests.Treeview",
-            background="#0d1b33",
-            fieldbackground="#0d1b33",
-            foreground="#eaf2ff",
-            rowheight=24,
-        )
-        style.map(
-            "SavedTests.Treeview",
-            background=[("selected", "#1f6fff")],
-            foreground=[("selected", "white")],
+        panel = Card(self, parent_bg=T.BG, padding=(T.SPACE_LG, T.SPACE_LG))
+        panel.grid(
+            row=4, column=0, columnspan=3, sticky="nsew",
+            padx=T.SPACE_SM, pady=(T.SPACE_XL, 0),
         )
 
-        columns = ("test_name", "analysis_type", "score", "status", "completed_at", "sample_path")
+        body = panel.body
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        head = tk.Frame(body, bg=T.SURFACE)
+        head.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, T.SPACE_MD))
+
+        tk.Label(
+            head, text="Saved Tests and Scores", bg=T.SURFACE, fg=T.TEXT,
+            font=T.f_subheading(),
+        ).pack(side="left")
+
+        self.count_badge = Badge(head, "0 cases", status="idle", parent_bg=T.SURFACE)
+        self.count_badge.pack(side="left", padx=(T.SPACE_SM, 0))
+
+        # The table sits directly on the card surface rather than in a sunken
+        # well, so its square corners never fight the card's rounded ones.
+        table_wrap = tk.Frame(body, bg=T.SURFACE)
+        table_wrap.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        table_wrap.columnconfigure(0, weight=1)
+        table_wrap.rowconfigure(0, weight=1)
+
         self.test_tree = ttk.Treeview(
-            panel,
-            columns=columns,
+            table_wrap,
+            columns=[c[0] for c in TEST_COLUMNS],
             show="headings",
-            height=10,
-            style="SavedTests.Treeview",
+            height=9,
+            style="Card.Treeview",
+            selectmode="browse",
         )
 
-        self.test_tree.heading("test_name", text="Test")
-        self.test_tree.heading("analysis_type", text="Type")
-        self.test_tree.heading("score", text="Score")
-        self.test_tree.heading("status", text="Status")
-        self.test_tree.heading("completed_at", text="Completed")
-        self.test_tree.heading("sample_path", text="Sample")
-
-        self.test_tree.column("test_name", width=140, anchor="w")
-        self.test_tree.column("analysis_type", width=80, anchor="center")
-        self.test_tree.column("score", width=70, anchor="center")
-        self.test_tree.column("status", width=90, anchor="center")
-        self.test_tree.column("completed_at", width=170, anchor="w")
-        self.test_tree.column("sample_path", width=520, anchor="w")
+        for key, heading, width, anchor in TEST_COLUMNS:
+            # Heading alignment follows its column so the two never disagree.
+            self.test_tree.heading(key, text=heading, anchor=anchor)
+            self.test_tree.column(key, width=width, anchor=anchor, stretch=(key == "sample_path"))
 
         self.test_tree.grid(row=0, column=0, sticky="nsew")
 
-        ysb = ttk.Scrollbar(panel, orient="vertical", command=self.test_tree.yview)
+        ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.test_tree.yview)
         ysb.grid(row=0, column=1, sticky="ns")
         self.test_tree.configure(yscrollcommand=ysb.set)
+
+        self.empty_state = EmptyState(
+            table_wrap,
+            "No saved cases yet",
+            detail="Run any analysis module and completed cases will appear here.",
+            glyph="◎",
+            parent_bg=T.SURFACE,
+        )
 
         self.refresh_saved_tests()
 
@@ -494,13 +585,19 @@ class LauncherWindow(ttk.Frame):
 
         rows = self._load_saved_tests()
 
-        self.test_tree.tag_configure(
-            "visible_row",
-            background="#0d1b33",
-            foreground="#eaf2ff",
-        )
+        # Zebra striping plus a severity tint for rows that did not complete.
+        # The stripe tags deliberately set background only -- if they also set a
+        # foreground it competes with the "failed" tag and the tint is lost.
+        self.test_tree.tag_configure("even", background=T.SURFACE)
+        self.test_tree.tag_configure("odd", background=T.mix(T.SURFACE, T.RAISED, 0.55))
+        self.test_tree.tag_configure("failed", foreground=T.DANGER)
 
-        for row in rows:
+        for index, row in enumerate(rows):
+            tags = ["even" if index % 2 == 0 else "odd"]
+            status = str(row.get("status", "")).strip().lower()
+            if status and status not in ("completed", "done", "ok"):
+                tags.append("failed")
+
             self.test_tree.insert(
                 "",
                 "end",
@@ -512,8 +609,25 @@ class LauncherWindow(ttk.Frame):
                     row["completed_at"],
                     row["sample_path"],
                 ),
-                tags=("visible_row",),
+                tags=tuple(tags),
             )
+
+        self._update_table_chrome(len(rows))
+
+    def _update_table_chrome(self, count: int) -> None:
+        """Toggle the empty-state overlay and refresh the case counter."""
+        if self.count_badge is not None:
+            label = "1 case" if count == 1 else f"{count} cases"
+            self.count_badge.set(label, status="info" if count else "idle")
+
+        if self.empty_state is None:
+            return
+
+        if count:
+            self.empty_state.place_forget()
+        else:
+            self.empty_state.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.empty_state.lift()
 
     def get_selected_saved_test_context(self):
         if self.test_tree is None:

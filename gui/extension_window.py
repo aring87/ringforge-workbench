@@ -8,6 +8,9 @@ from pathlib import Path
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from gui import theme as T
+from gui.components import HeaderBar, ScrolledText
+from gui.styles import apply_window_theme
 
 try:
     import tkinter.scrolledtext as scrolledtext
@@ -16,19 +19,21 @@ except Exception:
 
 
 class ExtensionAnalysisWindow(tk.Toplevel):
-    BG = "#05070B"
-    PANEL = "#0B1220"
-    PANEL_ALT = "#101A2E"
-    PANEL_SOFT = "#0D1730"
-    BORDER = "#294C8E"
-    BORDER_SOFT = "#1C3566"
-    ACCENT = "#2F6BFF"
-    ACCENT_HOVER = "#3D7BFF"
-    TEXT = "#F7FAFF"
-    MUTED = "#9FB0D3"
-    SUCCESS = "#22C55E"
-    WARNING = "#F59E0B"
-    DANGER = "#EF4444"
+    # Aliases onto the shared design tokens. They stay as class attributes
+    # because the plain Tk widgets in this window reference them directly.
+    BG = T.BG
+    PANEL = T.SURFACE
+    PANEL_ALT = T.RAISED
+    PANEL_SOFT = T.BG_ALT
+    BORDER = T.BORDER
+    BORDER_SOFT = T.BORDER_MUTED
+    ACCENT = T.ACCENT
+    ACCENT_HOVER = T.ACCENT_HOVER
+    TEXT = T.TEXT
+    MUTED = T.TEXT_MUTED
+    SUCCESS = T.SUCCESS
+    WARNING = T.WARNING
+    DANGER = T.DANGER
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -88,97 +93,8 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _configure_styles(self):
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        style.configure("App.TFrame", background=self.BG)
-        style.configure("Card.TFrame", background=self.PANEL, relief="flat")
-        style.configure("App.TLabelframe",
-                        background=self.PANEL,
-                        foreground=self.TEXT,
-                        bordercolor=self.BORDER,
-                        lightcolor=self.BORDER,
-                        darkcolor=self.BORDER,
-                        relief="solid",
-                        borderwidth=1)
-        style.configure("App.TLabelframe.Label",
-                        background=self.PANEL,
-                        foreground=self.TEXT,
-                        font=("Segoe UI", 10, "bold"))
-
-        style.configure("BannerTitle.TLabel",
-                        background=self.PANEL,
-                        foreground=self.TEXT,
-                        font=("Segoe UI", 16, "bold"))
-        style.configure("BannerSub.TLabel",
-                        background=self.PANEL,
-                        foreground=self.MUTED,
-                        font=("Segoe UI", 10))
-
-        style.configure("SectionHeader.TLabel",
-                        background=self.BG,
-                        foreground=self.ACCENT,
-                        font=("Segoe UI", 10, "bold"))
-
-        style.configure("FieldLabel.TLabel",
-                        background=self.PANEL,
-                        foreground=self.MUTED,
-                        font=("Segoe UI", 9, "bold"))
-        style.configure("FieldValue.TLabel",
-                        background=self.PANEL,
-                        foreground=self.TEXT,
-                        font=("Segoe UI", 10))
-        style.configure("Footer.TLabel",
-                        background=self.BG,
-                        foreground=self.MUTED,
-                        font=("Segoe UI", 9))
-
-        style.configure("Path.TEntry",
-                        fieldbackground=self.PANEL_ALT,
-                        background=self.PANEL_ALT,
-                        foreground=self.TEXT,
-                        bordercolor=self.BORDER,
-                        lightcolor=self.BORDER,
-                        darkcolor=self.BORDER,
-                        padding=(8, 7))
-
-        style.configure("Action.TButton",
-                        background=self.ACCENT,
-                        foreground=self.TEXT,
-                        bordercolor=self.ACCENT,
-                        focusthickness=0,
-                        focuscolor=self.ACCENT,
-                        padding=(12, 8),
-                        font=("Segoe UI", 10, "bold"))
-        style.map("Action.TButton",
-                  background=[("active", self.ACCENT_HOVER), ("pressed", self.ACCENT)])
-
-        style.configure("Secondary.TButton",
-                        background=self.PANEL_ALT,
-                        foreground=self.TEXT,
-                        bordercolor=self.BORDER_SOFT,
-                        focusthickness=0,
-                        focuscolor=self.BORDER_SOFT,
-                        padding=(12, 8),
-                        font=("Segoe UI", 10, "bold"))
-        style.map("Secondary.TButton",
-                  background=[("active", "#132346"), ("pressed", "#10203E")])
-
-        style.configure("TNotebook",
-                        background=self.BG,
-                        borderwidth=0,
-                        tabmargins=(0, 0, 0, 0))
-        style.configure("TNotebook.Tab",
-                        background=self.PANEL_ALT,
-                        foreground=self.TEXT,
-                        padding=(12, 7),
-                        font=("Segoe UI", 9, "bold"))
-        style.map("TNotebook.Tab",
-                  background=[("selected", self.ACCENT), ("active", "#1B335F")],
-                  foreground=[("selected", self.TEXT)])
+        # One shared theme for the whole workbench; see gui/styles.py.
+        apply_window_theme(self)
 
     def _build_ui(self):
         outer = ttk.Frame(self, style="App.TFrame", padding=10)
@@ -199,99 +115,24 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         self._build_workspace(outer)
         self._build_footer(outer)
 
-    def _build_banner(self, parent):
-        from pathlib import Path
-        try:
-            from PIL import Image, ImageTk
-        except Exception:
-            Image = None
-            ImageTk = None
-
-        panel_bg = "#0B1220"
-        border = "#294C8E"
-        accent = "#2F6BFF"
-        text_main = "#F7FAFF"
-        text_soft = "#B8C7E6"
-
-        banner_wrap = ttk.Frame(parent, style="App.TFrame")
-        banner_wrap.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        banner_wrap.columnconfigure(0, weight=1)
-
-        banner = tk.Frame(
-            banner_wrap,
-            bg=panel_bg,
-            highlightthickness=1,
-            highlightbackground=border,
-            highlightcolor=border,
-        )
-        banner.grid(row=0, column=0, sticky="ew")
-        banner.columnconfigure(1, weight=1)
-
+    def _build_banner(self, parent) -> None:
+        """Branded page header, shared with every other workbench window."""
         logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
 
-        if Image is not None and ImageTk is not None and logo_path.exists():
-            try:
-                logo_img = Image.open(logo_path).convert("RGBA")
-                logo_img = logo_img.resize((96, 96), Image.LANCZOS)
-                self._banner_logo_img = ImageTk.PhotoImage(logo_img)
-
-                tk.Label(
-                    banner,
-                    image=self._banner_logo_img,
-                    bg=panel_bg,
-                    bd=0,
-                    highlightthickness=0,
-                ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
-            except Exception:
-                tk.Label(
-                    banner,
-                    text="RF",
-                    bg=panel_bg,
-                    fg=accent,
-                    font=("Segoe UI", 18, "bold"),
-                    bd=0,
-                    highlightthickness=0,
-                ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
-        else:
-            tk.Label(
-                banner,
-                text="RF",
-                bg=panel_bg,
-                fg=accent,
-                font=("Segoe UI", 18, "bold"),
-                bd=0,
-                highlightthickness=0,
-            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
-
-        tk.Label(
-            banner,
-            text="RingForge Workbench",
-            bg=panel_bg,
-            fg=text_main,
-            font=("Segoe UI", 24, "bold"),
-            anchor="w",
-        ).grid(row=0, column=1, sticky="sw", pady=(16, 0))
-
-        tk.Label(
-            banner,
-            text="Browser Extension Analysis",
-            bg=panel_bg,
-            fg=accent,
-            font=("Segoe UI", 18, "bold"),
-            anchor="w",
-        ).grid(row=1, column=1, sticky="nw")
-
-        tk.Label(
-            banner,
-            text="Inspect Chrome and Edge extension packages for permissions, scripts, remote access, and risky behaviors.",
-            bg=panel_bg,
-            fg=text_soft,
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify="left",
-            wraplength=980,
-        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
-
+        header = HeaderBar(
+            parent,
+            "RingForge",
+            subtitle="Browser Extension Analysis",
+            description=(
+                "Inspect Chrome and Edge extension packages for permissions, "
+                "scripts, remote access, and risky behaviors."
+            ),
+            logo_path=logo_path if logo_path.exists() else None,
+            logo_size=72,
+            parent_bg=T.BG,
+        )
+        header.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_MD))
+        self._banner_logo_img = getattr(header, "_logo_image", None)
     def _build_source_card(self, parent):
         header = ttk.LabelFrame(parent, text="Extension Source", style="App.TLabelframe")
         header.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -657,7 +498,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             frame,
             bg=self.PANEL,
             fg=self.TEXT,
-            selectbackground="#183A7A",
+            selectbackground=T.ACCENT_SOFT,
             selectforeground=self.TEXT,
             relief="flat",
             borderwidth=0,
@@ -680,19 +521,20 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         common_kwargs = {
             "wrap": "word",
             "height": 18,
-            "bg": self.PANEL,
-            "fg": self.TEXT,
-            "insertbackground": self.TEXT,
+            "bg": T.SUNKEN,
+            "fg": T.TEXT_SECONDARY,
+            "insertbackground": T.ACCENT,
+            "selectbackground": T.ACCENT_SOFT,
+            "selectforeground": T.TEXT,
             "relief": "flat",
             "borderwidth": 0,
+            "highlightthickness": 0,
             "padx": 10,
             "pady": 10,
-            "font": ("Consolas", 10),
+            "font": T.f_mono(10),
         }
 
-        if scrolledtext is not None:
-            return scrolledtext.ScrolledText(parent, **common_kwargs)
-        return tk.Text(parent, **common_kwargs)
+        return ScrolledText(parent, **common_kwargs)
 
     def _set_text(self, widget, text):
         if widget is None:
@@ -1812,22 +1654,11 @@ pre {{
         badge_border = self.BORDER_SOFT
         text_color = self.TEXT
 
-        if verdict_l == "critical":
-            badge_bg = "#3A0A0A"
-            badge_border = self.DANGER
-            text_color = "#FCA5A5"
-        elif verdict_l == "high":
-            badge_bg = "#3A1218"
-            badge_border = self.DANGER
-            text_color = "#FECACA"
-        elif verdict_l == "medium":
-            badge_bg = "#3A2A0C"
-            badge_border = self.WARNING
-            text_color = "#FDE68A"
-        elif verdict_l == "low":
-            badge_bg = "#13301C"
-            badge_border = self.SUCCESS
-            text_color = "#BBF7D0"
+        # Severity colours come from the shared semantic map so this badge
+        # always matches verdicts rendered elsewhere in the workbench.
+        if verdict_l in T.STATUS_COLORS:
+            text_color, badge_bg = T.status_colors(verdict_l)
+            badge_border = text_color
 
         if self.risk_verdict_badge is not None:
             self.risk_verdict_badge.configure(

@@ -10,6 +10,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from gui import theme as T
+from gui.components import HeaderBar
+from gui.styles import apply_window_theme
 from typing import Any, Optional
 
 try:
@@ -34,7 +37,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         self.title("API Spec Analysis")
         self.geometry("1880x1080")
         self.minsize(1600, 900)
-        self.configure(bg="#05070B")
+        self.configure(bg=T.BG)
 
         self.spec_path_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
@@ -65,112 +68,20 @@ class SpecAnalysisWindow(tk.Toplevel):
     # -------------------------------------------------------------------------
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self)
+        # One shared theme for the whole workbench; see gui/styles.py.
+        apply_window_theme(self)
 
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        bg = "#05070B"
-        panel = "#0B1220"
-        panel_alt = "#101A2E"
-        border = "#294C8E"
-        text = "#F7FAFF"
-        muted = "#B8C7E6"
-        accent = "#2F6BFF"
-        accent_active = "#3F7BFF"
-        entry_bg = "#0D1A33"
-        tab_bg = "#14213B"
-
-        style.configure(".", background=bg, foreground=text)
-        style.configure("App.TFrame", background=bg)
-        style.configure("Card.TFrame", background=panel, relief="flat", borderwidth=0)
-        style.configure("SummaryCard.TFrame", background=panel_alt, relief="flat", borderwidth=0)
-
-        style.configure("Section.TLabelframe", background=bg, foreground=text, borderwidth=1, relief="solid")
-        style.configure("Section.TLabelframe.Label", background=bg, foreground=text, font=("Segoe UI", 10, "bold"))
-
-        style.configure("Title.TLabel", background=panel, foreground=text, font=("Segoe UI", 18, "bold"))
-        style.configure("Subtitle.TLabel", background=panel, foreground=muted, font=("Segoe UI", 10))
-        style.configure("Field.TLabel", background=bg, foreground="#DCE6FF", font=("Segoe UI", 10, "bold"))
-        style.configure("Muted.TLabel", background=bg, foreground=muted, font=("Segoe UI", 9))
-        style.configure("SectionHeader.TLabel", background=bg, foreground=accent, font=("Segoe UI", 11, "bold"))
-        style.configure("SummaryLabel.TLabel", background=panel_alt, foreground=muted, font=("Segoe UI", 9, "bold"))
-        style.configure("SummaryValue.TLabel", background=panel_alt, foreground=text, font=("Segoe UI", 13, "bold"))
-
-        style.configure(
-            "Action.TButton",
-            background=accent,
-            foreground="#FFFFFF",
-            bordercolor=accent,
-            focusthickness=0,
-            focuscolor=accent,
-            padding=(12, 7),
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.map(
-            "Action.TButton",
-            background=[("active", accent_active), ("pressed", accent_active)],
-            foreground=[("disabled", "#A6B4D0"), ("!disabled", "#FFFFFF")],
-        )
-
-        style.configure(
-            "Secondary.TButton",
-            background=panel_alt,
-            foreground=text,
-            bordercolor=border,
-            focusthickness=0,
-            focuscolor=panel_alt,
-            padding=(10, 7),
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.map(
-            "Secondary.TButton",
-            background=[("active", "#16284A"), ("pressed", "#16284A")],
-            foreground=[("disabled", "#A6B4D0"), ("!disabled", text)],
-        )
-
-        style.configure(
-            "TEntry",
-            fieldbackground=entry_bg,
-            foreground=text,
-            insertcolor=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            padding=6,
-        )
-
-        style.configure(
-            "Treeview",
-            background=entry_bg,
-            fieldbackground=entry_bg,
-            foreground=text,
-            bordercolor=border,
-            rowheight=28,
-            font=("Segoe UI", 10),
-        )
-        style.map("Treeview", background=[("selected", "#1D3F86")], foreground=[("selected", "#FFFFFF")])
-        style.configure(
-            "Treeview.Heading",
-            background=panel_alt,
-            foreground=text,
-            bordercolor=border,
-            font=("Segoe UI", 10, "bold"),
-            padding=(8, 8),
-        )
-
+        # Kept for the plain Tk widgets in this window, which ttk cannot style.
         self.colors = {
-            "bg": bg,
-            "panel": panel,
-            "panel_alt": panel_alt,
-            "border": border,
-            "text": text,
-            "muted": muted,
-            "accent": accent,
-            "entry_bg": entry_bg,
-            "tab_bg": tab_bg,
+            "bg": T.BG,
+            "panel": T.SURFACE,
+            "panel_alt": T.RAISED,
+            "border": T.BORDER,
+            "text": T.TEXT,
+            "muted": T.TEXT_MUTED,
+            "accent": T.ACCENT,
+            "entry_bg": T.SUNKEN,
+            "tab_bg": T.RAISED,
         }
 
     # -------------------------------------------------------------------------
@@ -230,83 +141,23 @@ class SpecAnalysisWindow(tk.Toplevel):
         self._build_status_bar(content)
 
     def _build_top_banner(self, outer: dict[str, Any]) -> None:
-        panel_bg = self.colors["panel"]
-        border = self.colors["border"]
-        accent = self.colors["accent"]
-        text_main = self.colors["text"]
-        text_soft = self.colors["muted"]
-
-        banner_wrap = ttk.Frame(self, style="App.TFrame")
-        banner_wrap.grid(row=0, column=0, sticky="ew", padx=outer.get("padx", 10), pady=outer.get("pady", (8, 10)))
-        banner_wrap.columnconfigure(0, weight=1)
-
-        banner = tk.Frame(
-            banner_wrap,
-            bg=panel_bg,
-            highlightthickness=1,
-            highlightbackground=border,
-            highlightcolor=border,
-        )
-        banner.grid(row=0, column=0, sticky="ew")
-        banner.columnconfigure(1, weight=1)
-
+        """Branded page header, shared with every other workbench window."""
         logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
-        if logo_path.exists() and Image is not None and ImageTk is not None:
-            try:
-                logo_img = Image.open(logo_path).convert("RGBA")
-                logo_img = logo_img.resize((96, 96), Image.LANCZOS)
-                self.brand_logo_img = ImageTk.PhotoImage(logo_img)
-                tk.Label(
-                    banner,
-                    image=self.brand_logo_img,
-                    bg=panel_bg,
-                    bd=0,
-                    highlightthickness=0,
-                ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
-            except Exception:
-                self._build_banner_fallback(banner, panel_bg, accent)
-        else:
-            self._build_banner_fallback(banner, panel_bg, accent)
 
-        tk.Label(
-            banner,
-            text="RingForge Workbench",
-            bg=panel_bg,
-            fg=text_main,
-            font=("Segoe UI", 24, "bold"),
-            anchor="w",
-        ).grid(row=0, column=1, sticky="sw", pady=(16, 0))
-
-        tk.Label(
-            banner,
-            text="API Spec Analysis",
-            bg=panel_bg,
-            fg=accent,
-            font=("Segoe UI", 18, "bold"),
-            anchor="w",
-        ).grid(row=1, column=1, sticky="nw")
-
-        tk.Label(
-            banner,
-            text="Analyze OpenAPI and Swagger definitions, inspect endpoint inventory, review auth models, and export analyst-ready HTML reports.",
-            bg=panel_bg,
-            fg=text_soft,
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify="left",
-            wraplength=1100,
-        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
-
-    def _build_banner_fallback(self, banner: tk.Misc, panel_bg: str, accent: str) -> None:
-        tk.Label(
-            banner,
-            text="[anvil.png missing]",
-            bg=panel_bg,
-            fg=accent,
-            font=("Segoe UI", 10, "bold"),
-            bd=0,
-            highlightthickness=0,
-        ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14)
+        header = HeaderBar(
+            self,
+            "RingForge",
+            subtitle="Spec Analysis",
+            description=(
+                "Review OpenAPI and Swagger definitions and surface risky or "
+                "undocumented endpoints."
+            ),
+            logo_path=logo_path if logo_path.exists() else None,
+            logo_size=72,
+            parent_bg=T.BG,
+        )
+        header.grid(row=0, column=0, sticky="ew", padx=outer.get("padx", 10), pady=outer.get("pady", (8, 10)))
+        self._banner_logo_img = getattr(header, "_logo_image", None)
 
     def _build_spec_controls(self, parent):
         top = ttk.LabelFrame(parent, text="Spec Input", style="Section.TLabelframe")
@@ -447,7 +298,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             fg=self.colors["text"],
             insertbackground=self.colors["text"],
             selectbackground=self.colors["accent"],
-            selectforeground="#FFFFFF",
+            selectforeground=T.TEXT_ON_ACCENT,
             relief="flat",
             borderwidth=0,
             highlightthickness=1,

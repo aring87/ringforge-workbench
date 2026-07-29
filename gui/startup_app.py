@@ -17,6 +17,7 @@ from gui.splash import SplashScreen
 from gui.styles import apply_app_theme
 from gui.extension_window import ExtensionAnalysisWindow
 from gui.unified_report_window import UnifiedReportWindow
+from gui import theme as T
 
 
 class StartupApp(tk.Tk):
@@ -37,7 +38,7 @@ class StartupApp(tk.Tk):
         self.title("RingForge Workbench")
         self.geometry("1280x920+80+40")
         self.minsize(1180, 820)
-        self.configure(bg="#05070B")
+        self.configure(bg=T.BG)
 
         self.dynamic_window = None
         self.spec_window = None
@@ -82,7 +83,7 @@ class StartupApp(tk.Tk):
             self.deiconify()
             self.lift()
             self.focus_force()
-            self.configure(bg="#05070B")
+            self.configure(bg=T.BG)
 
             if self.launcher_frame is not None and self.launcher_frame.winfo_exists():
                 self.launcher_frame.destroy()

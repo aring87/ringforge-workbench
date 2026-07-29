@@ -4,6 +4,7 @@ import tkinter as tk
 from pathlib import Path
 from PIL import Image, ImageTk
 import traceback
+from gui import theme as T
 
 
 class SplashScreen(tk.Toplevel):
@@ -20,12 +21,12 @@ class SplashScreen(tk.Toplevel):
         self.duration_ms = duration_ms
         self._img_ref = None
 
-        bg = "#05070B"
-        panel = "#0B1220"
-        border = "#294C8E"
-        text = "#F7FAFF"
-        muted = "#B8C7E6"
-        accent = "#2F6BFF"
+        bg = T.BG
+        panel = T.SURFACE
+        border = T.BORDER_STRONG
+        text = T.TEXT
+        muted = T.TEXT_SECONDARY
+        accent = T.ACCENT
 
         self.overrideredirect(True)
         self.configure(bg=bg)

@@ -11,6 +11,9 @@ from typing import Any
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from gui import theme as T
+from gui.components import Checkbox, HeaderBar
+from gui.styles import apply_window_theme
 
 try:
     from PIL import Image, ImageTk
@@ -161,7 +164,7 @@ class APIAnalysisWindow(tk.Toplevel):
         self.title("Manual API Tester")
         self.geometry("1680x1080")
         self.minsize(1400, 960)
-        self.configure(bg="#05070B")
+        self.configure(bg=T.BG)
 
         self.latest_report_path: Path | None = None
         self.brand_logo_img = None
@@ -189,149 +192,19 @@ class APIAnalysisWindow(tk.Toplevel):
             pass
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
+        # One shared theme for the whole workbench; see gui/styles.py.
+        apply_window_theme(self)
 
-        bg = "#05070B"
-        panel = "#0B1220"
-        panel_alt = "#101A2E"
-        border = "#294C8E"
-        text = "#F7FAFF"
-        muted = "#B8C7E6"
-        accent = "#2F6BFF"
-        accent_active = "#3F7BFF"
-        entry_bg = "#0D1A33"
-        tab_bg = "#14213B"
-
-        self.option_add("*TCombobox*Listbox*Background", entry_bg)
-        self.option_add("*TCombobox*Listbox*Foreground", text)
-        self.option_add("*TCombobox*Listbox*selectBackground", accent)
-        self.option_add("*TCombobox*Listbox*selectForeground", "#FFFFFF")
-
-        style.configure(".", background=bg, foreground=text)
-        style.configure("App.TFrame", background=bg)
-        style.configure("Header.TFrame", background=panel)
-        style.configure("Card.TFrame", background=panel, relief="flat", borderwidth=0)
-        style.configure("SummaryCard.TFrame", background=panel_alt, relief="flat", borderwidth=0)
-
-        style.configure("Section.TLabelframe", background=bg, foreground=text, borderwidth=1, relief="solid")
-        style.configure("Section.TLabelframe.Label", background=bg, foreground=text, font=("Segoe UI", 10, "bold"))
-
-        style.configure("Field.TLabel", background=bg, foreground="#DCE6FF", font=("Segoe UI", 10, "bold"))
-        style.configure("Muted.TLabel", background=bg, foreground=muted, font=("Segoe UI", 9))
-        style.configure("SummaryLabel.TLabel", background=panel_alt, foreground=muted, font=("Segoe UI", 9, "bold"))
-        style.configure("SummaryValue.TLabel", background=panel_alt, foreground=text, font=("Segoe UI", 11, "bold"))
-
-        style.configure(
-            "Action.TButton",
-            background=accent,
-            foreground="#FFFFFF",
-            bordercolor=accent,
-            focusthickness=0,
-            focuscolor=accent,
-            padding=(12, 7),
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.map(
-            "Action.TButton",
-            background=[("active", accent_active), ("pressed", accent_active)],
-            foreground=[("disabled", "#A6B4D0"), ("!disabled", "#FFFFFF")],
-        )
-
-        style.configure(
-            "Secondary.TButton",
-            background=panel_alt,
-            foreground=text,
-            bordercolor=border,
-            focusthickness=0,
-            focuscolor=panel_alt,
-            padding=(10, 7),
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.map(
-            "Secondary.TButton",
-            background=[("active", "#16284A"), ("pressed", "#16284A")],
-            foreground=[("disabled", "#A6B4D0"), ("!disabled", text)],
-        )
-
-        style.configure(
-            "TEntry",
-            fieldbackground=entry_bg,
-            foreground=text,
-            insertcolor=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            padding=6,
-        )
-        style.configure(
-            "TSpinbox",
-            fieldbackground=entry_bg,
-            foreground=text,
-            arrowsize=12,
-            insertcolor=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            padding=4,
-        )
-        style.configure(
-            "TCombobox",
-            fieldbackground=entry_bg,
-            background=entry_bg,
-            foreground=text,
-            arrowcolor=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            padding=4,
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", entry_bg)],
-            foreground=[("readonly", text)],
-            background=[("readonly", entry_bg)],
-        )
-
-        style.configure("TCheckbutton", background=bg, foreground=text, font=("Segoe UI", 10))
-        style.map("TCheckbutton", background=[("active", bg)], foreground=[("active", text)])
-
-        style.configure("TNotebook", background=bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
-        
-        style.configure(
-            "Api.TNotebook",
-            background=bg,
-            borderwidth=0,
-            tabmargins=(0, 0, 0, 0),
-        )
-        
-        style.configure(
-            "Api.TNotebook.Tab",
-            background=tab_bg,
-            foreground=text,
-            padding=(18, 9),
-            font=("Segoe UI", 10, "bold"),
-        )
-
-        style.map(
-            "Api.TNotebook.Tab",
-            background=[("selected", accent), ("active", "#1D3F86")],
-            foreground=[("selected", "#FFFFFF"), ("active", "#FFFFFF")],
-            padding=[("selected", (18, 9)), ("!selected", (18, 9))],
-        )
-
+        # Kept for the plain Tk widgets in this window, which ttk cannot style.
         self.colors = {
-            "bg": bg,
-            "panel": panel,
-            "panel_alt": panel_alt,
-            "border": border,
-            "text": text,
-            "muted": muted,
-            "accent": accent,
-            "entry_bg": entry_bg,
+            "bg": T.BG,
+            "panel": T.SURFACE,
+            "panel_alt": T.RAISED,
+            "border": T.BORDER,
+            "text": T.TEXT,
+            "muted": T.TEXT_MUTED,
+            "accent": T.ACCENT,
+            "entry_bg": T.SUNKEN,
         }
 
     def _build_ui(self) -> None:
@@ -354,60 +227,23 @@ class APIAnalysisWindow(tk.Toplevel):
         self._build_response_section(content)
 
     def _build_top_banner(self, outer: dict[str, Any]) -> None:
-        panel_bg = "#0B1220"
-        border = "#294C8E"
-        accent = "#2F6BFF"
-        text_main = "#F7FAFF"
-        text_soft = "#B8C7E6"
-
-        banner_wrap = ttk.Frame(self, style="App.TFrame")
-        banner_wrap.grid(row=0, column=0, sticky="ew", padx=outer.get("padx", 10), pady=outer.get("pady", (8, 10)))
-        banner_wrap.columnconfigure(0, weight=1)
-
-        banner = tk.Frame(
-            banner_wrap,
-            bg=panel_bg,
-            highlightthickness=1,
-            highlightbackground=border,
-            highlightcolor=border,
-        )
-        banner.grid(row=0, column=0, sticky="ew")
-        banner.columnconfigure(1, weight=1)
-
+        """Branded page header, shared with every other workbench window."""
         logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
-        if logo_path.exists() and Image is not None and ImageTk is not None:
-            try:
-                logo_img = Image.open(logo_path).convert("RGBA")
-                logo_img = logo_img.resize((96, 96), Image.LANCZOS)
-                self.brand_logo_img = ImageTk.PhotoImage(logo_img)
-                tk.Label(banner, image=self.brand_logo_img, bg=panel_bg, bd=0, highlightthickness=0).grid(
-                    row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
-                )
-            except Exception:
-                tk.Label(banner, text="[anvil.png error]", bg=panel_bg, fg=accent, font=("Segoe UI", 10, "bold"), bd=0, highlightthickness=0).grid(
-                    row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
-                )
-        else:
-            tk.Label(banner, text="[anvil.png missing]", bg=panel_bg, fg=accent, font=("Segoe UI", 10, "bold"), bd=0, highlightthickness=0).grid(
-                row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
-            )
 
-        tk.Label(banner, text="RingForge Workbench", bg=panel_bg, fg=text_main, font=("Segoe UI", 24, "bold"), anchor="w").grid(
-            row=0, column=1, sticky="sw", pady=(16, 0)
+        header = HeaderBar(
+            self,
+            "RingForge",
+            subtitle="API Analysis",
+            description=(
+                "Send manual endpoint requests, inspect responses, and score "
+                "findings for risk."
+            ),
+            logo_path=logo_path if logo_path.exists() else None,
+            logo_size=72,
+            parent_bg=T.BG,
         )
-        tk.Label(banner, text="Manual API Tester", bg=panel_bg, fg=accent, font=("Segoe UI", 18, "bold"), anchor="w").grid(
-            row=1, column=1, sticky="nw"
-        )
-        tk.Label(
-            banner,
-            text="Build requests, test endpoints, inspect responses, and export analyst-ready HTML reports.",
-            bg=panel_bg,
-            fg=text_soft,
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify="left",
-            wraplength=980,
-        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
+        header.grid(row=0, column=0, sticky="ew", padx=outer.get("padx", 10), pady=outer.get("pady", (8, 10)))
+        self._banner_logo_img = getattr(header, "_logo_image", None)
 
     def _build_request_setup(self, parent: tk.Misc) -> None:
         frame = ttk.LabelFrame(parent, text="Request Setup", style="Section.TLabelframe")
@@ -453,7 +289,7 @@ class APIAnalysisWindow(tk.Toplevel):
 
         self.url_entry = ttk.Entry(url_row, textvariable=self.url_var)
         self.url_entry.grid(row=0, column=0, sticky="ew")
-        self.verify_ssl_check = ttk.Checkbutton(url_row, text="Verify SSL", variable=self.verify_ssl_var)
+        self.verify_ssl_check = Checkbox(url_row, "Verify SSL", self.verify_ssl_var, parent_bg=T.BG)
         self.verify_ssl_check.grid(row=0, column=1, sticky="w", padx=(10, 8))
         self.timeout_spin = ttk.Spinbox(url_row, from_=1, to=600, textvariable=self.timeout_var, width=5)
         self.timeout_spin.grid(row=0, column=2, sticky="w", padx=(0, 4))
@@ -574,10 +410,11 @@ class APIAnalysisWindow(tk.Toplevel):
         right = ttk.Frame(bar, style="App.TFrame")
         right.grid(row=0, column=1, sticky="e")
 
-        ttk.Checkbutton(
+        Checkbox(
             right,
-            text="Redact report",
-            variable=self.redact_report_var,
+            "Redact report",
+            self.redact_report_var,
+            parent_bg=T.BG,
         ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
         ttk.Button(

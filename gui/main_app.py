@@ -8,7 +8,8 @@ from typing import Optional, Tuple
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageTk
+from gui import theme as T
+from gui.components import HeaderBar
 from gui.extension_window import ExtensionAnalysisWindow
 from gui.controllers import StaticAnalysisController, ResultController, PathActionsController
 from gui.api_window import APIAnalysisWindow
@@ -192,7 +193,7 @@ class App(tk.Tk):
         self.geometry(f"{target_w}x{target_h}+20+20")
 
     def _build_ui(self):
-        outer = {"padx": 12, "pady": 8}
+        outer = {"padx": T.SPACE_XL, "pady": T.SPACE_SM}
 
         self._build_top_banner(outer)
         build_header(self, self, outer)
@@ -206,84 +207,25 @@ class App(tk.Tk):
         self._update_effective_label()
 
     def _build_top_banner(self, outer):
-        banner_wrap = ttk.Frame(self)
-        banner_wrap.pack(fill="x", **outer)
-
-        panel_bg = "#0B1220"
-        border = "#294C8E"
-        accent = "#2F6BFF"
-        text_main = "#F7FAFF"
-        text_soft = "#B8C7E6"
-
-        banner = tk.Frame(
-            banner_wrap,
-            bg=panel_bg,
-            highlightthickness=1,
-            highlightbackground=border,
-            highlightcolor=border,
-        )
-        banner.pack(fill="x")
-        banner.columnconfigure(1, weight=1)
-
         logo_path = ROOT / "assets" / "anvil.png"
 
-        if logo_path.exists():
-            logo_img = Image.open(logo_path).convert("RGBA")
-            logo_img = logo_img.resize((96, 96), Image.LANCZOS)
-            self.brand_logo_img = ImageTk.PhotoImage(logo_img)
+        header = HeaderBar(
+            self,
+            "RingForge",
+            subtitle="Static Analysis",
+            description=(
+                "Focused static triage, scoring, report generation, and analyst "
+                "review for the selected sample."
+            ),
+            logo_path=logo_path if logo_path.exists() else None,
+            logo_size=72,
+            parent_bg=T.BG,
+        )
+        header.pack(fill="x", **outer)
 
-            logo_label = tk.Label(
-                banner,
-                image=self.brand_logo_img,
-                bg=panel_bg,
-                bd=0,
-                highlightthickness=0,
-            )
-            logo_label.grid(
-                row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
-            )
-        else:
-            logo_label = tk.Label(
-                banner,
-                text="[anvil.png missing]",
-                bg=panel_bg,
-                fg=accent,
-                font=("Segoe UI", 10, "bold"),
-                bd=0,
-                highlightthickness=0,
-            )
-            logo_label.grid(
-                row=0, column=0, rowspan=3, sticky="w", padx=(16, 18), pady=14
-            )
-
-        tk.Label(
-            banner,
-            text="RingForge Workbench",
-            bg=panel_bg,
-            fg=text_main,
-            font=("Segoe UI", 24, "bold"),
-            anchor="w",
-        ).grid(row=0, column=1, sticky="sw", pady=(16, 0))
-
-        tk.Label(
-            banner,
-            text="Static Analysis",
-            bg=panel_bg,
-            fg=accent,
-            font=("Segoe UI", 18, "bold"),
-            anchor="w",
-        ).grid(row=1, column=1, sticky="nw")
-
-        tk.Label(
-            banner,
-            text="Focused static triage, scoring, report generation, and analyst review for the selected sample.",
-            bg=panel_bg,
-            fg=text_soft,
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify="left",
-            wraplength=900,
-        ).grid(row=2, column=1, sticky="w", pady=(4, 16))
+        # HeaderBar owns the PhotoImage, but keep the old attribute alive so
+        # nothing that referenced it breaks.
+        self.brand_logo_img = getattr(header, "_logo_image", None)
 
     def open_spec_analysis_window(self):
         if self.spec_window is not None and self.spec_window.winfo_exists():
@@ -437,17 +379,21 @@ class App(tk.Tk):
         advanced_on = bool(self.adv_enabled_var.get())
         state = "normal" if advanced_on else "disabled"
 
-        for child in self.adv_body.winfo_children():
+        for widget in getattr(self, "adv_widgets", []):
             try:
-                if child is getattr(self, "subfile_limit_label", None):
-                    # Keep ttk label normal so it does not get a white disabled background.
-                    # Only change text color to make it appear disabled.
-                    child.configure(state="normal")
-                    child.configure(foreground="#E5E7EB" if advanced_on else "#6B7280")
-                elif isinstance(child, ttk.Label):
-                    child.configure(state="normal")
-                else:
-                    child.configure(state=state)
+                widget.configure(state=state)
+            except tk.TclError:
+                pass
+
+        # Labels stay enabled so ttk never swaps in a light disabled background;
+        # only the text colour signals the disabled state.
+        label = getattr(self, "subfile_limit_label", None)
+        if label is not None:
+            try:
+                label.configure(
+                    state="normal",
+                    foreground=T.TEXT_SECONDARY if advanced_on else T.TEXT_DISABLED,
+                )
             except tk.TclError:
                 pass
 
@@ -534,9 +480,20 @@ class App(tk.Tk):
 
         for i, step_key in enumerate(STEP_DISPLAY_ORDER):
             label = STEP_LABELS.get(step_key, step_key)
-            ttk.Label(self.steps_frame, text=f"{label}:").grid(
-                row=i, column=0, sticky="w"
+
+            # A status dot, the step name, its bar, and the status word.
+            dot = tk.Canvas(
+                self.steps_frame, width=8, height=8, bg=T.SURFACE,
+                highlightthickness=0, bd=0, takefocus=0,
             )
+            dot.grid(row=i, column=0, sticky="w", pady=5)
+            dot_item = dot.create_oval(1, 1, 7, 7, fill=T.NEUTRAL, outline="")
+
+            tk.Label(
+                self.steps_frame, text=label, bg=T.SURFACE, fg=T.TEXT_SECONDARY,
+                font=T.f_body(), anchor="w",
+            ).grid(row=i, column=1, sticky="w", padx=(T.SPACE_SM, T.SPACE_MD))
+
             bar_var = tk.IntVar(value=0)
             ttk.Progressbar(
                 self.steps_frame,
@@ -544,10 +501,21 @@ class App(tk.Tk):
                 mode="determinate",
                 maximum=100,
                 variable=bar_var,
-            ).grid(row=i, column=1, sticky="we", padx=8)
-            status = ttk.Label(self.steps_frame, text="idle")
-            status.grid(row=i, column=2, sticky="w")
-            self.step_widgets[step_key] = {"var": bar_var, "status": status}
+                length=220,
+            ).grid(row=i, column=2, sticky="e", padx=(T.SPACE_LG, T.SPACE_MD))
+
+            status = tk.Label(
+                self.steps_frame, text="idle", bg=T.SURFACE, fg=T.TEXT_MUTED,
+                font=T.f_small_strong(), anchor="e", width=12,
+            )
+            status.grid(row=i, column=3, sticky="e")
+
+            self.step_widgets[step_key] = {
+                "var": bar_var,
+                "status": status,
+                "dot": dot,
+                "dot_item": dot_item,
+            }
 
         self.overall_var.set(0)
         self.overall_text.configure(text="0%")
@@ -558,17 +526,16 @@ class App(tk.Tk):
         if not w:
             return
         w["var"].set(max(0, min(100, pct)))
-        color_map = {
-            "done": "#22c55e",
-            "running": "#3d86ff",
-            "queued": "#9bb2d1",
-            "n/a": "#6f87a8",
-            "missing tool": "#f59e0b",
-            "failed": "#ef4444",
-            "idle": "#9bb2d1",
-        }
-        fg = color_map.get(status.lower(), "#eaf2ff")
-        w["status"].configure(text=status, foreground=fg)
+
+        color, _soft = T.status_colors(status)
+        w["status"].configure(text=status, foreground=color)
+
+        dot = w.get("dot")
+        if dot is not None:
+            try:
+                dot.itemconfigure(w["dot_item"], fill=color)
+            except tk.TclError:
+                pass
 
     def _recalc_overall(self):
         completed = 0

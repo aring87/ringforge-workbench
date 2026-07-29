@@ -21,6 +21,8 @@ from PIL import Image, ImageTk
 from dynamic_analysis.html_report import write_dynamic_html_report
 from dynamic_analysis.orchestrator import run_dynamic_analysis
 from static_triage_engine.scoring import combined_score_from_case_dir
+from gui import theme as T
+from gui.components import Checkbox, HeaderBar
 
 
 class DynamicAnalysisWindow(tk.Toplevel):
@@ -52,7 +54,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("RingForge Workbench - Dynamic Analysis")
-        self.configure(bg="#05070B")
+        self.configure(bg=T.BG)
         self.resizable(True, True)
         self._autosize_window()
 
@@ -510,12 +512,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
             command=self._refresh_summary_from_inputs,
         ).pack(side="left", padx=(6, 14))
 
-        ttk.Checkbutton(
+        Checkbox(
             observation_row,
-            text="Installer mode",
-            variable=self.installer_observation_mode_var,
-            style="Dark.TCheckbutton",
+            "Installer mode",
+            self.installer_observation_mode_var,
             command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
         ).pack(side="left")
 
         runtime_row = ttk.Frame(header)
@@ -531,12 +533,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
             command=self._refresh_summary_from_inputs,
         ).pack(side="left")
 
-        ttk.Checkbutton(
+        Checkbox(
             runtime_row,
-            text="Enable Procmon Capture",
-            variable=self.procmon_enabled_var,
-            style="Dark.TCheckbutton",
+            "Enable Procmon Capture",
+            self.procmon_enabled_var,
             command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
         ).pack(side="left", padx=(14, 0))
 
         workspace = ttk.Frame(frm)
@@ -573,87 +575,24 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self._build_output_section(left_bottom)
         self._build_findings_summary_section(right_bottom)
 
-    def _build_top_banner(self, outer):
-        compact = bool(getattr(self, "_compact_ui", False))
-        panel_bg = "#0B1220"
-        border = "#294C8E"
-        accent = "#2F6BFF"
-        text_main = "#F7FAFF"
-        text_soft = "#B8C7E6"
+    def _build_top_banner(self, outer) -> None:
+        """Branded page header, shared with every other workbench window."""
+        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
 
-        logo_size = 52 if compact else 82
-        title_font = 17 if compact else 22
-        module_font = 13 if compact else 17
-        logo_pad_y = 4 if compact else 10
-        banner_title_pad = 6 if compact else 12
-        banner_bottom_pad = 6 if compact else 12
-
-        banner_wrap = ttk.Frame(self)
-        banner_wrap.pack(fill="x", **outer)
-
-        banner = tk.Frame(
-            banner_wrap,
-            bg=panel_bg,
-            highlightthickness=1,
-            highlightbackground=border,
-            highlightcolor=border,
+        header = HeaderBar(
+            self,
+            "RingForge",
+            subtitle="Dynamic Analysis",
+            description=(
+                "Runtime behavior capture, persistence tracking, dropped-file "
+                "review, and post-execution triage."
+            ),
+            logo_path=logo_path if logo_path.exists() else None,
+            logo_size=52 if getattr(self, '_compact_ui', False) else 72,
+            parent_bg=T.BG,
         )
-        banner.pack(fill="x")
-        banner.columnconfigure(1, weight=1)
-
-        logo_path = self._project_root() / "assets" / "anvil.png"
-        if logo_path.exists():
-            logo_img = Image.open(logo_path).convert("RGBA")
-            logo_img = logo_img.resize((logo_size, logo_size), Image.LANCZOS)
-            self.brand_logo_img = ImageTk.PhotoImage(logo_img)
-
-            tk.Label(
-                banner,
-                image=self.brand_logo_img,
-                bg=panel_bg,
-                bd=0,
-                highlightthickness=0,
-            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(14, 16), pady=logo_pad_y)
-        else:
-            tk.Label(
-                banner,
-                text="[anvil.png missing]",
-                bg=panel_bg,
-                fg=accent,
-                font=("Segoe UI", 10, "bold"),
-                bd=0,
-                highlightthickness=0,
-            ).grid(row=0, column=0, rowspan=3, sticky="w", padx=(14, 16), pady=logo_pad_y)
-
-        tk.Label(
-            banner,
-            text="RingForge Workbench",
-            bg=panel_bg,
-            fg=text_main,
-            font=("Segoe UI", title_font, "bold"),
-            anchor="w",
-        ).grid(row=0, column=1, sticky="sw", pady=(banner_title_pad, 0))
-
-        tk.Label(
-            banner,
-            text="Dynamic Analysis",
-            bg=panel_bg,
-            fg=accent,
-            font=("Segoe UI", module_font, "bold"),
-            anchor="w",
-        ).grid(row=1, column=1, sticky="nw")
-
-        tk.Label(
-            banner,
-            text="Runtime behavior capture, persistence tracking, dropped-file review, and post-execution triage.",
-            bg=panel_bg,
-            fg=text_soft,
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify="left",
-            wraplength=980,
-        ).grid(row=2, column=1, sticky="w", pady=(3, banner_bottom_pad))
-
+        header.pack(fill="x", **outer)
+        self._banner_logo_img = getattr(header, "_logo_image", None)
     def _build_settings_section(self, parent):
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
@@ -812,16 +751,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.output = tk.Text(
             outwrap,
             wrap="word",
-            bg="#0d1b33",
-            fg="#eaf2ff",
-            insertbackground="#eaf2ff",
-            selectbackground="#1f6fff",
+            bg=T.SUNKEN,
+            fg=T.TEXT,
+            insertbackground=T.TEXT,
+            selectbackground=T.ACCENT_SOFT,
             selectforeground="white",
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#2a4365",
-            highlightcolor="#3d86ff",
+            highlightbackground=T.BORDER_STRONG,
+            highlightcolor=T.ACCENT,
             font=("Consolas", 10),
         )
         self.output.grid(row=0, column=0, sticky="nsew")
@@ -877,21 +816,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ttk.Button(
             report_actions,
             text="Open Case Folder",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._open_case_folder,
         ).grid(row=0, column=0, sticky="ew", padx=8, pady=(6 if getattr(self, "_compact_ui", False) else 10, 4), ipady=1)
 
         ttk.Button(
             report_actions,
             text="Open Dynamic Output Folder",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._open_dynamic_output_folder,
         ).grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4), ipady=1)
 
         ttk.Button(
             report_actions,
             text="Open Latest Report",
-            style="Action.TButton",
+            style="Secondary.TButton",
             command=self._open_latest_dynamic_html,
         ).grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6 if getattr(self, "_compact_ui", False) else 10), ipady=1)
 

@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from gui import theme as T
+from gui.components import HeaderBar, ScrolledText
+from gui.styles import apply_window_theme
 
 try:
     import tkinter.scrolledtext as scrolledtext
@@ -63,7 +66,7 @@ class UnifiedReportWindow(tk.Toplevel):
         self.title("Unified RingForge Report")
         self.geometry("1180x820+150+100")
         self.minsize(980, 720)
-        self.configure(bg="#05070B")
+        self.configure(bg=T.BG)
         self.transient(parent)
 
         self.case_dir = None
@@ -85,14 +88,18 @@ class UnifiedReportWindow(tk.Toplevel):
     # ---------------------------------------------------------------------
 
     def _build_ui(self):
-        outer = ttk.Frame(self, padding=12)
+        apply_window_theme(self)
+
+        outer = ttk.Frame(self, style="App.TFrame", padding=12)
         outer.pack(fill="both", expand=True)
 
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(2, weight=1)
+        outer.rowconfigure(3, weight=1)
+
+        self._build_top_banner(outer)
 
         header = ttk.LabelFrame(outer, text="Case Source")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         header.columnconfigure(1, weight=1)
 
         ttk.Label(header, text="Path:").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 6))
@@ -101,13 +108,14 @@ class UnifiedReportWindow(tk.Toplevel):
         btns = ttk.Frame(header)
         btns.grid(row=0, column=2, sticky="e", padx=8, pady=(8, 6))
 
-        ttk.Button(btns, text="Browse", style="Action.TButton", command=self._browse_case_dir).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Scan", style="Action.TButton", command=self._scan_case_dir).pack(side="left", padx=(0, 6))
+        # "Generate Report" is the primary action here; the rest support it.
+        ttk.Button(btns, text="Browse", style="Secondary.TButton", command=self._browse_case_dir).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Scan", style="Secondary.TButton", command=self._scan_case_dir).pack(side="left", padx=(0, 6))
         ttk.Button(btns, text="Generate Report", style="Action.TButton", command=self._generate_report).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Open Report Folder", style="Action.TButton", command=self._open_report_folder).pack(side="left")
+        ttk.Button(btns, text="Open Report Folder", style="Secondary.TButton", command=self._open_report_folder).pack(side="left")
 
         summary = ttk.LabelFrame(outer, text="Summary")
-        summary.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        summary.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         for col in range(4):
             summary.columnconfigure(col, weight=1)
 
@@ -115,7 +123,7 @@ class UnifiedReportWindow(tk.Toplevel):
         self._summary_row(summary, 1, "Overall Verdict", self.overall_verdict_var, "Report Path", self.report_path_var)
 
         lower = ttk.Panedwindow(outer, orient="horizontal")
-        lower.grid(row=2, column=0, sticky="nsew")
+        lower.grid(row=3, column=0, sticky="nsew")
 
         left_panel = ttk.Frame(lower, padding=6)
         middle_panel = ttk.Frame(lower, padding=6)
@@ -145,10 +153,29 @@ class UnifiedReportWindow(tk.Toplevel):
         self._set_text(self.preview_text, "Generate a report to preview the result.")
 
         footer = ttk.Frame(outer)
-        footer.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         footer.columnconfigure(0, weight=1)
 
         ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+
+    def _build_top_banner(self, parent):
+        """Branded page header, shared with every other workbench window."""
+        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+
+        header = HeaderBar(
+            parent,
+            "RingForge",
+            subtitle="Unified Report",
+            description=(
+                "Combine artifacts from any completed analysis modules into one "
+                "consolidated report."
+            ),
+            logo_path=logo_path if logo_path.exists() else None,
+            logo_size=72,
+            parent_bg=T.BG,
+        )
+        header.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_MD))
+        self._banner_logo_img = getattr(header, "_logo_image", None)
 
     def _summary_row(self, parent, row, label1, var1, label2, var2):
         ttk.Label(parent, text=f"{label1}:").grid(row=row, column=0, sticky="w", padx=8, pady=4)
@@ -157,19 +184,21 @@ class UnifiedReportWindow(tk.Toplevel):
         ttk.Label(parent, textvariable=var2, wraplength=360, justify="left").grid(row=row, column=3, sticky="ew", padx=8, pady=4)
 
     def _make_text(self, parent):
-        widget_cls = scrolledtext.ScrolledText if scrolledtext is not None else tk.Text
-        return widget_cls(
+        return ScrolledText(
             parent,
             wrap="word",
             height=18,
-            bg="#0B1220",
-            fg="#F7FAFF",
-            insertbackground="#F7FAFF",
+            bg=T.SUNKEN,
+            fg=T.TEXT_SECONDARY,
+            insertbackground=T.ACCENT,
+            selectbackground=T.ACCENT_SOFT,
+            selectforeground=T.TEXT,
             relief="flat",
-            borderwidth=1,
+            borderwidth=0,
+            highlightthickness=0,
             padx=10,
             pady=10,
-            font=("Consolas", 10),
+            font=T.f_mono(10),
         )
 
     def _set_text(self, widget, text):
