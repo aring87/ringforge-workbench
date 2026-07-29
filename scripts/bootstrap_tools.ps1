@@ -1,0 +1,376 @@
+<#
+.SYNOPSIS
+  Installs the tier-1 dynamic analysis telemetry tools into an analysis VM.
+
+.DESCRIPTION
+  Sets up the three tools that close the gaps Procmon cannot see:
+
+    Sysmon        process injection, image loads, WMI persistence, DNS queries
+    Wireshark     dumpcap + tshark, and the Npcap driver, for full packet capture
+    FakeNet-NG    a simulated internet so samples proceed through their real logic
+
+  All three install kernel-level drivers, and FakeNet installs a system-wide
+  traffic diverter. This script is intended for a disposable analysis VM and
+  refuses to run on what looks like physical hardware unless -Force is given.
+
+  After installing, it runs the workbench's own preflight checks so you can see
+  exactly what the Dynamic Analysis window will report.
+
+  Recommended order of operations:
+    1) Snapshot the clean VM
+    2) Run this script
+    3) Snapshot again as the "tooling installed" baseline
+    4) Detonate samples, reverting to the step-3 snapshot between runs
+
+.PARAMETER SkipSysmon
+  Do not install Sysmon.
+
+.PARAMETER SkipWireshark
+  Do not install Wireshark/Npcap.
+
+.PARAMETER SkipFakeNet
+  Do not install FakeNet-NG.
+
+.PARAMETER SysmonConfigUrl
+  Sysmon configuration to install. Defaults to the SwiftOnSecurity config, which
+  is a well-tested general-purpose baseline.
+
+.PARAMETER Force
+  Proceed even when this does not look like a virtual machine. Use only if you
+  are certain; see the warning above.
+
+.PARAMETER KeepTemp
+  Keep downloaded files for debugging.
+#>
+
+[CmdletBinding()]
+param(
+  [switch]$SkipSysmon,
+  [switch]$SkipWireshark,
+  [switch]$SkipFakeNet,
+  [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
+  [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
+  [switch]$Force,
+  [switch]$KeepTemp
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function Write-Info($msg) { Write-Host "[*] $msg" -ForegroundColor Cyan }
+function Write-Ok($msg)   { Write-Host "[+] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
+function Write-Step($msg) { Write-Host ""; Write-Host "=== $msg ===" -ForegroundColor Magenta }
+
+function Get-ScriptDir {
+  if ($PSScriptRoot -and $PSScriptRoot.Trim().Length -gt 0) { return $PSScriptRoot }
+  $inv = $MyInvocation.MyCommand.Path
+  if ($inv -and $inv.Trim().Length -gt 0) { return (Split-Path -Parent $inv) }
+  return (Get-Location).Path
+}
+
+function Test-Admin {
+  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($id)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-VirtualMachine {
+  try {
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    $fingerprint = "{0} {1}" -f $cs.Manufacturer, $cs.Model
+    return ($fingerprint -match 'Virtual|VMware|VirtualBox|KVM|QEMU|Xen|Hyper-V|Parallels|innotek')
+  } catch {
+    return $false
+  }
+}
+
+function Get-ServiceState {
+  param([Parameter(Mandatory=$true)][string]$Name)
+  $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+  if ($null -eq $svc) { return "" }
+  return $svc.Status.ToString()
+}
+
+function Install-Sysmon {
+  param(
+    [Parameter(Mandatory=$true)][string]$ToolsDir,
+    [Parameter(Mandatory=$true)][string]$TempDir,
+    [Parameter(Mandatory=$true)][string]$ConfigUrl
+  )
+
+  Write-Step "Sysmon"
+
+  $zip = Join-Path $TempDir "Sysmon.zip"
+  $extract = Join-Path $TempDir "sysmon"
+
+  Write-Info "Downloading Sysmon from Sysinternals..."
+  Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile $zip
+  Expand-Archive -Path $zip -DestinationPath $extract -Force
+
+  $exe = Get-ChildItem -Path $extract -Filter "Sysmon64.exe" -Recurse -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+  if (-not $exe) {
+    $exe = Get-ChildItem -Path $extract -Filter "Sysmon.exe" -Recurse -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+  }
+  if (-not $exe) { throw "Could not find Sysmon executable in the downloaded archive." }
+
+  # Keep a copy under tools\ so the workbench preflight can find the binary
+  # even when the service is not running.
+  $target = Join-Path $ToolsDir $exe.Name
+  Copy-Item -LiteralPath $exe.FullName -Destination $target -Force
+  Write-Ok "Sysmon binary: $target"
+
+  $configPath = Join-Path $ToolsDir "sysmonconfig.xml"
+  Write-Info "Downloading Sysmon configuration..."
+  try {
+    Invoke-WebRequest -Uri $ConfigUrl -OutFile $configPath
+    Write-Ok "Config: $configPath"
+  } catch {
+    Write-Warn "Could not download the Sysmon config: $($_.Exception.Message)"
+    Write-Warn "Installing with the built-in default config instead (noisier, fewer events)."
+    $configPath = ""
+  }
+
+  $existing = Get-ServiceState -Name "Sysmon64"
+  if (-not $existing) { $existing = Get-ServiceState -Name "Sysmon" }
+
+  if ($existing) {
+    Write-Info "Sysmon already installed (service state: $existing). Updating configuration..."
+    if ($configPath) {
+      & $target -accepteula -c $configPath | Out-Null
+    }
+  } else {
+    Write-Info "Installing the Sysmon driver and service..."
+    if ($configPath) {
+      & $target -accepteula -i $configPath | Out-Null
+    } else {
+      & $target -accepteula -i | Out-Null
+    }
+  }
+
+  Start-Sleep -Seconds 3
+  $state = Get-ServiceState -Name "Sysmon64"
+  if (-not $state) { $state = Get-ServiceState -Name "Sysmon" }
+
+  if ($state -eq "Running") {
+    Write-Ok "Sysmon service is running."
+  } else {
+    Write-Warn "Sysmon service state is '$state'. Injection and WMI telemetry will be unavailable."
+  }
+}
+
+function Install-Wireshark {
+  param([Parameter(Mandatory=$true)][string]$TempDir)
+
+  Write-Step "Wireshark / Npcap"
+
+  $existing = Get-Command "dumpcap.exe" -ErrorAction SilentlyContinue
+  if (-not $existing) {
+    foreach ($base in @("C:\Program Files\Wireshark", "C:\Program Files (x86)\Wireshark")) {
+      $candidate = Join-Path $base "dumpcap.exe"
+      if (Test-Path -LiteralPath $candidate) { $existing = $candidate; break }
+    }
+  }
+
+  if ($existing) {
+    Write-Ok "Wireshark already installed; skipping."
+    return
+  }
+
+  $winget = Get-Command winget -ErrorAction SilentlyContinue
+  if ($winget) {
+    Write-Info "Installing Wireshark via winget..."
+    try {
+      & $winget.Source install --id WiresharkFoundation.Wireshark `
+        --accept-package-agreements --accept-source-agreements --silent
+      Write-Ok "Wireshark installed."
+      Write-Warn "Npcap may have prompted separately; confirm it is installed."
+      return
+    } catch {
+      Write-Warn "winget install failed: $($_.Exception.Message)"
+    }
+  }
+
+  Write-Warn "Automated install unavailable."
+  Write-Warn "Install Wireshark manually from https://www.wireshark.org/download.html"
+  Write-Warn "and ensure the bundled Npcap driver is selected. Packet capture needs both."
+}
+
+function Install-FakeNet {
+  param(
+    [Parameter(Mandatory=$true)][string]$ToolsDir,
+    [Parameter(Mandatory=$true)][string]$TempDir,
+    [Parameter(Mandatory=$true)][string]$Repo
+  )
+
+  Write-Step "FakeNet-NG"
+
+  $headers = @{ "User-Agent" = "bootstrap_tools.ps1" }
+  Write-Info "Querying latest release of $Repo..."
+
+  try {
+    $rel = Invoke-RestMethod -Headers $headers -Uri ("https://api.github.com/repos/{0}/releases/latest" -f $Repo)
+  } catch {
+    Write-Warn "Could not query the FakeNet-NG release API: $($_.Exception.Message)"
+    Write-Warn "Download it manually from https://github.com/$Repo/releases and extract to tools\fakenet\"
+    return
+  }
+
+  $assets = @($rel.assets)
+  $asset = $null
+  if ($assets.Count -gt 0) {
+    $asset = @($assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1)[0]
+  }
+
+  if (-not $asset) {
+    Write-Warn "No zip asset found in release $($rel.tag_name)."
+    Write-Warn "Download it manually from https://github.com/$Repo/releases and extract to tools\fakenet\"
+    return
+  }
+
+  Write-Info "Downloading $($asset.name)..."
+  $zip = Join-Path $TempDir $asset.name
+  Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $zip
+
+  $extract = Join-Path $TempDir "fakenet_extract"
+  Expand-Archive -Path $zip -DestinationPath $extract -Force
+
+  $exe = Get-ChildItem -Path $extract -Filter "fakenet.exe" -Recurse -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+  if (-not $exe) {
+    Write-Warn "fakenet.exe not found inside the release archive; extracting as-is."
+    $exe = $null
+  }
+
+  $dest = Join-Path $ToolsDir "fakenet"
+  if (Test-Path -LiteralPath $dest) {
+    Remove-Item -Recurse -Force -LiteralPath $dest
+  }
+  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+  if ($exe) {
+    # Copy the whole folder containing fakenet.exe: it needs its configs and DLLs.
+    Copy-Item -Recurse -Force -Path (Join-Path $exe.Directory.FullName "*") -Destination $dest
+  } else {
+    Copy-Item -Recurse -Force -Path (Join-Path $extract "*") -Destination $dest
+  }
+
+  $installed = Join-Path $dest "fakenet.exe"
+  if (Test-Path -LiteralPath $installed) {
+    Write-Ok "FakeNet-NG: $installed"
+  } else {
+    Write-Warn "FakeNet-NG extracted to $dest but fakenet.exe was not found at the top level."
+  }
+}
+
+function Invoke-Preflight {
+  param([Parameter(Mandatory=$true)][string]$RepoRoot)
+
+  Write-Step "Verifying with the workbench preflight checks"
+
+  $python = Get-Command python -ErrorAction SilentlyContinue
+  if (-not $python) {
+    Write-Warn "python not found in PATH; skipping verification."
+    Write-Warn "Open the Dynamic Analysis window to see tool availability instead."
+    return
+  }
+
+  $verifier = Join-Path $env:TEMP ("rf_preflight_" + [Guid]::NewGuid().ToString("N") + ".py")
+
+  $lines = @(
+    "import sys",
+    ("sys.path.insert(0, r'" + $RepoRoot + "')"),
+    "from dynamic_analysis.sysmon_collector import sysmon_status",
+    "from dynamic_analysis.network_capture import capture_status",
+    "from dynamic_analysis.fakenet_runner import fakenet_status",
+    "checks = [('Sysmon', sysmon_status()), ('Packet capture', capture_status()), ('Simulated internet', fakenet_status())]",
+    "ready = 0",
+    "for name, status in checks:",
+    "    ok = bool(status.get('available'))",
+    "    ready += 1 if ok else 0",
+    "    print(('  [OK]   ' if ok else '  [--]   ') + name)",
+    "    note = status.get('note', '')",
+    "    if note:",
+    "        print('         ' + note)",
+    "print()",
+    "print('%d of %d tier-1 sources ready.' % (ready, len(checks)))",
+    "sys.exit(0 if ready == len(checks) else 2)"
+  )
+
+  Set-Content -LiteralPath $verifier -Value $lines -Encoding utf8
+
+  try {
+    & $python.Source $verifier
+    $code = $LASTEXITCODE
+    if ($code -eq 0) {
+      Write-Ok "All tier-1 telemetry sources are ready."
+    } else {
+      Write-Warn "Some sources are not ready. See the notes above."
+    }
+  } finally {
+    Remove-Item -LiteralPath $verifier -Force -ErrorAction SilentlyContinue
+  }
+}
+
+try {
+  $scriptDir = Get-ScriptDir
+  $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
+  $toolsDir = Join-Path $repoRoot "tools"
+
+  Write-Info "Repo root: $repoRoot"
+  Write-Info "Tools dir: $toolsDir"
+
+  if (-not (Test-Admin)) {
+    throw "Administrator rights are required. Sysmon, Npcap and FakeNet-NG all install drivers."
+  }
+
+  if (-not (Test-VirtualMachine)) {
+    Write-Host ""
+    Write-Warn "This does not look like a virtual machine."
+    Write-Warn "These tools install kernel drivers and a system-wide traffic diverter,"
+    Write-Warn "and this workbench is used to detonate malware. Installing them on a"
+    Write-Warn "physical workstation is strongly discouraged."
+    if (-not $Force) {
+      throw "Refusing to continue outside a VM. Re-run with -Force only if you are certain."
+    }
+    Write-Warn "-Force supplied; continuing anyway."
+  } else {
+    Write-Ok "Virtual machine detected."
+  }
+
+  New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+
+  $tempDir = Join-Path $env:TEMP ("rf_tools_" + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+  if (-not $SkipSysmon)    { Install-Sysmon -ToolsDir $toolsDir -TempDir $tempDir -ConfigUrl $SysmonConfigUrl }
+  else                     { Write-Step "Sysmon"; Write-Warn "Skipped by request." }
+
+  if (-not $SkipWireshark) { Install-Wireshark -TempDir $tempDir }
+  else                     { Write-Step "Wireshark / Npcap"; Write-Warn "Skipped by request." }
+
+  if (-not $SkipFakeNet)   { Install-FakeNet -ToolsDir $toolsDir -TempDir $tempDir -Repo $FakeNetRepo }
+  else                     { Write-Step "FakeNet-NG"; Write-Warn "Skipped by request." }
+
+  Invoke-Preflight -RepoRoot $repoRoot
+
+  if (-not $KeepTemp) {
+    Remove-Item -Recurse -Force -LiteralPath $tempDir -ErrorAction SilentlyContinue
+  } else {
+    Write-Warn "Keeping temp folder: $tempDir"
+  }
+
+  Write-Host ""
+  Write-Ok "Done."
+  Write-Info "Take a VM snapshot now, so you can revert to this tooled baseline between detonations."
+}
+catch {
+  Write-Host ""
+  Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+  if ($_.ScriptStackTrace) {
+    Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+  }
+  exit 1
+}
