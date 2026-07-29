@@ -1,0 +1,469 @@
+"""Sysmon telemetry collection for dynamic analysis runs.
+
+Procmon shows filesystem, registry and process IO, but it cannot see process
+injection, image-load provenance, named-pipe IPC, WMI persistence or DNS
+resolution. Sysmon covers exactly those gaps, so the two are complementary
+rather than redundant.
+
+Collection is read-only and non-destructive: the Sysmon channel is never
+cleared. The run start time is recorded, and afterwards only events newer than
+that timestamp are queried, so a shared analysis VM keeps its history intact.
+
+Requires Sysmon to be installed and running in the guest, e.g.::
+
+    sysmon64.exe -accepteula -i sysmonconfig.xml
+
+Nothing here raises if Sysmon is absent; every entry point degrades to a
+disabled/unavailable status dict so a run can proceed without it.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
+
+#: Sysmon event IDs we normalise. Anything not listed is still collected, just
+#: reported under its numeric ID.
+EVENT_NAMES = {
+    1: "ProcessCreate",
+    2: "FileCreateTime",
+    3: "NetworkConnect",
+    4: "SysmonServiceStateChange",
+    5: "ProcessTerminate",
+    6: "DriverLoad",
+    7: "ImageLoad",
+    8: "CreateRemoteThread",
+    9: "RawAccessRead",
+    10: "ProcessAccess",
+    11: "FileCreate",
+    12: "RegistryCreateDelete",
+    13: "RegistrySetValue",
+    14: "RegistryRename",
+    15: "FileCreateStreamHash",
+    16: "SysmonConfigChange",
+    17: "PipeCreated",
+    18: "PipeConnected",
+    19: "WmiEventFilter",
+    20: "WmiEventConsumer",
+    21: "WmiEventConsumerToFilter",
+    22: "DnsQuery",
+    23: "FileDelete",
+    24: "ClipboardChange",
+    25: "ProcessTampering",
+    26: "FileDeleteDetected",
+    27: "FileBlockExecutable",
+    28: "FileBlockShredding",
+    29: "FileExecutableDetected",
+}
+
+#: Event IDs that are worth surfacing on their own, with a severity weight.
+#: These are the behaviours Procmon structurally cannot report.
+HIGH_SIGNAL_EVENTS = {
+    8: ("Process injection (CreateRemoteThread)", "high"),
+    25: ("Process tampering / hollowing", "high"),
+    10: ("Process memory access", "medium"),
+    19: ("WMI event filter registered", "high"),
+    20: ("WMI event consumer registered", "high"),
+    21: ("WMI filter-to-consumer binding", "high"),
+    6: ("Driver load", "medium"),
+    9: ("Raw disk access", "medium"),
+    17: ("Named pipe created", "low"),
+    22: ("DNS query", "low"),
+}
+
+#: Access masks that indicate credential-theft style handles to LSASS.
+_LSASS_ACCESS_FLAGS = ("0x1010", "0x1410", "0x1438", "0x143a", "0x1f3fff", "0x1fffff")
+
+_XMLNS_RE = re.compile(r'\sxmlns(:\w+)?="[^"]*"')
+
+
+class SysmonError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Discovery
+# ---------------------------------------------------------------------------
+
+def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        errors="replace",
+    )
+
+
+def default_sysmon_path() -> Path:
+    """Where a bundled Sysmon binary is expected to live."""
+    return Path(__file__).resolve().parents[1] / "tools" / "sysmon64.exe"
+
+
+def find_sysmon(configured_path: str | Path | None = None) -> Optional[Path]:
+    """Locate a Sysmon binary. Returns ``None`` when not found."""
+    candidates: list[Path] = []
+
+    if configured_path:
+        candidates.append(Path(configured_path))
+
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    candidates.extend([tools / "sysmon64.exe", tools / "sysmon.exe"])
+
+    for name in ("sysmon64.exe", "sysmon.exe"):
+        candidates.append(Path(name))  # resolved via PATH by shutil below
+
+    import shutil
+
+    for candidate in candidates:
+        if candidate.is_absolute() or candidate.parent != Path("."):
+            if candidate.exists():
+                return candidate
+        else:
+            found = shutil.which(str(candidate))
+            if found:
+                return Path(found)
+
+    return None
+
+
+def channel_available() -> bool:
+    """True when the Sysmon Operational channel is registered on this host."""
+    try:
+        result = _run(["wevtutil", "gl", SYSMON_CHANNEL], timeout=20)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def service_running() -> bool:
+    """True when a Sysmon service is in the RUNNING state."""
+    for service in ("Sysmon64", "Sysmon"):
+        try:
+            result = _run(["sc", "query", service], timeout=20)
+        except Exception:
+            continue
+        if result.returncode == 0 and "RUNNING" in (result.stdout or "").upper():
+            return True
+    return False
+
+
+def sysmon_status(configured_path: str | Path | None = None) -> dict[str, Any]:
+    """Preflight summary describing whether Sysmon telemetry can be collected."""
+    binary = find_sysmon(configured_path)
+    channel = channel_available()
+    running = service_running()
+
+    available = channel and running
+    if available:
+        note = "Sysmon is running and its event channel is available."
+    elif channel and not running:
+        note = "Sysmon channel exists but the service is not running."
+    elif binary is not None:
+        note = (
+            "Sysmon binary found but not installed. Install it in the guest with: "
+            f"{binary.name} -accepteula -i sysmonconfig.xml"
+        )
+    else:
+        note = (
+            "Sysmon not found. Install Sysmon in the analysis VM and place "
+            "sysmon64.exe under tools/ to enable injection, WMI and DNS telemetry."
+        )
+
+    return {
+        "available": bool(available),
+        "binary_path": str(binary) if binary else "",
+        "channel_available": bool(channel),
+        "service_running": bool(running),
+        "note": note,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Capture window
+# ---------------------------------------------------------------------------
+
+def mark_start() -> str:
+    """Timestamp marking the start of a run, for later event filtering.
+
+    Returned in the UTC form the Windows event XPath engine expects.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _since_query(since_utc: str) -> str:
+    return f"*[System[TimeCreated[@SystemTime>='{since_utc}']]]"
+
+
+def export_evtx(output_path: str | Path, since_utc: str) -> dict[str, Any]:
+    """Archive the raw events for this run window to an .evtx file."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists():
+        out.unlink()
+
+    try:
+        result = _run(
+            [
+                "wevtutil", "epl", SYSMON_CHANNEL, str(out),
+                f"/q:{_since_query(since_utc)}",
+            ],
+            timeout=180,
+        )
+    except Exception as error:
+        return {"success": False, "error": str(error), "path": str(out)}
+
+    if result.returncode != 0:
+        return {
+            "success": False,
+            "error": (result.stderr or result.stdout or "").strip() or f"rc={result.returncode}",
+            "path": str(out),
+        }
+
+    return {"success": True, "error": "", "path": str(out)}
+
+
+def query_events(since_utc: str, max_events: int = 20000) -> list[dict[str, Any]]:
+    """Return normalised Sysmon events recorded since ``since_utc``."""
+    try:
+        result = _run(
+            [
+                "wevtutil", "qe", SYSMON_CHANNEL,
+                f"/q:{_since_query(since_utc)}",
+                "/f:RenderedXml",
+                f"/c:{int(max_events)}",
+            ],
+            timeout=300,
+        )
+    except Exception as error:
+        raise SysmonError(f"Failed to query Sysmon events: {error}") from error
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise SysmonError(f"wevtutil qe failed: {detail or result.returncode}")
+
+    return parse_rendered_xml(result.stdout or "")
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+def parse_rendered_xml(text: str) -> list[dict[str, Any]]:
+    """Parse concatenated ``<Event>`` fragments from ``wevtutil qe``.
+
+    The tool emits one fragment per event with no enclosing root element, so
+    they are wrapped before parsing. Namespaces are stripped first because the
+    rendered output mixes default and prefixed namespaces.
+    """
+    if not text.strip():
+        return []
+
+    cleaned = _XMLNS_RE.sub("", text)
+    try:
+        root = ET.fromstring(f"<Events>{cleaned}</Events>")
+    except ET.ParseError:
+        # Salvage whatever complete fragments we can rather than losing the run.
+        events: list[dict[str, Any]] = []
+        for fragment in re.findall(r"<Event\b.*?</Event>", cleaned, re.DOTALL):
+            try:
+                events.append(_event_to_dict(ET.fromstring(fragment)))
+            except ET.ParseError:
+                continue
+        return [e for e in events if e]
+
+    return [e for e in (_event_to_dict(node) for node in root.findall("Event")) if e]
+
+
+def _event_to_dict(node: ET.Element) -> dict[str, Any]:
+    system = node.find("System")
+    if system is None:
+        return {}
+
+    event_id_node = system.find("EventID")
+    try:
+        event_id = int((event_id_node.text or "0").strip()) if event_id_node is not None else 0
+    except ValueError:
+        event_id = 0
+
+    time_node = system.find("TimeCreated")
+    timestamp = time_node.get("SystemTime", "") if time_node is not None else ""
+
+    data: dict[str, str] = {}
+    event_data = node.find("EventData")
+    if event_data is not None:
+        for item in event_data.findall("Data"):
+            name = item.get("Name")
+            if name:
+                data[name] = (item.text or "").strip()
+
+    return {
+        "event_id": event_id,
+        "event_name": EVENT_NAMES.get(event_id, f"Event{event_id}"),
+        "timestamp": timestamp,
+        "process_id": data.get("ProcessId", ""),
+        "image": data.get("Image", ""),
+        "user": data.get("User", ""),
+        "data": data,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Summarising
+# ---------------------------------------------------------------------------
+
+def _short(value: str, limit: int = 220) -> str:
+    value = (value or "").strip()
+    return value if len(value) <= limit else value[: limit - 3] + "..."
+
+
+def _is_lsass_access(event: dict[str, Any]) -> bool:
+    if event.get("event_id") != 10:
+        return False
+    target = (event["data"].get("TargetImage", "") or "").lower()
+    if "lsass.exe" not in target:
+        return False
+    granted = (event["data"].get("GrantedAccess", "") or "").lower()
+    return any(flag in granted for flag in _LSASS_ACCESS_FLAGS)
+
+
+def _highlight(event: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Turn a high-signal event into an analyst-facing finding."""
+    event_id = event.get("event_id")
+    data = event.get("data", {})
+
+    if _is_lsass_access(event):
+        return {
+            "severity": "high",
+            "event_id": event_id,
+            "title": "LSASS memory access (possible credential theft)",
+            "detail": _short(
+                f"{data.get('SourceImage', '?')} -> {data.get('TargetImage', '?')} "
+                f"access={data.get('GrantedAccess', '?')}"
+            ),
+        }
+
+    if event_id not in HIGH_SIGNAL_EVENTS:
+        return None
+
+    title, severity = HIGH_SIGNAL_EVENTS[event_id]
+
+    if event_id == 8:
+        detail = f"{data.get('SourceImage', '?')} -> {data.get('TargetImage', '?')}"
+    elif event_id == 25:
+        detail = f"{data.get('Image', '?')} type={data.get('Type', '?')}"
+    elif event_id == 10:
+        detail = (
+            f"{data.get('SourceImage', '?')} -> {data.get('TargetImage', '?')} "
+            f"access={data.get('GrantedAccess', '?')}"
+        )
+    elif event_id in (19, 20, 21):
+        detail = _short(data.get("Query") or data.get("Destination") or data.get("Name", ""))
+    elif event_id == 6:
+        detail = f"{data.get('ImageLoaded', '?')} signed={data.get('Signed', '?')}"
+    elif event_id == 22:
+        detail = f"{data.get('QueryName', '?')} -> {_short(data.get('QueryResults', ''), 120)}"
+    elif event_id == 17:
+        detail = f"{data.get('PipeName', '?')} by {data.get('Image', '?')}"
+    else:
+        detail = _short(data.get("Image", ""))
+
+    return {
+        "severity": severity,
+        "event_id": event_id,
+        "title": title,
+        "detail": _short(detail),
+    }
+
+
+def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate raw Sysmon events into counts, indicators and highlights."""
+    counts: dict[str, int] = {}
+    dns_queries: list[str] = []
+    network_targets: list[str] = []
+    pipes: list[str] = []
+    injections: list[dict[str, str]] = []
+    highlights: list[dict[str, Any]] = []
+    seen_highlights: set[tuple] = set()
+
+    for event in events:
+        name = event.get("event_name", "unknown")
+        counts[name] = counts.get(name, 0) + 1
+        data = event.get("data", {})
+        event_id = event.get("event_id")
+
+        if event_id == 22:
+            query = data.get("QueryName", "").strip()
+            if query and query not in dns_queries:
+                dns_queries.append(query)
+
+        elif event_id == 3:
+            host = data.get("DestinationHostname") or data.get("DestinationIp", "")
+            port = data.get("DestinationPort", "")
+            target = f"{host}:{port}".strip(":")
+            if target and target not in network_targets:
+                network_targets.append(target)
+
+        elif event_id in (17, 18):
+            pipe = data.get("PipeName", "").strip()
+            if pipe and pipe not in pipes:
+                pipes.append(pipe)
+
+        elif event_id == 8:
+            injections.append(
+                {
+                    "source": data.get("SourceImage", ""),
+                    "target": data.get("TargetImage", ""),
+                }
+            )
+
+        found = _highlight(event)
+        if found:
+            key = (found["event_id"], found["detail"])
+            if key not in seen_highlights:
+                seen_highlights.add(key)
+                highlights.append(found)
+
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    highlights.sort(key=lambda h: severity_rank.get(h["severity"], 3))
+
+    return {
+        "total_events": len(events),
+        "counts": counts,
+        "dns_queries": dns_queries[:200],
+        "network_targets": network_targets[:200],
+        "named_pipes": pipes[:100],
+        "injection_events": injections[:100],
+        "highlights": highlights[:100],
+        "high_severity_count": sum(1 for h in highlights if h["severity"] == "high"),
+    }
+
+
+def collect(
+    since_utc: str,
+    evtx_path: str | Path,
+    max_events: int = 20000,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Export, query and summarise Sysmon events for a completed run.
+
+    Returns ``(events, summary, status)``. ``status`` records whether the export
+    and query succeeded so a partial failure never aborts the wider run.
+    """
+    status: dict[str, Any] = {"success": False, "error": "", "evtx": {}}
+
+    status["evtx"] = export_evtx(evtx_path, since_utc)
+
+    try:
+        events = query_events(since_utc, max_events=max_events)
+    except SysmonError as error:
+        status["error"] = str(error)
+        return [], summarize_sysmon_events([]), status
+
+    status["success"] = True
+    return events, summarize_sysmon_events(events), status

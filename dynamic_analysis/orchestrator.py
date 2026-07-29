@@ -17,7 +17,18 @@ from dynamic_analysis.dropped_file_triage import (
     enrich_dropped_files,
     summarize_dropped_files,
 )
+from dynamic_analysis.fakenet_runner import (
+    FakeNetSession,
+    fakenet_status,
+    parse_fakenet_log,
+)
 from dynamic_analysis.findings import summarize_dynamic_findings
+from dynamic_analysis.network_capture import (
+    PacketCapture,
+    capture_status,
+    extract_network_iocs,
+    parse_pcap,
+)
 from dynamic_analysis.procmon_runner import (
     export_procmon_csv,
     start_procmon_capture,
@@ -31,6 +42,11 @@ from dynamic_analysis.procmon_parser import (
 )
 from dynamic_analysis.snapshot_services import snapshot_services
 from dynamic_analysis.snapshot_tasks import snapshot_scheduled_tasks
+from dynamic_analysis.sysmon_collector import (
+    collect as collect_sysmon,
+    mark_start as sysmon_mark_start,
+    sysmon_status,
+)
 from dynamic_analysis.utils import (
     ensure_dir,
     file_size,
@@ -89,6 +105,8 @@ def build_case_paths(case_dir: str | Path) -> dict[str, Path]:
         "files": base / "files",
         "reports": base / "reports",
         "autoruns": base / "autoruns",
+        "network": base / "network",
+        "sysmon": base / "sysmon",
     }
 
     for p in paths.values():
@@ -357,11 +375,22 @@ def _build_behavior_summary(
     task_diff_summary: dict[str, Any],
     service_diff_summary: dict[str, Any],
     autoruns_diff_summary: dict[str, Any],
+    sysmon_summary: dict[str, Any] | None = None,
+    network_summary: dict[str, Any] | None = None,
+    fakenet_summary: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
     service_counts = service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {}
     autoruns_counts = autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {}
+
+    sysmon = sysmon_summary if isinstance(sysmon_summary, dict) else {}
+    network_counts = (
+        network_summary.get("counts", {}) if isinstance(network_summary, dict) else {}
+    )
+    fakenet_counts = (
+        fakenet_summary.get("counts", {}) if isinstance(fakenet_summary, dict) else {}
+    )
 
     return {
         "interesting_events": int(counts.get("interesting_events", 0) or 0),
@@ -374,6 +403,19 @@ def _build_behavior_summary(
         "autoruns_new_entries": int(autoruns_counts.get("new_entries", 0) or 0),
         "autoruns_modified_entries": int(autoruns_counts.get("modified_entries", 0) or 0),
         "autoruns_suspicious_new_or_modified": int(autoruns_counts.get("suspicious_new_or_modified", 0) or 0),
+        # Sysmon covers the behaviours Procmon cannot see at all.
+        "sysmon_total_events": int(sysmon.get("total_events", 0) or 0),
+        "sysmon_high_severity": int(sysmon.get("high_severity_count", 0) or 0),
+        "sysmon_injection_events": len(sysmon.get("injection_events", []) or []),
+        "sysmon_dns_queries": len(sysmon.get("dns_queries", []) or []),
+        # Packet capture and simulated internet reveal intent even when the
+        # connection never completes.
+        "network_dns_queries": int(network_counts.get("dns_queries", 0) or 0),
+        "network_http_requests": int(network_counts.get("http_requests", 0) or 0),
+        "network_unique_destinations": int(network_counts.get("unique_destinations", 0) or 0),
+        "network_unusual_ports": int(network_counts.get("unusual_ports", 0) or 0),
+        "fakenet_dns_requests": int(fakenet_counts.get("dns_requests", 0) or 0),
+        "fakenet_http_requests": int(fakenet_counts.get("http_requests", 0) or 0),
     }
 
 
@@ -707,6 +749,9 @@ def calculate_dynamic_score(
     service_diff_summary: dict[str, Any],
     dropped_files_summary: dict[str, Any],
     autoruns_diff_summary: dict[str, Any] | None = None,
+    sysmon_summary: dict[str, Any] | None = None,
+    network_summary: dict[str, Any] | None = None,
+    fakenet_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -716,6 +761,14 @@ def calculate_dynamic_score(
         autoruns_diff_summary.get("counts", {})
         if isinstance(autoruns_diff_summary, dict)
         else {}
+    )
+
+    sysmon = sysmon_summary if isinstance(sysmon_summary, dict) else {}
+    network_counts = (
+        network_summary.get("counts", {}) if isinstance(network_summary, dict) else {}
+    )
+    fakenet_counts = (
+        fakenet_summary.get("counts", {}) if isinstance(fakenet_summary, dict) else {}
     )
 
     interesting_events = int(counts.get("interesting_events", 0) or 0)
@@ -733,6 +786,14 @@ def calculate_dynamic_score(
     autoruns_new = int(autoruns_counts.get("new_entries", 0) or 0)
     autoruns_modified = int(autoruns_counts.get("modified_entries", 0) or 0)
     autoruns_suspicious = int(autoruns_counts.get("suspicious_new_or_modified", 0) or 0)
+
+    sysmon_injections = len(sysmon.get("injection_events", []) or [])
+    sysmon_high = int(sysmon.get("high_severity_count", 0) or 0)
+
+    network_unusual_ports = int(network_counts.get("unusual_ports", 0) or 0)
+    network_destinations = int(network_counts.get("unique_destinations", 0) or 0)
+    network_http = int(network_counts.get("http_requests", 0) or 0)
+    fakenet_dns = int(fakenet_counts.get("dns_requests", 0) or 0)
 
     score = 0
 
@@ -758,11 +819,25 @@ def calculate_dynamic_score(
     score += min(autoruns_new, 5) * 1
     score += min(autoruns_modified, 5) * 1
     score += autoruns_suspicious * 6
-    
+
+    # Sysmon: injection and credential access are the strongest single
+    # indicators available, and installers essentially never do them.
+    score += min(sysmon_injections, 5) * 10
+    score += min(sysmon_high, 8) * 6
+
+    # Network: a destination on an odd port is far more telling than volume,
+    # so counts of ordinary traffic stay deliberately cheap.
+    score += min(network_unusual_ports, 5) * 4
+    score += min(network_destinations, 10) * 1
+    score += min(network_http, 10) * 1
+    score += min(fakenet_dns, 10) * 1
+
     has_persistence_diff_signal = (
         suspicious_tasks > 0
         or suspicious_services > 0
         or autoruns_suspicious > 0
+        or sysmon_injections > 0
+        or sysmon_high > 0
     )
 
     if score <= 10:
@@ -782,15 +857,43 @@ def calculate_dynamic_score(
         severity = "High"
         verdict = "Elevated Attention"
 
+    # Severity floor for qualitative signals.
+    #
+    # The numeric model is volume-driven, so a sample that does exactly one
+    # decisive thing -- inject into another process, touch LSASS, or register a
+    # WMI consumer -- can otherwise land in the same band as a chatty
+    # installer. Those behaviours are categorically different from "lots of
+    # file writes", so they set a minimum severity rather than adding points.
+    escalation_reason = ""
+    if sysmon_injections > 0:
+        escalation_reason = "Sysmon recorded process injection (CreateRemoteThread)."
+    elif sysmon_high > 0:
+        escalation_reason = (
+            "Sysmon recorded high-signal behaviour (credential access, process "
+            "tampering, or WMI persistence)."
+        )
+
+    if escalation_reason and severity == "Low":
+        severity = "Medium"
+        verdict = "Needs Review"
+
     return {
         "score": score,
         "severity": severity,
         "verdict": verdict,
-        "score_model": "dynamic-installer-aware-v1",
+        "severity_floor_applied": bool(escalation_reason and score <= 45),
+        "severity_floor_reason": escalation_reason if score <= 45 else "",
+        "score_model": "dynamic-installer-aware-v2",
         "score_notes": [
             "Installer-aware scoring caps repetitive Procmon persistence/path hits.",
             "LOLBin usage is weighted lower unless paired with stronger persistence or dropped-file evidence.",
             "Autoruns changes remain visible but are not automatically treated as malicious.",
+            "Sysmon injection and credential-access events carry the heaviest weight, "
+            "because legitimate installers effectively never perform them.",
+            "Network volume is weighted lightly; unusual destination ports are weighted heavily.",
+            "Injection, credential access and WMI persistence set a minimum severity of "
+            "Medium regardless of score, so a single decisive behaviour is never "
+            "reported as Low.",
         ],
     }
 
@@ -853,6 +956,51 @@ def run_dynamic_analysis(
     dropped_files_json = paths["files"] / "dropped_files.json"
     dropped_files_summary_json = paths["files"] / "dropped_files_summary.json"
     findings_json = paths["reports"] / "dynamic_findings.json"
+
+    # --- Tier 1 telemetry: Sysmon, packet capture, simulated internet -------
+    sysmon_enabled = bool(config.get("sysmon_enabled", True))
+    sysmon_path = config.get("sysmon_path") or ""
+    sysmon_evtx = paths["sysmon"] / "sysmon_events.evtx"
+    sysmon_events_json = paths["sysmon"] / "sysmon_events.json"
+    sysmon_summary_json = paths["sysmon"] / "sysmon_summary.json"
+
+    pcap_enabled = bool(config.get("pcap_enabled", True))
+    dumpcap_path = config.get("dumpcap_path") or ""
+    network_interface = config.get("network_interface") or ""
+    capture_filter = config.get("capture_filter") or ""
+    pcap_file = paths["network"] / "capture.pcapng"
+    network_summary_json = paths["network"] / "network_summary.json"
+    network_iocs_json = paths["network"] / "network_iocs.json"
+
+    fakenet_enabled = bool(config.get("fakenet_enabled", False))
+    fakenet_path = config.get("fakenet_path") or ""
+    fakenet_config_path = config.get("fakenet_config_path") or ""
+    fakenet_summary_json = paths["network"] / "fakenet_summary.json"
+
+    # Preflight so the report records exactly which telemetry was possible.
+    sysmon_preflight = sysmon_status(sysmon_path) if sysmon_enabled else {
+        "available": False, "note": "Sysmon collection disabled for this run."
+    }
+    pcap_preflight = capture_status(dumpcap_path) if pcap_enabled else {
+        "available": False, "note": "Packet capture disabled for this run."
+    }
+    fakenet_preflight = fakenet_status(fakenet_path) if fakenet_enabled else {
+        "available": False, "note": "Simulated internet disabled for this run."
+    }
+
+    sysmon_summary: dict[str, Any] = {}
+    sysmon_status_result: dict[str, Any] = {"success": False, "error": "not run"}
+    network_summary: dict[str, Any] = {}
+    network_iocs: dict[str, Any] = {}
+    fakenet_summary: dict[str, Any] = {}
+    pcap_start_result: dict[str, Any] = {"started": False}
+    pcap_stop_result: dict[str, Any] = {}
+    fakenet_start_result: dict[str, Any] = {"started": False}
+    fakenet_stop_result: dict[str, Any] = {}
+
+    sysmon_since: str = ""
+    packet_capture: PacketCapture | None = None
+    fakenet_session: FakeNetSession | None = None
 
     started_at = utc_now_iso()
     exit_code: int | None = None
@@ -937,6 +1085,67 @@ def run_dynamic_analysis(
         # immediately after that snapshot returns.
         _raise_if_cancelled(cancel_event)
 
+        # Start order matters. FakeNet installs a traffic diverter and must be
+        # in place before anything connects; the packet capture then records
+        # the diverted traffic; Sysmon's window opens last so it contains as
+        # little analyzer setup noise as possible.
+        if fakenet_enabled:
+            if fakenet_preflight.get("available"):
+                _emit(status_cb, "Starting simulated internet (FakeNet-NG)...")
+                fakenet_session = FakeNetSession(
+                    output_dir=paths["network"],
+                    fakenet_path=fakenet_path or None,
+                    config_path=fakenet_config_path or None,
+                )
+                fakenet_start_result = fakenet_session.start()
+                if not fakenet_start_result.get("started"):
+                    _emit(
+                        status_cb,
+                        f"FakeNet-NG warning: {fakenet_start_result.get('error', 'unknown error')}",
+                    )
+                    fakenet_session = None
+            else:
+                _emit(status_cb, f"Simulated internet unavailable: {fakenet_preflight.get('note', '')}")
+
+        _raise_if_cancelled(cancel_event)
+
+        if pcap_enabled:
+            if pcap_preflight.get("available"):
+                _emit(status_cb, "Starting packet capture...")
+                packet_capture = PacketCapture(
+                    output_path=pcap_file,
+                    interface=network_interface or None,
+                    dumpcap_path=dumpcap_path or None,
+                    capture_filter=capture_filter,
+                )
+                pcap_start_result = packet_capture.start()
+                if pcap_start_result.get("started"):
+                    _emit(
+                        status_cb,
+                        f"Packet capture running on {pcap_start_result.get('interface', 'default interface')} "
+                        f"via {pcap_start_result.get('backend', '?')}.",
+                    )
+                else:
+                    _emit(
+                        status_cb,
+                        f"Packet capture warning: {pcap_start_result.get('error', 'unknown error')} "
+                        "(capture needs Administrator rights).",
+                    )
+                    packet_capture = None
+            else:
+                _emit(status_cb, f"Packet capture unavailable: {pcap_preflight.get('note', '')}")
+
+        _raise_if_cancelled(cancel_event)
+
+        if sysmon_enabled:
+            if sysmon_preflight.get("available"):
+                sysmon_since = sysmon_mark_start()
+                _emit(status_cb, f"Sysmon collection window opened at {sysmon_since}.")
+            else:
+                _emit(status_cb, f"Sysmon unavailable: {sysmon_preflight.get('note', '')}")
+
+        _raise_if_cancelled(cancel_event)
+
         if procmon_enabled:
             _emit(status_cb, "Starting Procmon capture...")
             start_procmon_capture(
@@ -981,6 +1190,54 @@ def run_dynamic_analysis(
                 terminate_procmon_capture(procmon_path)
             except Exception as error:
                 _emit(status_cb, f"Procmon stop warning: {error}")
+
+        # Tear down in reverse order, and unconditionally: a cancelled run must
+        # not leave a packet capture running or, worse, FakeNet's traffic
+        # diverter still installed on the host.
+        if packet_capture is not None:
+            _emit(status_cb, "Stopping packet capture...")
+            try:
+                pcap_stop_result = packet_capture.stop()
+                if pcap_stop_result.get("error"):
+                    _emit(status_cb, f"Packet capture stop warning: {pcap_stop_result['error']}")
+            except Exception as error:
+                pcap_stop_result = {"stopped": False, "error": str(error)}
+                _emit(status_cb, f"Packet capture stop warning: {error}")
+
+        if fakenet_session is not None:
+            _emit(status_cb, "Stopping simulated internet...")
+            try:
+                fakenet_stop_result = fakenet_session.stop()
+                if fakenet_stop_result.get("error"):
+                    _emit(status_cb, f"FakeNet-NG stop warning: {fakenet_stop_result['error']}")
+            except Exception as error:
+                fakenet_stop_result = {"stopped": False, "error": str(error)}
+                _emit(status_cb, f"FakeNet-NG stop warning: {error}")
+
+        if sysmon_enabled and sysmon_since:
+            _emit(status_cb, "Collecting Sysmon telemetry...")
+            try:
+                sysmon_events, sysmon_summary, sysmon_status_result = collect_sysmon(
+                    since_utc=sysmon_since,
+                    evtx_path=sysmon_evtx,
+                )
+                write_json(sysmon_events_json, sysmon_events)
+                write_json(sysmon_summary_json, sysmon_summary)
+
+                high = int(sysmon_summary.get("high_severity_count", 0) or 0)
+                _emit(
+                    status_cb,
+                    f"Sysmon collected {sysmon_summary.get('total_events', 0)} events "
+                    f"({high} high-severity).",
+                )
+                if not sysmon_status_result.get("success"):
+                    _emit(
+                        status_cb,
+                        f"Sysmon collection warning: {sysmon_status_result.get('error', 'unknown error')}",
+                    )
+            except Exception as error:
+                sysmon_status_result = {"success": False, "error": str(error)}
+                _emit(status_cb, f"Sysmon collection warning: {error}")
 
         if cancelled:
             _emit(status_cb, "Skipping after snapshots and Procmon export because run was cancelled.")
@@ -1031,6 +1288,48 @@ def run_dynamic_analysis(
                 findings_summary = summarize_dynamic_findings(events, interesting_events)
                 write_json(findings_json, findings_summary)
 
+            # Network artifacts are parsed even when Procmon is off, since the
+            # capture stands on its own.
+            if pcap_stop_result.get("pcap_exists"):
+                _emit(status_cb, "Parsing packet capture...")
+                try:
+                    network_summary = parse_pcap(pcap_file)
+                    network_summary["capture"] = pcap_stop_result
+                    write_json(network_summary_json, network_summary)
+
+                    network_iocs = extract_network_iocs(network_summary)
+                    write_json(network_iocs_json, network_iocs)
+
+                    if network_summary.get("parsed"):
+                        counts = network_summary.get("counts", {})
+                        _emit(
+                            status_cb,
+                            f"Network: {counts.get('dns_queries', 0)} DNS, "
+                            f"{counts.get('tls_sni', 0)} TLS SNI, "
+                            f"{counts.get('http_requests', 0)} HTTP, "
+                            f"{counts.get('unique_destinations', 0)} destinations.",
+                        )
+                    else:
+                        _emit(status_cb, f"Packet capture not parsed: {network_summary.get('note', '')}")
+                except Exception as error:
+                    _emit(status_cb, f"Packet capture parse warning: {error}")
+
+            if fakenet_stop_result.get("log_exists"):
+                _emit(status_cb, "Parsing simulated internet log...")
+                try:
+                    fakenet_summary = parse_fakenet_log(fakenet_stop_result.get("log_path", ""))
+                    fakenet_summary["session"] = fakenet_stop_result
+                    write_json(fakenet_summary_json, fakenet_summary)
+
+                    counts = fakenet_summary.get("counts", {})
+                    _emit(
+                        status_cb,
+                        f"Simulated internet served {counts.get('dns_requests', 0)} DNS and "
+                        f"{counts.get('http_requests', 0)} HTTP requests.",
+                    )
+                except Exception as error:
+                    _emit(status_cb, f"Simulated internet parse warning: {error}")
+
     if autoruns_enabled and not cancelled:
         _emit(status_cb, "Snapshotting Autoruns entries (after)...")
         autoruns_after_status = _run_autorunsc_snapshot(
@@ -1079,6 +1378,9 @@ def run_dynamic_analysis(
         task_diff_summary=task_diff_summary,
         service_diff_summary=service_diff_summary,
         autoruns_diff_summary=autoruns_diff_summary,
+        sysmon_summary=sysmon_summary,
+        network_summary=network_summary,
+        fakenet_summary=fakenet_summary,
     )
 
     score_data = calculate_dynamic_score(
@@ -1087,6 +1389,9 @@ def run_dynamic_analysis(
         service_diff_summary=service_diff_summary,
         dropped_files_summary=dropped_files_summary,
         autoruns_diff_summary=autoruns_diff_summary,
+        sysmon_summary=sysmon_summary,
+        network_summary=network_summary,
+        fakenet_summary=fakenet_summary,
     )
 
     if cancelled:
@@ -1132,6 +1437,19 @@ def run_dynamic_analysis(
         "autoruns_diff": autoruns_diff_summary,
         "dropped_files_summary": dropped_files_summary,
         "findings": findings_summary,
+        # --- Tier 1 telemetry ------------------------------------------------
+        "sysmon_enabled": sysmon_enabled,
+        "sysmon_preflight": sysmon_preflight,
+        "sysmon_collection": sysmon_status_result,
+        "sysmon_summary": sysmon_summary,
+        "pcap_enabled": pcap_enabled,
+        "pcap_preflight": pcap_preflight,
+        "pcap_capture": pcap_stop_result,
+        "network_summary": network_summary,
+        "network_iocs": network_iocs,
+        "fakenet_enabled": fakenet_enabled,
+        "fakenet_preflight": fakenet_preflight,
+        "fakenet_summary": fakenet_summary,
     }
 
     _emit(status_cb, "Writing final run summary...")

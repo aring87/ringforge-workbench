@@ -502,6 +502,129 @@ def _event_hits_table(
     </section>
     """
 
+def _telemetry_coverage_table(summary: dict[str, Any]) -> str:
+    """State plainly which telemetry sources were active for this run.
+
+    Absence of evidence is not evidence of absence: if Sysmon was not running,
+    the report must not read as though no injection occurred.
+    """
+    def describe(enabled_key: str, preflight_key: str, ran: bool) -> str:
+        if not summary.get(enabled_key):
+            return "Disabled for this run"
+        preflight = summary.get(preflight_key, {}) or {}
+        if not preflight.get("available"):
+            return f"Not available - {preflight.get('note', 'tool not installed')}"
+        return "Collected" if ran else "Enabled but produced no data"
+
+    sysmon_ran = bool((summary.get("sysmon_collection", {}) or {}).get("success"))
+    pcap_ran = bool((summary.get("pcap_capture", {}) or {}).get("pcap_exists"))
+    fakenet_ran = bool((summary.get("fakenet_summary", {}) or {}).get("parsed"))
+
+    data = {
+        "Procmon": "Collected" if summary.get("procmon_enabled") else "Disabled for this run",
+        "Sysmon": describe("sysmon_enabled", "sysmon_preflight", sysmon_ran),
+        "Packet capture": describe("pcap_enabled", "pcap_preflight", pcap_ran),
+        "Simulated internet": describe("fakenet_enabled", "fakenet_preflight", fakenet_ran),
+    }
+
+    active = sum(1 for v in data.values() if v == "Collected")
+    return _kv_table("Telemetry Coverage", data, _section_badge("Active", active))
+
+
+def _sysmon_sections(summary: dict[str, Any]) -> str:
+    """Sysmon findings: the behaviours Procmon cannot observe."""
+    sysmon = summary.get("sysmon_summary", {}) or {}
+    if not sysmon:
+        return ""
+
+    highlights = sysmon.get("highlights", []) or []
+    counts = sysmon.get("counts", {}) or {}
+
+    overview = {
+        "Total events": sysmon.get("total_events", 0),
+        "High severity": sysmon.get("high_severity_count", 0),
+        "Injection events": len(sysmon.get("injection_events", []) or []),
+        "DNS queries": len(sysmon.get("dns_queries", []) or []),
+        "Named pipes": len(sysmon.get("named_pipes", []) or []),
+    }
+
+    injections = [
+        {"source": entry.get("source", ""), "target": entry.get("target", "")}
+        for entry in (sysmon.get("injection_events", []) or [])
+    ]
+
+    return f"""
+<div class="grid">
+  {_kv_table("Sysmon Overview", overview, badge("High", sysmon.get("high_severity_count", 0)))}
+  {_kv_table("Sysmon Event Counts", counts)}
+</div>
+
+{_dict_list_table("Sysmon Highlights", highlights)}
+{_dict_list_table("Process Injection (CreateRemoteThread)", injections)}
+{_list_section("Sysmon DNS Queries", sysmon.get("dns_queries", []) or [], empty_text="No DNS queries were recorded by Sysmon.")}
+{_list_section("Named Pipes", sysmon.get("named_pipes", []) or [], empty_text="No named pipes were recorded.")}
+"""
+
+
+def _network_sections(summary: dict[str, Any]) -> str:
+    """Packet capture and simulated-internet findings."""
+    network = summary.get("network_summary", {}) or {}
+    fakenet = summary.get("fakenet_summary", {}) or {}
+    iocs = summary.get("network_iocs", {}) or {}
+
+    if not network and not fakenet:
+        return ""
+
+    blocks = []
+
+    if network:
+        capture = network.get("capture", {}) or {}
+        overview = {
+            "Parsed": network.get("parsed", False),
+            "Backend": capture.get("backend", ""),
+            "Capture size (bytes)": capture.get("pcap_bytes", 0),
+            **(network.get("counts", {}) or {}),
+        }
+        if network.get("note"):
+            overview["Note"] = network["note"]
+
+        blocks.append(
+            f"""
+<div class="grid">
+  {_kv_table("Packet Capture", overview, badge("Unusual ports", (network.get("counts", {}) or {}).get("unusual_ports", 0)))}
+  {_kv_table("Network Indicators", {
+      "Domains": len(iocs.get("domains", []) or []),
+      "IP addresses": len(iocs.get("ips", []) or []),
+      "URLs": len(iocs.get("urls", []) or []),
+  })}
+</div>
+
+{_list_section("Resolved Domains", iocs.get("domains", []) or [], emphasize=True, empty_text="No domains were resolved.")}
+{_list_section("Contacted IP Addresses", iocs.get("ips", []) or [], empty_text="No IP addresses were contacted.")}
+{_list_section("Requested URLs", iocs.get("urls", []) or [], emphasize=True, empty_text="No plaintext URLs were observed.")}
+{_list_section("TLS Server Names (SNI)", network.get("tls_sni", []) or [], empty_text="No TLS SNI values were observed.")}
+{_dict_list_table("HTTP Requests", network.get("http_requests", []) or [])}
+{_dict_list_table("Connections On Unusual Ports", network.get("unusual_ports", []) or [])}
+"""
+        )
+
+    if fakenet:
+        counts = fakenet.get("counts", {}) or {}
+        blocks.append(
+            f"""
+{_kv_table("Simulated Internet (FakeNet-NG)", {
+    "Parsed": fakenet.get("parsed", False),
+    **counts,
+})}
+{_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text="No domains were requested.")}
+{_dict_list_table("Requests Served", fakenet.get("http_requests", []) or [])}
+{_list_section("Listeners Hit", fakenet.get("listeners_hit", []) or [], empty_text="No listeners were hit.")}
+"""
+        )
+
+    return "\n".join(blocks)
+
+
 def _derive_report_verdict(summary: dict[str, Any]) -> tuple[str, str]:
     """
     Use the orchestrator's actual score/severity/verdict as the source of truth.
@@ -726,6 +849,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 <div class="grid">
   {_kv_table("Sample Metadata", sample)}
   {_capture_configuration_table(summary)}
+  {_telemetry_coverage_table(summary)}
   {_kv_table("Procmon Summary", procmon)}
   {_kv_table("Interesting Procmon Summary", procmon_interesting)}
   {_kv_table("Findings Counts", findings_counts)}
@@ -739,6 +863,8 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_list_section("Installer Context / Expected Behavior", _installer_context_notes(summary), emphasize=False, empty_text="No installer-specific context was identified.")}
 {_list_section("Clean Baseline Checks", _clean_baseline_notes(summary), emphasize=False, empty_text="No clean-baseline checks were available.")}
 {_list_section("Highlights", findings.get("highlights", []), emphasize=True, empty_text="No high-priority highlights were generated.")}
+{_sysmon_sections(summary)}
+{_network_sections(summary)}
 {_autoruns_suspicious_sections(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}
 {_dict_list_table("Top Network Processes", findings.get("top_network_processes", []))}

@@ -134,6 +134,24 @@ class DynamicAnalysisWindow(tk.Toplevel):
             )
         )
 
+        # --- Tier 1 telemetry -------------------------------------------------
+        # Sysmon and packet capture are on by default because they degrade
+        # cleanly when the tools are absent. Simulated internet is off by
+        # default: it installs a traffic diverter, so it stays opt-in.
+        self.sysmon_enabled_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_sysmon_enabled", True))
+        )
+        self.pcap_enabled_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_pcap_enabled", True))
+        )
+        self.fakenet_enabled_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_fakenet_enabled", False))
+        )
+        self.fakenet_path_var = tk.StringVar(
+            value=cfg.get("dynamic_fakenet_path", str(project_root / "tools" / "fakenet" / "fakenet.exe"))
+        )
+        self.summary_telemetry_var = tk.StringVar(value="-")
+
         self.status_var = tk.StringVar(value="Idle")
         self.summary_status_var = tk.StringVar(value="Ready")
         self.summary_sample_var = tk.StringVar(value=Path(main_sample).name if main_sample else "-")
@@ -541,6 +559,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
             parent_bg=T.BG,
         ).pack(side="left", padx=(14, 0))
 
+        self._build_telemetry_row(header)
+
         workspace = ttk.Frame(frm)
         workspace.grid(row=1, column=0, sticky="nsew", pady=(6 if compact else 8, 0))
         workspace.columnconfigure(0, weight=4)
@@ -838,6 +858,165 @@ class DynamicAnalysisWindow(tk.Toplevel):
     # Progress
     # -------------------------------------------------------------------------
 
+    def _apply_telemetry_steps(self, summary: Dict):
+        """Reflect what telemetry actually ran, rather than assuming success.
+
+        A tool that was switched off, or that is not installed, reports "n/a"
+        instead of "done" so the pipeline never overstates coverage.
+        """
+        requested = any(
+            (
+                summary.get("sysmon_enabled"),
+                summary.get("pcap_enabled"),
+                summary.get("fakenet_enabled"),
+            )
+        )
+        if not requested:
+            self._set_step("Telemetry start", 100, "n/a")
+            self._set_step("Telemetry collect", 100, "n/a")
+            return
+
+        started = any(
+            (
+                summary.get("sysmon_enabled") and summary.get("sysmon_preflight", {}).get("available"),
+                summary.get("pcap_enabled") and summary.get("pcap_capture", {}).get("pcap_exists"),
+                summary.get("fakenet_enabled") and summary.get("fakenet_summary", {}).get("parsed"),
+            )
+        )
+        self._set_step("Telemetry start", 100, "done" if started else "missing tool")
+
+        collected = any(
+            (
+                summary.get("sysmon_collection", {}).get("success"),
+                summary.get("network_summary", {}).get("parsed"),
+                summary.get("fakenet_summary", {}).get("parsed"),
+            )
+        )
+        self._set_step("Telemetry collect", 100, "done" if collected else "n/a")
+
+        self._log_telemetry_outcome(summary)
+
+    def _log_telemetry_outcome(self, summary: Dict):
+        """Write a short telemetry recap into the output pane."""
+        lines = []
+
+        sysmon = summary.get("sysmon_summary") or {}
+        if sysmon.get("total_events"):
+            lines.append(
+                f"  Sysmon: {sysmon.get('total_events', 0)} events, "
+                f"{sysmon.get('high_severity_count', 0)} high-severity, "
+                f"{len(sysmon.get('injection_events', []))} injection"
+            )
+            for highlight in (sysmon.get("highlights") or [])[:5]:
+                lines.append(f"    [{highlight['severity']}] {highlight['title']}: {highlight['detail']}")
+
+        network = summary.get("network_summary") or {}
+        if network.get("parsed"):
+            counts = network.get("counts", {})
+            lines.append(
+                f"  Network: {counts.get('dns_queries', 0)} DNS, "
+                f"{counts.get('tls_sni', 0)} SNI, {counts.get('http_requests', 0)} HTTP, "
+                f"{counts.get('unusual_ports', 0)} unusual ports"
+            )
+
+        iocs = summary.get("network_iocs") or {}
+        for label, key in (("domains", "domains"), ("IPs", "ips")):
+            values = iocs.get(key) or []
+            if values:
+                lines.append(f"    {label}: {', '.join(values[:8])}")
+
+        fakenet = summary.get("fakenet_summary") or {}
+        if fakenet.get("parsed"):
+            counts = fakenet.get("counts", {})
+            lines.append(
+                f"  Simulated internet: {counts.get('dns_requests', 0)} DNS, "
+                f"{counts.get('http_requests', 0)} HTTP served"
+            )
+
+        if not lines:
+            return
+
+        try:
+            self.output.insert("end", "\nTelemetry summary:\n" + "\n".join(lines) + "\n")
+            self.output.see("end")
+        except Exception:
+            pass
+
+    def _build_telemetry_row(self, header):
+        """Toggles for the tier-1 telemetry sources, with live availability."""
+        ttk.Label(header, text="Telemetry:").grid(
+            row=3, column=0, sticky="w", padx=(10, 0), pady=(0, 10)
+        )
+
+        row = ttk.Frame(header)
+        row.grid(row=3, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10))
+
+        Checkbox(
+            row,
+            "Sysmon",
+            self.sysmon_enabled_var,
+            command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
+        ).pack(side="left")
+
+        Checkbox(
+            row,
+            "Packet capture",
+            self.pcap_enabled_var,
+            command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
+        ).pack(side="left", padx=(14, 0))
+
+        Checkbox(
+            row,
+            "Simulated internet",
+            self.fakenet_enabled_var,
+            command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
+        ).pack(side="left", padx=(14, 0))
+
+        self.telemetry_status_label = ttk.Label(
+            row, text="", style="Muted.TLabel"
+        )
+        self.telemetry_status_label.pack(side="left", padx=(16, 0))
+
+        self._refresh_telemetry_availability()
+
+    def _refresh_telemetry_availability(self):
+        """Show which tier-1 tools are actually installed, before a run starts.
+
+        Checked once at build time rather than per keystroke: each probe shells
+        out to wevtutil/sc/dumpcap.
+        """
+        try:
+            from dynamic_analysis.sysmon_collector import sysmon_status
+            from dynamic_analysis.network_capture import capture_status
+            from dynamic_analysis.fakenet_runner import fakenet_status
+
+            self._sysmon_preflight = sysmon_status()
+            self._pcap_preflight = capture_status()
+            self._fakenet_preflight = fakenet_status(self.fakenet_path_var.get().strip() or None)
+        except Exception as error:
+            self._sysmon_preflight = {"available": False, "note": str(error)}
+            self._pcap_preflight = {"available": False, "note": ""}
+            self._fakenet_preflight = {"available": False, "note": ""}
+
+        def mark(label, status):
+            return f"{label}: {'ready' if status.get('available') else 'not installed'}"
+
+        parts = [
+            mark("Sysmon", self._sysmon_preflight),
+            mark("Capture", self._pcap_preflight),
+            mark("FakeNet", self._fakenet_preflight),
+        ]
+        if not self._is_running_as_admin():
+            parts.append("(capture needs admin)")
+
+        try:
+            self.telemetry_status_label.configure(text="  |  ".join(parts))
+        except Exception:
+            pass
+
     def _reset_progress(self):
         for w in self.steps_frame.winfo_children():
             w.destroy()
@@ -845,9 +1024,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         steps = [
             "Pre-checks",
+            "Telemetry start",
             "Procmon start",
             "Sample execution",
             "Procmon stop",
+            "Telemetry collect",
             "Event parsing",
             "Persistence diff",
             "Findings summary",
@@ -917,6 +1098,17 @@ class DynamicAnalysisWindow(tk.Toplevel):
             f"{'Installer' if self.installer_observation_mode_var.get() else 'Standard'}"
         )
 
+        enabled = [
+            name
+            for name, var in (
+                ("Sysmon", self.sysmon_enabled_var),
+                ("PCAP", self.pcap_enabled_var),
+                ("FakeNet", self.fakenet_enabled_var),
+            )
+            if var.get()
+        ]
+        self.summary_telemetry_var.set(" + ".join(enabled) if enabled else "Procmon only")
+
     def _save_cfg(self):
         if not hasattr(self.app, "cfg") or not isinstance(self.app.cfg, dict):
             self.app.cfg = {}
@@ -930,6 +1122,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_minimum_observation_seconds"] = int(self.minimum_observation_var.get())
         self.app.cfg["dynamic_post_exit_observation_seconds"] = int(self.post_exit_observation_var.get())
         self.app.cfg["dynamic_installer_observation_mode"] = bool(self.installer_observation_mode_var.get())
+        self.app.cfg["dynamic_sysmon_enabled"] = bool(self.sysmon_enabled_var.get())
+        self.app.cfg["dynamic_pcap_enabled"] = bool(self.pcap_enabled_var.get())
+        self.app.cfg["dynamic_fakenet_enabled"] = bool(self.fakenet_enabled_var.get())
+        self.app.cfg["dynamic_fakenet_path"] = self.fakenet_path_var.get().strip()
 
         config_path = self._project_root() / "config.json"
         config_path.write_text(json.dumps(self.app.cfg, indent=2), encoding="utf-8")
@@ -1553,6 +1749,10 @@ ul {{ margin-top: 8px; }}
             "procmon_enabled": bool(self.procmon_enabled_var.get()),
             "procmon_path": str(procmon_path),
             "procmon_config_path": procmon_config,
+            "sysmon_enabled": bool(self.sysmon_enabled_var.get()),
+            "pcap_enabled": bool(self.pcap_enabled_var.get()),
+            "fakenet_enabled": bool(self.fakenet_enabled_var.get()),
+            "fakenet_path": self.fakenet_path_var.get().strip(),
         }
 
         self._save_cfg()
@@ -1565,6 +1765,7 @@ ul {{ margin-top: 8px; }}
         self.update_idletasks()
 
         self._set_step("Pre-checks", 100, "done")
+        self._set_step("Telemetry start", 25, "running")
         self._set_step("Procmon start", 25, "running")
 
         self.output.delete("1.0", "end")
@@ -1577,6 +1778,12 @@ ul {{ margin-top: 8px; }}
         self.output.insert("end", f"  procmon_path={procmon_path}\n")
         self.output.insert("end", f"  procmon_config={procmon_config or '-'}\n")
         self.output.insert("end", f"  autorunsc_path={self._find_autorunsc_path() or 'not found'}\n")
+        self.output.insert(
+            "end",
+            f"  sysmon={config['sysmon_enabled']} "
+            f"pcap={config['pcap_enabled']} "
+            f"fakenet={config['fakenet_enabled']}\n",
+        )
         self.output.insert("end", f"  admin={self._is_running_as_admin()}\n\n")
         self.output.see("end")
 
@@ -1650,6 +1857,8 @@ ul {{ margin-top: 8px; }}
         self._set_step("Persistence diff", 100, "done")
         self._set_step("Findings summary", 100, "done")
         self._set_step("Report generation", 100, "done")
+
+        self._apply_telemetry_steps(summary if isinstance(summary, dict) else {})
 
         findings = summary.get("findings", {}) if isinstance(summary, dict) else {}
         counts = findings.get("counts", {}) if isinstance(findings, dict) else {}
