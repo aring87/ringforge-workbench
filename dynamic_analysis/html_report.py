@@ -687,15 +687,18 @@ def _network_sections(summary: dict[str, Any]) -> str:
 
     if fakenet:
         counts = fakenet.get("counts", {}) or {}
+        overview = {"Parsed": fakenet.get("parsed", False), **counts}
+        if fakenet.get("dns_adapter"):
+            overview["Adapter redirected"] = fakenet["dns_adapter"]
+            overview["DNS server set to"] = fakenet.get("dns_server", "")
+
         blocks.append(
             f"""
-{_kv_table("Simulated Internet (FakeNet-NG)", {
-    "Parsed": fakenet.get("parsed", False),
-    **counts,
-})}
-{_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text="No domains were requested.")}
+{_kv_table("Simulated Internet (FakeNet-NG)", overview)}
+{_dict_list_table("Connection Attempts By Process", fakenet.get("process_requests", []) or [])}
+{_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text="No domains were requested. With no default route the guest generates little background traffic, so this is expected for a sample that does not use the network.")}
 {_dict_list_table("Requests Served", fakenet.get("http_requests", []) or [])}
-{_list_section("Listeners Hit", fakenet.get("listeners_hit", []) or [], empty_text="No listeners were hit.")}
+{_list_section("Listeners Configured", fakenet.get("listeners_configured", []) or [], empty_text="No listeners were configured.")}
 """
         )
 

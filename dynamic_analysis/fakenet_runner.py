@@ -35,8 +35,26 @@ _HTTP_REQUEST_RE = re.compile(
     r"\b(GET|POST|HEAD|PUT|PATCH|DELETE|OPTIONS)\s+(\S+)\s+HTTP/\d", re.IGNORECASE
 )
 _HOST_HEADER_RE = re.compile(r"^\s*Host:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
-#: Listener banners, e.g. "[HTTPListener80]" or "[DNS Server]".
+#: Listener banners, e.g. "[HTTPListener80]" or "[DNS Server]". These appear at
+#: startup as well as when traffic arrives, so a match proves the listener was
+#: configured -- not that anything reached it.
 _LISTENER_RE = re.compile(r"\[([A-Za-z0-9 _\-]*(?:Listener|Server)[A-Za-z0-9 _\-]*)\]")
+
+#: Process-attributed connection attempts from the diverter, e.g.
+#: "evil.exe (4880) requested UDP 127.0.0.1:52173".
+#: This is FakeNet's most valuable output: the packet capture shows that a
+#: connection happened, this shows which process wanted it.
+_PROCESS_REQUEST_RE = re.compile(
+    r"([\w.\-]+\.exe)\s+\((\d+)\)\s+requested\s+(TCP|UDP)\s+"
+    r"([\d.]+|\[[0-9a-fA-F:]+\]):(\d+)",
+    re.IGNORECASE,
+)
+
+#: The adapter FakeNet took over, e.g.
+#: "Set DNS server 0.0.0.0 on the adapter: Ethernet 2".
+_DNS_ADAPTER_RE = re.compile(
+    r"Set DNS server\s+(\S+)\s+on the adapter:\s*(.+?)\s*$", re.MULTILINE
+)
 #: Diverted connections, e.g. "tcp 10.0.0.5:1234 -> 93.184.216.34:443".
 _DIVERT_RE = re.compile(
     r"(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})\s*(?:->|to)\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})"
@@ -275,8 +293,11 @@ def parse_fakenet_log(log_path: str | Path) -> dict[str, Any]:
         "dns_requests": [],
         "http_requests": [],
         "hosts": [],
-        "listeners_hit": [],
+        "listeners_configured": [],
+        "process_requests": [],
         "diverted_connections": [],
+        "dns_adapter": "",
+        "dns_server": "",
         "counts": {},
     }
 
@@ -323,18 +344,44 @@ def parse_fakenet_log(log_path: str | Path) -> dict[str, Any]:
         if entry not in diverted:
             diverted.append(entry)
 
+    # Which process asked for what. The pcap cannot attribute a packet to a
+    # process; the diverter can, which makes this the more useful record.
+    process_requests: list[dict[str, str]] = []
+    for match in _PROCESS_REQUEST_RE.finditer(text):
+        entry = {
+            "process": match.group(1),
+            "pid": match.group(2),
+            "protocol": match.group(3).upper(),
+            "destination": f"{match.group(4)}:{match.group(5)}",
+        }
+        if entry not in process_requests:
+            process_requests.append(entry)
+
+    adapter = ""
+    dns_server = ""
+    adapter_match = _DNS_ADAPTER_RE.search(text)
+    if adapter_match:
+        dns_server = adapter_match.group(1).strip()
+        adapter = adapter_match.group(2).strip()
+
     summary.update(
         {
             "parsed": True,
             "dns_requests": dns[:300],
             "http_requests": http[:300],
             "hosts": hosts[:300],
-            "listeners_hit": listeners[:50],
+            # Renamed from listeners_hit: these banners are printed at startup,
+            # so their presence only proves a listener was configured.
+            "listeners_configured": listeners[:50],
+            "process_requests": process_requests[:300],
             "diverted_connections": diverted[:300],
+            "dns_adapter": adapter,
+            "dns_server": dns_server,
             "counts": {
                 "dns_requests": len(dns),
                 "http_requests": len(http),
                 "hosts": len(hosts),
+                "process_requests": len(process_requests),
                 "diverted_connections": len(diverted),
             },
         }

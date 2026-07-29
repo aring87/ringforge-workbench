@@ -291,7 +291,12 @@ def export_evtx(output_path: str | Path, since_utc: str) -> dict[str, Any]:
     return {"success": True, "error": "", "path": str(out)}
 
 
-def _query(xpath: str, max_events: int, reverse: bool = False) -> list[dict[str, Any]]:
+def _query(
+    xpath: str,
+    max_events: int,
+    reverse: bool = False,
+    stats: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     cmd = [
         "wevtutil", "qe", SYSMON_CHANNEL,
         f"/q:{xpath}",
@@ -310,7 +315,18 @@ def _query(xpath: str, max_events: int, reverse: bool = False) -> list[dict[str,
         detail = (result.stderr or result.stdout or "").strip()
         raise SysmonError(f"wevtutil qe failed: {detail or result.returncode}")
 
-    return parse_rendered_xml(result.stdout or "")
+    raw = result.stdout or ""
+    events = parse_rendered_xml(raw)
+
+    # Record how much wevtutil actually returned. Without this, a query that
+    # matched nothing and a query whose output failed to parse both present as
+    # "zero events", and they need opposite fixes.
+    if stats is not None:
+        stats["stdout_bytes"] = len(raw)
+        stats["stderr"] = (result.stderr or "").strip()[:300]
+        stats["parsed_events"] = len(events)
+
+    return events
 
 
 def query_events(
@@ -341,9 +357,12 @@ def query_events(
 
     last_error = ""
     for name, xpath, count, reverse in strategies:
-        record: dict[str, Any] = {"strategy": name, "events": 0, "error": ""}
+        record: dict[str, Any] = {
+            "strategy": name, "events": 0, "error": "",
+            "stdout_bytes": 0, "parsed_events": 0, "stderr": "",
+        }
         try:
-            events = _query(xpath, count, reverse=reverse)
+            events = _query(xpath, count, reverse=reverse, stats=record)
         except SysmonError as error:
             record["error"] = str(error)
             last_error = str(error)
@@ -652,8 +671,19 @@ def _diagnose_empty(
             f"failed. {detail}"
         )
 
+    # Distinguish "wevtutil returned nothing" from "wevtutil returned data we
+    # failed to parse". These look identical in the output but need opposite
+    # fixes, so the raw byte counts decide it.
+    returned_bytes = max((int(a.get("stdout_bytes", 0) or 0) for a in attempts), default=0)
+    if returned_bytes > 0:
+        return (
+            f"The channel holds {channel_records} records and wevtutil returned "
+            f"{returned_bytes} bytes, but none of it parsed into events. This is "
+            "a parsing fault in the workbench, not a problem with Sysmon."
+        )
+
     return (
-        f"The channel holds {channel_records} records, but none fall within this "
-        "run's time window. Check that the guest clock is correct, since the "
-        "window is bounded by timestamps."
+        f"The channel holds {channel_records} records, but wevtutil returned no "
+        "output for this run's window, including an unfiltered query. Verify "
+        "with: wevtutil qe Microsoft-Windows-Sysmon/Operational /c:3 /f:RenderedXml"
     )
