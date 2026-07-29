@@ -86,11 +86,86 @@ def normalize_service_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _snapshot_via_sc() -> list[dict[str, Any]]:
+    """Fallback snapshot using sc.exe, which does not depend on WMI/CIM."""
+    result = subprocess.run(
+        ["sc.exe", "queryex", "type=", "service", "state=", "all"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        errors="replace",
+    )
+    if result.returncode not in (0, 1060):
+        raise RuntimeError(
+            f"sc query failed. rc={result.returncode} stderr={(result.stderr or '').strip()}"
+        )
+
+    services: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+
+    for line in (result.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("SERVICE_NAME:"):
+            if current.get("service_name"):
+                services.append(current)
+            current = {
+                "service_name": stripped.split(":", 1)[1].strip(),
+                "display_name": "",
+                "state": "",
+                "start_mode": "",
+                "path_name": "",
+                "service_account": "",
+            }
+        elif stripped.upper().startswith("DISPLAY_NAME:") and current:
+            current["display_name"] = stripped.split(":", 1)[1].strip()
+        elif "STATE" in stripped.upper() and ":" in stripped and current:
+            # e.g. "STATE              : 4  RUNNING"
+            parts = stripped.split(":", 1)[1].split()
+            current["state"] = parts[-1] if parts else ""
+
+    if current.get("service_name"):
+        services.append(current)
+
+    return services
+
+
+def snapshot_services_with_status() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Snapshot services, reporting which collection method succeeded."""
+    status: dict[str, Any] = {"success": False, "method": "", "error": "", "fallback_used": False}
+    errors: list[str] = []
+
+    try:
+        raw = _run_powershell_json_to_file()
+        services = [normalize_service_item(item) for item in raw]
+        services.sort(key=lambda x: x.get("service_name", ""))
+        status.update({"success": True, "method": "Win32_Service"})
+        return services, status
+    except Exception as error:
+        errors.append(f"Win32_Service: {error}")
+
+    try:
+        services = _snapshot_via_sc()
+        services.sort(key=lambda x: x.get("service_name", ""))
+        status.update(
+            {
+                "success": True,
+                "method": "sc.exe",
+                "fallback_used": True,
+                "error": errors[0] if errors else "",
+            }
+        )
+        return services, status
+    except Exception as error:
+        errors.append(f"sc.exe: {error}")
+
+    status["error"] = " | ".join(errors)
+    return [], status
+
+
 def snapshot_services() -> list[dict[str, Any]]:
-    raw = _run_powershell_json_to_file()
-    normalized = [normalize_service_item(item) for item in raw]
-    normalized.sort(key=lambda x: x.get("service_name", ""))
-    return normalized
+    """Backwards-compatible wrapper returning just the service list."""
+    services, _status = snapshot_services_with_status()
+    return services
 
 
 def service_identity(service: dict[str, Any]) -> str:

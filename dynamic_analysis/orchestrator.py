@@ -40,8 +40,14 @@ from dynamic_analysis.procmon_parser import (
     summarize_interesting_events,
     summarize_procmon_events,
 )
-from dynamic_analysis.snapshot_services import snapshot_services
-from dynamic_analysis.snapshot_tasks import snapshot_scheduled_tasks
+from dynamic_analysis.snapshot_services import (
+    snapshot_services,
+    snapshot_services_with_status,
+)
+from dynamic_analysis.snapshot_tasks import (
+    snapshot_scheduled_tasks,
+    snapshot_scheduled_tasks_with_status,
+)
 from dynamic_analysis.sysmon_collector import (
     collect as collect_sysmon,
     mark_start as sysmon_mark_start,
@@ -1027,6 +1033,8 @@ def run_dynamic_analysis(
 
     tasks_before: Any = []
     services_before: Any = []
+    tasks_status: dict[str, Any] = {"success": False, "method": "", "error": "not run"}
+    services_status: dict[str, Any] = {"success": False, "method": "", "error": "not run"}
 
     procmon_started = False
     sample_launch_attempted = False
@@ -1053,14 +1061,36 @@ def run_dynamic_analysis(
         _raise_if_cancelled(cancel_event)
 
         _emit(status_cb, "Snapshotting scheduled tasks (before)...")
-        tasks_before = snapshot_scheduled_tasks()
+        tasks_before, tasks_status = snapshot_scheduled_tasks_with_status()
         write_json(tasks_before_json, tasks_before)
+        if not tasks_status.get("success"):
+            _emit(
+                status_cb,
+                f"Scheduled task snapshot unavailable: {tasks_status.get('error', 'unknown error')}",
+            )
+        elif tasks_status.get("fallback_used"):
+            _emit(
+                status_cb,
+                f"Scheduled tasks collected via {tasks_status.get('method')} "
+                "(the CIM provider was unavailable).",
+            )
 
         _raise_if_cancelled(cancel_event)
 
         _emit(status_cb, "Snapshotting services (before)...")
-        services_before = snapshot_services()
+        services_before, services_status = snapshot_services_with_status()
         write_json(services_before_json, services_before)
+        if not services_status.get("success"):
+            _emit(
+                status_cb,
+                f"Service snapshot unavailable: {services_status.get('error', 'unknown error')}",
+            )
+        elif services_status.get("fallback_used"):
+            _emit(
+                status_cb,
+                f"Services collected via {services_status.get('method')} "
+                "(the CIM provider was unavailable).",
+            )
 
         _raise_if_cancelled(cancel_event)
 
@@ -1438,6 +1468,8 @@ def run_dynamic_analysis(
         "dropped_files_summary": dropped_files_summary,
         "findings": findings_summary,
         # --- Tier 1 telemetry ------------------------------------------------
+        "tasks_snapshot_status": tasks_status,
+        "services_snapshot_status": services_status,
         "sysmon_enabled": sysmon_enabled,
         "sysmon_preflight": sysmon_preflight,
         "sysmon_collection": sysmon_status_result,
