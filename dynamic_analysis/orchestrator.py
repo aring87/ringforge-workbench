@@ -27,6 +27,7 @@ from dynamic_analysis.network_capture import (
     PacketCapture,
     capture_status,
     extract_network_iocs,
+    network_isolation_status,
     parse_pcap,
 )
 from dynamic_analysis.procmon_runner import (
@@ -1007,6 +1008,21 @@ def run_dynamic_analysis(
         "available": False, "note": "Simulated internet disabled for this run."
     }
 
+    # Containment check. A second adapter lets a sample bypass FakeNet entirely
+    # and reach real infrastructure, and nothing in the resulting artifacts
+    # would say so, hence checking before the sample is ever launched.
+    isolation = network_isolation_status(dumpcap_path or None)
+    if isolation.get("level") != "ok":
+        _emit(status_cb, f"CONTAINMENT WARNING: {isolation.get('note', '')}")
+        for path in isolation.get("egress", []):
+            _emit(
+                status_cb,
+                f"  egress: {path.get('adapter') or '?'} "
+                f"({path.get('interface_ip')} -> {path.get('gateway')})",
+            )
+    else:
+        _emit(status_cb, f"Network isolation: {isolation.get('note', '')}")
+
     sysmon_summary: dict[str, Any] = {}
     sysmon_status_result: dict[str, Any] = {"success": False, "error": "not run"}
     network_summary: dict[str, Any] = {}
@@ -1489,6 +1505,7 @@ def run_dynamic_analysis(
         "sysmon_preflight": sysmon_preflight,
         "sysmon_collection": sysmon_status_result,
         "sysmon_summary": sysmon_summary,
+        "network_isolation": isolation,
         "pcap_enabled": pcap_enabled,
         "pcap_preflight": pcap_preflight,
         "pcap_capture": pcap_stop_result,

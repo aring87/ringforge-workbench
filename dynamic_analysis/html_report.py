@@ -533,8 +533,54 @@ def _telemetry_coverage_table(summary: dict[str, Any]) -> str:
         "Simulated internet": describe("fakenet_enabled", "fakenet_preflight", fakenet_ran),
     }
 
+    isolation = summary.get("network_isolation", {}) or {}
+    if isolation:
+        egress = isolation.get("egress_count", 0)
+        if isolation.get("isolated"):
+            data["Network isolation"] = "Isolated (no default route)"
+        elif isolation.get("level") == "ok":
+            data["Network isolation"] = f"Single egress path ({egress})"
+        else:
+            data["Network isolation"] = f"NOT CONTAINED - {egress} egress paths"
+
     active = sum(1 for v in data.values() if v == "Collected")
     return _kv_table("Telemetry Coverage", data, _section_badge("Active", active))
+
+
+def _containment_section(summary: dict[str, Any]) -> str:
+    """Warn prominently when the sample could have bypassed the simulated internet.
+
+    Whoever reads the report is often not whoever ran it, so a containment
+    failure has to travel with the results rather than living only in the log.
+    """
+    isolation = summary.get("network_isolation", {}) or {}
+    if not isolation or isolation.get("level") == "ok":
+        return ""
+
+    rows = [
+        {
+            "adapter": path.get("adapter", ""),
+            "interface_ip": path.get("interface_ip", ""),
+            "gateway": path.get("gateway", ""),
+            "private": path.get("private", ""),
+        }
+        for path in (isolation.get("egress", []) or [])
+    ]
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Containment Warning</h2>
+        {badge("Egress paths", isolation.get("egress_count", 0))}
+      </div>
+      <p>{_esc(isolation.get("note", ""))}</p>
+      <p class="muted">
+        Network indicators below may reflect traffic that reached real
+        infrastructure rather than the simulated internet.
+      </p>
+      {_dict_list_table("Egress Paths", rows)}
+    </section>
+    """
 
 
 def _sysmon_sections(summary: dict[str, Any]) -> str:
@@ -854,6 +900,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 
     body_html = f"""
 {_summary_tiles(summary)}
+{_containment_section(summary)}
 
 <div class="grid">
   {_kv_table("Sample Metadata", sample)}

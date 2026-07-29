@@ -247,6 +247,109 @@ def pick_default_interface(dumpcap_path: str | Path | None = None) -> str:
     return "1"
 
 
+def default_route_interfaces() -> list[dict[str, str]]:
+    """Local addresses that hold an IPv4 default route.
+
+    Parsed from ``route print`` rather than Get-NetIPConfiguration: the CIM
+    namespaces that cmdlet depends on are missing on stripped Windows images,
+    which are common as analysis VM bases.
+    """
+    try:
+        result = subprocess.run(
+            ["route", "print", "-4"],
+            capture_output=True, text=True, timeout=30, errors="replace",
+        )
+    except Exception:
+        return []
+
+    routes: list[dict[str, str]] = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        # "0.0.0.0  0.0.0.0  <gateway>  <interface ip>  <metric>"
+        if len(parts) >= 5 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+            entry = {"gateway": parts[2], "interface_ip": parts[3], "metric": parts[4]}
+            if entry not in routes:
+                routes.append(entry)
+    return routes
+
+
+def has_ipv6_default_route() -> bool:
+    """True when an IPv6 default route exists, which can also carry traffic out."""
+    try:
+        result = subprocess.run(
+            ["route", "print", "-6"],
+            capture_output=True, text=True, timeout=30, errors="replace",
+        )
+    except Exception:
+        return False
+    return any("::/0" in line for line in (result.stdout or "").splitlines())
+
+
+def network_isolation_status(dumpcap_path: str | Path | None = None) -> dict[str, Any]:
+    """Report how many ways traffic can leave this machine.
+
+    FakeNet redirects DNS on the adapter it is bound to. When a VM has both a
+    host-only and a NAT/bridged adapter, a sample can simply use the other one
+    and reach real infrastructure -- which is a containment failure, not just
+    noisy data. The failure is silent, so it is checked before every run.
+    """
+    routes = default_route_interfaces()
+    ipv6 = has_ipv6_default_route()
+    adapters = list_interfaces(dumpcap_path)
+
+    # Name each egress path by matching its address against the capture list.
+    egress: list[dict[str, str]] = []
+    for route in routes:
+        name = ""
+        for adapter in adapters:
+            if route["interface_ip"] in (adapter.get("addrs") or []):
+                name = adapter.get("description") or adapter.get("name", "")
+                break
+        egress.append(
+            {
+                "interface_ip": route["interface_ip"],
+                "gateway": route["gateway"],
+                "adapter": name,
+                "private": "yes" if is_private_ip(route["interface_ip"]) else "no",
+            }
+        )
+
+    count = len(egress)
+    isolated = count == 0 and not ipv6
+
+    if count > 1:
+        level = "warning"
+        note = (
+            f"{count} adapters hold a default route. FakeNet-NG redirects DNS on one "
+            "adapter only, so a sample can reach real infrastructure through another. "
+            "Disable all but one adapter before detonating live malware."
+        )
+    elif count == 1 and ipv6:
+        level = "warning"
+        note = (
+            "One IPv4 default route plus an IPv6 default route. IPv6 traffic can "
+            "bypass the IPv4 redirect; disable IPv6 on the adapter before detonating."
+        )
+    elif count == 1:
+        level = "ok"
+        note = f"Single egress path via {egress[0]['adapter'] or egress[0]['interface_ip']}."
+    elif isolated:
+        level = "ok"
+        note = "No default route: this machine is fully isolated."
+    else:
+        level = "warning"
+        note = "No IPv4 default route, but an IPv6 default route exists."
+
+    return {
+        "level": level,
+        "isolated": isolated,
+        "egress_count": count,
+        "egress": egress,
+        "ipv6_default_route": ipv6,
+        "note": note,
+    }
+
+
 def capture_status(dumpcap_path: str | Path | None = None) -> dict[str, Any]:
     """Preflight summary describing whether packet capture can run."""
     dumpcap = find_dumpcap(dumpcap_path)

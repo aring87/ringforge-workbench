@@ -980,6 +980,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.telemetry_status_label.pack(side="left", padx=(16, 0))
 
+        self.isolation_label = ttk.Label(header, text="", style="Muted.TLabel")
+        self.isolation_label.grid(
+            row=4, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10)
+        )
+
         self._refresh_telemetry_availability()
 
     def _refresh_telemetry_availability(self):
@@ -990,16 +995,18 @@ class DynamicAnalysisWindow(tk.Toplevel):
         """
         try:
             from dynamic_analysis.sysmon_collector import sysmon_status
-            from dynamic_analysis.network_capture import capture_status
+            from dynamic_analysis.network_capture import capture_status, network_isolation_status
             from dynamic_analysis.fakenet_runner import fakenet_status
 
             self._sysmon_preflight = sysmon_status()
             self._pcap_preflight = capture_status()
             self._fakenet_preflight = fakenet_status(self.fakenet_path_var.get().strip() or None)
+            self._isolation = network_isolation_status()
         except Exception as error:
             self._sysmon_preflight = {"available": False, "note": str(error)}
             self._pcap_preflight = {"available": False, "note": ""}
             self._fakenet_preflight = {"available": False, "note": ""}
+            self._isolation = {"level": "unknown", "note": "", "egress_count": 0}
 
         def mark(label, status):
             return f"{label}: {'ready' if status.get('available') else 'not installed'}"
@@ -1014,6 +1021,36 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         try:
             self.telemetry_status_label.configure(text="  |  ".join(parts))
+        except Exception:
+            pass
+
+        # Containment is a separate, louder line: a second adapter lets a
+        # sample bypass the simulated internet and reach real infrastructure.
+        try:
+            level = self._isolation.get("level")
+            if level == "warning":
+                count = self._isolation.get("egress_count", 0)
+                if count > 1:
+                    detail = f"{count} network egress paths - disable all but one adapter"
+                else:
+                    # Single adapter but still not contained, e.g. an IPv6
+                    # default route. Use the specific reason: telling someone
+                    # to remove adapters they do not have is worse than silence.
+                    detail = self._isolation.get("note", "traffic can leave this machine")
+                self.isolation_label.configure(
+                    text=f"NOT CONTAINED: {detail}",
+                    foreground=T.DANGER,
+                )
+            elif self._isolation.get("isolated"):
+                self.isolation_label.configure(
+                    text="Contained: no default route", foreground=T.SUCCESS
+                )
+            elif level == "ok":
+                self.isolation_label.configure(
+                    text=self._isolation.get("note", ""), foreground=T.TEXT_MUTED
+                )
+            else:
+                self.isolation_label.configure(text="", foreground=T.TEXT_MUTED)
         except Exception:
             pass
 
