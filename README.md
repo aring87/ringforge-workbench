@@ -549,11 +549,12 @@ Verified end to end:
 - Report rendering for populated, degraded and legacy summaries
 - Scoring calibration: baseline-only network traffic scores lower, while an
   injected C2 domain, URL and IP still surface and score above it
+- Sysmon collection against a live channel holding 53,000+ records spanning
+  two weeks, confirming both the newest-first read and the parsing of
+  `wevtutil`'s single-quoted XML
 
-Known state at release: the Sysmon XML parsing fix landed after the last full
-detonation and has been verified against captured `wevtutil` output rather than
-a live run. Confirm `Telemetry Coverage` reports Sysmon as `Collected` on first
-use in a new environment.
+A final detonation reported all four sources as `Collected`, with Sysmon
+returning process creation and registry events for the run window.
 
 `v1.7.2` was validated with API Spec Analysis and Unified Report workflows.
 
