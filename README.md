@@ -1,6 +1,6 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.7.2-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.8.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
@@ -19,9 +19,9 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.7.2` |
-| Release Name | API Spec Analysis Polish + Unified Report Integration |
-| Release Type | Maintenance / polish release |
+| Version | `v1.8.0` |
+| Release Name | Tier-1 Dynamic Telemetry + UI Redesign |
+| Release Type | Feature release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
 | License | MIT |
@@ -76,6 +76,10 @@ Dynamic Analysis supports controlled runtime behavior review inside a Windows an
 Current dynamic capabilities include:
 
 - Procmon-backed event collection
+- Sysmon telemetry: process injection, image loads, WMI persistence, DNS queries, named pipes
+- Full packet capture with DNS, TLS SNI, HTTP and connection extraction
+- Simulated internet (FakeNet-NG) with per-process connection attribution
+- Network containment checking before every run
 - Parsed runtime event review
 - Interesting event filtering
 - Process creation tracking
@@ -92,6 +96,8 @@ Current dynamic capabilities include:
 - Clean baseline checks
 - Analyst notes
 - Noise filtering for RingForge tools, Procmon, Autorunsc, Windows helper activity, and common clean-baseline behavior
+- Windows baseline network traffic separated from sample-attributable indicators
+- Telemetry coverage reporting, so a missing source is never mistaken for a clean result
 
 ### Manual API Tester
 
@@ -205,6 +211,90 @@ Supported module summaries include:
 - Combined Score
 
 The Unified Report now summarizes Manual API Tester findings, API Spec Analysis findings, Browser Extension Analysis status, and available static/dynamic results. It also uses clearer labels such as `Not run` and `Not generated` when a module has no artifacts in the selected case.
+
+---
+
+## What's New in v1.8.0
+
+`v1.8.0` adds three telemetry sources that cover behaviour Procmon structurally
+cannot observe, and rebuilds the interface on a single design system.
+
+### Tier-1 Dynamic Telemetry
+
+Procmon reports filesystem, registry and process IO. It cannot see process
+injection, image-load provenance, WMI persistence, DNS resolution, or anything
+that crossed the wire. Three sources close those gaps:
+
+| Source | Adds |
+|---|---|
+| **Sysmon** | CreateRemoteThread injection, process tampering, LSASS credential access, WMI event subscriptions, DNS queries, named pipes, image loads |
+| **Packet capture** | DNS answers, HTTP hosts and URIs, TLS SNI, outbound connections, unusual destination ports |
+| **FakeNet-NG** | A simulated internet so samples proceed through their real logic, plus per-process connection attribution |
+
+All three are optional. Each degrades to an explanatory status rather than an
+exception, and a run proceeds with whatever is available.
+
+Collection is read-only: the Sysmon channel is never cleared. Only events
+inside the run window are queried, so a shared analysis VM keeps its history.
+
+### Network Containment
+
+A VM with both host-only and NAT adapters lets a sample bypass the simulated
+internet and reach real infrastructure. Nothing in the resulting artifacts
+would say so.
+
+Egress paths are now enumerated before the sample is launched. The status log
+names every adapter holding a default route, the Dynamic Analysis window shows
+a red `NOT CONTAINED` line at rest, and the report carries a containment
+warning that caveats the network indicators. IPv6 default routes are detected
+separately, since they bypass an IPv4-only redirect.
+
+### Scoring and Reporting Honesty
+
+- A capture records the whole host, so Windows certificate-revocation,
+  telemetry and mDNS traffic is classified as baseline and excluded from
+  findings and scoring. Both lists are kept, since C2 does hide behind CDNs.
+- Injection, credential access and WMI persistence set a minimum severity of
+  Medium regardless of score, so a sample that does one decisive thing is never
+  reported as Low.
+- Telemetry coverage is stated explicitly. If Sysmon was not running, the
+  report says so rather than reading as though no injection occurred.
+
+### Resilience
+
+- Scheduled task and service snapshots fall back to `schtasks.exe` and
+  `sc.exe` when the CIM namespaces are missing, which is common on debloated
+  Windows images used as VM bases. A failed snapshot no longer aborts the run.
+- Antivirus quarantine of FakeNet-NG is recognised and explained as the
+  expected false positive it is.
+
+### Supporting Scripts
+
+| Script | Runs on | Purpose |
+|---|---|---|
+| `scripts/bootstrap_tools.ps1` | Analysis VM | Installs Sysmon, Wireshark/Npcap and FakeNet-NG, then verifies with the workbench's own preflight checks |
+| `scripts/vm_net.ps1` | Host | Arms and disarms the VM's internet adapter via VBoxManage, without a shutdown |
+
+Both refuse to run in the wrong place: `bootstrap_tools.ps1` will not install
+drivers outside a VM without `-Force`, and `vm_net.ps1` explains that
+containment is only enforceable from the host.
+
+### Interface Redesign
+
+The six windows each carried their own ttk palette, leaving 183 hex literals
+across 11 files and a different look per module. They now share one design
+system:
+
+- `gui/theme.py` — design tokens (black and Lexus Ultrasonic Blue Mica 2.0),
+  the only file containing colour literals
+- `gui/components.py` — canvas-drawn cards, buttons, checkboxes, badges and
+  headers, giving Tk rounded corners, hover states and gradients
+- `gui/styles.py` — every ttk style declared once
+
+Fixed along the way: card labels rendering on the wrong background, clam
+drawing an "✗" for a *checked* checkbox, near-white 3D frames around tables and
+notebooks, light focus rings on dark text panes, and white scrollbars that
+Windows draws natively regardless of configured colour.
 
 ---
 
@@ -442,6 +532,29 @@ The latest files stay at the root of `spec_analysis` for quick access and Unifie
 
 ## Validation Summary
 
+`v1.8.0` was validated by repeated live detonations in a VirtualBox Windows 11
+analysis VM, with Procmon, Sysmon, packet capture and FakeNet-NG all active.
+
+Verified end to end:
+
+- Packet capture start, clean stop, and parsing of real DNS, HTTP and TLS
+  traffic, across multiple interfaces
+- FakeNet-NG lifecycle and log parsing against real FakeNet output, including
+  per-process connection attribution
+- Network containment detection on a two-adapter VM, and on a contained VM
+  with no default route
+- Scheduled task and service snapshot fallbacks against a VM whose
+  `Root\Microsoft\Windows\TaskScheduler` CIM namespace is absent
+- Graceful degradation for every tool when it is not installed
+- Report rendering for populated, degraded and legacy summaries
+- Scoring calibration: baseline-only network traffic scores lower, while an
+  injected C2 domain, URL and IP still surface and score above it
+
+Known state at release: the Sysmon XML parsing fix landed after the last full
+detonation and has been verified against captured `wevtutil` output rather than
+a live run. Confirm `Telemetry Coverage` reports Sysmon as `Collected` on first
+use in a new environment.
+
 `v1.7.2` was validated with API Spec Analysis and Unified Report workflows.
 
 Validated Spec Analysis checks:
@@ -590,7 +703,7 @@ Service/task findings reviewed in installer context
 
 ## External Tooling Notice
 
-The `v1.7.2` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
+The `v1.8.0` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
 
 Users must download and configure external tools themselves.
 
@@ -598,7 +711,7 @@ This keeps the release package cleaner and avoids redistributing external softwa
 
 ### Not Included in the Release Package
 
-The following are not bundled in the `v1.7.2` release ZIP:
+The following are not bundled in the `v1.8.0` release ZIP:
 
 - Sysinternals Procmon
 - Sysinternals Autorunsc
@@ -624,7 +737,45 @@ The following are not bundled in the `v1.7.2` release ZIP:
 
 #### Dynamic Analysis Tools
 
-For full dynamic analysis functionality:
+For full dynamic analysis functionality.
+
+> **Quick path:** run `scripts/bootstrap_tools.ps1` inside the analysis VM as
+> Administrator. It downloads and installs Sysmon, Wireshark/Npcap and
+> FakeNet-NG, then verifies each with the same preflight checks the Dynamic
+> Analysis window uses. The manual steps below are the equivalent.
+
+- **Sysmon**
+  - Provides process injection, image load, WMI persistence, DNS query and
+    named pipe telemetry. None of this is visible to Procmon.
+  - Install in the guest with a configuration, for example:
+
+```text
+sysmon64.exe -accepteula -i sysmonconfig.xml
+```
+
+  - Recommended path for the binary:
+
+```text
+tools/sysmon64.exe
+```
+
+- **Wireshark (dumpcap and tshark)**
+  - `dumpcap` records the capture; `tshark` extracts DNS, TLS SNI, HTTP and
+    connections. The Npcap driver bundled with Wireshark is required.
+  - Found automatically in `C:\Program Files\Wireshark`, on `PATH`, or under
+    `tools/`. Without `tshark` the pcap is still saved for manual analysis.
+  - `pktmon` is used as a fallback when Wireshark is absent.
+
+- **FakeNet-NG**
+  - Serves a simulated internet so samples proceed through their real logic,
+    and keeps the detonation from reaching live infrastructure.
+  - Antivirus classifies it as a HackTool and will quarantine it; exclude the
+    tools directory inside the VM.
+  - Recommended path:
+
+```text
+tools/fakenet/fakenet.exe
+```
 
 - **Procmon / Procmon64**
   - Used for runtime process, file, registry, and network event capture.
@@ -907,9 +1058,9 @@ Important folders:
 | Folder | Purpose |
 |---|---|
 | `assets/` | Branding and UI assets |
-| `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting |
-| `gui/` | Tkinter GUI windows, launcher, controllers, and styles |
-| `scripts/` | Entry points and helper scripts |
+| `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting. Includes `sysmon_collector.py`, `network_capture.py`, and `fakenet_runner.py` |
+| `gui/` | Tkinter GUI windows, launcher, controllers, and styles. `theme.py` holds the design tokens; `components.py` the shared widgets |
+| `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup) and `vm_net.ps1` (host containment) |
 | `static_triage_engine/` | Static analysis engine, scoring, and reporting |
 | `tools/` | Local helper tool paths and configuration folders |
 | `triage_inbox.py` | Helper entry point / inbox workflow |
@@ -1198,6 +1349,25 @@ RingForge is a triage and analyst workflow tool. It does not replace a full malw
 ---
 
 ## Version History
+
+### v1.8.0 — Tier-1 Dynamic Telemetry + UI Redesign
+
+- Added Sysmon collection: injection, process tampering, LSASS access, WMI
+  persistence, DNS queries, named pipes
+- Added full packet capture with DNS, TLS SNI, HTTP and connection extraction
+- Added FakeNet-NG simulated internet with per-process connection attribution
+- Added network containment checking before every run, including IPv6 egress
+- Windows baseline traffic separated from sample-attributable indicators in
+  both findings and scoring
+- Severity floor: injection, credential access and WMI persistence never
+  report as Low
+- Telemetry coverage reported explicitly, so a missing source is not mistaken
+  for a clean result
+- Scheduled task and service snapshots fall back to `schtasks.exe` / `sc.exe`
+  when CIM namespaces are unavailable
+- Added `scripts/bootstrap_tools.ps1` (guest) and `scripts/vm_net.ps1` (host)
+- Rebuilt the interface on a shared design system: `gui/theme.py`,
+  `gui/components.py`, and a single central `gui/styles.py`
 
 ### v1.7.2 — API Spec Analysis Polish + Unified Report Integration
 
