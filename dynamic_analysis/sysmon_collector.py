@@ -346,23 +346,30 @@ def query_events(
     elapsed_ms = _elapsed_ms_since(since_utc)
     started = _parse_event_time(since_utc)
 
+    # Every strategy reads newest-first.
+    #
+    # wevtutil returns oldest-first by default, and /c: caps the result. On a
+    # channel holding weeks of history -- 53k records was the case that exposed
+    # this -- a capped read returns events from days ago and never reaches the
+    # detonation window, which presents as "Sysmon recorded nothing". For a
+    # window that just ended, the most recent matches are the ones wanted.
     strategies = [
-        ("timediff", _timediff_query(elapsed_ms), max_events, False),
-        ("absolute-timestamp", _since_query(since_utc), max_events, False),
+        ("timediff", _timediff_query(elapsed_ms), max_events),
+        ("absolute-timestamp", _since_query(since_utc), max_events),
         # Unfiltered is a diagnostic last resort. Keep the count modest: each
         # rendered event is roughly a kilobyte of XML through a pipe, and a
         # huge request times out, which is how this path failed before.
-        ("unfiltered-recent", "*", min(max_events, 3000), True),
+        ("unfiltered-recent", "*", min(max_events, 3000)),
     ]
 
     last_error = ""
-    for name, xpath, count, reverse in strategies:
+    for name, xpath, count in strategies:
         record: dict[str, Any] = {
             "strategy": name, "events": 0, "error": "",
             "stdout_bytes": 0, "parsed_events": 0, "stderr": "",
         }
         try:
-            events = _query(xpath, count, reverse=reverse, stats=record)
+            events = _query(xpath, count, reverse=True, stats=record)
         except SysmonError as error:
             record["error"] = str(error)
             last_error = str(error)
@@ -370,14 +377,15 @@ def query_events(
                 attempts_out.append(record)
             continue
 
-        if reverse and started is not None and events:
-            # The unfiltered query returns newest first and ignores the run
-            # window, so bound it here.
+        # Results arrive newest-first. Bound them to the run window -- the
+        # unfiltered strategy applies no time filter at all -- then restore
+        # chronological order.
+        if started is not None and events:
             events = [
                 event for event in events
                 if (_parse_event_time(event.get("timestamp", "")) or started) >= started
             ]
-            events.reverse()
+        events.reverse()
 
         record["events"] = len(events)
         if attempts_out is not None:
