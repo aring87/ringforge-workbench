@@ -80,7 +80,11 @@ HIGH_SIGNAL_EVENTS = {
 #: Access masks that indicate credential-theft style handles to LSASS.
 _LSASS_ACCESS_FLAGS = ("0x1010", "0x1410", "0x1438", "0x143a", "0x1f3fff", "0x1fffff")
 
-_XMLNS_RE = re.compile(r'\sxmlns(:\w+)?="[^"]*"')
+#: wevtutil emits attributes single-quoted (xmlns='...'), so both quote styles
+#: must be handled. Matching only double quotes left the namespace in place,
+#: after which every findall("Event") missed and 8 MB of telemetry parsed to
+#: nothing.
+_XMLNS_RE = re.compile(r"""\sxmlns(?::\w+)?\s*=\s*(?:"[^"]*"|'[^']*')""")
 
 
 class SysmonError(Exception):
@@ -421,12 +425,24 @@ def parse_rendered_xml(text: str) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         for fragment in re.findall(r"<Event\b.*?</Event>", cleaned, re.DOTALL):
             try:
-                events.append(_event_to_dict(ET.fromstring(fragment)))
+                node = ET.fromstring(fragment)
             except ET.ParseError:
                 continue
+            _strip_namespaces(node)
+            events.append(_event_to_dict(node))
         return [e for e in events if e]
 
+    # Second line of defence: if any namespace survived the textual strip, tags
+    # arrive as "{uri}Event" and every lookup below silently misses.
+    _strip_namespaces(root)
     return [e for e in (_event_to_dict(node) for node in root.findall("Event")) if e]
+
+
+def _strip_namespaces(element: ET.Element) -> None:
+    """Remove XML namespace prefixes from an element tree, in place."""
+    for node in element.iter():
+        if isinstance(node.tag, str) and "}" in node.tag:
+            node.tag = node.tag.split("}", 1)[1]
 
 
 def _event_to_dict(node: ET.Element) -> dict[str, Any]:
