@@ -35,6 +35,11 @@
   Sysmon configuration to install. Defaults to the SwiftOnSecurity config, which
   is a well-tested general-purpose baseline.
 
+.PARAMETER AddExclusions
+  Add a Windows Defender exclusion for the tools directory before downloading.
+  FakeNet-NG is reliably flagged as a HackTool and is otherwise quarantined on
+  arrival. Appropriate inside a disposable analysis VM and nowhere else.
+
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Use only if you
   are certain; see the warning above.
@@ -50,6 +55,7 @@ param(
   [switch]$SkipFakeNet,
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
   [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
+  [switch]$AddExclusions,
   [switch]$Force,
   [switch]$KeepTemp
 )
@@ -335,12 +341,43 @@ function Install-FakeNet {
     Copy-Item -Recurse -Force -Path (Join-Path $extract "*") -Destination $dest
   }
 
+  # Antivirus commonly quarantines fakenet.exe between extraction and this
+  # check, since a traffic diverter looks exactly like a HackTool.
+  Start-Sleep -Seconds 2
   $installed = Join-Path $dest "fakenet.exe"
   if (Test-Path -LiteralPath $installed) {
     Write-Ok "FakeNet-NG: $installed"
   } else {
-    Write-Warn "FakeNet-NG extracted to $dest but fakenet.exe was not found at the top level."
+    Write-Warn "fakenet.exe is not present after extraction."
+    Write-Warn "Antivirus most likely quarantined it: FakeNet-NG diverts traffic,"
+    Write-Warn "so it is classed as a HackTool. This is an expected false positive."
+    Write-Warn "Add a Defender exclusion for the tools directory and re-run:"
+    Write-Warn "  Add-MpPreference -ExclusionPath '$ToolsDir'"
   }
+}
+
+function Add-DefenderExclusions {
+  param([Parameter(Mandatory=$true)][string[]]$Paths)
+
+  Write-Step "Antivirus exclusions"
+
+  $cmd = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+  if (-not $cmd) {
+    Write-Warn "Add-MpPreference unavailable; skipping (Defender may not be present)."
+    return
+  }
+
+  foreach ($path in $Paths) {
+    try {
+      Add-MpPreference -ExclusionPath $path -ErrorAction Stop
+      Write-Ok "Excluded: $path"
+    } catch {
+      Write-Warn "Could not exclude '$path': $($_.Exception.Message)"
+    }
+  }
+
+  Write-Warn "Exclusions reduce protection. They are appropriate inside a"
+  Write-Warn "disposable analysis VM and nowhere else."
 }
 
 function Invoke-Preflight {
@@ -429,6 +466,15 @@ try {
 
   $tempDir = Join-Path $env:TEMP ("rf_tools_" + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+  # Exclude the tools directory before downloading, or antivirus quarantines
+  # FakeNet-NG the moment it lands on disk.
+  if ($AddExclusions) {
+    Add-DefenderExclusions -Paths @($toolsDir)
+  } else {
+    Write-Warn "Antivirus exclusions not requested. If FakeNet-NG disappears after"
+    Write-Warn "download, re-run with -AddExclusions."
+  }
 
   if (-not $SkipSysmon)    { Install-Sysmon -ToolsDir $toolsDir -TempDir $tempDir -ConfigUrl $SysmonConfigUrl }
   else                     { Write-Step "Sysmon"; Write-Warn "Skipped by request." }

@@ -43,8 +43,33 @@ _DIVERT_RE = re.compile(
 )
 
 
+#: Windows raises this from CreateProcess when antivirus blocks the image.
+ERROR_VIRUS_INFECTED = 225
+
+AV_GUIDANCE = (
+    "Antivirus blocked or quarantined fakenet.exe. This is an expected false "
+    "positive: FakeNet-NG diverts traffic, so AV classifies it as a HackTool. "
+    "Exclude the tools directory in the analysis VM (or disable real-time "
+    "protection inside the VM only), then re-run scripts/bootstrap_tools.ps1 "
+    "to restore the file."
+)
+
+
 class FakeNetError(Exception):
     pass
+
+
+def _describe_launch_error(error: OSError, binary: Path) -> str:
+    """Turn a launch failure into something the analyst can act on."""
+    winerror = getattr(error, "winerror", None)
+    if winerror == ERROR_VIRUS_INFECTED:
+        return f"{AV_GUIDANCE} (blocked path: {binary})"
+    if isinstance(error, PermissionError):
+        return (
+            "Permission denied starting FakeNet-NG. It installs a traffic "
+            "diverter and must run elevated."
+        )
+    return f"failed to start FakeNet-NG: {error}"
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +107,24 @@ def fakenet_status(configured: str | Path | None = None) -> dict[str, Any]:
     binary = find_fakenet(configured)
     available = binary is not None
 
+    if available:
+        note = "FakeNet-NG found; the sample will be served a simulated internet."
+    else:
+        note = (
+            "FakeNet-NG not found. Place fakenet.exe under tools/fakenet/ to "
+            "let samples resolve and connect without reaching real infrastructure."
+        )
+        # A tools/fakenet directory with no executable in it almost always
+        # means antivirus quarantined the binary after extraction, so say so
+        # rather than sending the analyst off to re-download it blindly.
+        install_dir = _tools_dir() / "fakenet"
+        if install_dir.is_dir() and not (install_dir / "fakenet.exe").exists():
+            note = f"{install_dir} exists but fakenet.exe is missing. {AV_GUIDANCE}"
+
     return {
         "available": available,
         "binary_path": str(binary) if binary else "",
-        "note": (
-            "FakeNet-NG found; the sample will be served a simulated internet."
-            if available
-            else "FakeNet-NG not found. Place fakenet.exe under tools/fakenet/ to "
-            "let samples resolve and connect without reaching real infrastructure."
-        ),
+        "note": note,
         "requires_admin": True,
     }
 
@@ -150,6 +184,9 @@ class FakeNetSession:
                 stdin=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
+        except OSError as error:
+            self.error = _describe_launch_error(error, binary)
+            return {"started": False, "error": self.error}
         except Exception as error:
             self.error = f"failed to start FakeNet-NG: {error}"
             return {"started": False, "error": self.error}
