@@ -142,6 +142,32 @@ def channel_available() -> bool:
         return False
 
 
+def channel_record_count() -> int:
+    """Total records currently in the Sysmon channel, or -1 if unreadable.
+
+    This distinguishes the two ways a collection can come back empty: a channel
+    that genuinely holds nothing (Sysmon is installed but not logging) versus a
+    query or permission problem hiding events that are really there. Without
+    it, both look like "the sample did nothing".
+    """
+    try:
+        result = _run(["wevtutil", "gli", SYSMON_CHANNEL], timeout=30)
+    except Exception:
+        return -1
+
+    if result.returncode != 0:
+        return -1
+
+    for line in (result.stdout or "").splitlines():
+        if "numberOfLogRecords" in line:
+            _, _, value = line.partition(":")
+            try:
+                return int(value.strip())
+            except ValueError:
+                return -1
+    return -1
+
+
 def service_running() -> bool:
     """True when a Sysmon service is in the RUNNING state."""
     for service in ("Sysmon64", "Sysmon"):
@@ -525,15 +551,46 @@ def collect(
     Returns ``(events, summary, status)``. ``status`` records whether the export
     and query succeeded so a partial failure never aborts the wider run.
     """
-    status: dict[str, Any] = {"success": False, "error": "", "evtx": {}}
+    status: dict[str, Any] = {"success": False, "error": "", "evtx": {}, "diagnosis": ""}
 
     status["evtx"] = export_evtx(evtx_path, since_utc)
+    status["channel_records"] = channel_record_count()
 
     try:
         events = query_events(since_utc, max_events=max_events)
     except SysmonError as error:
         status["error"] = str(error)
+        status["diagnosis"] = _diagnose_empty(status["channel_records"], failed=True)
         return [], summarize_sysmon_events([]), status
 
     status["success"] = True
+    if not events:
+        status["diagnosis"] = _diagnose_empty(status["channel_records"], failed=False)
+
     return events, summarize_sysmon_events(events), status
+
+
+def _diagnose_empty(channel_records: int, failed: bool) -> str:
+    """Explain an empty collection so it is actionable rather than mysterious."""
+    if channel_records == -1:
+        return (
+            "The Sysmon event channel could not be read. Reading it normally "
+            "requires elevation, so run the workbench as Administrator."
+        )
+    if channel_records == 0:
+        return (
+            "The Sysmon channel is empty: the service is installed but is not "
+            "writing events. Reapply the configuration in the VM with "
+            "'sysmon64.exe -c sysmonconfig.xml' and confirm with "
+            "'wevtutil gli Microsoft-Windows-Sysmon/Operational'."
+        )
+    if failed:
+        return (
+            f"The channel holds {channel_records} records but the query failed. "
+            "This is usually a permissions problem; run as Administrator."
+        )
+    return (
+        f"The channel holds {channel_records} records, but none fall within this "
+        "run's time window. Check that the guest clock is correct, since the "
+        "window is bounded by timestamps."
+    )

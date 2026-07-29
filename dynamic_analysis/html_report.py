@@ -589,6 +589,28 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
     if not sysmon:
         return ""
 
+    # An empty collection is a gap in coverage, not a clean result. Say why,
+    # and say what it means, rather than showing a wall of zeroes.
+    collection = summary.get("sysmon_collection", {}) or {}
+    if int(sysmon.get("total_events", 0) or 0) == 0:
+        reason = collection.get("diagnosis") or collection.get("error") or (
+            "No events were returned for this run's time window."
+        )
+        return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Sysmon: No Telemetry Collected</h2>
+        {_section_badge("Events", 0)}
+      </div>
+      <p>{_esc(reason)}</p>
+      <p class="muted">
+        Process injection, credential access and WMI persistence are only
+        visible through Sysmon. Their absence from this report reflects missing
+        telemetry, not evidence that the sample avoided them.
+      </p>
+    </section>
+    """
+
     highlights = sysmon.get("highlights", []) or []
     counts = sysmon.get("counts", {}) or {}
 

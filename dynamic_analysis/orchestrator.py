@@ -1294,6 +1294,8 @@ def run_dynamic_analysis(
                         status_cb,
                         f"Sysmon collection warning: {sysmon_status_result.get('error', 'unknown error')}",
                     )
+                if sysmon_status_result.get("diagnosis"):
+                    _emit(status_cb, f"Sysmon: {sysmon_status_result['diagnosis']}")
             except Exception as error:
                 sysmon_status_result = {"success": False, "error": str(error)}
                 _emit(status_cb, f"Sysmon collection warning: {error}")

@@ -212,6 +212,50 @@ def _is_usable_ipv4(address: str) -> bool:
     return not address.startswith("169.254.") and not address.startswith("127.")
 
 
+def select_capture_interfaces(
+    dumpcap_path: str | Path | None = None,
+    limit: int = 8,
+) -> list[str]:
+    """Every interface worth capturing on, best candidate first.
+
+    Capturing a single interface is fragile. A properly contained VM has no
+    default route at all, so there is nothing to anchor the choice to, and
+    picking wrong yields an empty capture that looks exactly like "the sample
+    made no connections". dumpcap accepts repeated -i flags, so all plausible
+    interfaces are recorded into one pcapng instead.
+    """
+    interfaces = list_interfaces(dumpcap_path)
+    if not interfaces:
+        return []
+
+    candidates = [i for i in interfaces if not i.get("loopback")]
+    selected: list[str] = []
+
+    def add(name: str) -> None:
+        if name and name not in selected and len(selected) < limit:
+            selected.append(name)
+
+    # The default-route interface first, when one exists.
+    route_ip = _local_route_ip()
+    if route_ip:
+        for interface in candidates:
+            if route_ip in (interface.get("addrs") or []):
+                add(interface["name"])
+
+    # Then anything holding a real lease -- this is what catches the host-only
+    # adapter on an isolated VM.
+    for interface in candidates:
+        if any(_is_usable_ipv4(a) for a in (interface.get("addrs") or [])):
+            add(interface["name"])
+
+    # Then anything addressed at all.
+    for interface in candidates:
+        if interface.get("addrs"):
+            add(interface["name"])
+
+    return selected
+
+
 def pick_default_interface(dumpcap_path: str | Path | None = None) -> str:
     """Capture interface carrying the default route.
 
@@ -430,8 +474,17 @@ class PacketCapture:
         return {"started": False, "backend": "", "error": self.error}
 
     def _start_dumpcap(self, dumpcap: Path) -> dict[str, Any]:
-        interface = self.interface or pick_default_interface(dumpcap)
-        cmd = [str(dumpcap), "-i", str(interface), "-w", str(self.output_path), "-q"]
+        if self.interface:
+            interfaces = [str(self.interface)]
+        else:
+            interfaces = select_capture_interfaces(dumpcap)
+            if not interfaces:
+                interfaces = [pick_default_interface(dumpcap)]
+
+        cmd = [str(dumpcap)]
+        for interface in interfaces:
+            cmd.extend(["-i", str(interface)])
+        cmd.extend(["-w", str(self.output_path), "-q"])
         if self.capture_filter:
             cmd.extend(["-f", self.capture_filter])
 
@@ -454,7 +507,8 @@ class PacketCapture:
         return {
             "started": True,
             "backend": "dumpcap",
-            "interface": str(interface),
+            "interface": ", ".join(interfaces),
+            "interface_count": len(interfaces),
             "error": "",
         }
 
