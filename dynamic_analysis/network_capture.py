@@ -31,6 +31,26 @@ from typing import Any, Optional
 #: Ports that are ordinary for outbound traffic; anything else is worth a look.
 COMMON_PORTS = {80, 443, 53, 123, 8080, 8443, 445, 139, 22, 21, 25, 587, 993, 995}
 
+#: A capture records the whole host, not just the sample. Windows generates a
+#: steady stream of certificate-revocation, telemetry, update and connectivity
+#: traffic on its own, and reporting it as though the sample caused it produces
+#: pure false positives. These suffixes mark that background, which is
+#: classified separately rather than discarded -- C2 does sometimes hide behind
+#: a CDN, so an analyst must still be able to see it.
+BASELINE_DOMAIN_SUFFIXES = (
+    "microsoft.com", "microsoftonline.com", "windows.com", "windowsupdate.com",
+    "msftconnecttest.com", "msftncsi.com", "windows.net", "azure.com",
+    "azureedge.net", "office.com", "office365.com", "live.com", "msn.com",
+    "bing.com", "skype.com", "digicert.com", "verisign.com", "entrust.net",
+    "sectigo.com", "usertrust.com", "globalsign.com", "letsencrypt.org",
+    "godaddy.com", "ntp.org", "root-servers.net", "akamaitechnologies.com",
+    "akamaiedge.net", "edgesuite.net", "edgekey.net",
+)
+
+#: Local and non-routable name traffic: mDNS, reverse lookups, WPAD, and bare
+#: single-label hostnames such as the VM's own computer name.
+BASELINE_DOMAIN_MARKERS = (".local", ".arpa", ".home", ".lan", "wpad", "isatap")
+
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 
@@ -568,6 +588,49 @@ def parse_pcap(pcap_path: str | Path, tshark_path: str | Path | None = None) -> 
     return summary
 
 
+def is_baseline_domain(name: str) -> bool:
+    """True when a name is ordinary Windows background traffic.
+
+    Baseline does not mean safe -- it means "this host would have requested it
+    with no sample running", so it must not be presented as a finding.
+    """
+    value = (name or "").strip().lower().rstrip(".")
+    if not value:
+        return False
+
+    if any(marker in value for marker in BASELINE_DOMAIN_MARKERS):
+        return True
+
+    # A bare single-label name is a NetBIOS/LLMNR style local lookup.
+    if "." not in value:
+        return True
+
+    return any(
+        value == suffix or value.endswith("." + suffix)
+        for suffix in BASELINE_DOMAIN_SUFFIXES
+    )
+
+
+def is_private_ip(address: str) -> bool:
+    """True for RFC1918, loopback and link-local addresses."""
+    value = (address or "").strip()
+    if not _IPV4_RE.match(value):
+        return False
+    try:
+        octets = [int(part) for part in value.split(".")]
+    except ValueError:
+        return False
+    if octets[0] == 10 or octets[0] == 127:
+        return True
+    if octets[0] == 192 and octets[1] == 168:
+        return True
+    if octets[0] == 172 and 16 <= octets[1] <= 31:
+        return True
+    if octets[0] == 169 and octets[1] == 254:
+        return True
+    return False
+
+
 def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
     """Collapse a parsed capture into deduplicated domain and IP indicators."""
     domains: list[str] = []
@@ -604,4 +667,31 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
         if dst and dst not in ips:
             ips.append(dst)
 
-    return {"domains": domains[:300], "ips": ips[:300], "urls": urls[:300]}
+    # Split host background traffic from anything the sample plausibly caused.
+    # Both are kept: the analyst decides, but only one is presented as a lead.
+    notable_domains = [d for d in domains if not is_baseline_domain(d)]
+    baseline_domains = [d for d in domains if is_baseline_domain(d)]
+    notable_urls = [
+        u for u in urls
+        if not is_baseline_domain(u.split("//", 1)[-1].split("/", 1)[0].split(":")[0])
+    ]
+    external_ips = [ip for ip in ips if not is_private_ip(ip)]
+
+    return {
+        "domains": domains[:300],
+        "ips": ips[:300],
+        "urls": urls[:300],
+        "notable_domains": notable_domains[:300],
+        "baseline_domains": baseline_domains[:300],
+        "notable_urls": notable_urls[:300],
+        "external_ips": external_ips[:300],
+        "counts": {
+            "domains": len(domains),
+            "notable_domains": len(notable_domains),
+            "baseline_domains": len(baseline_domains),
+            "ips": len(ips),
+            "external_ips": len(external_ips),
+            "urls": len(urls),
+            "notable_urls": len(notable_urls),
+        },
+    }

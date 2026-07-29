@@ -797,9 +797,22 @@ def calculate_dynamic_score(
     sysmon_high = int(sysmon.get("high_severity_count", 0) or 0)
 
     network_unusual_ports = int(network_counts.get("unusual_ports", 0) or 0)
-    network_destinations = int(network_counts.get("unique_destinations", 0) or 0)
-    network_http = int(network_counts.get("http_requests", 0) or 0)
     fakenet_dns = int(fakenet_counts.get("dns_requests", 0) or 0)
+
+    # A capture records the whole host. Scoring raw domain and request counts
+    # charges the sample for Windows' own certificate-revocation and telemetry
+    # traffic, so only non-baseline indicators count toward the score.
+    ioc_counts = (
+        network_summary.get("iocs", {}).get("counts", {})
+        if isinstance(network_summary, dict) and isinstance(network_summary.get("iocs"), dict)
+        else {}
+    )
+    if ioc_counts:
+        network_destinations = int(ioc_counts.get("external_ips", 0) or 0)
+        network_http = int(ioc_counts.get("notable_urls", 0) or 0)
+    else:
+        network_destinations = int(network_counts.get("unique_destinations", 0) or 0)
+        network_http = int(network_counts.get("http_requests", 0) or 0)
 
     score = 0
 
@@ -1329,6 +1342,8 @@ def run_dynamic_analysis(
 
                     network_iocs = extract_network_iocs(network_summary)
                     write_json(network_iocs_json, network_iocs)
+                    # Attach so scoring can use the baseline-filtered counts.
+                    network_summary["iocs"] = network_iocs
 
                     if network_summary.get("parsed"):
                         counts = network_summary.get("counts", {})

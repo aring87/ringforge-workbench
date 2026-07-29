@@ -516,7 +516,13 @@ def _telemetry_coverage_table(summary: dict[str, Any]) -> str:
             return f"Not available - {preflight.get('note', 'tool not installed')}"
         return "Collected" if ran else "Enabled but produced no data"
 
-    sysmon_ran = bool((summary.get("sysmon_collection", {}) or {}).get("success"))
+    # "Collected" must mean data actually arrived. A successful query that
+    # returned nothing is reported as such, because a silent zero looks
+    # identical to "the sample did nothing".
+    sysmon_ran = (
+        bool((summary.get("sysmon_collection", {}) or {}).get("success"))
+        and int((summary.get("sysmon_summary", {}) or {}).get("total_events", 0) or 0) > 0
+    )
     pcap_ran = bool((summary.get("pcap_capture", {}) or {}).get("pcap_exists"))
     fakenet_ran = bool((summary.get("fakenet_summary", {}) or {}).get("parsed"))
 
@@ -593,15 +599,18 @@ def _network_sections(summary: dict[str, Any]) -> str:
 <div class="grid">
   {_kv_table("Packet Capture", overview, badge("Unusual ports", (network.get("counts", {}) or {}).get("unusual_ports", 0)))}
   {_kv_table("Network Indicators", {
-      "Domains": len(iocs.get("domains", []) or []),
-      "IP addresses": len(iocs.get("ips", []) or []),
-      "URLs": len(iocs.get("urls", []) or []),
-  })}
+      "Domains (notable)": len(iocs.get("notable_domains", []) or []),
+      "Domains (Windows baseline)": len(iocs.get("baseline_domains", []) or []),
+      "External IP addresses": len(iocs.get("external_ips", []) or []),
+      "URLs (notable)": len(iocs.get("notable_urls", []) or []),
+      "URLs (total)": len(iocs.get("urls", []) or []),
+  }, badge("Notable", len(iocs.get("notable_domains", []) or [])))}
 </div>
 
-{_list_section("Resolved Domains", iocs.get("domains", []) or [], emphasize=True, empty_text="No domains were resolved.")}
-{_list_section("Contacted IP Addresses", iocs.get("ips", []) or [], empty_text="No IP addresses were contacted.")}
-{_list_section("Requested URLs", iocs.get("urls", []) or [], emphasize=True, empty_text="No plaintext URLs were observed.")}
+{_list_section("Resolved Domains (excluding Windows baseline)", iocs.get("notable_domains", []) or [], emphasize=True, empty_text="Only routine Windows background traffic was resolved. Nothing here is attributable to the sample.")}
+{_list_section("Requested URLs (excluding Windows baseline)", iocs.get("notable_urls", []) or [], emphasize=True, empty_text="No notable plaintext URLs were observed.")}
+{_list_section("Contacted External IP Addresses", iocs.get("external_ips", []) or [], empty_text="No external IP addresses were contacted.")}
+{_list_section("Windows Baseline Traffic (context, not findings)", iocs.get("baseline_domains", []) or [], empty_text="No baseline traffic was recorded.")}
 {_list_section("TLS Server Names (SNI)", network.get("tls_sni", []) or [], empty_text="No TLS SNI values were observed.")}
 {_dict_list_table("HTTP Requests", network.get("http_requests", []) or [])}
 {_dict_list_table("Connections On Unusual Ports", network.get("unusual_ports", []) or [])}

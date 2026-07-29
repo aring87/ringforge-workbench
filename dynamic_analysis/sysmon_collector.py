@@ -201,6 +201,42 @@ def _since_query(since_utc: str) -> str:
     return f"*[System[TimeCreated[@SystemTime>='{since_utc}']]]"
 
 
+def _timediff_query(elapsed_ms: int) -> str:
+    """Events recorded within the last ``elapsed_ms`` milliseconds.
+
+    ``timediff`` is the reliably supported way to bound an event query by time.
+    Comparing @SystemTime against a literal parses without error but silently
+    matches nothing on some builds, which looks identical to "Sysmon recorded
+    no events" -- the worst possible failure for this collector.
+    """
+    return f"*[System[TimeCreated[timediff(@SystemTime) <= {int(elapsed_ms)}]]]"
+
+
+def _parse_event_time(value: str) -> Optional[datetime]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1]
+    # Event log timestamps carry 100ns precision; Python accepts 6 digits.
+    if "." in text:
+        head, _, frac = text.partition(".")
+        text = f"{head}.{frac[:6]}"
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _elapsed_ms_since(since_utc: str) -> int:
+    started = _parse_event_time(since_utc)
+    if started is None:
+        return 3600 * 1000
+    delta = datetime.now(timezone.utc) - started
+    # A small margin absorbs clock granularity at the boundary.
+    return max(1000, int(delta.total_seconds() * 1000) + 5000)
+
+
 def export_evtx(output_path: str | Path, since_utc: str) -> dict[str, Any]:
     """Archive the raw events for this run window to an .evtx file."""
     out = Path(output_path)
@@ -229,18 +265,18 @@ def export_evtx(output_path: str | Path, since_utc: str) -> dict[str, Any]:
     return {"success": True, "error": "", "path": str(out)}
 
 
-def query_events(since_utc: str, max_events: int = 20000) -> list[dict[str, Any]]:
-    """Return normalised Sysmon events recorded since ``since_utc``."""
+def _query(xpath: str, max_events: int, reverse: bool = False) -> list[dict[str, Any]]:
+    cmd = [
+        "wevtutil", "qe", SYSMON_CHANNEL,
+        f"/q:{xpath}",
+        "/f:RenderedXml",
+        f"/c:{int(max_events)}",
+    ]
+    if reverse:
+        cmd.append("/rd:true")
+
     try:
-        result = _run(
-            [
-                "wevtutil", "qe", SYSMON_CHANNEL,
-                f"/q:{_since_query(since_utc)}",
-                "/f:RenderedXml",
-                f"/c:{int(max_events)}",
-            ],
-            timeout=300,
-        )
+        result = _run(cmd, timeout=300)
     except Exception as error:
         raise SysmonError(f"Failed to query Sysmon events: {error}") from error
 
@@ -249,6 +285,40 @@ def query_events(since_utc: str, max_events: int = 20000) -> list[dict[str, Any]
         raise SysmonError(f"wevtutil qe failed: {detail or result.returncode}")
 
     return parse_rendered_xml(result.stdout or "")
+
+
+def query_events(since_utc: str, max_events: int = 20000) -> list[dict[str, Any]]:
+    """Return normalised Sysmon events recorded since ``since_utc``.
+
+    Falls back through progressively less selective queries. An empty result is
+    indistinguishable from a filter that silently matched nothing, so an empty
+    first attempt is retried rather than trusted.
+    """
+    elapsed_ms = _elapsed_ms_since(since_utc)
+
+    events = _query(_timediff_query(elapsed_ms), max_events)
+    if events:
+        return events
+
+    # Some builds accept the literal-timestamp form but not timediff.
+    events = _query(_since_query(since_utc), max_events)
+    if events:
+        return events
+
+    # Last resort: pull the most recent events unfiltered and bound them here,
+    # so a quirk in the event-log XPath engine cannot hide real telemetry.
+    started = _parse_event_time(since_utc)
+    recent = _query("*", max_events, reverse=True)
+    if not recent or started is None:
+        return recent
+
+    filtered = []
+    for event in recent:
+        stamp = _parse_event_time(event.get("timestamp", ""))
+        if stamp is None or stamp >= started:
+            filtered.append(event)
+    filtered.reverse()  # restore chronological order
+    return filtered
 
 
 # ---------------------------------------------------------------------------
