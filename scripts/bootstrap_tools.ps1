@@ -75,14 +75,92 @@ function Test-Admin {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Test-VirtualMachine {
+function Get-VirtualMachineEvidence {
+  <#
+    Collects every independent hint that this is a VM and returns them all.
+
+    Reading only Win32_ComputerSystem is not enough: analysis VMs are commonly
+    hardened against anti-VM evasion by spoofing their DMI/SMBIOS strings, which
+    also defeats the naive check. Guest-additions services and virtual device
+    names survive that hardening, so several sources are consulted and any one
+    hit is sufficient.
+  #>
+  # Deliberately vendor-specific. A bare "Virtual" matches a mounted VHD and
+  # "Microsoft Virtual Disk" on ordinary physical machines, and matching those
+  # would turn this guard into a rubber stamp.
+  $pattern = 'VirtualBox|VBOX|VMware|QEMU|Xen|innotek|Parallels|Bochs'
+  $evidence = @()
+
+  # 1) DMI / SMBIOS identity strings.
   try {
     $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
-    $fingerprint = "{0} {1}" -f $cs.Manufacturer, $cs.Model
-    return ($fingerprint -match 'Virtual|VMware|VirtualBox|KVM|QEMU|Xen|Hyper-V|Parallels|innotek')
-  } catch {
-    return $false
+    $value = "{0} {1}" -f $cs.Manufacturer, $cs.Model
+    if ($value -match $pattern) { $evidence += "ComputerSystem: $value" }
+  } catch { }
+
+  try {
+    $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
+    $value = "{0} {1} {2}" -f $bios.Manufacturer, $bios.Version, $bios.SerialNumber
+    if ($value -match $pattern) { $evidence += "BIOS: $value" }
+  } catch { }
+
+  try {
+    $product = Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction Stop
+    $value = "{0} {1}" -f $product.Vendor, $product.Name
+    if ($value -match $pattern) { $evidence += "SystemProduct: $value" }
+  } catch { }
+
+  # Hyper-V guests report this exact pair, and a Hyper-V *host* does not.
+  # The vmic* integration services are no use here: Windows ships them on
+  # hosts too, so their presence proves nothing.
+  try {
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    if ($cs.Manufacturer -eq "Microsoft Corporation" -and $cs.Model -eq "Virtual Machine") {
+      $evidence += "Hyper-V guest"
+    }
+  } catch { }
+
+  # 2) Guest-additions services. These survive DMI spoofing.
+  # Only guest-side packages are listed: VirtualBox's host install uses
+  # VBoxSDS/VBoxSVC, which are deliberately absent from this list.
+  $guestServices = @(
+    "VBoxService", "VBoxGuest", "VBoxSF", "VBoxMouse",
+    "VMTools", "VMwareTools", "vmhgfs", "vmmouse", "vmrawdsk",
+    "qemu-ga", "xenbus", "xensvc"
+  )
+  foreach ($name in $guestServices) {
+    $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($null -ne $svc) { $evidence += "Service: $name" }
   }
+
+  # 3) Virtual hardware.
+  try {
+    foreach ($disk in @(Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction Stop)) {
+      if ($disk.Model -and $disk.Model -match $pattern) {
+        $evidence += "Disk: $($disk.Model)"
+      }
+    }
+  } catch { }
+
+  try {
+    foreach ($video in @(Get-CimInstance -ClassName Win32_VideoController -ErrorAction Stop)) {
+      if ($video.Name -and $video.Name -match $pattern) {
+        $evidence += "Video: $($video.Name)"
+      }
+    }
+  } catch { }
+
+  # 4) Guest driver files on disk. vmci.sys is excluded: VMware Workstation
+  # installs it on the host as well, so it does not imply a guest.
+  $driverDir = Join-Path $env:SystemRoot "System32\drivers"
+  foreach ($driver in @("VBoxGuest.sys", "VBoxMouse.sys", "VBoxSF.sys",
+                        "vmhgfs.sys", "vmmouse.sys", "vm3dmp.sys")) {
+    if (Test-Path -LiteralPath (Join-Path $driverDir $driver)) {
+      $evidence += "Driver: $driver"
+    }
+  }
+
+  return @($evidence | Select-Object -Unique)
 }
 
 function Get-ServiceState {
@@ -326,18 +404,25 @@ try {
     throw "Administrator rights are required. Sysmon, Npcap and FakeNet-NG all install drivers."
   }
 
-  if (-not (Test-VirtualMachine)) {
+  $vmEvidence = @(Get-VirtualMachineEvidence)
+  if ($vmEvidence.Count -eq 0) {
     Write-Host ""
     Write-Warn "This does not look like a virtual machine."
     Write-Warn "These tools install kernel drivers and a system-wide traffic diverter,"
     Write-Warn "and this workbench is used to detonate malware. Installing them on a"
     Write-Warn "physical workstation is strongly discouraged."
+    Write-Warn ""
+    Write-Warn "If this IS a VM, its identity strings may be spoofed to defeat anti-VM"
+    Write-Warn "evasion, which also defeats this check. Re-run with -Force."
     if (-not $Force) {
       throw "Refusing to continue outside a VM. Re-run with -Force only if you are certain."
     }
     Write-Warn "-Force supplied; continuing anyway."
   } else {
-    Write-Ok "Virtual machine detected."
+    Write-Ok ("Virtual machine detected ({0})." -f $vmEvidence[0])
+    foreach ($item in ($vmEvidence | Select-Object -Skip 1)) {
+      Write-Verbose "  also: $item"
+    }
   }
 
   New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
