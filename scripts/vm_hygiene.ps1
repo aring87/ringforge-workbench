@@ -20,6 +20,13 @@
                            and several live in subfolders, so they are matched by
                            path pattern rather than by name.
 
+    MDM enrolment          dmwappushservice and the EnterpriseMgmt tasks. A VM
+                           cloned from a managed desktop retries OMA-DM
+                           enrolment forever, and each attempt writes into the
+                           scheduled-task store -- which the persistence check
+                           correctly reports as task-store writes that had
+                           nothing to do with the sample.
+
     Windows Update scans   The InstallService scan tasks plus the NoAutoUpdate
                            policy. The UpdateOrchestrator tasks are owned by
                            TrustedInstaller and cannot be disabled by an
@@ -32,6 +39,12 @@
   wuauserv is deliberately left alone. Windows restores its start type, so
   disabling it does not hold; the policy key removes its reason to run instead,
   which is what actually stops the churn.
+
+  Defender is reported, not changed. Turning protection off is a bigger decision
+  than disabling an updater, and it belongs to whoever runs this -- but it does
+  have to happen before real samples, because Defender will quarantine the
+  sample the same way it quarantined FakeNet-NG. Use
+  bootstrap_tools.ps1 -DisableRealtimeProtection for that.
 
   Nothing here is reverted by this script. The intended workflow is to run it
   once, verify, and snapshot -- then revert to that snapshot between samples.
@@ -82,6 +95,12 @@ $TASK_PATTERNS = @(
   @{ Label = "Edge updater";                Pattern = 'Edge.*Update' },
   @{ Label = "Acrobat updater";             Pattern = 'Acrobat.*Update' },
   @{ Label = "OneDrive updater";            Pattern = 'OneDrive.*Update' },
+  # MDM/OMA-DM enrolment. On a VM cloned from a managed desktop this retries
+  # forever, and each attempt writes a task file under \Tasks\Microsoft\Windows\
+  # EnterpriseMgmt\ -- which the persistence check correctly reads as a write
+  # into the task store, producing three persistence "hits" per run that have
+  # nothing to do with the sample.
+  @{ Label = "MDM enrolment (OMA-DM)";      Pattern = 'EnterpriseMgmt' },
   @{ Label = "Windows Update scans";        Pattern = '\\InstallService\\';      WindowsUpdate = $true },
   @{ Label = "Windows Update scheduling";   Pattern = '\\WindowsUpdate\\';       WindowsUpdate = $true },
   @{ Label = "Update Orchestrator";         Pattern = '\\UpdateOrchestrator\\';  WindowsUpdate = $true; Protected = $true }
@@ -97,6 +116,13 @@ $SERVICE_PATTERNS = @(
   @{ Label = "Edge updater services";     Pattern = '^edgeupdate' },
   @{ Label = "Edge elevation service";    Pattern = 'MicrosoftEdgeElevationService' },
   @{ Label = "Delivery Optimization";     Pattern = '^DoSvc$' },
+  # Drives the OMA-DM retries above. Disabling the tasks alone is not enough:
+  # this service creates fresh ones per enrolment session.
+  @{ Label = "MDM push (OMA-DM)";         Pattern = '^dmwappushservice$' },
+  # Microsoft Account sign-in. Its SharePoint lookups showed up as Sysmon DNS
+  # queries during a run. Self-heals to Manual like wuauserv, but with OneDrive
+  # gone it has nothing left to wake it.
+  @{ Label = "MS Account sign-in";        Pattern = '^wlidsvc$' },
   @{ Label = "Update Session Orchestr.";  Pattern = '^UsoSvc$'; WindowsUpdate = $true }
 )
 
@@ -341,6 +367,64 @@ function Set-WindowsUpdatePolicy {
 }
 
 
+function Show-DefenderState {
+    <#
+      Report Defender's posture and say what to do about it.
+
+      Reported rather than changed, because turning protection off is a bigger
+      decision than disabling an updater and belongs to whoever is running this.
+      bootstrap_tools.ps1 -DisableRealtimeProtection does the change.
+
+      Get-MpComputerStatus is unavailable here -- the Defender WMI namespace is
+      missing on debloated images -- so state is read from the policy keys and
+      the process list instead.
+
+      Worth being blunt about why this matters: Defender quarantined fakenet.exe
+      mid-session and then refused to let it be downloaded again, and its
+      MpCmdRun scan added 80,000 file events to one run and none to the next.
+      With a real sample it will quarantine the sample itself.
+    #>
+  Write-Step "Defender"
+
+  $rtKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
+  $exKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths"
+
+  $rtDisabled = $false
+  try {
+    $value = Get-ItemProperty -Path $rtKey -Name DisableRealtimeMonitoring -ErrorAction Stop
+    $rtDisabled = ($value.DisableRealtimeMonitoring -eq 1)
+  } catch { }
+
+  $exclusions = @()
+  try { $exclusions = @((Get-Item $exKey -ErrorAction Stop).Property) } catch { }
+
+  $engine = Get-Process MsMpEng -ErrorAction SilentlyContinue
+
+  if ($rtDisabled) {
+    Write-Ok "Real-time protection is disabled by policy."
+  } else {
+    Write-Danger "Real-time protection is NOT disabled by policy."
+    Write-Warn "The Windows Security toggle alone re-enables itself on a timer."
+    Write-Warn "Fix it with:  .\scripts\bootstrap_tools.ps1 -AddExclusions -DisableRealtimeProtection"
+    Write-Warn "then reboot. Turn Tamper Protection off first in Windows Security,"
+    Write-Warn "or the policy will not apply."
+  }
+
+  if ($exclusions.Count -gt 0) {
+    Write-Ok ("{0} path exclusion(s) set by policy." -f $exclusions.Count)
+    foreach ($path in $exclusions) { Write-Skip $path }
+  } else {
+    Write-Warn "No policy path exclusions. The tools and temp directories should be"
+    Write-Warn "excluded, or FakeNet-NG gets quarantined on download."
+  }
+
+  if ($engine) {
+    # Expected, and not itself a problem: the service runs regardless.
+    Write-Skip "MsMpEng is running, which is normal even with real-time protection off."
+  }
+}
+
+
 function Show-OptionalSoftware {
   Write-Step "Software this VM does not need"
 
@@ -445,6 +529,7 @@ try {
   $taskResult = Disable-NoisyTasks -Tasks $tasks
   $serviceResult = Disable-NoisyServices
   Set-WindowsUpdatePolicy
+  Show-DefenderState
   Show-OptionalSoftware
 
   if (-not $DryRun) {

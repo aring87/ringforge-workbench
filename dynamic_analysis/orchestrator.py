@@ -482,6 +482,30 @@ AUTORUNS_SUSPICIOUS_PATH_MARKERS = (
     "\\recycle",
 )
 
+#: Autorun entries created by the analysis tooling rather than by the sample.
+#:
+#: FakeNet-NG registers its WinDivert traffic diverter as a driver the first time
+#: it runs, so a fresh install makes RingForge's own plumbing appear as a new
+#: startup entry attributed to whatever was detonated. The same applies to the
+#: Procmon and Npcap drivers.
+#:
+#: Classified separately rather than discarded, exactly as Windows baseline
+#: network traffic is: the entries stay visible, they just do not count as
+#: findings. An analyst who wants to confirm the tooling registered correctly can
+#: still see it.
+ANALYZER_AUTORUN_MARKERS = (
+    "windivert",     # FakeNet-NG's traffic diverter
+    "pydivert",      # ...and the Python package that ships it
+    "\\fakenet",
+    "procmon",
+    "procdump",
+    "autorunsc",
+    "sysmondrv",
+    "sysmon64",
+    "npcap",
+    "npf.sys",
+)
+
 AUTORUNS_HIGH_SIGNAL_CATEGORIES = (
     "logon",
     "scheduled tasks",
@@ -687,6 +711,21 @@ def _autoruns_content_fingerprint(row: dict[str, str]) -> str:
     return "||".join(str(row.get(k, "")).strip().lower() for k in keys)
 
 
+def _is_analyzer_autorun(row: dict[str, str]) -> bool:
+    """True when an autorun entry was created by the analysis tooling."""
+    haystack = " ".join(
+        str(row.get(key, "")) for key in
+        ("Entry", "Image Path", "Launch String", "Description", "Company", "Entry Location")
+    ).lower()
+
+    if any(marker in haystack for marker in ANALYZER_AUTORUN_MARKERS):
+        return True
+
+    # Anything registered out of the workbench's own tools directory.
+    tools_dir = str(_default_autorunsc_path().parent).lower()
+    return bool(tools_dir and tools_dir in haystack)
+
+
 def _is_suspicious_autorun(row: dict[str, str]) -> bool:
     signer = row.get("Signer", "").lower()
     company = row.get("Company", "").lower()
@@ -735,16 +774,24 @@ def diff_autoruns_snapshots(before_csv: Path, after_csv: Path) -> dict[str, Any]
     before_ids = set(before_by_id)
     after_ids = set(after_by_id)
 
-    new_ids = sorted(after_ids - before_ids)
+    all_new_ids = sorted(after_ids - before_ids)
     removed_ids = sorted(before_ids - after_ids)
     common_ids = sorted(before_ids & after_ids)
 
+    # Split the analyzer's own registrations out before anything is counted, so
+    # they cannot reach the findings or the score.
+    analyzer_ids = [i for i in all_new_ids if _is_analyzer_autorun(after_by_id[i])]
+    new_ids = [i for i in all_new_ids if i not in set(analyzer_ids)]
+
     modified_ids = []
     for entry_id in common_ids:
+        if _is_analyzer_autorun(after_by_id[entry_id]):
+            continue
         if _autoruns_content_fingerprint(before_by_id[entry_id]) != _autoruns_content_fingerprint(after_by_id[entry_id]):
             modified_ids.append(entry_id)
 
     new_entries = [_summarize_autorun_row(after_by_id[i]) for i in new_ids]
+    analyzer_entries = [_summarize_autorun_row(after_by_id[i]) for i in analyzer_ids]
     removed_entries = [_summarize_autorun_row(before_by_id[i]) for i in removed_ids]
     modified_entries = [
         {
@@ -778,6 +825,7 @@ def diff_autoruns_snapshots(before_csv: Path, after_csv: Path) -> dict[str, Any]
         "suspicious_new_entries": len(suspicious_new),
         "suspicious_modified_entries": len(suspicious_modified),
         "suspicious_new_or_modified": len(suspicious_new) + len(suspicious_modified),
+        "analyzer_entries": len(analyzer_entries),
     }
 
     return {
@@ -787,6 +835,9 @@ def diff_autoruns_snapshots(before_csv: Path, after_csv: Path) -> dict[str, Any]
         "modified_entries": modified_entries[:100],
         "suspicious_new_entries": suspicious_new[:100],
         "suspicious_modified_entries": suspicious_modified[:100],
+        # Kept visible so the tooling registering itself is verifiable rather
+        # than silently dropped.
+        "analyzer_entries": analyzer_entries[:100],
     }
 
 

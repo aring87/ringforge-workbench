@@ -230,6 +230,8 @@ def _autoruns_table(summary: dict[str, Any]) -> str:
         "suspicious_new_entries": counts.get("suspicious_new_entries", 0),
         "suspicious_modified_entries": counts.get("suspicious_modified_entries", 0),
         "suspicious_new_or_modified": counts.get("suspicious_new_or_modified", 0),
+        # Shown so excluded tooling entries are visible rather than unexplained.
+        "analyzer_entries_excluded": counts.get("analyzer_entries", 0),
         "before_error": before_status.get("error", "") if isinstance(before_status, dict) else "",
         "after_error": after_status.get("error", "") if isinstance(after_status, dict) else "",
     }
@@ -330,6 +332,30 @@ def _autoruns_entry_table(
           <tbody>{''.join(rows)}</tbody>
         </table>
       </div>
+    </section>
+    """
+
+
+def _autoruns_analyzer_section(summary: dict[str, Any]) -> str:
+    """Autorun entries the analysis tooling created, excluded from findings."""
+    diff = summary.get("autoruns_diff", {}) or {}
+    entries = diff.get("analyzer_entries", []) or []
+    if not entries:
+        return ""
+
+    return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Autoruns Entries From The Analysis Tooling</h2>
+        {_section_badge("Excluded", len(entries))}
+      </div>
+      <p class="muted">
+        Created by RingForge's own instrumentation rather than by the sample --
+        FakeNet-NG's WinDivert diverter registers as a driver on first run, for
+        example. Excluded from the findings and the score, and listed here so the
+        tooling registering correctly stays verifiable.
+      </p>
+      {_autoruns_entry_table("", entries)}
     </section>
     """
 
@@ -1137,6 +1163,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_network_sections(summary)}
 {_memory_sections(summary)}
 {_autoruns_suspicious_sections(summary)}
+{_autoruns_analyzer_section(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}
 {_dict_list_table("Top Network Processes", findings.get("top_network_processes", []))}
 {_spawned_processes_table("Spawned Processes", findings.get("spawned_processes", []), empty_text="No non-noise spawned processes were attributed to the sample.")}
