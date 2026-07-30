@@ -271,7 +271,10 @@ function Disable-NoisyTasks {
           Write-Skip "likely protected by the OS: $($task.Path)"
           $protected++
         } else {
-          Write-Host "    would disable: $($task.Path)" -ForegroundColor Yellow
+          # "attempt", not "disable". Ownership is per task, not per group --
+          # \WindowsUpdate\Scheduled Start yields while Refresh Group Policy
+          # Cache beside it does not -- and the only way to find out is to try.
+          Write-Host "    would attempt: $($task.Path)" -ForegroundColor Yellow
           $changed++
         }
         continue
@@ -463,8 +466,21 @@ function Invoke-EdrAgents {
       if (Set-ServiceDisabled -Name $service.Name) {
         $changed++
         Write-Ok "disabled: $($service.Name)"
+      } elseif ($service.Name -eq "Sense") {
+        # Not a misconfiguration, and not fixable locally. Defender for Endpoint
+        # enforces its own tamper protection from the tenant, independently of
+        # the Windows Security toggle, and Sense runs as a protected process.
+        # Both sc.exe and the registry are refused even to an administrator --
+        # which is the product working correctly: an EDR a local admin could
+        # switch off would be trivially defeated by anything running as admin.
+        Write-Warn "could not disable: Sense -- blocked by Defender for Endpoint's own"
+        Write-Warn "tamper protection, which is managed from the tenant and is separate"
+        Write-Warn "from the Windows Security toggle. Turning that toggle off does not"
+        Write-Warn "release it."
+        Write-Warn "Offboard from the Defender portal instead: Settings -> Endpoints ->"
+        Write-Warn "Offboarding, then run the package it gives you and reboot."
       } else {
-        Write-Warn "could not disable: $($service.Name) (protected; is Tamper Protection off?)"
+        Write-Warn "could not disable: $($service.Name) (protected service)"
       }
     }
   }
