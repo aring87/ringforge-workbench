@@ -66,6 +66,7 @@ from dynamic_analysis.sysmon_collector import (
     sysmon_status,
 )
 from dynamic_analysis.utils import (
+    ANALYZER_TOOL_IMAGE_MARKERS,
     ensure_dir,
     file_size,
     md5_file,
@@ -483,28 +484,10 @@ AUTORUNS_SUSPICIOUS_PATH_MARKERS = (
 )
 
 #: Autorun entries created by the analysis tooling rather than by the sample.
-#:
-#: FakeNet-NG registers its WinDivert traffic diverter as a driver the first time
-#: it runs, so a fresh install makes RingForge's own plumbing appear as a new
-#: startup entry attributed to whatever was detonated. The same applies to the
-#: Procmon and Npcap drivers.
-#:
-#: Classified separately rather than discarded, exactly as Windows baseline
-#: network traffic is: the entries stay visible, they just do not count as
-#: findings. An analyst who wants to confirm the tooling registered correctly can
-#: still see it.
-ANALYZER_AUTORUN_MARKERS = (
-    "windivert",     # FakeNet-NG's traffic diverter
-    "pydivert",      # ...and the Python package that ships it
-    "\\fakenet",
-    "procmon",
-    "procdump",
-    "autorunsc",
-    "sysmondrv",
-    "sysmon64",
-    "npcap",
-    "npf.sys",
-)
+#: Shared with the Sysmon summariser, which has to make the same judgement about
+#: driver loads, so the definition lives in utils and this name is kept as the
+#: autoruns-facing alias.
+ANALYZER_AUTORUN_MARKERS = ANALYZER_TOOL_IMAGE_MARKERS
 
 AUTORUNS_HIGH_SIGNAL_CATEGORIES = (
     "logon",
@@ -1232,6 +1215,10 @@ def run_dynamic_analysis(
     cancelled = False
     cancellation_reason = ""
 
+    # Populated by the launch callback. A dict rather than a plain int because
+    # the callback assigns from an inner scope.
+    sample_pid_seen: dict[str, int] = {}
+
     try:
         _raise_if_cancelled(cancel_event)
 
@@ -1417,6 +1404,15 @@ def run_dynamic_analysis(
         )
 
         sample_launch_attempted = True
+
+        def _on_sample_launch(pid: int) -> None:
+            # Recorded unconditionally, not only when dumping is on: findings
+            # needs the sample's PID to keep the analyzer-lineage filter from
+            # walking into the sample's own children.
+            sample_pid_seen["pid"] = pid
+            if memory_session is not None:
+                memory_session.set_root_pid(pid)
+
         exit_code = run_sample(
             sample_path,
             timeout_seconds,
@@ -1425,7 +1421,7 @@ def run_dynamic_analysis(
             installer_observation_mode=installer_observation_mode,
             cancel_event=cancel_event,
             status_cb=status_cb,
-            on_launch=memory_session.set_root_pid if memory_session is not None else None,
+            on_launch=_on_sample_launch,
         )
         _emit(status_cb, f"Sample observation completed with exit code {exit_code}.")
 
@@ -1566,7 +1562,12 @@ def run_dynamic_analysis(
                 write_json(dropped_files_summary_json, dropped_files_summary)
 
                 _emit(status_cb, "Building dynamic findings summary...")
-                findings_summary = summarize_dynamic_findings(events, interesting_events)
+                findings_summary = summarize_dynamic_findings(
+                    events,
+                    interesting_events,
+                    sample_pid=sample_pid_seen.get("pid"),
+                    sample_name=sample_path.name,
+                )
                 write_json(findings_json, findings_summary)
 
             # Network artifacts are parsed even when Procmon is off, since the

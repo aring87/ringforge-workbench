@@ -7,6 +7,40 @@ from pathlib import Path
 from typing import Any
 
 
+#: Images belonging to the analysis tooling rather than to the sample.
+#:
+#: FakeNet-NG registers its WinDivert traffic diverter as a driver, Procmon and
+#: Npcap install theirs, and all of it happens inside the observation window --
+#: so without this the workbench reports its own plumbing as the sample's
+#: behaviour. The list lives here, in a module that imports nothing else from
+#: the package, because both the autoruns diff and the Sysmon summariser need it
+#: and neither can import the other.
+#:
+#: Matches are classified, never discarded. An analyst who wants to confirm the
+#: tooling loaded correctly can still see it; it simply stops counting as a
+#: finding.
+ANALYZER_TOOL_IMAGE_MARKERS = (
+    "windivert",     # FakeNet-NG's traffic diverter
+    "pydivert",      # ...and the Python package that ships it
+    "\\fakenet",
+    "procmon",
+    "procdump",
+    "autorunsc",
+    "sysmondrv",
+    "sysmon64",
+    "npcap",
+    "npf.sys",
+)
+
+
+def is_analyzer_image(value: object) -> bool:
+    """True when a path or image name belongs to the analysis tooling."""
+    lowered = str(value or "").strip().lower().replace("/", "\\")
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in ANALYZER_TOOL_IMAGE_MARKERS)
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

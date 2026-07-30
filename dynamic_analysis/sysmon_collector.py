@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from dynamic_analysis.utils import is_analyzer_image
+
 SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
 
 #: Sysmon event IDs we normalise. Anything not listed is still collected, just
@@ -497,6 +499,20 @@ def _is_lsass_access(event: dict[str, Any]) -> bool:
     return any(flag in granted for flag in _LSASS_ACCESS_FLAGS)
 
 
+def _is_analyzer_event(event: dict[str, Any]) -> bool:
+    """True when the event describes the workbench's own tooling.
+
+    Every image-bearing field is checked rather than just Image, because the
+    field that names the tooling varies by event: a driver load carries it in
+    ImageLoaded, a process access in SourceImage.
+    """
+    data = event.get("data", {}) or {}
+    for key in ("Image", "ImageLoaded", "SourceImage", "TargetImage", "TargetFilename"):
+        if is_analyzer_image(data.get(key)):
+            return True
+    return False
+
+
 def _highlight(event: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Turn a high-signal event into an analyst-facing finding."""
     event_id = event.get("event_id")
@@ -554,6 +570,7 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     pipes: list[str] = []
     injections: list[dict[str, str]] = []
     highlights: list[dict[str, Any]] = []
+    analyzer_highlights: list[dict[str, Any]] = []
     seen_highlights: set[tuple] = set()
 
     for event in events:
@@ -592,10 +609,21 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
             key = (found["event_id"], found["detail"])
             if key not in seen_highlights:
                 seen_highlights.add(key)
-                highlights.append(found)
+                # Sysmon sees the workbench's own drivers load exactly as it sees
+                # the sample's -- FakeNet's WinDivert diverter being the recurring
+                # case, since it re-registers from a fresh PyInstaller temp path
+                # on every launch. The observation is correct; the attribution is
+                # not, and a medium-severity driver load the analyst did not cause
+                # is worse than no highlight at all.
+                if _is_analyzer_event(event):
+                    found["analyzer_activity"] = True
+                    analyzer_highlights.append(found)
+                else:
+                    highlights.append(found)
 
     severity_rank = {"high": 0, "medium": 1, "low": 2}
     highlights.sort(key=lambda h: severity_rank.get(h["severity"], 3))
+    analyzer_highlights.sort(key=lambda h: severity_rank.get(h["severity"], 3))
 
     return {
         "total_events": len(events),
@@ -605,6 +633,10 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "named_pipes": pipes[:100],
         "injection_events": injections[:100],
         "highlights": highlights[:100],
+        # Kept, not dropped -- same treatment the autoruns diff gives analyzer
+        # entries, so the tooling can still be confirmed to have loaded.
+        "analyzer_highlights": analyzer_highlights[:50],
+        "analyzer_highlights_excluded": len(analyzer_highlights),
         "high_severity_count": sum(1 for h in highlights if h["severity"] == "high"),
     }
 

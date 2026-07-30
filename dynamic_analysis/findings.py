@@ -193,6 +193,16 @@ ANALYZER_TOOL_PROCESS_NAMES = {
     "autoruns64.exe",
     "python.exe",
     "pythonw.exe",
+    # Tier-1 and tier-2 telemetry tools. FakeNet in particular is not passive:
+    # it shells out on startup, and those children were being counted as the
+    # sample's own LOLBin activity.
+    "fakenet.exe",
+    "dumpcap.exe",
+    "tshark.exe",
+    "sysmon.exe",
+    "sysmon64.exe",
+    "procdump.exe",
+    "procdump64.exe",
 }
 
 ANALYZER_TOOL_COMMAND_MARKERS = (
@@ -432,6 +442,78 @@ def _is_analyzer_activity(process_name: object, path: object = None, detail: obj
     return False
 
 
+#: Procmon records a process-create as "PID: <child>, Command line: ...", where
+#: the record's own ``pid`` field is the *parent*. Both halves are needed to
+#: reconstruct lineage.
+_CHILD_PID_IN_DETAIL = re.compile(r"\bpid:\s*(\d+)", re.IGNORECASE)
+
+
+def _child_pid_from_detail(detail: object) -> int | None:
+    match = _CHILD_PID_IN_DETAIL.search(_normalize_text(detail))
+    if not match:
+        return None
+    return _safe_int(match.group(1), default=0) or None
+
+
+def _propagate_analyzer_lineage(
+    records: list[dict[str, Any]],
+    sample_pid: int | None = None,
+    sample_name: str = "",
+) -> None:
+    """Mark descendants of analyzer processes as analyzer activity, in place.
+
+    Naming a tool in ANALYZER_TOOL_PROCESS_NAMES only ever catches its direct
+    children. FakeNet's startup is `fakenet.exe -> cmd.exe -> ipconfig.exe`, so
+    the ipconfig was still landing in the sample's findings with cmd.exe as its
+    apparent parent -- indistinguishable, by name alone, from a sample shelling
+    out.
+
+    The sample is deliberately excluded. It is launched *by* the analyzer, so its
+    launch record is genuinely analyzer activity, but letting the sample's PID
+    into the lineage set would suppress every process the sample goes on to
+    create -- hiding precisely what the run exists to observe. That failure would
+    be silent and would look like a well-behaved sample.
+    """
+    sample_proc = _normalize_process_name(sample_name)
+
+    def _is_sample(record: dict[str, Any]) -> bool:
+        if sample_pid and _child_pid_from_detail(record.get("detail")) == sample_pid:
+            return True
+        return bool(sample_proc) and _normalize_process_name(record.get("child_process_name")) == sample_proc
+
+    analyzer_pids: set[int] = set()
+
+    def _seed_from(record: dict[str, Any]) -> None:
+        if _is_sample(record):
+            return
+        child_pid = _child_pid_from_detail(record.get("detail"))
+        if child_pid:
+            analyzer_pids.add(child_pid)
+
+    for record in records:
+        if record.get("is_analyzer_activity"):
+            _seed_from(record)
+
+    # Iterated to a fixed point rather than swept once: a single pass reaches
+    # only the first generation, and the chain that motivated this is already
+    # two deep.
+    changed = True
+    while changed:
+        changed = False
+        for record in records:
+            if record.get("is_analyzer_activity"):
+                continue
+            parent_pid = record.get("pid")
+            if not parent_pid or parent_pid not in analyzer_pids:
+                continue
+            if _is_sample(record):
+                continue
+            record["is_analyzer_activity"] = True
+            record["analyzer_lineage"] = True
+            _seed_from(record)
+            changed = True
+
+
 def _looks_suspicious_path(value: object) -> bool:
     lowered = _normalize_text_lower(value)
     return any(part in lowered for part in SUSPICIOUS_PATH_KEYWORDS)
@@ -578,12 +660,20 @@ def _build_process_create_record(event: dict[str, Any]) -> dict[str, Any]:
         "detail": detail,
         "is_lolbin": _is_lolbin(process_name, path, detail),
         "is_analyzer_activity": _is_analyzer_activity(process_name, path, detail),
+        # Set by _propagate_analyzer_lineage when the record was excluded for
+        # its ancestry rather than its own name, so the reason stays visible.
+        "analyzer_lineage": False,
         "is_windows_baseline": _is_windows_baseline_process_create(process_name, path, detail),
         "is_noise_process": _is_noise_process(process_name) or _is_noise_process(child_process_name),
     }
 
 
-def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_dynamic_findings(
+    events: list[dict[str, Any]],
+    interesting_events: list[dict[str, Any]],
+    sample_pid: int | None = None,
+    sample_name: str = "",
+) -> dict[str, Any]:
     findings: dict[str, Any] = {
         "highlights": [],
         "top_written_paths": [],
@@ -598,6 +688,7 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
     network_counter: Counter[str] = Counter()
 
     process_creates: list[dict[str, Any]] = []
+    process_create_records: list[dict[str, Any]] = []
     suspicious_path_hits: list[dict[str, Any]] = []
     persistence_hits: list[dict[str, Any]] = []
 
@@ -626,19 +717,10 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
         )
 
         if "process" in operation and "create" in operation:
-            record = _build_process_create_record(event)
-
-            # Exclude RingForge helper tools, known OS noise, and normal Windows
-            # packaged-app helper behavior from sample spawned-process findings.
-            if (
-                not record["is_noise_process"]
-                and not record["is_analyzer_activity"]
-                and not record["is_windows_baseline"]
-            ):
-                process_creates.append(record)
-                process_create_count += 1
-                if record["is_lolbin"]:
-                    lolbin_count += 1
+            # Collected whole and filtered after the loop. Lineage cannot be
+            # resolved one event at a time: a child can be seen before the
+            # parent that condemns it.
+            process_create_records.append(_build_process_create_record(event))
 
         if "tcp connect" in operation or ("network" in operation and "connect" in operation):
             if process_name and not is_noise_proc and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
@@ -690,6 +772,22 @@ def summarize_dynamic_findings(events: list[dict[str, Any]], interesting_events:
                         "detail": detail,
                     }
                 )
+
+    _propagate_analyzer_lineage(process_create_records, sample_pid=sample_pid, sample_name=sample_name)
+
+    # Exclude RingForge helper tools and their descendants, known OS noise, and
+    # normal Windows packaged-app helper behavior from the sample's findings.
+    for record in process_create_records:
+        if (
+            record["is_noise_process"]
+            or record["is_analyzer_activity"]
+            or record["is_windows_baseline"]
+        ):
+            continue
+        process_creates.append(record)
+        process_create_count += 1
+        if record["is_lolbin"]:
+            lolbin_count += 1
 
     findings["top_written_paths"] = [{"path": path, "count": count} for path, count in write_counter.most_common(10)]
     findings["top_network_processes"] = [{"process_name": process_name, "count": count} for process_name, count in network_counter.most_common(10)]

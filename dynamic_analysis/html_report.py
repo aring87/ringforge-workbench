@@ -835,6 +835,10 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
         "Injection events": len(sysmon.get("injection_events", []) or []),
         "DNS queries": len(sysmon.get("dns_queries", []) or []),
         "Named pipes": len(sysmon.get("named_pipes", []) or []),
+        # Reported rather than hidden, matching the autoruns diff: a reader
+        # should be able to tell the difference between "the tooling produced no
+        # noise" and "the noise was filtered".
+        "Analyzer highlights excluded": sysmon.get("analyzer_highlights_excluded", 0),
     }
 
     injections = [
