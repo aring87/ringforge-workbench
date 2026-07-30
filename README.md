@@ -1,6 +1,6 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.8.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.9.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
@@ -19,8 +19,8 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.8.0` |
-| Release Name | Tier-1 Dynamic Telemetry + UI Redesign |
+| Version | `v1.9.0` |
+| Release Name | Tier-2 Process Memory + YARA |
 | Release Type | Feature release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
@@ -79,6 +79,8 @@ Current dynamic capabilities include:
 - Sysmon telemetry: process injection, image loads, WMI persistence, DNS queries, named pipes
 - Full packet capture with DNS, TLS SNI, HTTP and connection extraction
 - Simulated internet (FakeNet-NG) with per-process connection attribution
+- Process memory dumps of the sample's process tree during the run
+- YARA over those dumps, flagging rules that match memory but not the file on disk
 - Network containment checking before every run
 - Parsed runtime event review
 - Interesting event filtering
@@ -214,10 +216,82 @@ The Unified Report now summarizes Manual API Tester findings, API Spec Analysis 
 
 ---
 
+## What's New in v1.9.0
+
+`v1.9.0` adds process memory dumping and YARA scanning over the result, so a
+packed payload can be identified once it is running rather than only guessed at
+from the file on disk.
+
+### Process Memory Dumps
+
+Every tier-1 source observes a sample from the outside. None of them can see
+what a packer decrypted into its own address space, which is exactly where a
+loader that unpacks, runs and exits leaves nothing usable behind.
+
+ProcDump captures the sample's process tree during the observation window.
+Unlike the other collectors this cannot be a start-before / stop-after pair,
+because a dump is only meaningful while the process is alive, so a watcher
+thread runs alongside the detonation.
+
+| Behaviour | Detail |
+|---|---|
+| **Dump offsets** | Every profile dumps early *and* late — quick `4s, 15s`, standard `5s, 25s`, deep `3s, 20s, 60s`. A loader that exits in a couple of seconds is unreadable by the time its exit is noticed, so a late-only schedule captured nothing at all |
+| **Exit trigger** | A root process exiting takes an extra dump of whatever is still alive, in addition to the remaining scheduled offsets rather than instead of them |
+| **Process tree** | The launched process plus descendants, tracked continuously so a tree that has already collapsed can still be reported |
+| **Guard rails** | 5 processes, 1 GB working set, 4 GB total. Skipped processes are recorded with the reason, so a dump that never happened stays distinguishable from one that found nothing |
+
+ProcDump is used rather than `MiniDumpWriteDump` through ctypes because a 64-bit
+process dumping a 32-bit target through the raw API writes a truncated dump that
+looks valid and scans badly.
+
+### Memory YARA
+
+The dumps and the sample on disk are scanned in one pass with one compiled
+ruleset. The signal this exists for is narrow and specific: **rules that match a
+process's memory but not the sample on disk.** That difference is a payload that
+was packed, encrypted or downloaded, and it is the one thing static analysis
+structurally cannot reach.
+
+Scanning both sides with the same ruleset in the same pass is what makes the
+comparison honest — diffing against a separate static run would compare results
+produced by whatever rules happened to be installed at the time.
+
+- A memory-only match is weighted like process injection and sets the same
+  minimum severity of Medium. Matches present in both memory and on disk score
+  1 point, because the static run already reported them.
+- Match offsets are reported as `dump_file_offset`: byte offsets into the dump
+  file, never virtual addresses.
+- Rules built on the `pe` module cannot match a raw dump at all, so the report
+  states plainly that their absence is not evidence.
+
+### Memory Dump Self-Test
+
+`test_specs/memory_canary/` contains a benign sample that assembles a marker
+string at runtime, so the literal exists only in process memory and never in the
+file. A correct pipeline reports exactly one memory-only rule and raises severity
+to Medium on the strength of that alone.
+
+This isolates the delta logic from ruleset coverage. A packed sample tests the
+dumps, the rules and the comparison at once, and when such a run comes back
+empty it does not say which of the three failed.
+
+### Supporting Changes
+
+| Change | Detail |
+|---|---|
+| `scripts/bootstrap_yara_rules.ps1` | New. Installs a YARA ruleset, and test-compiles each file individually so one rule needing an unavailable module is quarantined instead of failing the whole ruleset — `yara.compile` is all-or-nothing across the files it is handed |
+| `tools/yara/local/` | Hand-maintained rules that survive a ruleset update, since the downloaded rules directory is rebuilt on every bootstrap |
+| `scripts/bootstrap_tools.ps1` | Also installs ProcDump; the preflight check now covers five sources |
+| `requirements.txt` | Pins `yara-python`, which was missing entirely — the static YARA path had been silently reporting "not installed" |
+| Case folders | The Dynamic Analysis window points the case folder at the selected sample instead of leaving the previous run's folder in place behind a mismatch warning |
+| Rounded surfaces | Cards, buttons and badges are drawn from corner arcs and straight edges. The previous smoothed polygon fitted a spline through its corner points, bulging outside its own bounding box and being clipped — which is why outlines had pieces missing |
+
+---
+
 ## What's New in v1.8.0
 
-`v1.8.0` adds three telemetry sources that cover behaviour Procmon structurally
-cannot observe, and rebuilds the interface on a single design system.
+`v1.8.0` added three telemetry sources that cover behaviour Procmon structurally
+cannot observe, and rebuilt the interface on a single design system.
 
 ### Tier-1 Dynamic Telemetry
 
@@ -532,8 +606,26 @@ The latest files stay at the root of `spec_analysis` for quick access and Unifie
 
 ## Validation Summary
 
-`v1.8.0` was validated by repeated live detonations in a VirtualBox Windows 11
-analysis VM, with Procmon, Sysmon, packet capture and FakeNet-NG all active.
+`v1.9.0` was validated by repeated live detonations in a VirtualBox Windows 11
+analysis VM with all six sources active, under confirmed containment
+(`network_isolation` reporting no default route).
+
+Verified end to end:
+
+- ProcDump capture of the launched process and of surviving children, with both
+  the scheduled and exit triggers firing in the same run
+- YARA scanning of 230–320 MB dumps against 550 rule files, at roughly five
+  seconds per dump
+- The memory-versus-disk comparison, using the `memory_canary` self-test: no
+  match against the file on disk, one memory-only rule, and severity raised from
+  Low to Medium by that finding alone
+- ProcDump returning a non-zero exit code on a *successful* dump, confirming that
+  the written artifact rather than the exit code has to be the success signal
+- Scheduled task and service CIM fallbacks reporting `fallback_used` on a
+  debloated image
+
+`v1.8.0` was validated by repeated live detonations with Procmon, Sysmon, packet
+capture and FakeNet-NG active.
 
 Verified end to end:
 
@@ -704,7 +796,7 @@ Service/task findings reviewed in installer context
 
 ## External Tooling Notice
 
-The `v1.8.0` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
+The `v1.9.0` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
 
 Users must download and configure external tools themselves.
 
@@ -712,10 +804,12 @@ This keeps the release package cleaner and avoids redistributing external softwa
 
 ### Not Included in the Release Package
 
-The following are not bundled in the `v1.8.0` release ZIP:
+The following are not bundled in the `v1.9.0` release ZIP:
 
 - Sysinternals Procmon
 - Sysinternals Autorunsc
+- Sysinternals ProcDump
+- Process memory dumps (`.dmp`)
 - capa executable
 - capa rules
 - capa signatures
@@ -741,9 +835,10 @@ The following are not bundled in the `v1.8.0` release ZIP:
 For full dynamic analysis functionality.
 
 > **Quick path:** run `scripts/bootstrap_tools.ps1` inside the analysis VM as
-> Administrator. It downloads and installs Sysmon, Wireshark/Npcap and
-> FakeNet-NG, then verifies each with the same preflight checks the Dynamic
-> Analysis window uses. The manual steps below are the equivalent.
+> Administrator. It downloads and installs Sysmon, Wireshark/Npcap, FakeNet-NG
+> and ProcDump, then verifies each with the same preflight checks the Dynamic
+> Analysis window uses. Follow it with `scripts/bootstrap_yara_rules.ps1` for the
+> rules that memory scanning needs. The manual steps below are the equivalent.
 
 - **Sysmon**
   - Provides process injection, image load, WMI persistence, DNS query and
@@ -776,6 +871,31 @@ tools/sysmon64.exe
 
 ```text
 tools/fakenet/fakenet.exe
+```
+
+- **ProcDump**
+  - Writes the process memory images that memory YARA scans. The 64-bit build
+    is required: `procdump.exe` cannot dump a 64-bit process, and a dump of the
+    wrong bitness looks valid while scanning as though the sample did nothing.
+  - Needs Administrator rights, since opening another process for a full dump
+    requires debug privilege.
+  - Recommended path:
+
+```text
+tools/procdump64.exe
+```
+
+- **YARA rules**
+  - Without rules a dump is just a large file: the run writes it and reports
+    "not scanned". `scripts/bootstrap_yara_rules.ps1` installs a ruleset and
+    quarantines any rule that fails to compile.
+  - Prefer string- and memory-oriented rules. Anything built on the `pe` module
+    cannot match a raw process dump.
+  - Recommended paths:
+
+```text
+tools/yara/rules/          downloaded ruleset, replaced on every bootstrap
+tools/yara/local/          hand-maintained rules, preserved across updates
 ```
 
 - **Procmon / Procmon64**
@@ -1059,9 +1179,10 @@ Important folders:
 | Folder | Purpose |
 |---|---|
 | `assets/` | Branding and UI assets |
-| `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting. Includes `sysmon_collector.py`, `network_capture.py`, and `fakenet_runner.py` |
+| `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting. Includes `sysmon_collector.py`, `network_capture.py`, `fakenet_runner.py`, `memory_dump.py`, and `memory_yara.py` |
 | `gui/` | Tkinter GUI windows, launcher, controllers, and styles. `theme.py` holds the design tokens; `components.py` the shared widgets |
-| `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup) and `vm_net.ps1` (host containment) |
+| `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup), `bootstrap_yara_rules.ps1` (YARA rules), and `vm_net.ps1` (host containment) |
+| `test_specs/` | Test inputs, including the `memory_canary/` memory-dump self-test |
 | `static_triage_engine/` | Static analysis engine, scoring, and reporting |
 | `tools/` | Local helper tool paths and configuration folders |
 | `triage_inbox.py` | Helper entry point / inbox workflow |
@@ -1087,6 +1208,8 @@ Common packages include:
 - `lief`
 - `pyyaml`
 - `pillow`
+- `psutil`
+- `yara-python`
 - `pyinstaller`
 - `weasyprint` optional for direct PDF generation
 
@@ -1265,6 +1388,9 @@ A dynamic run may produce:
 | `autoruns_diff.json` | Autoruns persistence diff |
 | `dropped_files.json` | Dropped-file candidates |
 | `dropped_files_summary.json` | Dropped-file summary |
+| `memory/*.dmp` | Process memory dumps, named `<process>_<pid>_t<offset>[_exit].dmp` |
+| `memory/memory_dumps.json` | Dump records: pid, image, offset, trigger, size, SHA-256 |
+| `memory/memory_yara.json` | YARA results per dump, the on-disk baseline scan, and the memory-only rule list |
 | `<sample>_dynamic_report.html` | Analyst-readable dynamic report |
 | `dynamic_report.html` | Compatibility copy of the dynamic report |
 
@@ -1350,6 +1476,31 @@ RingForge is a triage and analyst workflow tool. It does not replace a full malw
 ---
 
 ## Version History
+
+### v1.9.0 — Tier-2 Process Memory + YARA
+
+- Added process memory dumping with ProcDump during the observation window,
+  driven by a watcher thread alongside the detonation
+- Every run profile dumps early as well as late, so a loader that exits within
+  seconds is still captured
+- A root process exiting triggers an extra dump of surviving processes, in
+  addition to the remaining scheduled offsets
+- Liveness is tracked through handles captured while processes were running, so
+  a recycled Windows PID cannot be dumped in place of the sample
+- Added YARA scanning over the dumps and the on-disk sample in a single compiled
+  pass
+- Rules matching memory but not disk are weighted like injection and set a
+  minimum severity of Medium; matches present in both score 1 point
+- Match offsets reported as dump-file offsets, never virtual addresses
+- Added `scripts/bootstrap_yara_rules.ps1`, with per-file compile checking and
+  quarantine of rules that cannot compile
+- Added `tools/yara/local/` for hand-maintained rules that survive a ruleset
+  update
+- Added a benign memory-dump self-test under `test_specs/memory_canary/`
+- Pinned `yara-python`, which was absent from requirements entirely
+- Case folders now follow the selected sample rather than persisting from the
+  previous run
+- Fixed rounded card, button and badge outlines rendering with pieces missing
 
 ### v1.8.0 — Tier-1 Dynamic Telemetry + UI Redesign
 
