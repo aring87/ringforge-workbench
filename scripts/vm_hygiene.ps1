@@ -55,6 +55,14 @@
 .PARAMETER SkipWindowsUpdate
   Leave Windows Update scanning and its policy alone.
 
+.PARAMETER DisableEDR
+  Disable Defender for Endpoint (the Sense services) and DiagTrack. Opt-in,
+  because it is a bigger step than silencing an updater -- but an EDR agent
+  uploads suspicious samples to its tenant and can quarantine them before they
+  run, so it has to go before real samples. Without this switch the agents are
+  reported and left alone. A Wazuh agent is only ever reported, since that is
+  usually the analyst's own SIEM.
+
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Required on a VM
   whose identity strings are spoofed for anti-VM hardening.
@@ -72,6 +80,7 @@
 param(
   [switch]$DryRun,
   [switch]$SkipWindowsUpdate,
+  [switch]$DisableEDR,
   [switch]$Force
 )
 
@@ -124,6 +133,28 @@ $SERVICE_PATTERNS = @(
   # gone it has nothing left to wake it.
   @{ Label = "MS Account sign-in";        Pattern = '^wlidsvc$' },
   @{ Label = "Update Session Orchestr.";  Pattern = '^UsoSvc$'; WindowsUpdate = $true }
+)
+
+#: EDR agents. Reported always, disabled only with -DisableEDR.
+#:
+#: An EDR agent on an analysis VM is not merely noisy. Defender for Endpoint
+#: uploads suspicious samples to whichever tenant it reports to, so detonating
+#: real malware on an enrolled machine submits that sample and raises alerts
+#: under the owner's account. It can also quarantine independently of the
+#: Defender antivirus settings, which are a different mechanism with different
+#: controls.
+#:
+#: SenseNdr appeared in the FakeNet process list of every run until it was dealt
+#: with -- a permanent, invisible contribution to every result.
+$EDR_PATTERNS = @(
+  @{ Label = "Defender for Endpoint"; Pattern = '^Sense' },
+  @{ Label = "Connected User Experiences"; Pattern = '^DiagTrack$' }
+)
+
+#: Reported but never touched: this one is usually the analyst's own SIEM
+#: shipping to a host-only address, which is a deliberate part of the lab.
+$EDR_REPORT_ONLY = @(
+  @{ Label = "Wazuh agent"; Pattern = 'Wazuh' }
 )
 
 #: Software an analysis VM does not need. Reported only -- uninstalling is the
@@ -367,6 +398,80 @@ function Set-WindowsUpdatePolicy {
 }
 
 
+function Invoke-EdrAgents {
+  <#
+    Report EDR agents, and disable them when -DisableEDR is given.
+
+    Sense is a protected-process service, so sc.exe is commonly denied even
+    elevated; Set-ServiceDisabled's registry fallback is what actually lands it.
+    Tamper Protection has to be off first, the same as for Defender itself.
+
+    Disabling is not offboarding. The machine stays registered in whatever tenant
+    it was enrolled with and simply reports as inactive. For a lab VM that is
+    fine; if the enrolment is not yours to remove, use the offboarding package
+    from the Defender portal instead.
+  #>
+  Write-Step "EDR agents"
+
+  $services = @(Get-Service -ErrorAction SilentlyContinue)
+  $found = 0
+  $changed = 0
+
+  foreach ($group in $EDR_PATTERNS) {
+    $matched = @($services | Where-Object { $_.Name -match $group.Pattern })
+    if ($matched.Count -eq 0) {
+      Write-Skip "$($group.Label): not present"
+      continue
+    }
+
+    $found += $matched.Count
+
+    foreach ($service in $matched) {
+      if ($service.StartType -eq "Disabled") {
+        Write-Skip "already disabled: $($service.Name)"
+        continue
+      }
+
+      if (-not $DisableEDR) {
+        Write-Danger ("{0}: {1} is {2}/{3}" -f $group.Label, $service.Name, $service.Status, $service.StartType)
+        continue
+      }
+
+      if ($DryRun) {
+        Write-Host "    would disable: $($service.Name)" -ForegroundColor Yellow
+        $changed++
+        continue
+      }
+
+      if (Set-ServiceDisabled -Name $service.Name) {
+        $changed++
+        Write-Ok "disabled: $($service.Name)"
+      } else {
+        Write-Warn "could not disable: $($service.Name) (protected; is Tamper Protection off?)"
+      }
+    }
+  }
+
+  foreach ($group in $EDR_REPORT_ONLY) {
+    foreach ($service in @($services | Where-Object { $_.Name -match $group.Pattern })) {
+      Write-Info ("{0}: {1} is {2}/{3} -- left alone, this is usually your own SIEM." -f
+                  $group.Label, $service.Name, $service.Status, $service.StartType)
+    }
+  }
+
+  if ($found -gt 0 -and -not $DisableEDR) {
+    Write-Warn ""
+    Write-Warn "An EDR agent uploads suspicious samples to its tenant and can quarantine"
+    Write-Warn "them before they run. Re-run with -DisableEDR, or offboard properly from"
+    Write-Warn "the portal, before detonating anything real."
+  }
+
+  if ($changed -gt 0) {
+    Write-Warn "Reboot for this to take full effect."
+  }
+}
+
+
 function Show-DefenderState {
     <#
       Report Defender's posture and say what to do about it.
@@ -529,6 +634,7 @@ try {
   $taskResult = Disable-NoisyTasks -Tasks $tasks
   $serviceResult = Disable-NoisyServices
   Set-WindowsUpdatePolicy
+  Invoke-EdrAgents
   Show-DefenderState
   Show-OptionalSoftware
 
