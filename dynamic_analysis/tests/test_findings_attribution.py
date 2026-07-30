@@ -92,6 +92,11 @@ class SamplePreservationTests(unittest.TestCase):
         self.assertIn("cmd.exe", self._children(sample_pid=1636))
 
 
+#: FakeNet's own binary, as Sysmon records it. Confirmed from a real run: every
+#: DnsQuery for the guest hostname came from here, not from the sample.
+FAKENET = r"C:\projects\RingForge_Analyzer\ringforge-workbench\tools\fakenet\fakenet.exe"
+
+
 class SysmonAnalyzerHighlightTests(unittest.TestCase):
     def driver_load(self, image):
         return {"event_id": 6, "event_name": "DriverLoad",
@@ -111,6 +116,42 @@ class SysmonAnalyzerHighlightTests(unittest.TestCase):
         # Excluded, but visible and counted rather than silently dropped.
         self.assertEqual(summary["analyzer_highlights_excluded"], 1)
         self.assertTrue(summary["analyzer_highlights"][0]["analyzer_activity"])
+
+
+class SysmonIndicatorAttributionTests(unittest.TestCase):
+    """Indicator lists describe the sample, not the tooling watching it.
+
+    Gating only the highlights left FakeNet's hostname lookups sitting in
+    dns_queries, where the report renders them under "Sysmon DNS Queries" as
+    though the sample had resolved them.
+    """
+
+    EVENTS = [
+        {"event_id": 22, "event_name": "DnsQuery",
+         "data": {"Image": FAKENET, "QueryName": "win11", "QueryResults": "192.168.56.20;"}},
+        {"event_id": 22, "event_name": "DnsQuery",
+         "data": {"Image": r"C:\samples\evil.exe", "QueryName": "evil-c2.example", "QueryResults": "1.2.3.4;"}},
+        {"event_id": 3, "event_name": "NetworkConnect",
+         "data": {"Image": FAKENET, "DestinationIp": "10.0.0.1", "DestinationPort": "53"}},
+        {"event_id": 3, "event_name": "NetworkConnect",
+         "data": {"Image": r"C:\samples\evil.exe", "DestinationIp": "185.220.101.1", "DestinationPort": "443"}},
+    ]
+
+    def test_analyzer_lookups_are_not_the_samples_dns_queries(self) -> None:
+        summary = summarize_sysmon_events(self.EVENTS)
+        self.assertEqual(summary["dns_queries"], ["evil-c2.example"])
+
+    def test_analyzer_connections_are_not_the_samples_targets(self) -> None:
+        summary = summarize_sysmon_events(self.EVENTS)
+        self.assertEqual(summary["network_targets"], ["185.220.101.1:443"])
+
+    def test_raw_counts_stay_unfiltered(self) -> None:
+        # Sysmon really did observe these. Filtering total_events would
+        # misrepresent coverage rather than attribution.
+        summary = summarize_sysmon_events(self.EVENTS)
+        self.assertEqual(summary["total_events"], 4)
+        self.assertEqual(summary["counts"]["DnsQuery"], 2)
+        self.assertEqual(summary["analyzer_events_excluded"], 2)
 
 
 if __name__ == "__main__":

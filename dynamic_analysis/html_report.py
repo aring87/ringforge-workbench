@@ -837,7 +837,9 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
         "Named pipes": len(sysmon.get("named_pipes", []) or []),
         # Reported rather than hidden, matching the autoruns diff: a reader
         # should be able to tell the difference between "the tooling produced no
-        # noise" and "the noise was filtered".
+        # noise" and "the noise was filtered". The events figure covers the
+        # indicator lists too, of which the highlights are a subset.
+        "Analyzer events excluded": sysmon.get("analyzer_events_excluded", 0),
         "Analyzer highlights excluded": sysmon.get("analyzer_highlights_excluded", 0),
     }
 

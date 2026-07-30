@@ -572,6 +572,7 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     highlights: list[dict[str, Any]] = []
     analyzer_highlights: list[dict[str, Any]] = []
     seen_highlights: set[tuple] = set()
+    analyzer_events = 0
 
     for event in events:
         name = event.get("event_name", "unknown")
@@ -579,43 +580,50 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         data = event.get("data", {})
         event_id = event.get("event_id")
 
-        if event_id == 22:
-            query = data.get("QueryName", "").strip()
-            if query and query not in dns_queries:
-                dns_queries.append(query)
+        # Decided once, per event, and applied to indicators as well as
+        # highlights. Sysmon observes the workbench's own tooling exactly as it
+        # observes the sample -- FakeNet's WinDivert driver load, and its DNS
+        # lookups of the guest hostname, being the recurring cases. The
+        # observation is correct; the attribution is not.
+        is_analyzer = _is_analyzer_event(event)
+        if is_analyzer:
+            analyzer_events += 1
 
-        elif event_id == 3:
-            host = data.get("DestinationHostname") or data.get("DestinationIp", "")
-            port = data.get("DestinationPort", "")
-            target = f"{host}:{port}".strip(":")
-            if target and target not in network_targets:
-                network_targets.append(target)
+        # Analyzer events stay in total_events and counts, because Sysmon really
+        # did see them, but they are kept out of the indicator lists -- those are
+        # read as things the sample did.
+        if not is_analyzer:
+            if event_id == 22:
+                query = data.get("QueryName", "").strip()
+                if query and query not in dns_queries:
+                    dns_queries.append(query)
 
-        elif event_id in (17, 18):
-            pipe = data.get("PipeName", "").strip()
-            if pipe and pipe not in pipes:
-                pipes.append(pipe)
+            elif event_id == 3:
+                host = data.get("DestinationHostname") or data.get("DestinationIp", "")
+                port = data.get("DestinationPort", "")
+                target = f"{host}:{port}".strip(":")
+                if target and target not in network_targets:
+                    network_targets.append(target)
 
-        elif event_id == 8:
-            injections.append(
-                {
-                    "source": data.get("SourceImage", ""),
-                    "target": data.get("TargetImage", ""),
-                }
-            )
+            elif event_id in (17, 18):
+                pipe = data.get("PipeName", "").strip()
+                if pipe and pipe not in pipes:
+                    pipes.append(pipe)
+
+            elif event_id == 8:
+                injections.append(
+                    {
+                        "source": data.get("SourceImage", ""),
+                        "target": data.get("TargetImage", ""),
+                    }
+                )
 
         found = _highlight(event)
         if found:
             key = (found["event_id"], found["detail"])
             if key not in seen_highlights:
                 seen_highlights.add(key)
-                # Sysmon sees the workbench's own drivers load exactly as it sees
-                # the sample's -- FakeNet's WinDivert diverter being the recurring
-                # case, since it re-registers from a fresh PyInstaller temp path
-                # on every launch. The observation is correct; the attribution is
-                # not, and a medium-severity driver load the analyst did not cause
-                # is worse than no highlight at all.
-                if _is_analyzer_event(event):
+                if is_analyzer:
                     found["analyzer_activity"] = True
                     analyzer_highlights.append(found)
                 else:
@@ -637,6 +645,10 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         # entries, so the tooling can still be confirmed to have loaded.
         "analyzer_highlights": analyzer_highlights[:50],
         "analyzer_highlights_excluded": len(analyzer_highlights),
+        # Every event attributed to the tooling, not just those that would have
+        # become highlights. Without this the difference between "the tooling was
+        # quiet" and "the tooling was filtered" is invisible.
+        "analyzer_events_excluded": analyzer_events,
         "high_severity_count": sum(1 for h in highlights if h["severity"] == "high"),
     }
 
