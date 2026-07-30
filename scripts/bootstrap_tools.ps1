@@ -57,6 +57,10 @@
   when Defender has already quarantined a tool. Requires a reboot to take
   effect. Appropriate inside a disposable analysis VM and nowhere else.
 
+.PARAMETER SkipUpx
+  Do not install UPX. UPX is only needed to build the packed positive control in
+  test_specs\upx_control\; nothing in a detonation uses it.
+
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Use only if you
   are certain; see the warning above.
@@ -71,8 +75,10 @@ param(
   [switch]$SkipWireshark,
   [switch]$SkipFakeNet,
   [switch]$SkipProcDump,
+  [switch]$SkipUpx,
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
   [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
+  [string]$UpxRepo = "upx/upx",
   [switch]$AddExclusions,
   [switch]$DisableRealtimeProtection,
   [switch]$Force,
@@ -310,6 +316,67 @@ function Install-ProcDump {
   } catch {
     Write-Verbose "ProcDump EULA pre-accept returned: $($_.Exception.Message)"
   }
+}
+
+function Install-Upx {
+  param(
+    [Parameter(Mandatory=$true)][string]$ToolsDir,
+    [Parameter(Mandatory=$true)][string]$TempDir,
+    [Parameter(Mandatory=$true)][string]$Repo
+  )
+
+  Write-Step "UPX"
+
+  # UPX is not part of a detonation. It exists to build the positive control
+  # described in test_specs\upx_control\, which is the only thing that shows the
+  # ruleset covers a payload that is compressed at rest -- the case the memory
+  # canary deliberately does not test.
+  $target = Join-Path $ToolsDir "upx.exe"
+  if (Test-Path -LiteralPath $target) {
+    Write-Ok "UPX already present: $target"
+    return
+  }
+
+  $headers = @{ "User-Agent" = "bootstrap_tools.ps1" }
+
+  try {
+    $release = Invoke-RestMethod -Headers $headers -Uri ("https://api.github.com/repos/{0}/releases/latest" -f $Repo)
+  } catch {
+    Write-Warn "Could not query the UPX release API: $($_.Exception.Message)"
+    Write-Warn "Download upx.exe manually from https://github.com/$Repo/releases and place it in $ToolsDir"
+    return
+  }
+
+  # win64 specifically. UPX will happily refuse a 64-bit input if only the 32-bit
+  # build is present, and the failure reads as "packing did not work" rather than
+  # "wrong packer build".
+  $asset = @($release.assets) |
+           Where-Object { $_.name -match "win64\.zip$" } |
+           Select-Object -First 1
+
+  if (-not $asset) {
+    Write-Warn "No win64 archive in the latest UPX release."
+    Write-Warn "Download upx.exe manually from https://github.com/$Repo/releases and place it in $ToolsDir"
+    return
+  }
+
+  $zip = Join-Path $TempDir $asset.name
+  $extract = Join-Path $TempDir "upx"
+
+  Write-Info ("Downloading {0} ({1})..." -f $asset.name, $release.tag_name)
+  Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $zip
+  Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+
+  $exe = Get-ChildItem -Path $extract -Filter "upx.exe" -Recurse -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+
+  if (-not $exe) {
+    Write-Warn "upx.exe was not found in the downloaded archive."
+    return
+  }
+
+  Copy-Item -LiteralPath $exe.FullName -Destination $target -Force
+  Write-Ok "UPX binary: $target"
 }
 
 function Install-Wireshark {
@@ -647,6 +714,9 @@ try {
 
   if (-not $SkipProcDump)  { Install-ProcDump -ToolsDir $toolsDir -TempDir $tempDir }
   else                     { Write-Step "ProcDump"; Write-Warn "Skipped by request." }
+
+  if (-not $SkipUpx)       { Install-Upx -ToolsDir $toolsDir -TempDir $tempDir -Repo $UpxRepo }
+  else                     { Write-Step "UPX"; Write-Warn "Skipped by request." }
 
   Invoke-Preflight -RepoRoot $repoRoot
 
