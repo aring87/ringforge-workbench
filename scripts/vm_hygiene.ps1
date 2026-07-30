@@ -263,8 +263,17 @@ function Disable-NoisyTasks {
       }
 
       if ($DryRun) {
-        Write-Host "    would disable: $($task.Path)" -ForegroundColor Yellow
-        $changed++
+        # A dry run cannot discover an access denial without attempting the
+        # write, so groups known to be OS-owned are called out rather than
+        # counted. Otherwise the preview promises ten changes and the real run
+        # makes two, which makes the summary worth less than no summary.
+        if ($group.ContainsKey("Protected")) {
+          Write-Skip "likely protected by the OS: $($task.Path)"
+          $protected++
+        } else {
+          Write-Host "    would disable: $($task.Path)" -ForegroundColor Yellow
+          $changed++
+        }
         continue
       }
 
@@ -379,7 +388,15 @@ function Set-WindowsUpdatePolicy {
 
   $key = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
 
-  if ($DryRun) {
+  $already = $false
+  try {
+    $current = Get-ItemProperty -Path $key -Name NoAutoUpdate -ErrorAction Stop
+    $already = ($current.NoAutoUpdate -eq 1)
+  } catch { }
+
+  if ($already) {
+    Write-Ok "NoAutoUpdate=1 already set."
+  } elseif ($DryRun) {
     Write-Host "    would set NoAutoUpdate=1 at $key" -ForegroundColor Yellow
   } else {
     New-Item -Path $key -Force | Out-Null
