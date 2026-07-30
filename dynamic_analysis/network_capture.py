@@ -19,6 +19,7 @@ Both backends need Administrator rights.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -768,24 +769,51 @@ def is_baseline_domain(name: str) -> bool:
     )
 
 
-def is_private_ip(address: str) -> bool:
-    """True for RFC1918, loopback and link-local addresses."""
+def _parse_ip(address: str) -> ipaddress._BaseAddress | None:
+    """Parse an address, tolerating a zone index. Returns None if it is not one."""
     value = (address or "").strip()
-    if not _IPV4_RE.match(value):
-        return False
+    if not value:
+        return None
+    # fe80::1%12 -- Windows appends the interface index to link-local v6.
+    value = value.split("%", 1)[0]
     try:
-        octets = [int(part) for part in value.split(".")]
+        return ipaddress.ip_address(value)
     except ValueError:
+        return None
+
+
+def is_private_ip(address: str) -> bool:
+    """True for RFC1918, loopback and link-local addresses.
+
+    Backed by the stdlib rather than octet arithmetic so that IPv6 is covered
+    too. The hand-rolled version matched an IPv4 regex first, so every IPv6
+    address fell through as though it were routable.
+    """
+    parsed = _parse_ip(address)
+    if parsed is None:
         return False
-    if octets[0] == 10 or octets[0] == 127:
+    return bool(parsed.is_private or parsed.is_loopback or parsed.is_link_local)
+
+
+def is_non_routable_ip(address: str) -> bool:
+    """True for addresses that can never be a remote destination.
+
+    Multicast, broadcast, unspecified and reserved space. SSDP discovery to
+    239.255.255.250 is the case this exists for: it was being reported as a
+    contacted external IP *and* as a notable URL. On a real sample that is not
+    merely noise in the score, it is a lead an analyst can spend time chasing.
+    """
+    parsed = _parse_ip(address)
+    if parsed is None:
+        return False
+    if parsed.is_multicast or parsed.is_unspecified or parsed.is_reserved:
         return True
-    if octets[0] == 192 and octets[1] == 168:
-        return True
-    if octets[0] == 172 and 16 <= octets[1] <= 31:
-        return True
-    if octets[0] == 169 and octets[1] == 254:
-        return True
-    return False
+    return isinstance(parsed, ipaddress.IPv4Address) and int(parsed) == 0xFFFFFFFF
+
+
+def _url_host(url: str) -> str:
+    """The bare host of a URL, without scheme, path or port."""
+    return (url or "").split("//", 1)[-1].split("/", 1)[0].split(":")[0]
 
 
 def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
@@ -830,9 +858,18 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
     baseline_domains = [d for d in domains if is_baseline_domain(d)]
     notable_urls = [
         u for u in urls
-        if not is_baseline_domain(u.split("//", 1)[-1].split("/", 1)[0].split(":")[0])
+        if not is_baseline_domain(_url_host(u)) and not is_non_routable_ip(_url_host(u))
     ]
-    external_ips = [ip for ip in ips if not is_private_ip(ip)]
+
+    # Non-routable addresses are separated rather than dropped, the same way
+    # baseline domains are: an analyst can still confirm what the guest was
+    # doing, but discovery chatter is not offered as a destination the sample
+    # contacted.
+    non_routable_ips = [ip for ip in ips if is_non_routable_ip(ip)]
+    external_ips = [
+        ip for ip in ips
+        if not is_private_ip(ip) and not is_non_routable_ip(ip)
+    ]
 
     return {
         "domains": domains[:300],
@@ -842,12 +879,14 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
         "baseline_domains": baseline_domains[:300],
         "notable_urls": notable_urls[:300],
         "external_ips": external_ips[:300],
+        "non_routable_ips": non_routable_ips[:300],
         "counts": {
             "domains": len(domains),
             "notable_domains": len(notable_domains),
             "baseline_domains": len(baseline_domains),
             "ips": len(ips),
             "external_ips": len(external_ips),
+            "non_routable_ips": len(non_routable_ips),
             "urls": len(urls),
             "notable_urls": len(notable_urls),
         },

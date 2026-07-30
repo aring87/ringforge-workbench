@@ -889,6 +889,7 @@ def _network_sections(summary: dict[str, Any]) -> str:
       "Domains (notable)": len(iocs.get("notable_domains", []) or []),
       "Domains (Windows baseline)": len(iocs.get("baseline_domains", []) or []),
       "External IP addresses": len(iocs.get("external_ips", []) or []),
+      "Non-routable addresses": len(iocs.get("non_routable_ips", []) or []),
       "URLs (notable)": len(iocs.get("notable_urls", []) or []),
       "URLs (total)": len(iocs.get("urls", []) or []),
   }, badge("Notable", len(iocs.get("notable_domains", []) or [])))}
@@ -898,6 +899,7 @@ def _network_sections(summary: dict[str, Any]) -> str:
 {_list_section("Requested URLs (excluding Windows baseline)", iocs.get("notable_urls", []) or [], emphasize=True, empty_text="No notable plaintext URLs were observed.")}
 {_list_section("Contacted External IP Addresses", iocs.get("external_ips", []) or [], empty_text="No external IP addresses were contacted.")}
 {_list_section("Windows Baseline Traffic (context, not findings)", iocs.get("baseline_domains", []) or [], empty_text="No baseline traffic was recorded.")}
+{_list_section("Non-Routable Addresses (context, not findings)", iocs.get("non_routable_ips", []) or [], empty_text="No multicast or broadcast traffic was recorded.")}
 {_list_section("TLS Server Names (SNI)", network.get("tls_sni", []) or [], empty_text="No TLS SNI values were observed.")}
 {_dict_list_table("HTTP Requests", network.get("http_requests", []) or [])}
 {_dict_list_table("Connections On Unusual Ports", network.get("unusual_ports", []) or [])}
