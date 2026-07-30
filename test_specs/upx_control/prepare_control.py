@@ -63,6 +63,24 @@ _RULE_START = re.compile(r"^(?:private\s+|global\s+)*rule\s+([A-Za-z_][A-Za-z0-9
 #: perfectly good candidates.
 _USES_PE = re.compile(r"\bpe\s*\.")
 
+#: A magic-number test anchored at offset 0, of which `uint16(0) == 0x5a4d` --
+#: "is this a PE" -- is overwhelmingly the common case in signature-base. A
+#: minidump begins with `MDMP`, so any rule anchored to the sample's own header
+#: fails against a dump no matter what its strings do.
+_ANCHORED_MAGIC = re.compile(r"\buint(?:8|16|32)(?:be)?\s*\(\s*0\s*\)")
+
+#: An upper bound on file size. Rules routinely carry one as a cheap performance
+#: guard, with no intent to exclude memory -- but a dump is two to three orders
+#: of magnitude larger than the binary the bound was written for.
+_FILESIZE_BOUND = re.compile(r"\bfilesize\s*<=?\s*(\d+)\s*(TB|GB|MB|KB)?", re.IGNORECASE)
+
+_UNIT_BYTES = {"": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+
+#: Assumed dump size when judging a filesize bound, in megabytes. A full dump of
+#: even a small console process runs to tens of megabytes, so a bound below this
+#: cannot be satisfied. Override with --assume-dump-mb.
+DEFAULT_ASSUMED_DUMP_MB = 50
+
 
 # ---------------------------------------------------------------------------
 # Rule source inspection
@@ -96,8 +114,33 @@ def index_rule_sources(rule_files: dict[str, str]) -> dict[str, dict[str, Any]]:
     return index
 
 
-def classify_rule(name: str, index: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Decide whether a rule could ever match a raw process dump."""
+def _filesize_blockers(body: str, assumed_dump_bytes: int) -> list[str]:
+    """Filesize upper bounds that a dump of the assumed size cannot satisfy."""
+    blockers: list[str] = []
+    for value, unit in _FILESIZE_BOUND.findall(body):
+        try:
+            limit = int(value) * _UNIT_BYTES[unit.upper() if unit else ""]
+        except (ValueError, KeyError):
+            continue
+        if limit < assumed_dump_bytes:
+            blockers.append(
+                f"bounded to filesize < {value}{unit or 'B'}, below a {assumed_dump_bytes // (1024 * 1024)} MB dump"
+            )
+    return blockers
+
+
+def classify_rule(
+    name: str,
+    index: dict[str, dict[str, Any]],
+    assumed_dump_mb: int = DEFAULT_ASSUMED_DUMP_MB,
+) -> dict[str, Any]:
+    """Decide whether a rule could ever match a raw process dump.
+
+    Three things independently disqualify a rule, and a rule can carry more than
+    one. Reporting all of them rather than the first matters when deciding
+    whether a candidate is salvageable: a lone filesize bound might be worth
+    scanning a smaller dump for, whereas an anchored magic test never will be.
+    """
     entry = index.get(name)
     if entry is None:
         # Not finding the source is not a reason to discard the rule; it only
@@ -109,16 +152,20 @@ def classify_rule(name: str, index: dict[str, dict[str, Any]]) -> dict[str, Any]
             "reason": "rule source not located; viability unknown",
         }
 
-    uses_pe = bool(_USES_PE.search(entry["body"]))
+    body = entry["body"]
+    reasons: list[str] = []
+
+    if _USES_PE.search(body):
+        reasons.append("gated on the pe module")
+    if _ANCHORED_MAGIC.search(body):
+        reasons.append("anchored to a magic number at offset 0, where a dump has MDMP")
+    reasons.extend(_filesize_blockers(body, assumed_dump_mb * 1024 * 1024))
+
     return {
         "rule": name,
         "file": str(entry["file"].relative_to(REPO_ROOT)) if _under_repo(entry["file"]) else str(entry["file"]),
-        "memory_viable": not uses_pe,
-        "reason": (
-            "gated on the pe module, so it cannot match a minidump"
-            if uses_pe
-            else "string-based, so it can match a minidump"
-        ),
+        "memory_viable": not reasons,
+        "reason": "; ".join(reasons) if reasons else "string-based, so it can match a minidump",
     }
 
 
@@ -197,6 +244,12 @@ def main() -> int:
     parser.add_argument("--rules", default="", help="Override the rules directory. Default: whatever the dynamic run uses.")
     parser.add_argument("--upx", default="", help="Path to upx.exe. Default: tools\\upx.exe, then PATH.")
     parser.add_argument("--timeout", type=int, default=120, help="Per-file YARA timeout in seconds.")
+    parser.add_argument(
+        "--assume-dump-mb",
+        type=int,
+        default=DEFAULT_ASSUMED_DUMP_MB,
+        help="Dump size assumed when judging filesize bounds in rules.",
+    )
     parser.add_argument("--json", default="", help="Also write the full result as JSON to this path.")
     args = parser.parse_args()
 
@@ -251,7 +304,7 @@ def main() -> int:
         return 2
 
     index = index_rule_sources(rule_files)
-    classified = [classify_rule(name, index) for name in before]
+    classified = [classify_rule(name, index, args.assume_dump_mb) for name in before]
     viable = [c for c in classified if c["memory_viable"] is not False]
 
     print(f"  {len(before)} rule(s) matched:")

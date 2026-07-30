@@ -25,9 +25,21 @@ dump was taken too early".
 
 Mimikatz, from the official `gentilkiwi/mimikatz` releases. signature-base
 carries several string-based mimikatz rules written for memory scanning, which
-is exactly the property this test needs -- rules gated on the `pe` module cannot
-match a raw minidump at all, so they are useless here no matter how good they
-are.
+is exactly the property this test needs.
+
+Three things independently stop a rule from ever matching a minidump, however
+good its strings are, and the pre-flight checks for all of them:
+
+- a condition using the `pe` module, which has no PE to parse in a raw dump
+- a magic number anchored at offset 0, almost always `uint16(0) == 0x5a4d`;
+  a minidump begins with `MDMP`
+- a `filesize` upper bound, usually written as a cheap performance guard with
+  no intent to exclude memory, but a dump is orders of magnitude larger than
+  the binary the bound was sized for
+
+`Mimikatz_Gen_Strings` carries the last two at once and is the reason this list
+exists -- it was predicted as an expectation on the first run and could never
+have been met.
 
 Keep it in `samples\`, which is gitignored.
 
@@ -65,10 +77,13 @@ python test_specs\upx_control\prepare_control.py --sample samples\mimikatz.exe -
 
 That script settles, on disk, every question that would otherwise be
 indistinguishable from a broken pipeline afterwards. It confirms the ruleset
-detects the candidate unpacked, classifies each matching rule as string-based or
-`pe`-gated, packs the binary, confirms packing destroyed the detection, and
-prints the exact set of rules to expect back in memory. It exits non-zero and
-says why when the control is not worth detonating.
+detects the candidate unpacked, classifies each matching rule against the three
+disqualifiers above, packs the binary, confirms packing destroyed the detection,
+and prints the exact set of rules to expect back in memory. It exits non-zero
+and says why when the control is not worth detonating.
+
+Filesize bounds are judged against an assumed 50 MB dump. Override with
+`--assume-dump-mb` if you are dumping something much larger or smaller.
 
 Then **disarm before running anything**:
 
@@ -105,11 +120,24 @@ remaining ones are narrow:
 | No dumps at all | ProcDump missing or not elevated; check the preflight note |
 | Dumps taken, no matches anywhere | The dump is not capturing the unpacked image -- the real finding this test exists to catch |
 | Matched in memory *and* on disk | The packed file is not what was detonated; check the path |
-| Fewer memory-only rules than expected | Partial unpacking, or rules matching a region ProcDump did not include |
+| Fewer memory-only rules than expected | Read the rule's condition. If the pre-flight passed it, it found no disqualifier -- so either there is a fourth kind, or the strings genuinely are not in the dump |
 | Matched, but severity stayed Low | The severity floor is not being applied |
 
-A run that comes back with the expected rules is the first evidence that the
-memory path finds real payloads, not just a canary designed to be found.
+## Result, 2026-07-30
+
+Passed. `HackTool_Producers` matched on disk both before and after packing, as
+predicted -- it keys on version strings in the resource directory, which UPX
+leaves intact. `HKTL_Mimikatz_SkeletonKey_in_memory_Aug20_1`,
+`Powerkatz_DLL_Generic` and `mimikatz` were all destroyed by packing and all
+three returned in memory. Score 59, Medium, severity floored by the memory-only
+match.
+
+Both dumps matched identically, so the +5s offset alone was sufficient. That
+confirms the assumption UPX was chosen for: the image is fully reconstructed
+before the original entry point runs.
+
+The run also predicted a fourth rule, `Mimikatz_Gen_Strings`, which could never
+have matched. That gap is what the offset-0 and filesize checks now close.
 
 ## After this
 
