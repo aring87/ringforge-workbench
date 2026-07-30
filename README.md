@@ -281,6 +281,7 @@ empty it does not say which of the three failed.
 |---|---|
 | `scripts/bootstrap_yara_rules.ps1` | New. Installs a YARA ruleset, and test-compiles each file individually so one rule needing an unavailable module is quarantined instead of failing the whole ruleset — `yara.compile` is all-or-nothing across the files it is handed |
 | `tools/yara/local/` | Hand-maintained rules that survive a ruleset update, since the downloaded rules directory is rebuilt on every bootstrap |
+| `scripts/vm_hygiene.ps1` | New. Disables the browser, Acrobat and OneDrive updaters plus Windows Update scanning in the guest, so a run's diffs describe the sample rather than what the machine was going to do anyway. A Chrome update that landed mid-detonation was previously reported as two suspicious autoruns entries |
 | `scripts/bootstrap_tools.ps1` | Also installs ProcDump; the preflight check now covers five sources |
 | `requirements.txt` | Pins `yara-python`, which was missing entirely — the static YARA path had been silently reporting "not installed" |
 | Case folders | The Dynamic Analysis window points the case folder at the selected sample instead of leaving the previous run's folder in place behind a mismatch warning |
@@ -1181,7 +1182,7 @@ Important folders:
 | `assets/` | Branding and UI assets |
 | `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting. Includes `sysmon_collector.py`, `network_capture.py`, `fakenet_runner.py`, `memory_dump.py`, and `memory_yara.py` |
 | `gui/` | Tkinter GUI windows, launcher, controllers, and styles. `theme.py` holds the design tokens; `components.py` the shared widgets |
-| `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup), `bootstrap_yara_rules.ps1` (YARA rules), and `vm_net.ps1` (host containment) |
+| `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup), `bootstrap_yara_rules.ps1` (YARA rules), `vm_hygiene.ps1` (guest noise reduction), and `vm_net.ps1` (host containment) |
 | `test_specs/` | Test inputs, including the `memory_canary/` memory-dump self-test |
 | `static_triage_engine/` | Static analysis engine, scoring, and reporting |
 | `tools/` | Local helper tool paths and configuration folders |
