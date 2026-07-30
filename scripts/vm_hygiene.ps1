@@ -479,6 +479,15 @@ function Invoke-EdrAgents {
         Write-Warn "release it."
         Write-Warn "Offboard from the Defender portal instead: Settings -> Endpoints ->"
         Write-Warn "Offboarding, then run the package it gives you and reboot."
+        Write-Warn ""
+        Write-Warn "No portal access -- an expired trial tenant, say -- means Safe Mode,"
+        Write-Warn "where the service is not running to defend itself. Boot with"
+        Write-Warn "'bcdedit /set {current} safeboot minimal', then:"
+        Write-Warn '  reg add "HKLM\SYSTEM\CurrentControlSet\Services\Sense" /v Start /t REG_DWORD /d 4 /f'
+        Write-Warn '  reg add "HKLM\SOFTWARE\Microsoft\Windows Advanced Threat Protection" /v OnboardingState /t REG_DWORD /d 0 /f'
+        Write-Warn "then 'bcdedit /deletevalue {current} safeboot' and reboot. Clearing"
+        Write-Warn "OnboardingState matters as much as the service: left set, Sense keeps"
+        Write-Warn "trying to reach a tenant that is no longer listening."
       } else {
         Write-Warn "could not disable: $($service.Name) (protected service)"
       }
