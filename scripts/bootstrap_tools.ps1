@@ -43,9 +43,19 @@
   is a well-tested general-purpose baseline.
 
 .PARAMETER AddExclusions
-  Add a Windows Defender exclusion for the tools directory before downloading.
+  Exclude the tools and temp directories from Defender before downloading.
   FakeNet-NG is reliably flagged as a HackTool and is otherwise quarantined on
-  arrival. Appropriate inside a disposable analysis VM and nowhere else.
+  arrival -- or refused mid-download, since Defender scans the file as it is
+  written. Applied through Add-MpPreference where that works and through the
+  Group Policy registry otherwise, because a debloated image is missing the
+  Defender WMI namespace the cmdlet needs. Appropriate inside a disposable
+  analysis VM and nowhere else.
+
+.PARAMETER DisableRealtimeProtection
+  Turn Defender's real-time protection off by policy. A bigger hammer than
+  -AddExclusions, and needed when exclusions are not enough -- most obviously
+  when Defender has already quarantined a tool. Requires a reboot to take
+  effect. Appropriate inside a disposable analysis VM and nowhere else.
 
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Use only if you
@@ -64,6 +74,7 @@ param(
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
   [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
   [switch]$AddExclusions,
+  [switch]$DisableRealtimeProtection,
   [switch]$Force,
   [switch]$KeepTemp
 )
@@ -413,27 +424,110 @@ function Install-FakeNet {
 }
 
 function Add-DefenderExclusions {
+  <#
+    Exclude paths from Defender, by whichever mechanism this image supports.
+
+    Add-MpPreference alone is not enough. It talks to the Defender WMI provider,
+    and debloated Windows images -- the usual analysis VM base -- are missing the
+    Root\Microsoft\Windows\Defender namespace entirely, so the cmdlet fails with
+    "Invalid namespace". Since -AddExclusions is advertised as the fix for
+    FakeNet being quarantined, a silent skip there means the flag does nothing on
+    exactly the machines that need it.
+
+    The Group Policy keys do not go through that provider, so they work where the
+    cmdlet cannot. Both are attempted: the cmdlet applies immediately, the policy
+    keys survive a reboot and a Defender reset.
+  #>
   param([Parameter(Mandatory=$true)][string[]]$Paths)
 
   Write-Step "Antivirus exclusions"
 
+  $viaCmdlet = 0
+  $viaPolicy = 0
+
   $cmd = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
-  if (-not $cmd) {
-    Write-Warn "Add-MpPreference unavailable; skipping (Defender may not be present)."
-    return
+  if ($cmd) {
+    foreach ($path in $Paths) {
+      try {
+        Add-MpPreference -ExclusionPath $path -ErrorAction Stop
+        $viaCmdlet++
+      } catch {
+        Write-Verbose "Add-MpPreference failed for '$path': $($_.Exception.Message)"
+      }
+    }
+  }
+
+  if ($viaCmdlet -eq 0) {
+    Write-Info "Add-MpPreference unavailable or failing; using the policy registry instead."
+  }
+
+  # Value name is the path itself; the data is ignored by Defender.
+  $policyKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths"
+  try {
+    New-Item -Path $policyKey -Force | Out-Null
+    foreach ($path in $Paths) {
+      New-ItemProperty -Path $policyKey -Name $path -Value 0 -PropertyType DWord -Force | Out-Null
+      $viaPolicy++
+    }
+  } catch {
+    Write-Warn "Could not write exclusion policy: $($_.Exception.Message)"
   }
 
   foreach ($path in $Paths) {
-    try {
-      Add-MpPreference -ExclusionPath $path -ErrorAction Stop
-      Write-Ok "Excluded: $path"
-    } catch {
-      Write-Warn "Could not exclude '$path': $($_.Exception.Message)"
-    }
+    Write-Ok "Excluded: $path"
+  }
+
+  if ($viaCmdlet -eq 0 -and $viaPolicy -gt 0) {
+    Write-Warn "Policy exclusions can need a reboot before Defender honours them."
+    Write-Warn "If a download is still blocked as 'a virus or potentially unwanted"
+    Write-Warn "software', reboot and re-run this script."
   }
 
   Write-Warn "Exclusions reduce protection. They are appropriate inside a"
   Write-Warn "disposable analysis VM and nowhere else."
+}
+
+
+function Disable-DefenderRealtime {
+  <#
+    Turn off real-time protection through Group Policy.
+
+    Separate from -AddExclusions and opt-in, because it is a much bigger hammer:
+    exclusions narrow what Defender inspects, this stops it inspecting anything.
+
+    Policy keys rather than Set-MpPreference for the same reason as above, and
+    rather than the Windows Security toggle because that toggle re-enables itself
+    on a timer -- which is how a quarantined FakeNet comes back after you thought
+    you had turned protection off.
+
+    DisableAntiSpyware is deliberately not set here: current Windows 11 builds
+    ignore it, and setting it invites the conclusion that protection is off when
+    it is not.
+  #>
+  Write-Step "Defender real-time protection"
+
+  $key = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
+  $values = @(
+    "DisableRealtimeMonitoring",
+    "DisableBehaviorMonitoring",
+    "DisableOnAccessProtection",
+    "DisableScanOnRealtimeEnable"
+  )
+
+  try {
+    New-Item -Path $key -Force | Out-Null
+    foreach ($name in $values) {
+      Set-ItemProperty -Path $key -Name $name -Value 1 -Type DWord
+    }
+    Write-Ok "Real-time protection disabled by policy."
+    Write-Warn "Reboot for this to take effect. Afterwards the Windows Security"
+    Write-Warn "toggle should read 'managed by your administrator', which is the"
+    Write-Warn "sign it will stay off rather than flipping back on."
+  } catch {
+    Write-Warn "Could not write real-time protection policy: $($_.Exception.Message)"
+    Write-Warn "Turn it off in Windows Security manually: Virus & threat protection"
+    Write-Warn "-> Manage settings. Turn Tamper Protection off first, or nothing sticks."
+  }
 }
 
 function Invoke-Preflight {
@@ -527,8 +621,16 @@ try {
 
   # Exclude the tools directory before downloading, or antivirus quarantines
   # FakeNet-NG the moment it lands on disk.
+  if ($DisableRealtimeProtection) {
+    Disable-DefenderRealtime
+  }
+
   if ($AddExclusions) {
-    Add-DefenderExclusions -Paths @($toolsDir)
+    # The temp directory matters as much as tools/. Downloads land there first,
+    # and Defender scans the file as it is written -- so excluding only the
+    # destination leaves the very file that gets blocked unprotected. FakeNet's
+    # zip was refused mid-download for exactly this reason.
+    Add-DefenderExclusions -Paths @($toolsDir, $tempDir, $env:TEMP)
   } else {
     Write-Warn "Antivirus exclusions not requested. If FakeNet-NG disappears after"
     Write-Warn "download, re-run with -AddExclusions."
