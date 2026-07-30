@@ -23,6 +23,17 @@ from dynamic_analysis.fakenet_runner import (
     parse_fakenet_log,
 )
 from dynamic_analysis.findings import summarize_dynamic_findings
+from dynamic_analysis.memory_dump import (
+    MemoryDumpSession,
+    memory_dump_status,
+    successful_dumps,
+    summarize_memory_dumps,
+)
+from dynamic_analysis.memory_yara import (
+    memory_yara_status,
+    scan_memory_dumps,
+    summarize_memory_yara,
+)
 from dynamic_analysis.network_capture import (
     PacketCapture,
     capture_status,
@@ -114,6 +125,7 @@ def build_case_paths(case_dir: str | Path) -> dict[str, Path]:
         "autoruns": base / "autoruns",
         "network": base / "network",
         "sysmon": base / "sysmon",
+        "memory": base / "memory",
     }
 
     for p in paths.values():
@@ -184,6 +196,7 @@ def run_sample(
     installer_observation_mode: bool = True,
     cancel_event: CancelEvent = None,
     status_cb: StatusCallback = None,
+    on_launch: Optional[Callable[[int], None]] = None,
 ) -> int:
     """
     Launch the sample and observe runtime behavior.
@@ -196,6 +209,10 @@ def run_sample(
       services, scheduled tasks, and background setup activity can be captured.
     - The run never exceeds timeout_seconds.
     - Analyst cancellation is honored during observation.
+
+    on_launch receives the sample's PID immediately after launch. Memory
+    dumping needs the PID while the process is alive, and the exit code this
+    function returns arrives far too late for that.
     """
     sample = Path(sample_path)
 
@@ -207,6 +224,13 @@ def run_sample(
     _emit(status_cb, f"Launch command: {' '.join(launch_cmd)}")
 
     proc = subprocess.Popen(launch_cmd)
+
+    if on_launch is not None:
+        # A failure in a telemetry hook must never take down the detonation.
+        try:
+            on_launch(proc.pid)
+        except Exception as error:
+            _emit(status_cb, f"Launch hook warning: {error}")
 
     exit_code: int | None = None
     process_exit_time: float | None = None
@@ -385,6 +409,8 @@ def _build_behavior_summary(
     sysmon_summary: dict[str, Any] | None = None,
     network_summary: dict[str, Any] | None = None,
     fakenet_summary: dict[str, Any] | None = None,
+    memory_summary: dict[str, Any] | None = None,
+    memory_yara_summary: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -398,6 +424,11 @@ def _build_behavior_summary(
     fakenet_counts = (
         fakenet_summary.get("counts", {}) if isinstance(fakenet_summary, dict) else {}
     )
+    memory_counts = (
+        memory_summary.get("counts", {}) if isinstance(memory_summary, dict) else {}
+    )
+    memory_yara = memory_yara_summary if isinstance(memory_yara_summary, dict) else {}
+    memory_yara_counts = memory_yara.get("counts", {}) or {}
 
     return {
         "interesting_events": int(counts.get("interesting_events", 0) or 0),
@@ -423,6 +454,16 @@ def _build_behavior_summary(
         "network_unusual_ports": int(network_counts.get("unusual_ports", 0) or 0),
         "fakenet_dns_requests": int(fakenet_counts.get("dns_requests", 0) or 0),
         "fakenet_http_requests": int(fakenet_counts.get("http_requests", 0) or 0),
+        # The dump counts are collection coverage: they say what could be
+        # scanned, not what the sample did.
+        "memory_processes_observed": int(memory_counts.get("processes_observed", 0) or 0),
+        "memory_dumps_succeeded": int(memory_counts.get("dumps_succeeded", 0) or 0),
+        "memory_dumps_mb": int(memory_counts.get("total_mb", 0) or 0),
+        # The YARA counts are the behaviour. memory_only_rules is the one that
+        # matters: a payload visible in memory and not on disk.
+        "memory_yara_matches": int(memory_yara_counts.get("total_matches", 0) or 0),
+        "memory_yara_dumps_matched": int(memory_yara_counts.get("dumps_with_matches", 0) or 0),
+        "memory_only_rules": int(memory_yara_counts.get("memory_only_rules", 0) or 0),
     }
 
 
@@ -759,6 +800,7 @@ def calculate_dynamic_score(
     sysmon_summary: dict[str, Any] | None = None,
     network_summary: dict[str, Any] | None = None,
     fakenet_summary: dict[str, Any] | None = None,
+    memory_yara_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -796,6 +838,11 @@ def calculate_dynamic_score(
 
     sysmon_injections = len(sysmon.get("injection_events", []) or [])
     sysmon_high = int(sysmon.get("high_severity_count", 0) or 0)
+
+    memory_yara = memory_yara_summary if isinstance(memory_yara_summary, dict) else {}
+    memory_yara_counts = memory_yara.get("counts", {}) or {}
+    memory_only_rules = list(memory_yara.get("memory_only_rules", []) or [])
+    memory_yara_matches = int(memory_yara_counts.get("total_matches", 0) or 0)
 
     network_unusual_ports = int(network_counts.get("unusual_ports", 0) or 0)
     fakenet_dns = int(fakenet_counts.get("dns_requests", 0) or 0)
@@ -845,6 +892,17 @@ def calculate_dynamic_score(
     score += min(sysmon_injections, 5) * 10
     score += min(sysmon_high, 8) * 6
 
+    # A rule that fires against a process's memory but not against the file on
+    # disk is a payload that was packed or encrypted at rest. Weighted like
+    # injection, because it is the same class of evidence: something the sample
+    # did that static inspection could not have revealed.
+    #
+    # Matches present both in memory and on disk are worth much less here. The
+    # static run already reported them, and paying twice for one finding would
+    # let a single noisy rule drive the dynamic verdict.
+    score += min(len(memory_only_rules), 5) * 10
+    score += min(memory_yara_matches, 10) * 1
+
     # Network: a destination on an odd port is far more telling than volume,
     # so counts of ordinary traffic stay deliberately cheap.
     score += min(network_unusual_ports, 5) * 4
@@ -858,6 +916,7 @@ def calculate_dynamic_score(
         or autoruns_suspicious > 0
         or sysmon_injections > 0
         or sysmon_high > 0
+        or bool(memory_only_rules)
     )
 
     if score <= 10:
@@ -885,7 +944,13 @@ def calculate_dynamic_score(
     # installer. Those behaviours are categorically different from "lots of
     # file writes", so they set a minimum severity rather than adding points.
     escalation_reason = ""
-    if sysmon_injections > 0:
+    if memory_only_rules:
+        escalation_reason = (
+            "YARA matched in process memory but not on disk "
+            f"({', '.join(memory_only_rules[:3])}), indicating a payload that was "
+            "packed or encrypted at rest."
+        )
+    elif sysmon_injections > 0:
         escalation_reason = "Sysmon recorded process injection (CreateRemoteThread)."
     elif sysmon_high > 0:
         escalation_reason = (
@@ -914,6 +979,10 @@ def calculate_dynamic_score(
             "Injection, credential access and WMI persistence set a minimum severity of "
             "Medium regardless of score, so a single decisive behaviour is never "
             "reported as Low.",
+            "A YARA rule matching process memory but not the file on disk is weighted "
+            "like injection and sets the same minimum severity: it means a payload "
+            "that static analysis could not have seen. Matches present in both are "
+            "weighted lightly, because the static run already reported them.",
         ],
     }
 
@@ -997,6 +1066,33 @@ def run_dynamic_analysis(
     fakenet_config_path = config.get("fakenet_config_path") or ""
     fakenet_summary_json = paths["network"] / "fakenet_summary.json"
 
+    # --- Tier 2 telemetry: process memory dumps -----------------------------
+    memory_dump_enabled = bool(config.get("memory_dump_enabled", True))
+    procdump_path = config.get("procdump_path") or ""
+    memory_dumps_json = paths["memory"] / "memory_dumps.json"
+
+    # Offsets are seconds after the sample launches.
+    #
+    # Every profile opens with an early dump. The later offsets are where an
+    # unpacked payload is actually expected, but a loader that unpacks, injects
+    # and exits within a few seconds is gone before any of them come due -- and
+    # the exit trigger cannot save it, because by the time the exit is detected
+    # the process is no longer readable. A first detonation showed exactly this:
+    # the launched process exited at ~1s and only a surviving child was ever
+    # dumped. The early dump is pre-unpacking and mediocre on its own; it is the
+    # difference between a mediocre image and none at all.
+    default_offsets = {
+        "quick": [4, 15],
+        "standard": [5, 25],
+        "deep": [3, 20, 60],
+    }[run_profile]
+    memory_dump_offsets = config.get("memory_dump_offsets") or default_offsets
+
+    memory_yara_enabled = bool(config.get("memory_yara_enabled", True))
+    yara_rules_dir = config.get("yara_rules_dir") or ""
+    memory_yara_timeout = int(config.get("memory_yara_timeout_seconds", 300))
+    memory_yara_json = paths["memory"] / "memory_yara.json"
+
     # Preflight so the report records exactly which telemetry was possible.
     sysmon_preflight = sysmon_status(sysmon_path) if sysmon_enabled else {
         "available": False, "note": "Sysmon collection disabled for this run."
@@ -1007,6 +1103,14 @@ def run_dynamic_analysis(
     fakenet_preflight = fakenet_status(fakenet_path) if fakenet_enabled else {
         "available": False, "note": "Simulated internet disabled for this run."
     }
+    memory_preflight = memory_dump_status(procdump_path) if memory_dump_enabled else {
+        "available": False, "note": "Process memory dumps disabled for this run."
+    }
+    memory_yara_preflight = (
+        memory_yara_status(yara_rules_dir or None)
+        if (memory_dump_enabled and memory_yara_enabled)
+        else {"available": False, "note": "Memory YARA scanning disabled for this run."}
+    )
 
     # Containment check. A second adapter lets a sample bypass FakeNet entirely
     # and reach real infrastructure, and nothing in the resulting artifacts
@@ -1033,9 +1137,16 @@ def run_dynamic_analysis(
     fakenet_start_result: dict[str, Any] = {"started": False}
     fakenet_stop_result: dict[str, Any] = {}
 
+    memory_dump_result: dict[str, Any] = {}
+    memory_summary: dict[str, Any] = {}
+    memory_start_result: dict[str, Any] = {"started": False}
+    memory_yara_result: dict[str, Any] = {}
+    memory_yara_summary: dict[str, Any] = {}
+
     sysmon_since: str = ""
     packet_capture: PacketCapture | None = None
     fakenet_session: FakeNetSession | None = None
+    memory_session: MemoryDumpSession | None = None
 
     started_at = utc_now_iso()
     exit_code: int | None = None
@@ -1216,7 +1327,37 @@ def run_dynamic_analysis(
 
         _raise_if_cancelled(cancel_event)
 
-        
+        # The watcher must be running before the sample launches, because it is
+        # handed the PID the moment Popen returns and the earliest dump offset
+        # is measured from there.
+        if memory_dump_enabled:
+            if memory_preflight.get("available"):
+                _emit(
+                    status_cb,
+                    "Starting process memory dump watcher "
+                    f"(offsets: {', '.join(f'+{o}s' for o in memory_dump_offsets)})...",
+                )
+                memory_session = MemoryDumpSession(
+                    output_dir=paths["memory"],
+                    procdump_path=procdump_path or None,
+                    dump_offsets=list(memory_dump_offsets),
+                    status_cb=status_cb,
+                )
+                memory_start_result = memory_session.start()
+                if not memory_start_result.get("started"):
+                    _emit(
+                        status_cb,
+                        f"Memory dump warning: {memory_start_result.get('error', 'unknown error')}",
+                    )
+                    memory_session = None
+                elif memory_preflight.get("tree_note"):
+                    _emit(status_cb, f"Memory dump: {memory_preflight['tree_note']}")
+            else:
+                _emit(status_cb, f"Memory dumps unavailable: {memory_preflight.get('note', '')}")
+
+        _raise_if_cancelled(cancel_event)
+
+
         _emit(
             status_cb,
             f"Launching sample and observing for at least {minimum_observation_seconds} seconds "
@@ -1233,6 +1374,7 @@ def run_dynamic_analysis(
             installer_observation_mode=installer_observation_mode,
             cancel_event=cancel_event,
             status_cb=status_cb,
+            on_launch=memory_session.set_root_pid if memory_session is not None else None,
         )
         _emit(status_cb, f"Sample observation completed with exit code {exit_code}.")
 
@@ -1243,6 +1385,33 @@ def run_dynamic_analysis(
         _emit(status_cb, cancellation_reason)
 
     finally:
+        # Stopped first, and unconditionally: a cancelled run must not leave a
+        # watcher thread still dumping gigabytes into the case directory.
+        if memory_session is not None:
+            _emit(status_cb, "Stopping process memory dump watcher...")
+            try:
+                memory_dump_result = memory_session.stop()
+                memory_summary = summarize_memory_dumps(memory_dump_result)
+                write_json(memory_dumps_json, memory_dump_result)
+
+                counts = memory_summary.get("counts", {})
+                _emit(
+                    status_cb,
+                    f"Memory dumps: {counts.get('dumps_succeeded', 0)} written "
+                    f"from {counts.get('processes_observed', 0)} observed process(es) "
+                    f"({counts.get('total_mb', 0)} MB).",
+                )
+                for failure in memory_summary.get("failures", []):
+                    _emit(
+                        status_cb,
+                        f"Memory dump failed for pid {failure.get('pid')}: "
+                        f"{failure.get('error', 'unknown error')}",
+                    )
+            except Exception as error:
+                memory_dump_result = {"stopped": False, "error": str(error)}
+                memory_summary = summarize_memory_dumps(memory_dump_result)
+                _emit(status_cb, f"Memory dump stop warning: {error}")
+
         if procmon_enabled and procmon_started:
             _emit(status_cb, "Stopping Procmon capture...")
             try:
@@ -1393,6 +1562,47 @@ def run_dynamic_analysis(
                 except Exception as error:
                     _emit(status_cb, f"Simulated internet parse warning: {error}")
 
+            # Scanned last: it is the slowest step in teardown, and it depends
+            # on the dumps having been written and closed.
+            scannable = successful_dumps(memory_dump_result)
+            if memory_dump_enabled and memory_yara_enabled and scannable:
+                if memory_yara_preflight.get("available"):
+                    _emit(status_cb, "Scanning process memory with YARA...")
+                    try:
+                        memory_yara_result = scan_memory_dumps(
+                            dump_records=scannable,
+                            sample_path=sample_path,
+                            rules_dir=yara_rules_dir or None,
+                            timeout=memory_yara_timeout,
+                            status_cb=status_cb,
+                        )
+                        memory_yara_summary = summarize_memory_yara(memory_yara_result)
+                        write_json(memory_yara_json, memory_yara_result)
+
+                        counts = memory_yara_summary.get("counts", {})
+                        memory_only = memory_yara_summary.get("memory_only_rules", [])
+                        _emit(
+                            status_cb,
+                            f"Memory YARA: {counts.get('total_matches', 0)} match(es) across "
+                            f"{counts.get('dumps_scanned', 0)} dump(s); "
+                            f"{len(memory_only)} rule(s) matched in memory but not on disk.",
+                        )
+                        if memory_yara_result.get("error"):
+                            _emit(
+                                status_cb,
+                                f"Memory YARA warning: {memory_yara_result['error']}",
+                            )
+                    except Exception as error:
+                        memory_yara_result = {"scanned": False, "error": str(error)}
+                        memory_yara_summary = summarize_memory_yara(memory_yara_result)
+                        _emit(status_cb, f"Memory YARA warning: {error}")
+                else:
+                    _emit(
+                        status_cb,
+                        f"Memory YARA unavailable: {memory_yara_preflight.get('note', '')} "
+                        "The dumps are kept and can be scanned manually.",
+                    )
+
     if autoruns_enabled and not cancelled:
         _emit(status_cb, "Snapshotting Autoruns entries (after)...")
         autoruns_after_status = _run_autorunsc_snapshot(
@@ -1444,6 +1654,8 @@ def run_dynamic_analysis(
         sysmon_summary=sysmon_summary,
         network_summary=network_summary,
         fakenet_summary=fakenet_summary,
+        memory_summary=memory_summary,
+        memory_yara_summary=memory_yara_summary,
     )
 
     score_data = calculate_dynamic_score(
@@ -1455,6 +1667,7 @@ def run_dynamic_analysis(
         sysmon_summary=sysmon_summary,
         network_summary=network_summary,
         fakenet_summary=fakenet_summary,
+        memory_yara_summary=memory_yara_summary,
     )
 
     if cancelled:
@@ -1516,6 +1729,15 @@ def run_dynamic_analysis(
         "fakenet_enabled": fakenet_enabled,
         "fakenet_preflight": fakenet_preflight,
         "fakenet_summary": fakenet_summary,
+        # --- Tier 2 telemetry ------------------------------------------------
+        "memory_dump_enabled": memory_dump_enabled,
+        "memory_dump_offsets": list(memory_dump_offsets),
+        "memory_preflight": memory_preflight,
+        "memory_dump_start": memory_start_result,
+        "memory_summary": memory_summary,
+        "memory_yara_enabled": memory_yara_enabled,
+        "memory_yara_preflight": memory_yara_preflight,
+        "memory_yara_summary": memory_yara_summary,
     }
 
     _emit(status_cb, "Writing final run summary...")

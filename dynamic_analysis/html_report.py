@@ -537,12 +537,19 @@ def _telemetry_coverage_table(summary: dict[str, Any]) -> str:
     )
     pcap_ran = bool((summary.get("pcap_capture", {}) or {}).get("pcap_exists"))
     fakenet_ran = bool((summary.get("fakenet_summary", {}) or {}).get("parsed"))
+    memory_ran = bool((summary.get("memory_summary", {}) or {}).get("collected"))
 
     data = {
         "Procmon": "Collected" if summary.get("procmon_enabled") else "Disabled for this run",
         "Sysmon": describe("sysmon_enabled", "sysmon_preflight", sysmon_ran),
         "Packet capture": describe("pcap_enabled", "pcap_preflight", pcap_ran),
         "Simulated internet": describe("fakenet_enabled", "fakenet_preflight", fakenet_ran),
+        "Process memory": describe("memory_dump_enabled", "memory_preflight", memory_ran),
+        "Memory YARA": describe(
+            "memory_yara_enabled",
+            "memory_yara_preflight",
+            bool((summary.get("memory_yara_summary", {}) or {}).get("scanned")),
+        ),
     }
 
     isolation = summary.get("network_isolation", {}) or {}
@@ -593,6 +600,176 @@ def _containment_section(summary: dict[str, Any]) -> str:
       {_dict_list_table("Egress Paths", rows)}
     </section>
     """
+
+
+def _memory_dump_rows(memory: dict[str, Any]) -> list[dict[str, Any]]:
+    """Dump rows trimmed for display.
+
+    The full dump path repeats the same long case directory on every row and
+    pushes the table into horizontal scrolling for no benefit -- the filename is
+    the part an analyst carries over to a scanner. The complete path stays in
+    memory_dumps.json.
+    """
+    rows: list[dict[str, Any]] = []
+    for dump in memory.get("dumps", []) or []:
+        row = {key: value for key, value in dump.items() if key != "path"}
+        row["file"] = Path(str(dump.get("path", ""))).name
+        rows.append(row)
+    return rows
+
+
+def _memory_sections(summary: dict[str, Any]) -> str:
+    """Which process images were captured, and what remains scannable.
+
+    Until the YARA pass lands these dumps carry no verdict of their own, so the
+    section describes coverage: what was dumped, what was skipped, and why.
+    Reporting a skipped process is the point -- a dump that never happened is
+    otherwise indistinguishable from one that found nothing.
+    """
+    memory = summary.get("memory_summary", {}) or {}
+    if not memory:
+        return ""
+
+    counts = memory.get("counts", {}) or {}
+    preflight = summary.get("memory_preflight", {}) or {}
+
+    if not counts.get("dumps_attempted"):
+        if not summary.get("memory_dump_enabled"):
+            return ""
+        note = preflight.get("note", "") or (
+            "No process from the sample tree was alive when a dump was due. "
+            "Short-lived samples exit before the configured offset; lower it, "
+            "or use the deep profile, which dumps earlier."
+        )
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Process Memory</h2>
+        {_section_badge("Dumps", 0)}
+      </div>
+      <p class="muted">{_esc(note)}</p>
+    </section>
+    """
+
+    sections = [
+        _kv_table(
+            "Process Memory Dumps",
+            {
+                "Processes observed": counts.get("processes_observed", 0),
+                "Dumps attempted": counts.get("dumps_attempted", 0),
+                "Dumps succeeded": counts.get("dumps_succeeded", 0),
+                "Dumps skipped": counts.get("dumps_skipped", 0),
+                "Total size (MB)": counts.get("total_mb", 0),
+                "Dump offsets (s)": ", ".join(
+                    str(o) for o in (summary.get("memory_dump_offsets", []) or [])
+                ),
+            },
+            _section_badge("Written", counts.get("dumps_succeeded", 0)),
+        ),
+        _dict_list_table("Captured Process Images", _memory_dump_rows(memory)),
+    ]
+
+    if memory.get("skipped"):
+        sections.append(
+            _dict_list_table("Processes Not Dumped", memory.get("skipped", []) or [])
+        )
+
+    if memory.get("failures"):
+        sections.append(
+            _dict_list_table(
+                "Failed Dumps", memory.get("failures", []) or [], emphasize=True
+            )
+        )
+
+    sections.append(_memory_yara_sections(summary))
+    return "\n".join(section for section in sections if section)
+
+
+def _memory_yara_sections(summary: dict[str, Any]) -> str:
+    """YARA results over the dumps, led by the memory-versus-disk difference."""
+    scan = summary.get("memory_yara_summary", {}) or {}
+
+    if not scan.get("scanned"):
+        if not summary.get("memory_yara_enabled"):
+            return ""
+        preflight = summary.get("memory_yara_preflight", {}) or {}
+        note = scan.get("error") or preflight.get("note", "")
+        if not note:
+            return ""
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Memory YARA</h2>
+        {_section_badge("Scanned", 0)}
+      </div>
+      <p class="muted">{_esc(note)}</p>
+      <p class="muted">
+        The dumps were kept and can be scanned manually.
+      </p>
+    </section>
+    """
+
+    counts = scan.get("counts", {}) or {}
+    memory_only = scan.get("memory_only_rules", []) or []
+
+    sections = []
+
+    # Led with, and flagged, because it is the finding the whole tier exists to
+    # produce: a rule that fires against memory and not against the file means
+    # the payload was packed or encrypted at rest.
+    if memory_only:
+        sections.append(f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Matched In Memory But Not On Disk</h2>
+        {_section_badge("Rules", len(memory_only))}
+      </div>
+      <p>
+        These rules matched a process's memory while the sample on disk did not
+        match them. That difference is a payload that was packed, encrypted or
+        downloaded, and became readable only once the process was running.
+      </p>
+      <ul>{''.join(f'<li>{_esc(rule)}</li>' for rule in memory_only)}</ul>
+    </section>
+    """)
+
+    sections.append(
+        _kv_table(
+            "Memory YARA Summary",
+            {
+                "Dumps scanned": counts.get("dumps_scanned", 0),
+                "Dumps with matches": counts.get("dumps_with_matches", 0),
+                "Dumps failed to scan": counts.get("dumps_failed", 0),
+                "Total matches": counts.get("total_matches", 0),
+                "Distinct rules in memory": counts.get("memory_rules", 0),
+                "Distinct rules on disk": counts.get("disk_rules", 0),
+                "Rules only in memory": counts.get("memory_only_rules", 0),
+                "Rule files": scan.get("rule_file_count", 0),
+            },
+            _section_badge("Memory-only", len(memory_only)),
+        )
+    )
+
+    sections.append(_dict_list_table("Per-Dump YARA Results", scan.get("per_dump", []) or []))
+
+    if scan.get("disk_rules"):
+        sections.append(
+            _list_section(
+                "Rules Also Matching The Sample On Disk",
+                list(scan.get("disk_rules", []) or []),
+                empty_text="None",
+            )
+        )
+
+    if scan.get("note"):
+        sections.append(f"""
+    <section class="card">
+      <div class="section-head"><h2>Reading These Results</h2></div>
+      <p class="muted">{_esc(scan["note"])}</p>
+    </section>
+    """)
+
+    return "\n".join(sections)
 
 
 def _sysmon_sections(summary: dict[str, Any]) -> str:
@@ -958,6 +1135,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_list_section("Highlights", findings.get("highlights", []), emphasize=True, empty_text="No high-priority highlights were generated.")}
 {_sysmon_sections(summary)}
 {_network_sections(summary)}
+{_memory_sections(summary)}
 {_autoruns_suspicious_sections(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}
 {_dict_list_table("Top Network Processes", findings.get("top_network_processes", []))}

@@ -176,10 +176,22 @@ class LauncherWindow(ttk.Frame):
             font=T.f_subheading(), anchor="w", justify="left",
         ).pack(side="left", pady=(4, 0))
 
-        tk.Label(
+        desc_label = tk.Label(
             body, text=desc, bg=T.SURFACE, fg=T.TEXT_MUTED, font=T.f_small(),
             anchor="w", justify="left", wraplength=290,
-        ).pack(anchor="w", fill="x", pady=(T.SPACE_MD, T.SPACE_LG))
+        )
+        desc_label.pack(anchor="w", fill="x", pady=(T.SPACE_MD, T.SPACE_LG))
+
+        # Wrap to the card's real width instead of a fixed 290px. The cards are
+        # a third of the window each, so on any reasonably sized window the fixed
+        # value broke the copy into a narrow column with a wide empty gutter
+        # beside it, and made every card taller than its content needed.
+        def rewrap(event, label=desc_label):
+            width = event.width - 2 * (T.SPACE_LG + 4) - T.SPACE_SM
+            if width > 80:
+                label.configure(wraplength=width)
+
+        card.bind("<Configure>", rewrap, add="+")
 
         RoundedButton(
             body,

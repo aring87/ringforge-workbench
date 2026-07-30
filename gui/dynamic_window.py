@@ -110,6 +110,13 @@ class DynamicAnalysisWindow(tk.Toplevel):
             value=cfg.get("dynamic_output_dir", str(default_dynamic_output))
         )
 
+        # The case folder follows the selected sample until the analyst chooses
+        # one explicitly. Without this, a case folder left over from the previous
+        # run silently collects the next sample's results, which is what the
+        # mismatch warning exists to catch -- better to get it right than to warn
+        # about it.
+        self._case_dir_manual = bool(cfg.get("dynamic_case_dir_manual", False))
+
         self.timeout_var = tk.IntVar(value=int(cfg.get("dynamic_timeout_seconds", 30)))
         self.procmon_enabled_var = tk.BooleanVar(value=bool(cfg.get("dynamic_procmon_enabled", True)))
         
@@ -146,6 +153,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.fakenet_enabled_var = tk.BooleanVar(
             value=bool(cfg.get("dynamic_fakenet_enabled", False))
+        )
+        self.memory_dump_enabled_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_memory_dump_enabled", True))
+        )
+        self.memory_yara_enabled_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_memory_yara_enabled", True))
         )
         self.fakenet_path_var = tk.StringVar(
             value=cfg.get("dynamic_fakenet_path", str(project_root / "tools" / "fakenet" / "fakenet.exe"))
@@ -188,6 +201,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self._build_ui()
         self._reset_progress()
         self._refresh_summary_from_inputs()
+        self._enable_case_auto_follow()
         self.after(150, self._drain_output)
 
         self.grab_set()
@@ -342,6 +356,58 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.dynamic_output_dir_var.set(str(dynamic_output))
 
         return case_home, dynamic_output
+
+    def _enable_case_auto_follow(self) -> None:
+        """Keep the case folder pointed at the selected sample.
+
+        Registered after the UI exists, so the trace never fires against
+        half-built widgets. It watches the variable rather than hooking the
+        Browse button because a path is just as often typed or pasted in, and
+        that is exactly the route that used to leave the previous run's case
+        folder selected.
+        """
+        try:
+            self.sample_var.trace_add("write", self._on_sample_changed)
+        except Exception:
+            # Tk 8.5 and earlier. Auto-follow is a convenience, so losing it is
+            # not worth failing the window over.
+            pass
+
+        # Reconcile the restored settings once. The trace only fires on change,
+        # so a saved sample paired with the previous run's case folder would
+        # otherwise stay mismatched until the sample was edited again.
+        self._sync_case_dir_to_sample()
+
+    def _on_sample_changed(self, *_args) -> None:
+        self._sync_case_dir_to_sample()
+
+    def _sync_case_dir_to_sample(self, force: bool = False) -> None:
+        """Point the case folder at cases/<sample name>.
+
+        Does nothing once the analyst has picked a folder by hand: an explicit
+        choice outranks the convention, including the case where several samples
+        genuinely belong to one case.
+        """
+        if self._case_dir_manual and not force:
+            return
+
+        sample = self.sample_var.get().strip()
+        if not sample:
+            return
+
+        case_name = self._safe_case_name(Path(sample).stem)
+        new_case_home = self._project_root() / "cases" / case_name
+
+        if str(new_case_home) == self.case_dir_var.get().strip():
+            return
+
+        self.case_dir_var.set(str(new_case_home))
+        self._sync_dynamic_output_to_case()
+
+        try:
+            self._refresh_summary_from_inputs()
+        except Exception:
+            pass
 
     def _sync_dynamic_output_to_case(self):
         """
@@ -869,6 +935,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 summary.get("sysmon_enabled"),
                 summary.get("pcap_enabled"),
                 summary.get("fakenet_enabled"),
+                summary.get("memory_dump_enabled"),
             )
         )
         if not requested:
@@ -881,6 +948,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 summary.get("sysmon_enabled") and summary.get("sysmon_preflight", {}).get("available"),
                 summary.get("pcap_enabled") and summary.get("pcap_capture", {}).get("pcap_exists"),
                 summary.get("fakenet_enabled") and summary.get("fakenet_summary", {}).get("parsed"),
+                summary.get("memory_dump_enabled") and summary.get("memory_dump_start", {}).get("started"),
             )
         )
         self._set_step("Telemetry start", 100, "done" if started else "missing tool")
@@ -890,6 +958,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 summary.get("sysmon_collection", {}).get("success"),
                 summary.get("network_summary", {}).get("parsed"),
                 summary.get("fakenet_summary", {}).get("parsed"),
+                summary.get("memory_summary", {}).get("collected"),
+                summary.get("memory_yara_summary", {}).get("scanned"),
             )
         )
         self._set_step("Telemetry collect", 100, "done" if collected else "n/a")
@@ -933,6 +1003,38 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 f"{counts.get('http_requests', 0)} HTTP served"
             )
 
+        memory = summary.get("memory_summary") or {}
+        memory_counts = memory.get("counts", {})
+        if memory_counts.get("processes_observed"):
+            lines.append(
+                f"  Memory: {memory_counts.get('dumps_succeeded', 0)} dump(s) from "
+                f"{memory_counts.get('processes_observed', 0)} process(es), "
+                f"{memory_counts.get('total_mb', 0)} MB"
+            )
+            for dump in (memory.get("dumps") or [])[:5]:
+                lines.append(
+                    f"    pid {dump.get('pid')} {dump.get('name', '?')} "
+                    f"+{dump.get('offset_seconds')}s -> {dump.get('size_mb', 0)} MB"
+                )
+            for failure in (memory.get("failures") or [])[:3]:
+                lines.append(
+                    f"    [failed] pid {failure.get('pid')}: {failure.get('error', '')[:120]}"
+                )
+
+        memory_yara = summary.get("memory_yara_summary") or {}
+        if memory_yara.get("scanned"):
+            yara_counts = memory_yara.get("counts", {})
+            lines.append(
+                f"  Memory YARA: {yara_counts.get('total_matches', 0)} match(es) across "
+                f"{yara_counts.get('dumps_scanned', 0)} dump(s), "
+                f"{yara_counts.get('memory_only_rules', 0)} memory-only rule(s)"
+            )
+            # Led with because it is the finding the dumps exist to produce.
+            for rule in (memory_yara.get("memory_only_rules") or [])[:8]:
+                lines.append(f"    [memory-only] {rule}")
+        elif memory_yara.get("error"):
+            lines.append(f"  Memory YARA: not scanned - {memory_yara['error']}")
+
         if not lines:
             return
 
@@ -975,6 +1077,22 @@ class DynamicAnalysisWindow(tk.Toplevel):
             parent_bg=T.BG,
         ).pack(side="left", padx=(14, 0))
 
+        Checkbox(
+            row,
+            "Memory dump",
+            self.memory_dump_enabled_var,
+            command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
+        ).pack(side="left", padx=(14, 0))
+
+        Checkbox(
+            row,
+            "Memory YARA",
+            self.memory_yara_enabled_var,
+            command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
+        ).pack(side="left", padx=(14, 0))
+
         self.telemetry_status_label = ttk.Label(
             row, text="", style="Muted.TLabel"
         )
@@ -997,15 +1115,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
             from dynamic_analysis.sysmon_collector import sysmon_status
             from dynamic_analysis.network_capture import capture_status, network_isolation_status
             from dynamic_analysis.fakenet_runner import fakenet_status
+            from dynamic_analysis.memory_dump import memory_dump_status
+            from dynamic_analysis.memory_yara import memory_yara_status
 
             self._sysmon_preflight = sysmon_status()
             self._pcap_preflight = capture_status()
             self._fakenet_preflight = fakenet_status(self.fakenet_path_var.get().strip() or None)
+            self._memory_preflight = memory_dump_status()
+            self._memory_yara_preflight = memory_yara_status()
             self._isolation = network_isolation_status()
         except Exception as error:
             self._sysmon_preflight = {"available": False, "note": str(error)}
             self._pcap_preflight = {"available": False, "note": ""}
             self._fakenet_preflight = {"available": False, "note": ""}
+            self._memory_preflight = {"available": False, "note": ""}
+            self._memory_yara_preflight = {"available": False, "note": ""}
             self._isolation = {"level": "unknown", "note": "", "egress_count": 0}
 
         def mark(label, status):
@@ -1015,6 +1139,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
             mark("Sysmon", self._sysmon_preflight),
             mark("Capture", self._pcap_preflight),
             mark("FakeNet", self._fakenet_preflight),
+            mark("Memory", self._memory_preflight),
+            mark("Mem YARA", self._memory_yara_preflight),
         ]
         if not self._is_running_as_admin():
             parts.append("(capture needs admin)")
@@ -1141,6 +1267,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 ("Sysmon", self.sysmon_enabled_var),
                 ("PCAP", self.pcap_enabled_var),
                 ("FakeNet", self.fakenet_enabled_var),
+                ("Memory", self.memory_dump_enabled_var),
+                ("MemYARA", self.memory_yara_enabled_var),
             )
             if var.get()
         ]
@@ -1151,6 +1279,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self.app.cfg = {}
 
         self.app.cfg["dynamic_case_dir"] = self.case_dir_var.get().strip()
+        self.app.cfg["dynamic_case_dir_manual"] = bool(self._case_dir_manual)
         self.app.cfg["dynamic_output_dir"] = self.dynamic_output_dir_var.get().strip()
         self.app.cfg["dynamic_timeout_seconds"] = int(self.timeout_var.get())
         self.app.cfg["dynamic_procmon_enabled"] = bool(self.procmon_enabled_var.get())
@@ -1163,6 +1292,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_pcap_enabled"] = bool(self.pcap_enabled_var.get())
         self.app.cfg["dynamic_fakenet_enabled"] = bool(self.fakenet_enabled_var.get())
         self.app.cfg["dynamic_fakenet_path"] = self.fakenet_path_var.get().strip()
+        self.app.cfg["dynamic_memory_dump_enabled"] = bool(self.memory_dump_enabled_var.get())
+        self.app.cfg["dynamic_memory_yara_enabled"] = bool(self.memory_yara_enabled_var.get())
 
         config_path = self._project_root() / "config.json"
         config_path.write_text(json.dumps(self.app.cfg, indent=2), encoding="utf-8")
@@ -1182,13 +1313,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         if chosen:
             sample = Path(chosen)
+            # Setting this fires the auto-follow trace, which repoints the case
+            # folder unless the analyst has chosen one by hand.
             self.sample_var.set(str(sample))
-
-            # If case folder is still generic/default, update it based on sample name.
-            case_home = self._get_case_home_dir()
-            if case_home.name in {"sample", "dynamic_case"}:
-                new_case_home = self._project_root() / "cases" / self._safe_case_name(sample.stem)
-                self.case_dir_var.set(str(new_case_home))
 
             self._sync_dynamic_output_to_case()
             self._refresh_summary_from_inputs()
@@ -1248,6 +1375,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
             if case_home.name == "dynamic_analysis":
                 case_home = case_home.parent
 
+            # A case carried over from the launcher is an explicit association,
+            # so it outranks the sample-name convention.
+            self._case_dir_manual = True
             self.case_dir_var.set(str(case_home))
         else:
             app_case_var = getattr(self.app, "case_var", None)
@@ -1286,6 +1416,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
             parent=self,
         )
         if chosen:
+            # An explicit choice stops the case folder tracking the sample name.
+            self._case_dir_manual = True
             self.dynamic_output_dir_var.set(str(Path(chosen)))
             self._refresh_summary_from_inputs()
             self._save_cfg()
@@ -1546,8 +1678,6 @@ ul {{ margin-top: 8px; }}
         sample_stem = self._safe_case_name(sample.stem).lower()
         case_name = self._safe_case_name(case_home.name).lower()
 
-        generic_case_names = {"sample", "dynamic_case", "notepad"}
-
         if not sample_stem or not case_name:
             return True
 
@@ -1790,6 +1920,8 @@ ul {{ margin-top: 8px; }}
             "pcap_enabled": bool(self.pcap_enabled_var.get()),
             "fakenet_enabled": bool(self.fakenet_enabled_var.get()),
             "fakenet_path": self.fakenet_path_var.get().strip(),
+            "memory_dump_enabled": bool(self.memory_dump_enabled_var.get()),
+            "memory_yara_enabled": bool(self.memory_yara_enabled_var.get()),
         }
 
         self._save_cfg()
@@ -1819,7 +1951,9 @@ ul {{ margin-top: 8px; }}
             "end",
             f"  sysmon={config['sysmon_enabled']} "
             f"pcap={config['pcap_enabled']} "
-            f"fakenet={config['fakenet_enabled']}\n",
+            f"fakenet={config['fakenet_enabled']} "
+            f"memory_dump={config['memory_dump_enabled']} "
+            f"memory_yara={config['memory_yara_enabled']}\n",
         )
         self.output.insert("end", f"  admin={self._is_running_as_admin()}\n\n")
         self.output.see("end")

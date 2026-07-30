@@ -38,6 +38,14 @@ Thumbs.db
 tools/ghidra_12.0_PUBLIC/
 tools/capa-rules/
 
+# Tools installed into the VM by bootstrap_tools.ps1, not tracked here
+tools/procdump64.exe
+tools/procdump.exe
+
+# Process memory dumps. These contain the sample's unpacked payload verbatim,
+# so a stray commit publishes live malware.
+*.dmp
+
 # Malware samples (keep out of git)
 samples/
 
@@ -126,8 +134,18 @@ tools/*.txt
 # Keep Procmon configs tracked
 # -----------------------------
 !tools/procmon-configs/
-!tools/procmon-configs/*.pmctools/yara/
-tools/yara/
+!tools/procmon-configs/*.pmc
+
+# ----------------------------
+# YARA rules
+# ----------------------------
+# The downloaded ruleset is hundreds of files installed by
+# bootstrap_yara_rules.ps1, and the quarantine holds whatever failed to compile.
+# Neither belongs in git. tools/yara/local/ is hand-maintained and IS tracked,
+# so these name the subdirectories rather than tools/yara/ as a whole -- git
+# cannot re-include anything under an excluded parent directory.
+tools/yara/rules/
+tools/yara/_broken/
 
 # Local release packages
 release/

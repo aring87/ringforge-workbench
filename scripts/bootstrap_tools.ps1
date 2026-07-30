@@ -3,13 +3,17 @@
   Installs the tier-1 dynamic analysis telemetry tools into an analysis VM.
 
 .DESCRIPTION
-  Sets up the three tools that close the gaps Procmon cannot see:
+  Sets up the tools that close the gaps Procmon cannot see:
 
     Sysmon        process injection, image loads, WMI persistence, DNS queries
     Wireshark     dumpcap + tshark, and the Npcap driver, for full packet capture
     FakeNet-NG    a simulated internet so samples proceed through their real logic
+    ProcDump      process memory images, for scanning what a packer unpacked
 
-  All three install kernel-level drivers, and FakeNet installs a system-wide
+  Scanning those images also needs YARA rules, which this script does not
+  install. Run scripts\bootstrap_yara_rules.ps1 for those.
+
+  The first three install kernel-level drivers, and FakeNet installs a system-wide
   traffic diverter. This script is intended for a disposable analysis VM and
   refuses to run on what looks like physical hardware unless -Force is given.
 
@@ -30,6 +34,9 @@
 
 .PARAMETER SkipFakeNet
   Do not install FakeNet-NG.
+
+.PARAMETER SkipProcDump
+  Do not install ProcDump.
 
 .PARAMETER SysmonConfigUrl
   Sysmon configuration to install. Defaults to the SwiftOnSecurity config, which
@@ -53,6 +60,7 @@ param(
   [switch]$SkipSysmon,
   [switch]$SkipWireshark,
   [switch]$SkipFakeNet,
+  [switch]$SkipProcDump,
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
   [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
   [switch]$AddExclusions,
@@ -245,6 +253,54 @@ function Install-Sysmon {
   }
 }
 
+function Install-ProcDump {
+  param(
+    [Parameter(Mandatory=$true)][string]$ToolsDir,
+    [Parameter(Mandatory=$true)][string]$TempDir
+  )
+
+  Write-Step "ProcDump"
+
+  $target = Join-Path $ToolsDir "procdump64.exe"
+  if (Test-Path -LiteralPath $target) {
+    Write-Ok "ProcDump already present: $target"
+    return
+  }
+
+  $zip = Join-Path $TempDir "Procdump.zip"
+  $extract = Join-Path $TempDir "procdump"
+
+  Write-Info "Downloading ProcDump from Sysinternals..."
+  Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Procdump.zip" -OutFile $zip
+  Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+
+  # procdump64.exe specifically: the 32-bit build cannot dump a 64-bit process,
+  # and a partial dump of the wrong bitness scans as though the sample did
+  # nothing.
+  $exe = Get-ChildItem -Path $extract -Filter "procdump64.exe" -Recurse -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+
+  if (-not $exe) {
+    Write-Warn "procdump64.exe was not found in the downloaded archive."
+    Write-Warn "Download it manually from https://learn.microsoft.com/sysinternals/downloads/procdump"
+    Write-Warn "and place procdump64.exe in $ToolsDir"
+    return
+  }
+
+  Copy-Item -LiteralPath $exe.FullName -Destination $target -Force
+  Write-Ok "ProcDump binary: $target"
+
+  # ProcDump prompts for the EULA on first run and would otherwise block the
+  # first detonation on a dialog nobody is watching. The workbench passes
+  # -accepteula on every invocation, but accepting it once here also covers
+  # manual use.
+  try {
+    & $target -accepteula -? | Out-Null
+  } catch {
+    Write-Verbose "ProcDump EULA pre-accept returned: $($_.Exception.Message)"
+  }
+}
+
 function Install-Wireshark {
   param([Parameter(Mandatory=$true)][string]$TempDir)
 
@@ -400,7 +456,9 @@ function Invoke-Preflight {
     "from dynamic_analysis.sysmon_collector import sysmon_status",
     "from dynamic_analysis.network_capture import capture_status",
     "from dynamic_analysis.fakenet_runner import fakenet_status",
-    "checks = [('Sysmon', sysmon_status()), ('Packet capture', capture_status()), ('Simulated internet', fakenet_status())]",
+    "from dynamic_analysis.memory_dump import memory_dump_status",
+    "from dynamic_analysis.memory_yara import memory_yara_status",
+    "checks = [('Sysmon', sysmon_status()), ('Packet capture', capture_status()), ('Simulated internet', fakenet_status()), ('Process memory', memory_dump_status()), ('Memory YARA', memory_yara_status())]",
     "ready = 0",
     "for name, status in checks:",
     "    ok = bool(status.get('available'))",
@@ -410,7 +468,7 @@ function Invoke-Preflight {
     "    if note:",
     "        print('         ' + note)",
     "print()",
-    "print('%d of %d tier-1 sources ready.' % (ready, len(checks)))",
+    "print('%d of %d telemetry sources ready.' % (ready, len(checks)))",
     "sys.exit(0 if ready == len(checks) else 2)"
   )
 
@@ -420,7 +478,7 @@ function Invoke-Preflight {
     & $python.Source $verifier
     $code = $LASTEXITCODE
     if ($code -eq 0) {
-      Write-Ok "All tier-1 telemetry sources are ready."
+      Write-Ok "All telemetry sources are ready."
     } else {
       Write-Warn "Some sources are not ready. See the notes above."
     }
@@ -484,6 +542,9 @@ try {
 
   if (-not $SkipFakeNet)   { Install-FakeNet -ToolsDir $toolsDir -TempDir $tempDir -Repo $FakeNetRepo }
   else                     { Write-Step "FakeNet-NG"; Write-Warn "Skipped by request." }
+
+  if (-not $SkipProcDump)  { Install-ProcDump -ToolsDir $toolsDir -TempDir $tempDir }
+  else                     { Write-Step "ProcDump"; Write-Warn "Skipped by request." }
 
   Invoke-Preflight -RepoRoot $repoRoot
 

@@ -1,0 +1,659 @@
+"""Process memory dumping for dynamic analysis runs.
+
+Everything in tier 1 observes a sample from the outside: Procmon records the
+syscalls, Sysmon records the injection, the pcap records the traffic. None of
+them can see what the sample decrypted into its own address space. A packed
+loader that unpacks, runs, and exits leaves a disk sample that matches nothing
+and a memory image that matches immediately -- which is the whole reason to
+dump.
+
+Unlike every other collector here, this one cannot be a start-before /
+stop-after pair. A memory dump is only meaningful while the process is alive,
+so the session runs a watcher thread alongside the detonation, learns the
+sample's PID from the orchestrator once it launches, and dumps at fixed offsets
+into the observation window.
+
+Dumping is done with Sysinternals ProcDump rather than MiniDumpWriteDump
+through ctypes. The deciding reason is WOW64: a 64-bit Python dumping a 32-bit
+target through the raw API produces a truncated dump that looks valid and scans
+badly, and a silently bad dump is worse than no dump. ProcDump handles the
+bitness mismatch itself.
+
+Nothing here raises into the run. Every entry point degrades to a status dict
+so a missing ProcDump, a denied OpenProcess, or a process that exited early
+costs the dump and nothing else.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from dynamic_analysis.sysmon_collector import is_elevated
+from dynamic_analysis.utils import sha256_file
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - psutil is a declared dependency
+    psutil = None
+
+StatusCallback = Optional[Callable[[str], None]]
+
+#: How often the watcher re-reads the sample's process tree. Descendants have to
+#: be recorded while they are alive: a dropper that spawns a child and exits
+#: leaves nothing to enumerate from, so the tree is tracked continuously rather
+#: than looked up when a dump is due.
+_POLL_INTERVAL_SECONDS = 0.5
+
+#: Default guard rails. A full (-ma) dump is the size of the working set, so an
+#: unbounded run against something chatty fills the case directory with
+#: gigabytes of browser heap.
+DEFAULT_MAX_PROCESSES = 5
+DEFAULT_MAX_WORKING_SET_MB = 1024
+DEFAULT_MAX_TOTAL_MB = 4096
+
+#: Per-process ProcDump timeout. Full dumps of a large working set are slow on
+#: a VM's virtual disk, but a hang here would hold up the whole run teardown.
+_DUMP_TIMEOUT_SECONDS = 300
+
+
+class MemoryDumpError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Tool discovery
+# ---------------------------------------------------------------------------
+
+def _tools_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "tools"
+
+
+def find_procdump(configured: str | Path | None = None) -> Optional[Path]:
+    """Locate a ProcDump binary. Returns ``None`` when not found.
+
+    The 64-bit build is preferred: it can dump both 32- and 64-bit targets,
+    while procdump.exe cannot dump a 64-bit process.
+    """
+    if configured:
+        candidate = Path(configured)
+        if candidate.exists():
+            return candidate
+
+    tools = _tools_dir()
+    for name in ("procdump64.exe", "procdump.exe"):
+        candidate = tools / name
+        if candidate.exists():
+            return candidate
+
+    for name in ("procdump64.exe", "procdump.exe"):
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+
+    return None
+
+
+def memory_dump_status(configured: str | Path | None = None) -> dict[str, Any]:
+    """Preflight summary describing whether process memory can be dumped."""
+    procdump = find_procdump(configured)
+    elevated = is_elevated()
+    have_psutil = psutil is not None
+
+    available = procdump is not None and elevated
+
+    if procdump is None:
+        note = (
+            "ProcDump not found. Place procdump64.exe under tools/ in the "
+            "analysis VM (bootstrap_tools.ps1 installs it) to enable process "
+            "memory dumps."
+        )
+    elif not elevated:
+        note = (
+            "ProcDump found, but the workbench is not running as Administrator. "
+            "Opening another process for a full memory dump requires debug "
+            "privilege. Relaunch the workbench elevated."
+        )
+    else:
+        note = "ProcDump is available; process memory will be dumped during the run."
+
+    return {
+        "available": bool(available),
+        "procdump_path": str(procdump) if procdump else "",
+        "elevated": bool(elevated),
+        "psutil_available": have_psutil,
+        "note": note,
+        "tree_note": (
+            ""
+            if have_psutil
+            else "psutil is not installed; only the launched process will be dumped, "
+                 "not the children it spawns."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dump lifecycle
+# ---------------------------------------------------------------------------
+
+class MemoryDumpSession:
+    """Dumps the sample's process tree at fixed offsets into the run.
+
+    Held as an object because the watcher thread has to outlive the call that
+    starts it and span the whole detonation, the same way ``PacketCapture``
+    holds its capture process.
+
+    Usage from the orchestrator::
+
+        session = MemoryDumpSession(output_dir=..., dump_offsets=[25])
+        session.start()                     # before the sample launches
+        ...                                 # run_sample(on_launch=session.set_root_pid)
+        result = session.stop()             # after observation ends
+    """
+
+    def __init__(
+        self,
+        output_dir: str | Path,
+        procdump_path: str | Path | None = None,
+        dump_offsets: list[int] | None = None,
+        max_processes: int = DEFAULT_MAX_PROCESSES,
+        max_working_set_mb: int = DEFAULT_MAX_WORKING_SET_MB,
+        max_total_mb: int = DEFAULT_MAX_TOTAL_MB,
+        status_cb: StatusCallback = None,
+    ):
+        self.output_dir = Path(output_dir)
+        self.procdump_path = procdump_path
+        self.dump_offsets = sorted(set(int(o) for o in (dump_offsets or [25]) if int(o) >= 0))
+        self.max_processes = int(max_processes)
+        self.max_working_set_mb = int(max_working_set_mb)
+        self.max_total_mb = int(max_total_mb)
+        self.status_cb = status_cb
+
+        self.procdump: Optional[Path] = None
+        self.started = False
+        self.error = ""
+
+        self._root_pid: Optional[int] = None
+        self._root_pid_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+        self._root_exit_handled = False
+
+        # PID -> descriptor, accumulated while processes are alive so a tree
+        # that has already collapsed can still be reported.
+        self._known: dict[int, dict[str, Any]] = {}
+
+        # PID -> live psutil handle, captured while the process was running.
+        # Liveness is checked through these rather than by re-opening the PID:
+        # Windows recycles PIDs, and a recycled one would otherwise read as the
+        # sample still running and get dumped in its place.
+        self._procs: dict[int, Any] = {}
+        self._dumps: list[dict[str, Any]] = []
+        self._total_bytes = 0
+        self._skipped: list[dict[str, Any]] = []
+
+    # -- lifecycle --------------------------------------------------------
+
+    def start(self) -> dict[str, Any]:
+        """Start the watcher thread. Call before the sample is launched."""
+        self.procdump = find_procdump(self.procdump_path)
+        if self.procdump is None:
+            self.error = "procdump not found"
+            return {"started": False, "error": self.error, "procdump_path": ""}
+
+        if not is_elevated():
+            self.error = "not running as Administrator"
+            return {
+                "started": False,
+                "error": self.error,
+                "procdump_path": str(self.procdump),
+            }
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._thread = threading.Thread(
+            target=self._watch,
+            name="ringforge-memory-dump",
+            daemon=True,
+        )
+        self._thread.start()
+        self.started = True
+
+        return {
+            "started": True,
+            "error": "",
+            "procdump_path": str(self.procdump),
+            "dump_offsets": list(self.dump_offsets),
+        }
+
+    def set_root_pid(self, pid: int) -> None:
+        """Hand the watcher the sample's PID. Safe to call from any thread.
+
+        The handle is opened here, on the caller's thread, because this runs
+        microseconds after Popen returns. Deferring it to the watcher's first
+        poll is late enough that a fast sample can already be gone, and a
+        handle opened after the fact carries no proof it is the same process.
+        """
+        with self._lock:
+            if self._root_pid is not None:
+                return
+            self._root_pid = int(pid)
+            if psutil is not None:
+                try:
+                    self._procs[int(pid)] = psutil.Process(int(pid))
+                except Exception:
+                    pass
+        self._root_pid_event.set()
+
+    def stop(self, timeout: float = _DUMP_TIMEOUT_SECONDS + 30) -> dict[str, Any]:
+        """Stop watching and return everything collected."""
+        self._stop_event.set()
+        # A watcher blocked waiting for a PID that never arrives -- a launch that
+        # threw -- must not hold up teardown.
+        self._root_pid_event.set()
+
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+        with self._lock:
+            dumps = list(self._dumps)
+            skipped = list(self._skipped)
+            observed = list(self._known.values())
+            total_bytes = self._total_bytes
+
+        successful = [d for d in dumps if d.get("success")]
+
+        return {
+            "stopped": True,
+            "started": self.started,
+            "error": self.error,
+            "procdump_path": str(self.procdump) if self.procdump else "",
+            "root_pid": self._root_pid,
+            "dump_offsets": list(self.dump_offsets),
+            "dumps": dumps,
+            "skipped": skipped,
+            "observed_processes": observed,
+            "counts": {
+                "processes_observed": len(observed),
+                "dumps_attempted": len(dumps),
+                "dumps_succeeded": len(successful),
+                "dumps_skipped": len(skipped),
+                "total_bytes": total_bytes,
+            },
+        }
+
+    # -- watcher ----------------------------------------------------------
+
+    def _emit(self, message: str) -> None:
+        if self.status_cb:
+            self.status_cb(message)
+
+    def _watch(self) -> None:
+        """Track the sample's process tree and dump it at each offset."""
+        # The offsets are relative to the sample launching, not to this thread
+        # starting, so the clock does not begin until the PID arrives.
+        self._root_pid_event.wait()
+        if self._stop_event.is_set() or self._root_pid is None:
+            return
+
+        launched_at = time.monotonic()
+        pending = list(self.dump_offsets)
+
+        while pending and not self._stop_event.is_set():
+            self._refresh_tree()
+
+            elapsed = time.monotonic() - launched_at
+            root_alive = self._pid_alive(self._root_pid)
+            due = [o for o in pending if elapsed >= o]
+
+            # The root exiting is the last moment anything can be salvaged from
+            # a tree that may be about to disappear entirely, so it triggers an
+            # extra dump of whatever is still alive.
+            #
+            # Deliberately an addition rather than a substitution. Consuming the
+            # next scheduled offset instead would dump a surviving child at the
+            # moment its parent died -- typically seconds in, before it has
+            # unpacked anything -- and then never again at the offset that was
+            # chosen precisely because it is late enough to be interesting.
+            #
+            # Skipped when a scheduled dump is already due on this same tick,
+            # which would otherwise write two near-identical images.
+            if not root_alive and not self._root_exit_handled:
+                self._root_exit_handled = True
+                if not due:
+                    self._dump_tree(
+                        offset=int(elapsed),
+                        elapsed=elapsed,
+                        trigger="process-exit",
+                    )
+
+            for offset in due:
+                pending.remove(offset)
+                if self._stop_event.is_set():
+                    return
+                self._dump_tree(offset=offset, elapsed=elapsed, trigger="scheduled")
+
+            # Nothing from the sample tree is running any more, so no future
+            # offset can produce anything.
+            if not self._dump_targets():
+                return
+
+            self._stop_event.wait(_POLL_INTERVAL_SECONDS)
+
+    def _pid_alive(self, pid: int | None) -> bool:
+        if pid is None:
+            return False
+        if psutil is None:
+            # Without psutil there is no safe liveness check, so assume alive
+            # and let ProcDump report the failure if the process has gone.
+            return True
+
+        with self._lock:
+            process = self._procs.get(int(pid))
+        if process is None:
+            return False
+
+        try:
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
+    def _refresh_tree(self) -> None:
+        """Record the root process and its descendants as they appear."""
+        root_pid = self._root_pid
+        if root_pid is None:
+            return
+
+        if psutil is None:
+            with self._lock:
+                self._known.setdefault(
+                    root_pid,
+                    {"pid": root_pid, "name": "", "image": "", "parent_pid": None},
+                )
+            return
+
+        # Walk out from every process still tracked, not just the root. A
+        # dropper that launches a child and exits is the common shape, and
+        # anchoring the walk on the root alone loses the grandchildren it
+        # spawns after the parent is already gone.
+        with self._lock:
+            handles = list(self._procs.values())
+
+        candidates: list[Any] = []
+        seen: set[int] = set()
+        for handle in handles:
+            for process in [handle] + self._children_of(handle):
+                if process.pid not in seen:
+                    seen.add(process.pid)
+                    candidates.append(process)
+
+        for process in candidates:
+            try:
+                info = {
+                    "pid": process.pid,
+                    "name": process.name(),
+                    "image": process.exe(),
+                    "parent_pid": process.ppid(),
+                }
+            except Exception:
+                # A process that vanished between enumeration and inspection, or
+                # one whose image path is unreadable, is still worth recording.
+                try:
+                    info = {"pid": process.pid, "name": "", "image": "", "parent_pid": None}
+                except Exception:
+                    continue
+
+            with self._lock:
+                self._procs.setdefault(info["pid"], process)
+                existing = self._known.get(info["pid"])
+                if existing is None:
+                    self._known[info["pid"]] = info
+                else:
+                    # Fill in details that were unreadable on an earlier pass.
+                    for key, value in info.items():
+                        if value and not existing.get(key):
+                            existing[key] = value
+
+    @staticmethod
+    def _children_of(handle: Any) -> list[Any]:
+        try:
+            return list(handle.children(recursive=True))
+        except Exception:
+            return []
+
+    def _dump_targets(self) -> list[dict[str, Any]]:
+        """Pick which live processes to dump, root first."""
+        with self._lock:
+            known = list(self._known.values())
+
+        root_pid = self._root_pid
+        live = [p for p in known if self._pid_alive(p["pid"])]
+
+        # Root first, then the rest in the order they were discovered, so a cap
+        # keeps the sample itself and its earliest children rather than an
+        # arbitrary slice.
+        live.sort(key=lambda p: (p["pid"] != root_pid, p["pid"]))
+        return live
+
+    def _working_set_mb(self, pid: int) -> int:
+        if psutil is None:
+            return 0
+        with self._lock:
+            process = self._procs.get(int(pid))
+        if process is None:
+            return 0
+        try:
+            return int(process.memory_info().rss / (1024 * 1024))
+        except Exception:
+            return 0
+
+    def _dump_tree(self, offset: int, elapsed: float, trigger: str) -> None:
+        targets = self._dump_targets()
+
+        if not targets:
+            self._emit(
+                f"Memory dump at +{int(elapsed)}s ({trigger}): "
+                "no live process remained from the sample."
+            )
+            return
+
+        self._emit(
+            f"Memory dump at +{int(elapsed)}s ({trigger}): "
+            f"{len(targets)} live process(es) from the sample tree."
+        )
+
+        dumped = 0
+        for target in targets:
+            if self._stop_event.is_set():
+                return
+
+            if dumped >= self.max_processes:
+                self._record_skip(target, offset, "process cap reached")
+                continue
+
+            with self._lock:
+                total_mb = self._total_bytes / (1024 * 1024)
+            if total_mb >= self.max_total_mb:
+                self._record_skip(target, offset, "total dump size cap reached")
+                continue
+
+            working_set = self._working_set_mb(target["pid"])
+            if working_set > self.max_working_set_mb:
+                self._record_skip(
+                    target,
+                    offset,
+                    f"working set {working_set} MB exceeds the {self.max_working_set_mb} MB limit",
+                )
+                continue
+
+            record = self._dump_one(target, offset, trigger)
+            with self._lock:
+                self._dumps.append(record)
+                self._total_bytes += int(record.get("size", 0) or 0)
+
+            if record.get("success"):
+                dumped += 1
+                self._emit(
+                    f"  dumped pid {record['pid']} ({record['name'] or '?'}) "
+                    f"-> {Path(record['path']).name} "
+                    f"({int(record.get('size', 0)) // (1024 * 1024)} MB)"
+                )
+            else:
+                self._emit(
+                    f"  dump failed for pid {record['pid']} "
+                    f"({record['name'] or '?'}): {record.get('error', 'unknown error')}"
+                )
+
+    def _record_skip(self, target: dict[str, Any], offset: int, reason: str) -> None:
+        with self._lock:
+            self._skipped.append(
+                {
+                    "pid": target["pid"],
+                    "name": target.get("name", ""),
+                    "offset_seconds": offset,
+                    "reason": reason,
+                }
+            )
+        self._emit(f"  skipped pid {target['pid']} ({target.get('name') or '?'}): {reason}")
+
+    def _dump_one(
+        self, target: dict[str, Any], offset: int, trigger: str = "scheduled"
+    ) -> dict[str, Any]:
+        pid = int(target["pid"])
+        name = target.get("name", "") or f"pid{pid}"
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+        # The trigger is part of the filename because an exit-triggered dump can
+        # land on the same whole second as a scheduled one, and the two are
+        # different evidence.
+        suffix = "_exit" if trigger == "process-exit" else ""
+        out_path = self.output_dir / f"{safe_name}_{pid}_t{offset}{suffix}.dmp"
+
+        record: dict[str, Any] = {
+            "pid": pid,
+            "name": target.get("name", ""),
+            "image": target.get("image", ""),
+            "parent_pid": target.get("parent_pid"),
+            "offset_seconds": offset,
+            "trigger": trigger,
+            "path": str(out_path),
+            "size": 0,
+            "sha256": "",
+            "success": False,
+            "returncode": None,
+            "duration_seconds": 0,
+            "error": "",
+        }
+
+        started = time.monotonic()
+        try:
+            result = subprocess.run(
+                [str(self.procdump), "-accepteula", "-ma", str(pid), str(out_path)],
+                capture_output=True,
+                text=True,
+                timeout=_DUMP_TIMEOUT_SECONDS,
+                errors="replace",
+            )
+            record["returncode"] = int(result.returncode)
+            record["stderr"] = (result.stderr or "").strip()[:2000]
+        except subprocess.TimeoutExpired:
+            record["error"] = f"procdump timed out after {_DUMP_TIMEOUT_SECONDS} seconds"
+            record["duration_seconds"] = int(time.monotonic() - started)
+            return record
+        except Exception as error:
+            record["error"] = str(error)
+            record["duration_seconds"] = int(time.monotonic() - started)
+            return record
+
+        record["duration_seconds"] = int(time.monotonic() - started)
+
+        # ProcDump's exit code is not a reliable success signal -- it reports the
+        # number of dumps written on some versions -- so the artifact decides.
+        if out_path.exists() and out_path.stat().st_size > 0:
+            record["size"] = out_path.stat().st_size
+            record["success"] = True
+            try:
+                record["sha256"] = sha256_file(out_path)
+            except Exception as error:
+                record["sha256_error"] = str(error)
+        else:
+            stdout = (result.stdout or "").strip()
+            record["error"] = (
+                record.get("stderr")
+                or stdout[-500:]
+                or f"procdump wrote no dump file (rc={result.returncode})"
+            )
+
+        return record
+
+
+# ---------------------------------------------------------------------------
+# Summarising
+# ---------------------------------------------------------------------------
+
+def summarize_memory_dumps(dump_result: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate a session result into the shape the run summary carries."""
+    if not isinstance(dump_result, dict):
+        return {"collected": False, "counts": {}, "dumps": []}
+
+    dumps = dump_result.get("dumps", []) or []
+    successful = [d for d in dumps if d.get("success")]
+    counts = dump_result.get("counts", {}) or {}
+
+    return {
+        "collected": bool(successful),
+        "counts": {
+            "processes_observed": int(counts.get("processes_observed", 0) or 0),
+            "dumps_attempted": len(dumps),
+            "dumps_succeeded": len(successful),
+            "dumps_skipped": int(counts.get("dumps_skipped", 0) or 0),
+            "total_mb": int(int(counts.get("total_bytes", 0) or 0) / (1024 * 1024)),
+        },
+        "dumps": [
+            {
+                "pid": d.get("pid"),
+                "name": d.get("name", ""),
+                "image": d.get("image", ""),
+                "offset_seconds": d.get("offset_seconds"),
+                "trigger": d.get("trigger", ""),
+                "path": d.get("path", ""),
+                "size_mb": int(int(d.get("size", 0) or 0) / (1024 * 1024)),
+                "sha256": d.get("sha256", ""),
+            }
+            for d in successful
+        ],
+        "failures": [
+            {
+                "pid": d.get("pid"),
+                "name": d.get("name", ""),
+                "offset_seconds": d.get("offset_seconds"),
+                "error": d.get("error", ""),
+            }
+            for d in dumps
+            if not d.get("success")
+        ],
+        "skipped": dump_result.get("skipped", []),
+        "observed_processes": dump_result.get("observed_processes", []),
+    }
+
+
+def dump_paths(dump_result: dict[str, Any]) -> list[Path]:
+    """Paths of the dumps that were actually written."""
+    dumps = dump_result.get("dumps", []) if isinstance(dump_result, dict) else []
+    return [Path(d["path"]) for d in dumps if d.get("success") and d.get("path")]
+
+
+def successful_dumps(dump_result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Dump records that produced a file on disk.
+
+    The handoff point for the YARA pass: it scans exactly these, and keeps each
+    record's pid, offset and trigger so a match can say which process it came
+    from and when.
+    """
+    dumps = dump_result.get("dumps", []) if isinstance(dump_result, dict) else []
+    return [d for d in dumps if d.get("success") and d.get("path")]

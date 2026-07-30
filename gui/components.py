@@ -28,28 +28,79 @@ from gui import theme as T
 # Geometry helpers
 # ---------------------------------------------------------------------------
 
-def rounded_points(x1: float, y1: float, x2: float, y2: float, r: float):
-    """Point list for a rounded rectangle, for ``create_polygon(smooth=True)``."""
-    r = max(0.0, min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
-    return [
-        x1 + r, y1,
-        x2 - r, y1,
-        x2, y1,
-        x2, y1 + r,
-        x2, y2 - r,
-        x2, y2,
-        x2 - r, y2,
-        x1 + r, y2,
-        x1, y2,
-        x1, y2 - r,
-        x1, y1 + r,
-        x1, y1,
-    ]
+def draw_round_rect(
+    canvas: tk.Canvas,
+    x1, y1, x2, y2, r,
+    *,
+    fill: str = "",
+    outline: str = "",
+    width: float = 1,
+    tags: str | tuple[str, ...] | None = None,
+):
+    """Draw a rounded rectangle from straight edges and true corner arcs.
 
+    Built from primitives rather than ``create_polygon(smooth=True)``. A smoothed
+    polygon interpolates a spline *through* the corner points instead of round
+    ing to them, so the curve bulges past the shape's own bounding box; the
+    overshoot is then clipped at the canvas edge. On screen that appeared as
+    outlines with pieces missing -- broken card bottoms and buttons whose right
+    edge simply stopped -- and the shape was never the requested radius anyway.
 
-def draw_round_rect(canvas: tk.Canvas, x1, y1, x2, y2, r, **kwargs):
-    """Draw a rounded rectangle and return its item id."""
-    return canvas.create_polygon(rounded_points(x1, y1, x2, y2, r), smooth=True, **kwargs)
+    Arcs cost a dozen canvas items instead of one, which is the price of the
+    geometry being exact.
+    """
+    x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
+    r = max(0.0, min(float(r), (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+    d = r * 2.0
+    opts = {"tags": tags} if tags else {}
+
+    if fill:
+        # Corner quadrants first, then the cross of rectangles between them. The
+        # pieces overlap by a hair so no seam shows along the joins.
+        for bbox, start in (
+            ((x1, y1, x1 + d, y1 + d), 90),
+            ((x2 - d, y1, x2, y1 + d), 0),
+            ((x1, y2 - d, x1 + d, y2), 180),
+            ((x2 - d, y2 - d, x2, y2), 270),
+        ):
+            if r > 0:
+                canvas.create_arc(
+                    *bbox, start=start, extent=90, style="pieslice",
+                    fill=fill, outline=fill, width=0, **opts,
+                )
+        canvas.create_rectangle(
+            x1 + r - 0.5, y1, x2 - r + 0.5, y2, fill=fill, outline=fill, width=0, **opts
+        )
+        canvas.create_rectangle(
+            x1, y1 + r - 0.5, x2, y2 - r + 0.5, fill=fill, outline=fill, width=0, **opts
+        )
+
+    if outline and width:
+        for bbox, start in (
+            ((x1, y1, x1 + d, y1 + d), 90),
+            ((x2 - d, y1, x2, y1 + d), 0),
+            ((x1, y2 - d, x1 + d, y2), 180),
+            ((x2 - d, y2 - d, x2, y2), 270),
+        ):
+            if r > 0:
+                canvas.create_arc(
+                    *bbox, start=start, extent=90, style="arc",
+                    outline=outline, width=width, **opts,
+                )
+        # Each edge runs a pixel into the arc at both ends. Tk rounds an arc's
+        # endpoints independently of a line's, so butting them exactly leaves a
+        # visible nick at all four corners -- obvious at small radii like the
+        # glyph chips. Overlapping costs nothing and closes the join.
+        o = 1.0 if r > 0 else 0.0
+        for coords in (
+            (x1 + r - o, y1, x2 - r + o, y1),
+            (x1 + r - o, y2, x2 - r + o, y2),
+            (x1, y1 + r - o, x1, y2 - r + o),
+            (x2, y1 + r - o, x2, y2 - r + o),
+        ):
+            canvas.create_line(*coords, fill=outline, width=width, **opts)
+
+    return None
 
 
 def draw_round_gradient(canvas: tk.Canvas, x1, y1, x2, y2, r, top: str, bottom: str,
@@ -207,6 +258,12 @@ class Card(tk.Frame):
         fill = self._fill_hover if hovering else self._fill
         border = self._border_hover if hovering else self._border
 
+        # An accented card takes a hint of its own accent into the outline, so
+        # the rail reads as part of one object rather than a bright bar stuck to
+        # the side of an almost invisible box.
+        if self._accent and not hovering:
+            border = T.mix(border, self._accent, 0.20)
+
         if self._gradient is not None:
             top, bottom = self._gradient
             if hovering:
@@ -234,27 +291,34 @@ class Card(tk.Frame):
             )
 
         if self._accent:
-            # Left rail, clipped to the card's rounded left edge.
-            self._rail = draw_round_rect(
-                self._canvas, 0.5, 0.5, 3.5, h - 0.5, 1.5,
-                fill=self._accent, outline=self._accent, width=0,
-            )
+            self._draw_accent_rail(w, h, fill)
 
         if self._brand_strip:
-            # A bright blue bar across the top, running deep -> hero -> sky.
-            # It lives in the card's padding ring, where no child widget can
-            # cover it, which is the only place Tk lets a gradient show.
-            inset = self._radius
-            mid = (inset + w - inset) / 2.0
-            for offset in (2.0, 3.0, 4.0):
-                draw_horizontal_fade(
-                    self._canvas, inset, offset, mid, offset,
-                    T.ACCENT_DEEP, T.ACCENT,
-                )
-                draw_horizontal_fade(
-                    self._canvas, mid, offset, w - inset, offset,
-                    T.ACCENT, T.ACCENT_BRIGHT,
-                )
+            # A blue bar across the top, running deep -> hero -> sky. It lives in
+            # the card's padding ring, where no child widget can cover it, which
+            # is the only place Tk lets a gradient show.
+            #
+            # Both ends fade into the card surface. Previously the bar held full
+            # brightness right up to its last pixel and simply stopped, which
+            # read as a cut-off line rather than a lit edge.
+            top_fill = self._gradient[0] if self._gradient else fill
+            inset = float(self._radius)
+            span = int(w - 2 * inset)
+            if span > 1:
+                fade = 0.14  # fraction of the width spent fading in and out
+                for offset in (2.0, 3.0):
+                    for i in range(0, span, 2):
+                        t = i / (span - 1)
+                        hue = (
+                            T.mix(T.ACCENT_DEEP, T.ACCENT, t * 2.0)
+                            if t < 0.5
+                            else T.mix(T.ACCENT, T.ACCENT_BRIGHT, (t - 0.5) * 2.0)
+                        )
+                        edge = min(1.0, t / fade, (1.0 - t) / fade)
+                        self._canvas.create_line(
+                            inset + i, offset, inset + i + 2, offset,
+                            fill=T.mix(top_fill, hue, edge),
+                        )
 
         if self._edge:
             # Accent hairline along the bottom, fading out to each side.
@@ -270,6 +334,40 @@ class Card(tk.Frame):
         # Canvas.lower() is the canvas *item* method; reach past it to the
         # widget-stacking version so the backdrop stays behind the content.
         tk.Misc.lower(self._canvas)
+
+    def _draw_accent_rail(self, w: int, h: int, fill: str) -> None:
+        """Category rail down the left edge.
+
+        Two things this has to get right, both of which the previous full-height
+        rounded bar got wrong.
+
+        It stops where the corner arcs do. A straight bar drawn from the top of
+        the card to the bottom sits outside the rounded silhouette at both ends,
+        which showed up as small bright nubs above and below every card.
+
+        It fades downward into the card surface instead of holding full
+        saturation for the whole height. At full strength the rail was the
+        brightest thing on screen while the card's own hairline was nearly
+        invisible, so six cards read as six loose stripes rather than six panels.
+        """
+        # Where the corner curve has finished enough for a straight edge to hide
+        # inside it.
+        inset = self._radius * 0.75
+        top = 1.5 + inset
+        bottom = h - 1.5 - inset
+        span = int(bottom - top)
+        if span <= 0:
+            return
+
+        x1, x2 = 1.5, 4.0
+        for i in range(span):
+            t = i / max(1, span - 1)
+            # Hold near-full strength through the top third, then fall away.
+            strength = 1.0 - (max(0.0, t - 0.30) / 0.70) * 0.82
+            self._canvas.create_line(
+                x1, top + i, x2, top + i,
+                fill=T.mix(fill, self._accent, strength),
+            )
 
     def _on_enter(self, _event=None) -> None:
         if not self._hovering:
