@@ -6,10 +6,17 @@
   Without rules, a memory dump is just a large file: the dynamic run writes it
   and reports "not scanned". This is the counterpart to bootstrap_capa_rules.ps1.
 
-  Defaults to Neo23x0/signature-base, whose rules are string- and
-  memory-oriented rather than built on PE structure. That matters here: rules
-  written against the `pe` module cannot match a raw process dump at all, so a
-  PE-heavy ruleset produces confident-looking silence.
+  Defaults to two rulesets, installed side by side, because their coverage is
+  close to disjoint. Neo23x0/signature-base is strong on APT tooling, hacktools
+  and webshells; elastic/protections-artifacts covers the commodity families --
+  stealers, loaders, RATs -- that signature-base barely touches. Both are string-
+  and memory-oriented rather than built on PE structure, which matters here:
+  rules written against the `pe` module cannot match a raw process dump at all,
+  so a PE-heavy ruleset produces confident-looking silence.
+
+  Each set installs into its own subdirectory. Filenames collide across
+  projects, and the directory a rule came from is the quickest way to find it
+  again when it fires.
 
   Rules that fail to compile are moved to tools\yara\_broken rather than left to
   take the whole ruleset down with them -- yara.compile() is all-or-nothing
@@ -32,8 +39,19 @@
 .PARAMETER Destination
   Destination base folder. Default: <repo_root>\tools\yara
 
-.PARAMETER Repo
-  GitHub repo to pull rules from. Default: Neo23x0/signature-base
+.PARAMETER Repos
+  GitHub repos to pull rules from, each installed into its own subdirectory of
+  rules\. Defaults to both:
+
+    Neo23x0/signature-base          APT, hacktools, webshells
+    elastic/protections-artifacts   commodity malware families
+
+  Two rather than one because they cover opposite halves of the problem, and
+  the gap between them is not obvious until it costs a detonation.
+  signature-base contains no AgentTesla rule at all, so a real AgentTesla
+  sample produced an empty memory-only result that looked exactly like a
+  broken pipeline -- the UPX control passing minutes later on the same VM was
+  the only thing that distinguished them.
 
 .PARAMETER Branch
   Branch to download when the repo publishes no releases. Default: master
@@ -49,7 +67,7 @@
 [CmdletBinding()]
 param(
   [string]$Destination = "",
-  [string]$Repo = "Neo23x0/signature-base",
+  [string[]]$Repos = @("Neo23x0/signature-base", "elastic/protections-artifacts"),
   [string]$Branch = "master",
   [switch]$SkipCompileCheck,
   [switch]$KeepTemp
@@ -176,31 +194,34 @@ function Test-RuleCompilation {
   }
 }
 
-try {
-  $scriptDir = Get-ScriptDir
-  $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
+function Install-RuleSet {
+  <#
+    Downloads one ruleset into its own subdirectory of rules\.
 
-  if (-not $Destination -or $Destination.Trim().Length -eq 0) {
-    $Destination = Join-Path $repoRoot "tools\yara"
-  }
+    Each set gets its own folder rather than being flattened together, for two
+    reasons. Rule filenames collide across projects, and a flat copy would let
+    one project silently overwrite another's rules. And when a rule fires, the
+    directory it came from is the fastest way to know which project to go and
+    read it in.
+  #>
+  param(
+    [Parameter(Mandatory=$true)][string]$Repo,
+    [Parameter(Mandatory=$true)][string]$Branch,
+    [Parameter(Mandatory=$true)][string]$RulesRoot,
+    [Parameter(Mandatory=$true)][string]$TmpRoot,
+    [Parameter(Mandatory=$true)][hashtable]$Headers
+  )
 
-  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  $destFull = (Resolve-Path -LiteralPath $Destination).Path
+  Write-Step ("Ruleset: {0}" -f $Repo)
 
-  Write-Info "Repo root: $repoRoot"
-  Write-Info "Destination: $destFull"
-  Write-Info "Repo: $Repo"
-
-  $headers = @{ "User-Agent" = "bootstrap_yara_rules.ps1" }
-
-  $tmpRoot = Join-Path $env:TEMP ("yara_rules_bootstrap_" + [Guid]::NewGuid().ToString("N"))
-  New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+  $slug = ($Repo -replace '[\/]', '-').ToLower()
+  $target = Join-Path $RulesRoot $slug
 
   $downloadUrl = $null
   $label = ""
 
   try {
-    $rel = Invoke-RestMethod -Headers $headers -Uri ("https://api.github.com/repos/{0}/releases/latest" -f $Repo)
+    $rel = Invoke-RestMethod -Headers $Headers -Uri ("https://api.github.com/repos/{0}/releases/latest" -f $Repo)
     if ($rel -and $rel.zipball_url) {
       $downloadUrl = $rel.zipball_url
       $label = $rel.tag_name
@@ -215,21 +236,65 @@ try {
     $label = $Branch
   }
 
-  $tmpArchive = Join-Path $tmpRoot "rules.zip"
-  $tmpExtract = Join-Path $tmpRoot "extract"
+  $tmpArchive = Join-Path $TmpRoot ("{0}.zip" -f $slug)
+  $tmpExtract = Join-Path $TmpRoot ("{0}-extract" -f $slug)
 
   Write-Info "Downloading..."
-  Invoke-WebRequest -Headers $headers -Uri $downloadUrl -OutFile $tmpArchive
+  try {
+    Invoke-WebRequest -Headers $Headers -Uri $downloadUrl -OutFile $tmpArchive
+  } catch {
+    # One ruleset failing must not cost the others. A run with signature-base
+    # and without Elastic is far better than no rules at all.
+    Write-Warn ("Download failed for {0}: {1}" -f $Repo, $_.Exception.Message)
+    return 0
+  }
 
   Write-Info "Extracting..."
   Expand-Archive -LiteralPath $tmpArchive -DestinationPath $tmpExtract -Force
 
-  Write-Info "Detecting rules root..."
-  $rulesRoot = Find-YaraRulesRoot -ExtractPath $tmpExtract
-  if (-not $rulesRoot) {
-    throw "No .yar or .yara files found in the archive. Inspect: $tmpExtract"
+  $sourceRoot = Find-YaraRulesRoot -ExtractPath $tmpExtract
+  if (-not $sourceRoot) {
+    Write-Warn ("No .yar or .yara files found in {0}; skipping." -f $Repo)
+    return 0
   }
-  Write-Info ("Rules root: {0}" -f $rulesRoot)
+  Write-Info ("Rules root: {0}" -f $sourceRoot)
+
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  Copy-Item -Force -Path (Join-Path $sourceRoot "*.yar") -Destination $target -ErrorAction SilentlyContinue
+  Copy-Item -Force -Path (Join-Path $sourceRoot "*.yara") -Destination $target -ErrorAction SilentlyContinue
+
+  $count = @(Get-ChildItem -Path $target -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in @(".yar", ".yara") }).Count
+
+  if ($count -eq 0) {
+    Write-Warn ("No rule files installed from {0}." -f $Repo)
+    return 0
+  }
+
+  Write-Ok ("{0} rule file(s) from {1} ({2}) -> rules\{3}" -f $count, $Repo, $label, $slug)
+  return $count
+}
+
+
+try {
+  $scriptDir = Get-ScriptDir
+  $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
+
+  if (-not $Destination -or $Destination.Trim().Length -eq 0) {
+    $Destination = Join-Path $repoRoot "tools\yara"
+  }
+
+  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+  $destFull = (Resolve-Path -LiteralPath $Destination).Path
+
+  Write-Info "Repo root: $repoRoot"
+  Write-Info "Destination: $destFull"
+  Write-Info ("Rulesets: {0}" -f ($Repos -join ", "))
+
+  $headers = @{ "User-Agent" = "bootstrap_yara_rules.ps1" }
+
+  $tmpRoot = Join-Path $env:TEMP ("yara_rules_bootstrap_" + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
   $targetRules = Join-Path $destFull "rules"
   if (Test-Path -LiteralPath $targetRules) {
@@ -238,19 +303,18 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $targetRules | Out-Null
 
-  Write-Info "Installing rules to: $targetRules"
-  Copy-Item -Force -Path (Join-Path $rulesRoot "*.yar") -Destination $targetRules -ErrorAction SilentlyContinue
-  Copy-Item -Force -Path (Join-Path $rulesRoot "*.yara") -Destination $targetRules -ErrorAction SilentlyContinue
-
-  $ruleCount = @(Get-ChildItem -Path $targetRules -File -ErrorAction SilentlyContinue |
-                 Where-Object { $_.Extension -in @(".yar", ".yara") }).Count
-
-  if ($ruleCount -eq 0) {
-    throw "No rule files were installed. Inspect: $rulesRoot"
+  $totalRules = 0
+  foreach ($repoName in $Repos) {
+    $totalRules += Install-RuleSet -Repo $repoName -Branch $Branch `
+                                   -RulesRoot $targetRules -TmpRoot $tmpRoot -Headers $headers
   }
 
-  Write-Ok ("Installed {0} YARA rule file(s) from {1} ({2})" -f $ruleCount, $Repo, $label)
-  Write-Ok ("Path: {0}" -f $targetRules)
+  if ($totalRules -eq 0) {
+    throw "No rule files were installed from any ruleset. Inspect: $tmpRoot"
+  }
+
+  Write-Host ""
+  Write-Ok ("{0} rule file(s) installed across {1} ruleset(s)." -f $totalRules, $Repos.Count)
 
   # Hand-maintained rules live outside the downloaded set and are copied in
   # afterwards. Nothing inside rules\ is precious -- it is deleted and rebuilt on
