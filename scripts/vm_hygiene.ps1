@@ -63,6 +63,20 @@
   reported and left alone. A Wazuh agent is only ever reported, since that is
   usually the analyst's own SIEM.
 
+.PARAMETER EnableAutoLogon
+  Log the guest in automatically at boot, so a snapshot revert produces a usable
+  machine without anyone touching it. Opt-in, and it stores the account password
+  in the registry in PLAINTEXT -- readable by anything running in the guest,
+  samples included. Only appropriate for a disposable, isolated VM whose
+  password is used nowhere else.
+
+.PARAMETER AutoLogonUser
+  Account to log on automatically. Defaults to the current user.
+
+.PARAMETER AutoLogonPassword
+  That account's password. Prompted for if omitted; stored in plaintext either
+  way.
+
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Required on a VM
   whose identity strings are spoofed for anti-VM hardening.
@@ -81,6 +95,9 @@ param(
   [switch]$DryRun,
   [switch]$SkipWindowsUpdate,
   [switch]$DisableEDR,
+  [switch]$EnableAutoLogon,
+  [string]$AutoLogonUser = "",
+  [string]$AutoLogonPassword = "",
   [switch]$Force
 )
 
@@ -603,6 +620,68 @@ function Show-OptionalSoftware {
 }
 
 
+function Enable-AutoLogon {
+  <#
+    Logs the guest in automatically after a revert.
+
+    Without this, `vm_snapshot.ps1 -Baseline` leaves a machine sitting at the
+    login screen: reachable, contained, and unable to run anything. Between
+    samples that is a manual step in a loop meant to be repeated dozens of
+    times, and it is the only one that cannot be scripted from the host.
+
+    The password is stored in the registry in PLAINTEXT. That is how
+    AutoAdminLogon works, and it means anything running in the guest can read
+    it -- including the samples. Acceptable only because this VM is disposable,
+    isolated and reverted between runs, and only if the password is not used
+    anywhere else. Sysinternals Autologon.exe stores it as an LSA secret
+    instead, which is marginally better but still readable by anything running
+    elevated, so it is not the meaningful protection it appears to be.
+  #>
+  param([string]$User, [string]$Password)
+
+  Write-Step "Automatic logon"
+
+  if (-not $User) { $User = $env:USERNAME }
+  if (-not $Password) {
+    Write-Warn "No -AutoLogonPassword given; prompting."
+    Write-Warn "It is written to the registry in plaintext either way."
+    $Password = Read-Host "Password for $User"
+  }
+
+  $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+
+  Write-Danger "The password will be stored in plaintext at:"
+  Write-Danger "  $key\DefaultPassword"
+  Write-Danger "Anything running in this guest can read it, samples included."
+
+  if ($DryRun) {
+    Write-Skip "Dry run: would set AutoAdminLogon=1, DefaultUserName=$User for $env:COMPUTERNAME."
+    return
+  }
+
+  try {
+    Set-ItemProperty -Path $key -Name "AutoAdminLogon" -Value "1" -Type String
+    Set-ItemProperty -Path $key -Name "DefaultUserName" -Value $User -Type String
+    Set-ItemProperty -Path $key -Name "DefaultDomainName" -Value $env:COMPUTERNAME -Type String
+    Set-ItemProperty -Path $key -Name "DefaultPassword" -Value $Password -Type String
+
+    # Windows decrements AutoLogonCount on each automatic logon and stops once
+    # it reaches zero. If anything ever set it, autologin would work a fixed
+    # number of times and then quietly stop -- which after a revert looks
+    # exactly like the setting never applied.
+    if ($null -ne (Get-ItemProperty -Path $key -Name "AutoLogonCount" -ErrorAction SilentlyContinue)) {
+      Remove-ItemProperty -Path $key -Name "AutoLogonCount" -ErrorAction SilentlyContinue
+      Write-Info "Removed AutoLogonCount, which would have expired the setting."
+    }
+
+    Write-Ok "Automatic logon enabled for $User."
+    Write-Info "Re-take the baseline snapshot so reverts keep this."
+  } catch {
+    Write-Warn "Could not enable automatic logon: $($_.Exception.Message)"
+  }
+}
+
+
 function Show-Verification {
   <#
     Re-reads state rather than trusting the change tally, and reports only what
@@ -679,6 +758,10 @@ try {
   Invoke-EdrAgents
   Show-DefenderState
   Show-OptionalSoftware
+
+  if ($EnableAutoLogon) {
+    Enable-AutoLogon -User $AutoLogonUser -Password $AutoLogonPassword
+  }
 
   if (-not $DryRun) {
     Show-Verification
