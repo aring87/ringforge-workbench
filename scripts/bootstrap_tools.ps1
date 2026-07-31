@@ -61,6 +61,11 @@
   Do not install UPX. UPX is only needed to build the packed positive control in
   test_specs\upx_control\; nothing in a detonation uses it.
 
+.PARAMETER SkipScriptBlockLogging
+  Do not enable PowerShell ScriptBlock logging. Leaving it off means a sample
+  that ran heavily obfuscated PowerShell and one that ran none produce identical
+  output, so this is worth doing before a run rather than after a dull one.
+
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Use only if you
   are certain; see the warning above.
@@ -76,6 +81,7 @@ param(
   [switch]$SkipFakeNet,
   [switch]$SkipProcDump,
   [switch]$SkipUpx,
+  [switch]$SkipScriptBlockLogging,
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
   [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
   [string]$UpxRepo = "upx/upx",
@@ -377,6 +383,48 @@ function Install-Upx {
 
   Copy-Item -LiteralPath $exe.FullName -Destination $target -Force
   Write-Ok "UPX binary: $target"
+}
+
+function Enable-ScriptBlockLogging {
+  Write-Step "PowerShell ScriptBlock logging"
+
+  # Set through Group Policy rather than the per-user key, for the same reason
+  # the Defender settings are: this image is missing CIM namespaces, and the
+  # policy path is the one that reliably holds.
+  #
+  # Worth enabling before any run rather than after a disappointing one: with it
+  # off, a sample that ran heavily obfuscated PowerShell and a sample that ran
+  # none at all produce identical output.
+  $key = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+
+  try {
+    if (-not (Test-Path -LiteralPath $key)) {
+      New-Item -Path $key -Force | Out-Null
+    }
+    New-ItemProperty -Path $key -Name "EnableScriptBlockLogging" `
+                     -Value 1 -PropertyType DWord -Force | Out-Null
+
+    # Deliberately NOT enabling EnableScriptBlockInvocationLogging: it records
+    # every block start and stop, which buries the script text this is for.
+    Write-Ok "ScriptBlock logging enabled (Event ID 4104)."
+    Write-Info "Script text is recorded after the engine deobfuscates it, so"
+    Write-Info "encoded and packed PowerShell is captured as what actually ran."
+  } catch {
+    Write-Warn "Could not enable ScriptBlock logging: $($_.Exception.Message)"
+    return
+  }
+
+  $channel = "Microsoft-Windows-PowerShell/Operational"
+  try {
+    & wevtutil gl $channel | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Ok "Channel available: $channel"
+    } else {
+      Write-Warn "Channel $channel is not available on this host."
+    }
+  } catch {
+    Write-Warn "Could not query $channel."
+  }
 }
 
 function Install-Wireshark {
@@ -717,6 +765,9 @@ try {
 
   if (-not $SkipUpx)       { Install-Upx -ToolsDir $toolsDir -TempDir $tempDir -Repo $UpxRepo }
   else                     { Write-Step "UPX"; Write-Warn "Skipped by request." }
+
+  if (-not $SkipScriptBlockLogging) { Enable-ScriptBlockLogging }
+  else { Write-Step "PowerShell ScriptBlock logging"; Write-Warn "Skipped by request." }
 
   Invoke-Preflight -RepoRoot $repoRoot
 

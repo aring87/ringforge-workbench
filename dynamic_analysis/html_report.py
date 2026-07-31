@@ -221,6 +221,101 @@ def _dict_list_table(
     """
 
 
+def _attack_sections(summary: dict[str, Any]) -> str:
+    """ATT&CK techniques, each shown with what evidenced it.
+
+    The evidence column is the point. A bare list of technique IDs is a claim;
+    the same list with the observation that produced each one is a finding
+    somebody can check.
+    """
+    mapping = summary.get("attack_mapping", {}) or {}
+    if not mapping.get("mapped"):
+        return ""
+
+    techniques = mapping.get("techniques", []) or []
+    if not techniques:
+        return _list_section(
+            "MITRE ATT&CK",
+            [],
+            empty_text="No techniques were evidenced by this run.",
+            context=True,
+        )
+
+    rows = [
+        {
+            "technique": f"{t.get('id', '')} {t.get('name', '')}".strip(),
+            "tactic": t.get("tactic", ""),
+            "evidence": "; ".join(t.get("evidence", [])[:2]),
+        }
+        for t in techniques
+    ]
+
+    counts = mapping.get("counts", {}) or {}
+    return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>MITRE ATT&amp;CK ({_esc(mapping.get("attack_version", ""))})</h2>
+        {_section_badge("Techniques", counts.get("techniques", 0))}
+      </div>
+      <p class="muted">{_esc(mapping.get("note", ""))}</p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Technique</th><th>Tactic</th><th>Evidence</th></tr></thead>
+          <tbody>{''.join(
+              f"<tr><td class='nowrap'>{_esc(r['technique'])}</td>"
+              f"<td class='nowrap'>{_esc(r['tactic'])}</td>"
+              f"<td>{_esc(r['evidence'])}</td></tr>" for r in rows
+          )}</tbody>
+        </table>
+      </div>
+    </section>
+    """
+
+
+def _powershell_sections(summary: dict[str, Any]) -> str:
+    """Recorded script blocks, which are the deobfuscated text of what ran."""
+    powershell = summary.get("powershell_summary", {}) or {}
+    preflight = summary.get("powershell_preflight", {}) or {}
+
+    if not powershell.get("collected"):
+        note = powershell.get("note") or preflight.get("note") or "Not collected."
+        return f"""
+    <section class="card">
+      <div class="section-head"><h2>PowerShell Script Blocks</h2></div>
+      <p class="muted">{_esc(note)}</p>
+    </section>
+    """
+
+    counts = powershell.get("counts", {}) or {}
+    overview = {
+        "Blocks from the sample": counts.get("blocks_from_sample", 0),
+        "Suspicious blocks": counts.get("blocks_suspicious", 0),
+        "Incomplete blocks": counts.get("incomplete_blocks", 0),
+        "Analyzer blocks excluded": counts.get("analyzer_blocks_excluded", 0),
+    }
+
+    rows = [
+        {
+            "time": block.get("timestamp", ""),
+            "severity": block.get("severity", ""),
+            "behaviours": ", ".join(block.get("behaviours", [])) or "none",
+            "length": block.get("length", 0),
+            "preview": block.get("preview", ""),
+        }
+        for block in (powershell.get("blocks", []) or [])
+    ]
+
+    return f"""
+{_kv_table("PowerShell Script Blocks", overview,
+           _section_badge("Suspicious", counts.get("blocks_suspicious", 0)))}
+{_list_section("PowerShell Behaviours Observed", powershell.get("behaviours", []) or [],
+               emphasize=True,
+               empty_text="No suspicious behaviours were matched in the recorded script blocks.")}
+{_dict_list_table("Recorded Script Blocks", rows,
+                  empty_text="No script blocks were attributed to the sample.")}
+    """
+
+
 def _autoruns_counts(summary: dict[str, Any]) -> dict[str, Any]:
     # Newer orchestrator writes a full autoruns_diff object plus compact counts.
     diff = summary.get("autoruns_diff", {}) or {}
@@ -1191,7 +1286,9 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_list_section("Installer Context / Expected Behavior", _installer_context_notes(summary), emphasize=False, empty_text="No installer-specific context was identified.", context=True)}
 {_list_section("Clean Baseline Checks", _clean_baseline_notes(summary), emphasize=False, empty_text="No clean-baseline checks were available.", context=True)}
 {_list_section("Highlights", findings.get("highlights", []), emphasize=True, empty_text="No high-priority highlights were generated.")}
+{_attack_sections(summary)}
 {_sysmon_sections(summary)}
+{_powershell_sections(summary)}
 {_network_sections(summary)}
 {_memory_sections(summary)}
 {_autoruns_suspicious_sections(summary)}

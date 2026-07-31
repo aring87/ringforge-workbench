@@ -22,7 +22,13 @@ from dynamic_analysis.fakenet_runner import (
     fakenet_status,
     parse_fakenet_log,
 )
+from dynamic_analysis.attack_mapping import map_run, summarize_attack
 from dynamic_analysis.findings import summarize_dynamic_findings
+from dynamic_analysis.powershell_logging import (
+    collect as collect_scriptblocks,
+    empty_summary as empty_powershell_summary,
+    powershell_logging_status,
+)
 from dynamic_analysis.memory_dump import (
     MemoryDumpSession,
     memory_dump_status,
@@ -1086,6 +1092,7 @@ def run_dynamic_analysis(
     sysmon_evtx = paths["sysmon"] / "sysmon_events.evtx"
     sysmon_events_json = paths["sysmon"] / "sysmon_events.json"
     sysmon_summary_json = paths["sysmon"] / "sysmon_summary.json"
+    powershell_blocks_json = paths["sysmon"] / "powershell_scriptblocks.json"
 
     pcap_enabled = bool(config.get("pcap_enabled", True))
     dumpcap_path = config.get("dumpcap_path") or ""
@@ -1162,6 +1169,8 @@ def run_dynamic_analysis(
         _emit(status_cb, f"Network isolation: {isolation.get('note', '')}")
 
     sysmon_summary: dict[str, Any] = {}
+    powershell_preflight: dict[str, Any] = {}
+    powershell_summary: dict[str, Any] = empty_powershell_summary("not collected")
     sysmon_status_result: dict[str, Any] = {"success": False, "error": "not run"}
     network_summary: dict[str, Any] = {}
     network_iocs: dict[str, Any] = {}
@@ -1489,6 +1498,28 @@ def run_dynamic_analysis(
                 fakenet_stop_result = {"stopped": False, "error": str(error)}
                 _emit(status_cb, f"FakeNet-NG stop warning: {error}")
 
+        if sysmon_since:
+            # Reuses the Sysmon window: both read Windows event channels bounded
+            # by when the sample was launched.
+            _emit(status_cb, "Collecting PowerShell script blocks...")
+            try:
+                powershell_preflight = powershell_logging_status()
+                scriptblocks, powershell_summary = collect_scriptblocks(sysmon_since)
+                write_json(powershell_blocks_json, scriptblocks)
+                counts = powershell_summary.get("counts", {}) or {}
+                if powershell_summary.get("collected"):
+                    _emit(
+                        status_cb,
+                        f"PowerShell: {counts.get('blocks_from_sample', 0)} script block(s) "
+                        f"from the sample, {counts.get('blocks_suspicious', 0)} suspicious "
+                        f"({counts.get('analyzer_blocks_excluded', 0)} analyzer block(s) excluded).",
+                    )
+                else:
+                    _emit(status_cb, f"PowerShell script blocks: {powershell_summary.get('note', '')}")
+            except Exception as error:
+                powershell_summary = empty_powershell_summary(f"collection failed: {error}")
+                _emit(status_cb, f"PowerShell collection warning: {error}")
+
         if sysmon_enabled and sysmon_since:
             _emit(status_cb, "Collecting Sysmon telemetry...")
             try:
@@ -1790,7 +1821,13 @@ def run_dynamic_analysis(
         "memory_yara_enabled": memory_yara_enabled,
         "memory_yara_preflight": memory_yara_preflight,
         "memory_yara_summary": memory_yara_summary,
+        "powershell_preflight": powershell_preflight,
+        "powershell_summary": powershell_summary,
     }
+
+    # Mapped last, from the assembled summary, so it sees every source rather
+    # than a subset that happens to be ready earlier.
+    summary["attack_mapping"] = summarize_attack(map_run(summary))
 
     _emit(status_cb, "Writing final run summary...")
     write_json(run_summary_path, summary)
