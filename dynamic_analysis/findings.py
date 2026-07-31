@@ -353,6 +353,27 @@ def _is_windows_baseline_process_create(process_name: object, path: object = Non
     if child_proc == "svchost.exe" and "-s netsetupsvc" in combined:
         return True
 
+    # Windows maintenance helpers that svchost starts on its own schedule. They
+    # turn up in runs of any length -- three different ones appeared across three
+    # mimikatz detonations -- and none of them relate to the sample.
+    #
+    # Deliberately narrower than the baseline_children check above: this requires
+    # the genuine System32 path and a clean command line, because usoclient.exe
+    # is a documented LOLBin. A copy of it living somewhere else, or one invoked
+    # with an unexpected command line, is exactly what should still be reported.
+    svchost_maintenance = {
+        "usoclient.exe",
+        "useroobebroker.exe",
+        "compattelrunner.exe",
+        "mousocoreworker.exe",
+        "wermgr.exe",
+    }
+    if parent_proc == "svchost.exe" and child_proc in svchost_maintenance:
+        if "\\windows\\system32\\" in path_l and not any(
+            marker in combined for marker in suspicious_launch_markers
+        ):
+            return True
+
     # Windows 11 Notepad often runs as a packaged app:
     # C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_...\Notepad.exe /SESSION...
     if child_proc == "notepad.exe" and "\\windowsapps\\" in combined and "notepad" in combined:

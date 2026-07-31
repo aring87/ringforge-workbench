@@ -92,6 +92,48 @@ class SamplePreservationTests(unittest.TestCase):
         self.assertIn("cmd.exe", self._children(sample_pid=1636))
 
 
+class WindowsMaintenanceProcessTests(unittest.TestCase):
+    """svchost's own housekeeping is not the sample's behaviour.
+
+    Three different helpers appeared across three mimikatz detonations --
+    usoclient, UserOOBEBroker and CompatTelRunner -- none related to the sample.
+    The abuse cases matter more than the suppression: usoclient.exe is a
+    documented LOLBin, so the filter has to be narrow enough that a relocated or
+    oddly-invoked copy still surfaces.
+    """
+
+    BASELINE = [
+        process_create("svchost.exe", r"C:\WINDOWS\system32\usoclient.exe", 1400,
+                       r'PID: 7372, Command line: "C:\WINDOWS\system32\usoclient.exe" StartScan'),
+        process_create("svchost.exe", r"C:\Windows\System32\oobe\UserOOBEBroker.exe", 740,
+                       r"PID: 7184, Command line: C:\Windows\System32\oobe\UserOOBEBroker.exe -Embedding"),
+        process_create("svchost.exe", r"C:\WINDOWS\system32\compattelrunner.exe", 7800,
+                       r"PID: 8572, Command line: C:\WINDOWS\system32\compattelrunner.exe -cv:CMiX -m:aeinv.dll"),
+    ]
+
+    def _kept(self, events):
+        result = summarize_dynamic_findings(events, events, sample_pid=1636, sample_name="evil.exe")
+        return result["counts"]["process_creates"]
+
+    def test_scheduled_maintenance_helpers_are_baseline(self) -> None:
+        self.assertEqual(self._kept(self.BASELINE), 0)
+
+    def test_lolbin_outside_system32_is_still_reported(self) -> None:
+        event = process_create("svchost.exe", r"C:\Users\a\AppData\Local\Temp\usoclient.exe", 1400,
+                               r"PID: 7372, Command line: usoclient.exe StartScan")
+        self.assertEqual(self._kept([event]), 1)
+
+    def test_suspicious_command_line_is_still_reported(self) -> None:
+        event = process_create("svchost.exe", r"C:\WINDOWS\system32\usoclient.exe", 1400,
+                               r"PID: 7373, Command line: usoclient.exe & powershell -enc SQBFAFgA")
+        self.assertEqual(self._kept([event]), 1)
+
+    def test_wrong_parent_is_still_reported(self) -> None:
+        event = process_create("evil.exe", r"C:\WINDOWS\system32\usoclient.exe", 5000,
+                               r"PID: 7374, Command line: usoclient.exe StartScan")
+        self.assertEqual(self._kept([event]), 1)
+
+
 #: FakeNet's own binary, as Sysmon records it. Confirmed from a real run: every
 #: DnsQuery for the guest hostname came from here, not from the sample.
 FAKENET = r"C:\projects\RingForge_Analyzer\ringforge-workbench\tools\fakenet\fakenet.exe"

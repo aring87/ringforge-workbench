@@ -98,18 +98,40 @@ def _kv_table(title: str, data: dict[str, Any], badge_html: str = "") -> str:
     """
 
 
-def _list_section(title: str, items: list[Any], emphasize: bool = False, empty_text: str = "None") -> str:
+def _list_section(
+    title: str,
+    items: list[Any],
+    emphasize: bool = False,
+    empty_text: str = "None",
+    context: bool = False,
+) -> str:
+    """Render a titled list with a count badge.
+
+    ``context`` marks a section whose length carries no severity, and the badge
+    then stays neutral however long the list is. Scaling colour by count is only
+    meaningful when more entries means more concern, and several sections here
+    are the opposite: "Clean Baseline Checks" turned amber at five *passing*
+    checks, and "Windows Baseline Traffic (context, not findings)" contradicted
+    its own title.
+    """
     section_class = "card card-alert" if emphasize and items else "card"
     if not items:
         body = f"<p class='muted'>{_esc(empty_text)}</p>"
     else:
         lis = "".join(f"<li>{_esc(item)}</li>" for item in items)
         body = f"<ul>{lis}</ul>"
+
+    badge_html = (
+        f'<span class="badge sev-none">Count: {_esc(len(items))}</span>'
+        if context
+        else _section_badge("Count", len(items))
+    )
+
     return f"""
     <section class="{section_class}">
       <div class="section-head">
         <h2>{_esc(title)}</h2>
-        {_section_badge("Count", len(items))}
+        {badge_html}
       </div>
       {body}
     </section>
@@ -900,8 +922,8 @@ def _network_sections(summary: dict[str, Any]) -> str:
 {_list_section("Resolved Domains (excluding Windows baseline)", iocs.get("notable_domains", []) or [], emphasize=True, empty_text="Only routine Windows background traffic was resolved. Nothing here is attributable to the sample.")}
 {_list_section("Requested URLs (excluding Windows baseline)", iocs.get("notable_urls", []) or [], emphasize=True, empty_text="No notable plaintext URLs were observed.")}
 {_list_section("Contacted External IP Addresses", iocs.get("external_ips", []) or [], empty_text="No external IP addresses were contacted.")}
-{_list_section("Windows Baseline Traffic (context, not findings)", iocs.get("baseline_domains", []) or [], empty_text="No baseline traffic was recorded.")}
-{_list_section("Non-Routable Addresses (context, not findings)", iocs.get("non_routable_ips", []) or [], empty_text="No multicast or broadcast traffic was recorded.")}
+{_list_section("Windows Baseline Traffic (context, not findings)", iocs.get("baseline_domains", []) or [], empty_text="No baseline traffic was recorded.", context=True)}
+{_list_section("Non-Routable Addresses (context, not findings)", iocs.get("non_routable_ips", []) or [], empty_text="No multicast or broadcast traffic was recorded.", context=True)}
 {_list_section("TLS Server Names (SNI)", network.get("tls_sni", []) or [], empty_text="No TLS SNI values were observed.")}
 {_dict_list_table("HTTP Requests", network.get("http_requests", []) or [])}
 {_dict_list_table("Connections On Unusual Ports", network.get("unusual_ports", []) or [])}
@@ -921,7 +943,7 @@ def _network_sections(summary: dict[str, Any]) -> str:
 {_dict_list_table("Connection Attempts By Process", fakenet.get("process_requests", []) or [])}
 {_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text="No domains were requested. With no default route the guest generates little background traffic, so this is expected for a sample that does not use the network.")}
 {_dict_list_table("Requests Served", fakenet.get("http_requests", []) or [])}
-{_list_section("Listeners Configured", fakenet.get("listeners_configured", []) or [], empty_text="No listeners were configured.")}
+{_list_section("Listeners Configured", fakenet.get("listeners_configured", []) or [], empty_text="No listeners were configured.", context=True)}
 """
         )
 
@@ -1163,9 +1185,9 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
   {_kv_table("Dropped Files Summary", dropped, badge("Suspicious", dropped.get("suspicious", 0)))}
 </div>
 
-{_list_section("Analyst Notes", _analyst_notes(summary), emphasize=False)}
-{_list_section("Installer Context / Expected Behavior", _installer_context_notes(summary), emphasize=False, empty_text="No installer-specific context was identified.")}
-{_list_section("Clean Baseline Checks", _clean_baseline_notes(summary), emphasize=False, empty_text="No clean-baseline checks were available.")}
+{_list_section("Analyst Notes", _analyst_notes(summary), emphasize=False, context=True)}
+{_list_section("Installer Context / Expected Behavior", _installer_context_notes(summary), emphasize=False, empty_text="No installer-specific context was identified.", context=True)}
+{_list_section("Clean Baseline Checks", _clean_baseline_notes(summary), emphasize=False, empty_text="No clean-baseline checks were available.", context=True)}
 {_list_section("Highlights", findings.get("highlights", []), emphasize=True, empty_text="No high-priority highlights were generated.")}
 {_sysmon_sections(summary)}
 {_network_sections(summary)}
