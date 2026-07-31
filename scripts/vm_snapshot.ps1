@@ -149,15 +149,41 @@ function Find-VBoxManage {
   throw "VBoxManage.exe not found. Pass -VBoxManagePath explicitly."
 }
 
+function Invoke-VBox {
+  <#
+    Runs VBoxManage and returns its output plus exit code, tolerating stderr.
+
+    VBoxManage streams progress ("0%...10%...100%") to stderr on anything
+    long-running. In Windows PowerShell 5.1 a native command's redirected stderr
+    arrives as ErrorRecord objects, and with $ErrorActionPreference = 'Stop'
+    that turns a completely successful poweroff into a terminating error --
+    which is exactly what it did. The exit code is the only trustworthy signal,
+    so every call goes through here.
+  #>
+  param([string]$Exe, [string[]]$Arguments)
+
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = & $Exe @Arguments 2>&1
+    return [PSCustomObject]@{
+      Output   = @($output | ForEach-Object { [string]$_ })
+      ExitCode = $LASTEXITCODE
+    }
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+}
+
 function Get-VmRunState {
   param([string]$Exe, [string]$Name)
 
-  $info = & $Exe showvminfo $Name --machinereadable 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $result = Invoke-VBox -Exe $Exe -Arguments @("showvminfo", $Name, "--machinereadable")
+  if ($result.ExitCode -ne 0) {
     throw "Could not read VM '$Name'. Check the name with: VBoxManage list vms"
   }
-  foreach ($line in $info) {
-    if ([string]$line -match '^VMState="(.+)"$') { return $matches[1] }
+  foreach ($line in $result.Output) {
+    if ($line -match '^VMState="(.+)"$') { return $matches[1] }
   }
   return "unknown"
 }
@@ -165,8 +191,8 @@ function Get-VmRunState {
 function Get-Snapshots {
   param([string]$Exe, [string]$Name)
 
-  $output = & $Exe snapshot $Name list --machinereadable 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $result = Invoke-VBox -Exe $Exe -Arguments @("snapshot", $Name, "list", "--machinereadable")
+  if ($result.ExitCode -ne 0) {
     # VBoxManage exits non-zero when a VM simply has no snapshots yet, which is
     # a normal state rather than an error worth aborting on.
     return [PSCustomObject]@{ Names = @(); Current = "" }
@@ -174,8 +200,7 @@ function Get-Snapshots {
 
   $names = @()
   $current = ""
-  foreach ($line in $output) {
-    $text = [string]$line
+  foreach ($text in $result.Output) {
     if ($text -match '^CurrentSnapshotName="(.+)"$') {
       $current = $matches[1]
     } elseif ($text -match '^SnapshotName(?:-[\d-]+)?="(.+)"$') {
@@ -198,7 +223,7 @@ function Stop-VmHard {
   # malware to shut itself down politely hands the sample one last execution
   # opportunity, at the exact moment nobody is watching.
   Write-Info "Powering off (hard)..."
-  & $Exe controlvm $Name poweroff 2>&1 | Out-Null
+  Invoke-VBox -Exe $Exe -Arguments @("controlvm", $Name, "poweroff") | Out-Null
 
   $deadline = (Get-Date).AddSeconds(60)
   while ((Get-Date) -lt $deadline) {
@@ -219,8 +244,8 @@ function Get-GuestIPv4 {
   # treat its absence as normal rather than as a fault.
   foreach ($index in 0..3) {
     $prop = "/VirtualBox/GuestInfo/Net/$index/V4/IP"
-    $out = & $Exe guestproperty get $Name $prop 2>&1
-    if ($LASTEXITCODE -eq 0 -and ([string]$out) -match 'Value:\s*(\d{1,3}(?:\.\d{1,3}){3})') {
+    $probe = Invoke-VBox -Exe $Exe -Arguments @("guestproperty", "get", $Name, $prop)
+    if ($probe.ExitCode -eq 0 -and ($probe.Output -join ' ') -match 'Value:\s*(\d{1,3}(?:\.\d{1,3}){3})') {
       $ip = $matches[1]
       # The host-only address is the one reachable while disarmed.
       if ($ip -notmatch '^(0\.|169\.254\.)') { return $ip }
@@ -242,8 +267,8 @@ function Wait-GuestReady {
     if ($state -notmatch 'running') { continue }
 
     # Preferred signal: Guest Additions reporting a logged-in session.
-    $out = & $Exe guestproperty get $Name "/VirtualBox/GuestInfo/OS/LoggedInUsers" 2>&1
-    if ($LASTEXITCODE -eq 0 -and ([string]$out) -match 'Value:\s*(\d+)' -and [int]$matches[1] -ge 1) {
+    $probe = Invoke-VBox -Exe $Exe -Arguments @("guestproperty", "get", $Name, "/VirtualBox/GuestInfo/OS/LoggedInUsers")
+    if ($probe.ExitCode -eq 0 -and ($probe.Output -join ' ') -match 'Value:\s*(\d+)' -and [int]$matches[1] -ge 1) {
       Write-Ok "Guest reports a logged-in session."
       return $true
     }
@@ -347,8 +372,10 @@ try {
     # inside a script is asking for trouble.
     $takeArgs = @("snapshot", $VMName, "take", $Take)
     if ($Description) { $takeArgs += @("--description", $Description) }
-    & $exe @takeArgs
-    if ($LASTEXITCODE -ne 0) { throw "VBoxManage failed to take the snapshot." }
+    $taken = Invoke-VBox -Exe $exe -Arguments $takeArgs
+    if ($taken.ExitCode -ne 0) {
+      throw ("VBoxManage failed to take the snapshot: " + ($taken.Output -join ' '))
+    }
 
     Write-Ok "Snapshot '$Take' taken."
     exit 0
@@ -363,8 +390,10 @@ try {
       Write-Warn "Cancelled."
       exit 1
     }
-    & $exe snapshot $VMName delete $Delete
-    if ($LASTEXITCODE -ne 0) { throw "VBoxManage failed to delete the snapshot." }
+    $deleted = Invoke-VBox -Exe $exe -Arguments @("snapshot", $VMName, "delete", $Delete)
+    if ($deleted.ExitCode -ne 0) {
+      throw ("VBoxManage failed to delete the snapshot: " + ($deleted.Output -join ' '))
+    }
     Write-Ok "Snapshot '$Delete' deleted."
     exit 0
   }
@@ -386,8 +415,10 @@ try {
 
   Stop-VmHard -Exe $exe -Name $VMName
 
-  & $exe snapshot $VMName restore $target
-  if ($LASTEXITCODE -ne 0) { throw "VBoxManage failed to restore '$target'." }
+  $restored = Invoke-VBox -Exe $exe -Arguments @("snapshot", $VMName, "restore", $target)
+  if ($restored.ExitCode -ne 0) {
+    throw ("VBoxManage failed to restore '$target': " + ($restored.Output -join ' '))
+  }
   Write-Ok "Restored to '$target'."
 
   # Before starting, never after. A snapshot restores the cable state it was
@@ -409,8 +440,10 @@ try {
 
   Write-Step "Starting"
   $type = if ($Headless) { "headless" } else { "gui" }
-  & $exe startvm $VMName --type $type
-  if ($LASTEXITCODE -ne 0) { throw "VBoxManage failed to start '$VMName'." }
+  $started = Invoke-VBox -Exe $exe -Arguments @("startvm", $VMName, "--type", $type)
+  if ($started.ExitCode -ne 0) {
+    throw ("VBoxManage failed to start '$VMName': " + ($started.Output -join ' '))
+  }
 
   $ready = Wait-GuestReady -Exe $exe -Name $VMName -Seconds $WaitSeconds -Address $GuestAddress
 
