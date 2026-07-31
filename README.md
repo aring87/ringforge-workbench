@@ -348,12 +348,18 @@ separately, since they bypass an IPv4-only redirect.
 
 | Script | Runs on | Purpose |
 |---|---|---|
-| `scripts/bootstrap_tools.ps1` | Analysis VM | Installs Sysmon, Wireshark/Npcap and FakeNet-NG, then verifies with the workbench's own preflight checks |
-| `scripts/vm_net.ps1` | Host | Arms and disarms the VM's internet adapter via VBoxManage, without a shutdown |
+| `scripts/bootstrap_tools.ps1` | Analysis VM | Installs Sysmon, Wireshark/Npcap, FakeNet-NG, ProcDump and UPX, then verifies with the workbench's own preflight checks |
+| `scripts/bootstrap_yara_rules.ps1` | Analysis VM | Installs a YARA ruleset for the memory-versus-disk scan, quarantining rules that fail to compile |
+| `scripts/vm_hygiene.ps1` | Analysis VM | Quiets background churn — updaters, MDM tasks, telemetry — and reports what it cannot change |
+| `scripts/vm_net.ps1` | Host | Arms and disarms the VM's internet adapter, without a shutdown |
+| `scripts/vm_snapshot.ps1` | Host | Takes and restores snapshots, re-establishing containment before the VM boots |
 
-Both refuse to run in the wrong place: `bootstrap_tools.ps1` will not install
-drivers outside a VM without `-Force`, and `vm_net.ps1` explains that
-containment is only enforceable from the host.
+They refuse to run in the wrong place: the guest-side scripts will not install
+drivers outside a VM without `-Force`, and the host-side ones explain that
+containment and reverting are only enforceable from outside the guest.
+
+The two host-side scripts are the only part of RingForge tied to a specific
+hypervisor — see [Hypervisor](#hypervisor).
 
 ### Interface Redesign
 
@@ -1194,6 +1200,36 @@ The release archive is intended to contain the packaged application and document
 ---
 
 ## Requirements
+
+### Hypervisor
+
+**VirtualBox is not required.** The analysis engine is hypervisor-agnostic: it
+runs inside whatever Windows machine you point it at, and nothing in
+`static_triage_engine/`, `dynamic_analysis/` or `gui/` knows or cares what it is
+running on. Sysmon, packet capture, FakeNet-NG, ProcDump and the memory YARA
+scan are all ordinary Windows tooling.
+
+Two host-side convenience scripts are VirtualBox-specific, because they drive
+`VBoxManage`:
+
+| Script | What you lose without VirtualBox |
+|---|---|
+| `vm_net.ps1` | Arming and disarming the guest's internet adapter from the host |
+| `vm_snapshot.ps1` | Taking and restoring snapshots, and reverting between detonations |
+
+On VMware, Hyper-V, Proxmox or anything else, do those two things through your
+own hypervisor's tooling instead. Both are single operations there: disconnect
+the network adapter, and revert to a snapshot.
+
+Importantly, you do not lose the *verification*. Containment is checked inside
+the guest by looking for a default route, which is an operating-system fact
+rather than a hypervisor one, so `network_isolation` in the run summary still
+tells you independently whether the machine was actually isolated. That check is
+what you should trust regardless of how you disconnected the adapter.
+
+`bootstrap_tools.ps1` likewise recognises VMware, QEMU, Xen, Parallels and
+Hyper-V guests, not just VirtualBox, when deciding whether it is safe to install
+kernel drivers.
 
 ### Python
 
