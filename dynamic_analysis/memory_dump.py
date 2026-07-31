@@ -61,6 +61,28 @@ DEFAULT_MAX_TOTAL_MB = 4096
 _DUMP_TIMEOUT_SECONDS = 300
 
 
+def _decode_tool_output(raw: bytes) -> str:
+    """Decode ProcDump's console output, which is UTF-16 on Windows.
+
+    subprocess's text mode decodes with the locale codec, which turns UTF-16LE
+    into every character followed by a null -- the failure report rendered
+    "D u m p   1   e r r o r :   T a r g e t   p r o c e s s ..." instead of the
+    message, making the one field that explains a failed dump unreadable.
+
+    The BOM is not always present, so interleaved nulls are the reliable tell.
+    """
+    if not raw:
+        return ""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+
+    sample = raw[:512]
+    odd = sample[1::2]
+    if odd and odd.count(0) > (len(odd) * 0.7):
+        return raw.decode("utf-16-le", errors="replace")
+    return raw.decode("utf-8", errors="replace")
+
+
 class MemoryDumpError(Exception):
     pass
 
@@ -656,15 +678,17 @@ class MemoryDumpSession:
 
         started = time.monotonic()
         try:
+            # Bytes, not text: ProcDump emits UTF-16 and the locale codec
+            # mangles it. Decoded explicitly below.
             result = subprocess.run(
                 [str(self.procdump), "-accepteula", "-ma", str(pid), str(out_path)],
                 capture_output=True,
-                text=True,
                 timeout=_DUMP_TIMEOUT_SECONDS,
-                errors="replace",
             )
             record["returncode"] = int(result.returncode)
-            record["stderr"] = (result.stderr or "").strip()[:2000]
+            stdout_text = _decode_tool_output(result.stdout or b"")
+            stderr_text = _decode_tool_output(result.stderr or b"")
+            record["stderr"] = stderr_text.strip()[:2000]
         except subprocess.TimeoutExpired:
             record["error"] = f"procdump timed out after {_DUMP_TIMEOUT_SECONDS} seconds"
             record["duration_seconds"] = int(time.monotonic() - started)
@@ -686,10 +710,12 @@ class MemoryDumpSession:
             except Exception as error:
                 record["sha256_error"] = str(error)
         else:
-            stdout = (result.stdout or "").strip()
+            # Collapsed to one line: ProcDump pads its output with blank lines
+            # and timestamps, which made a one-sentence error span ten rows of
+            # the report table.
+            detail = " ".join((record.get("stderr") or stdout_text).split())
             record["error"] = (
-                record.get("stderr")
-                or stdout[-500:]
+                detail[-500:]
                 or f"procdump wrote no dump file (rc={result.returncode})"
             )
 
@@ -736,6 +762,10 @@ def summarize_memory_dumps(dump_result: dict[str, Any]) -> dict[str, Any]:
                 "pid": d.get("pid"),
                 "name": d.get("name", ""),
                 "offset_seconds": d.get("offset_seconds"),
+                # Without this, two attempts on the same PID from different
+                # triggers -- a spawn dump and the root-exit sweep, say --
+                # render as identical rows.
+                "trigger": d.get("trigger", ""),
                 "error": d.get("error", ""),
             }
             for d in dumps
