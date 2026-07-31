@@ -184,6 +184,9 @@ class MemoryDumpSession:
         self._lock = threading.Lock()
 
         self._root_exit_handled = False
+        #: PIDs already considered for a spawn dump, successful or not, so a
+        #: process is never dumped twice or retried every tick.
+        self._spawn_dumped: set[int] = set()
 
         # PID -> descriptor, accumulated while processes are alive so a tree
         # that has already collapsed can still be reported.
@@ -305,12 +308,34 @@ class MemoryDumpSession:
         launched_at = time.monotonic()
         pending = list(self.dump_offsets)
 
-        while pending and not self._stop_event.is_set():
+        # Not `while pending`: a tree that has finished its scheduled offsets can
+        # still spawn the process that matters. The loop now runs until the
+        # session is stopped or nothing of the sample is left alive.
+        while not self._stop_event.is_set():
             self._refresh_tree()
 
             elapsed = time.monotonic() - launched_at
             root_alive = self._pid_alive(self._root_pid)
             due = [o for o in pending if elapsed >= o]
+
+            # A newly appeared descendant is dumped the moment it is seen.
+            #
+            # Fixed offsets cannot catch a crypter that sleeps: one real sample
+            # sat dormant for 77 seconds, then launched a second copy of itself
+            # which crashed within a couple of seconds. The +5s and +25s dumps
+            # both captured the dormant launcher, the payload process was never
+            # dumped at all, and the run reported a clean result. No choice of
+            # offsets fixes that in general -- the delay differs per crypter, and
+            # a missed window is indistinguishable from a quiet sample.
+            #
+            # The 0.5s poll is what makes this viable: the tree is already
+            # walked on every tick, so a child only has to outlive one interval.
+            #
+            # A scheduled offset falling on the same tick still runs. The two
+            # answer different questions -- what is new, versus what the whole
+            # tree looks like at a chosen moment -- and the spawn dump excludes
+            # the root, so they do not duplicate each other.
+            self._dump_spawned_children(elapsed)
 
             # The root exiting is the last moment anything can be salvaged from
             # a tree that may be about to disappear entirely, so it triggers an
@@ -339,12 +364,91 @@ class MemoryDumpSession:
                     return
                 self._dump_tree(offset=offset, elapsed=elapsed, trigger="scheduled")
 
-            # Nothing from the sample tree is running any more, so no future
-            # offset can produce anything.
+            # Nothing from the sample tree is running any more, so neither a
+            # future offset nor a future spawn can produce anything.
             if not self._dump_targets():
                 return
 
             self._stop_event.wait(_POLL_INTERVAL_SECONDS)
+
+    def _dump_spawned_children(self, elapsed: float) -> bool:
+        """Dump descendants seen for the first time. Returns True if any were.
+
+        The root is excluded: it is covered by the scheduled offsets, and
+        dumping it here would add a near-duplicate image at +0s.
+        """
+        root_pid = self._root_pid
+
+        with self._lock:
+            candidates = [
+                dict(info)
+                for pid, info in self._known.items()
+                if pid != root_pid and pid not in self._spawn_dumped
+            ]
+
+        dumped_any = False
+        for target in candidates:
+            if self._stop_event.is_set():
+                return dumped_any
+
+            pid = int(target["pid"])
+            # Marked before the attempt, not after. A process that dies during
+            # the dump must not be retried on every subsequent tick.
+            with self._lock:
+                self._spawn_dumped.add(pid)
+
+            if not self._pid_alive(pid):
+                # Seen and gone inside one poll interval. Recorded rather than
+                # ignored, because "we saw a child we could not capture" is a
+                # finding -- it is exactly the case that produced a clean report
+                # from a sample that had in fact staged a payload.
+                self._record_skip(target, int(elapsed), "child exited before it could be dumped")
+                continue
+
+            with self._lock:
+                total_mb = self._total_bytes / (1024 * 1024)
+                already = len([d for d in self._dumps if d.get("success")])
+
+            if already >= self.max_processes:
+                self._record_skip(target, int(elapsed), "process cap reached")
+                continue
+            if total_mb >= self.max_total_mb:
+                self._record_skip(target, int(elapsed), "total dump size cap reached")
+                continue
+
+            working_set = self._working_set_mb(pid)
+            if working_set > self.max_working_set_mb:
+                self._record_skip(
+                    target,
+                    int(elapsed),
+                    f"working set {working_set} MB exceeds the {self.max_working_set_mb} MB limit",
+                )
+                continue
+
+            self._emit(
+                f"Memory dump at +{int(elapsed)}s (process-spawn): "
+                f"new process pid {pid} ({target.get('name') or '?'})"
+            )
+
+            record = self._dump_one(target, int(elapsed), "process-spawn")
+            with self._lock:
+                self._dumps.append(record)
+                self._total_bytes += int(record.get("size", 0) or 0)
+
+            if record.get("success"):
+                dumped_any = True
+                self._emit(
+                    f"  dumped pid {record['pid']} ({record['name'] or '?'}) "
+                    f"-> {Path(record['path']).name} "
+                    f"({int(record.get('size', 0)) // (1024 * 1024)} MB)"
+                )
+            else:
+                self._emit(
+                    f"  dump failed for pid {record['pid']} "
+                    f"({record['name'] or '?'}): {record.get('error', 'unknown error')}"
+                )
+
+        return dumped_any
 
     def _pid_alive(self, pid: int | None) -> bool:
         if pid is None:
