@@ -29,7 +29,7 @@
   This is the state to detonate in.
 
 .PARAMETER VMName
-  Virtual machine name. Default: "Windows 11".
+  Virtual machine name. Default: "RingForge-Analysis".
 
 .PARAMETER Nic
   Adapter number to act on. Default 0 auto-detects the NAT/Bridged adapter.
@@ -47,7 +47,7 @@
 param(
   [switch]$Arm,
   [switch]$Disarm,
-  [string]$VMName = "Windows 11",
+  [string]$VMName = "RingForge-Analysis",
   [int]$Nic = 0,
   [string]$VBoxManagePath = ""
 )

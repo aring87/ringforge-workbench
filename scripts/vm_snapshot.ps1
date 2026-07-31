@@ -98,7 +98,7 @@ param(
   [string]$GuestAddress = "",
   [switch]$Headless,
   [switch]$Force,
-  [string]$VMName = "Windows 11",
+  [string]$VMName = "RingForge-Analysis",
   [string]$VBoxManagePath = ""
 )
 
