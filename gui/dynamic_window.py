@@ -294,11 +294,22 @@ class DynamicAnalysisWindow(tk.Toplevel):
     # Path helpers
     # -------------------------------------------------------------------------
 
+    #: Longest sample-derived case name. See the orchestrator's matching cap.
+    #:
+    #: The case name appears twice in every artifact path -- once as the case
+    #: folder and again inside the run directory name -- so a sample named as
+    #: its full SHA-256 costs roughly 155 characters before anything else.
+    #: MalwareBazaar names every sample that way, and the first live one failed
+    #: with "The filename or extension is too long".
+    _MAX_CASE_NAME = 24
+
     @staticmethod
     def _safe_case_name(value: str) -> str:
         value = (value or "dynamic_case").strip()
         value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
         value = value.strip("._-")
+        if len(value) > DynamicAnalysisWindow._MAX_CASE_NAME:
+            value = value[:DynamicAnalysisWindow._MAX_CASE_NAME].rstrip("._-")
         return value or "dynamic_case"
 
     def _project_root(self) -> Path:

@@ -100,10 +100,30 @@ def _raise_if_cancelled(cancel_event: CancelEvent) -> None:
 
 
 
+#: Longest sample-derived component allowed in a case or run directory name.
+#:
+#: Windows still caps a path at 260 characters unless long paths are enabled,
+#: and this name appears twice in every artifact path:
+#:
+#:   cases\<name>\dynamic_analysis\dynamic_runs\<name>_<timestamp>_<id>\metadata\...
+#:
+#: MalwareBazaar delivers every sample named as its full SHA-256, so a real
+#: sample is 64 characters and the two copies alone consume ~155 before the
+#: repo root, the fixed directories, or any filename. The first live sample
+#: failed at "The filename or extension is too long" for exactly this reason.
+#:
+#: 24 keeps a hash prefix long enough to stay recognisable and to remain
+#: effectively unique within a case directory, while leaving room for the rest
+#: of the path.
+_MAX_NAME_COMPONENT = 24
+
+
 def _slugify(value: str, fallback: str = "dynamic_test") -> str:
     text = (value or "").strip().lower()
     text = re.sub(r"[^a-z0-9._-]+", "_", text)
     text = text.strip("._-")
+    if len(text) > _MAX_NAME_COMPONENT:
+        text = text[:_MAX_NAME_COMPONENT].rstrip("._-")
     return text or fallback
 
 
