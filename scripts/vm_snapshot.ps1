@@ -259,6 +259,14 @@ function Wait-GuestReady {
 
   Write-Info "Waiting up to $Seconds seconds for the guest to come up..."
   $deadline = (Get-Date).AddSeconds($Seconds)
+  $started = Get-Date
+
+  # Tracked so a timeout can say what it saw rather than only that it saw
+  # nothing. "LoggedInUsers=0 after five minutes" points at autologin; "no
+  # properties at all" points at Guest Additions; the two need opposite fixes.
+  $lastUsers = "unavailable"
+  $pingable = $false
+  $nextReport = 30
 
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
@@ -266,24 +274,47 @@ function Wait-GuestReady {
     $state = Get-VmRunState -Exe $Exe -Name $Name
     if ($state -notmatch 'running') { continue }
 
-    # Preferred signal: Guest Additions reporting a logged-in session.
-    $probe = Invoke-VBox -Exe $Exe -Arguments @("guestproperty", "get", $Name, "/VirtualBox/GuestInfo/OS/LoggedInUsers")
-    if ($probe.ExitCode -eq 0 -and ($probe.Output -join ' ') -match 'Value:\s*(\d+)' -and [int]$matches[1] -ge 1) {
-      Write-Ok "Guest reports a logged-in session."
-      return $true
+    # Network first: it comes up well before the desktop, so it distinguishes
+    # "still booting" from "booted but sitting at the login screen".
+    if (-not $Address) { $Address = Get-GuestIPv4 -Exe $Exe -Name $Name }
+    if ($Address -and -not $pingable) {
+      $pingable = Test-Connection -ComputerName $Address -Count 1 -Quiet -ErrorAction SilentlyContinue
     }
 
-    if (-not $Address) { $Address = Get-GuestIPv4 -Exe $Exe -Name $Name }
-    if ($Address -and (Test-Connection -ComputerName $Address -Count 1 -Quiet -ErrorAction SilentlyContinue)) {
-      Write-Ok "Guest is responding on $Address."
-      return $true
+    # The signal that actually matters: the workbench needs a desktop session
+    # to launch into, so a reachable machine at the login screen is not ready.
+    $probe = Invoke-VBox -Exe $Exe -Arguments @("guestproperty", "get", $Name, "/VirtualBox/GuestInfo/OS/LoggedInUsers")
+    if ($probe.ExitCode -eq 0 -and ($probe.Output -join ' ') -match 'Value:\s*(\d+)') {
+      $lastUsers = $matches[1]
+      if ([int]$matches[1] -ge 1) {
+        $elapsed = [int]((Get-Date) - $started).TotalSeconds
+        Write-Ok "Guest reports a logged-in session after ${elapsed}s."
+        if ($Address) { Write-Ok "Reachable on $Address." }
+        return $true
+      }
+    }
+
+    $elapsed = [int]((Get-Date) - $started).TotalSeconds
+    if ($elapsed -ge $nextReport) {
+      $reach = if ($pingable) { "network up" } else { "no network yet" }
+      Write-Info "  ${elapsed}s: $reach, logged-in users: $lastUsers"
+      $nextReport += 30
     }
   }
 
-  # Not fatal. Without Guest Additions there may be no readiness signal at all,
-  # and reporting that honestly beats either hanging or claiming success.
+  # Not fatal. Reporting honestly beats hanging or claiming success -- but say
+  # what was observed, because a bare "no signal" is not actionable.
   Write-Warn "No readiness signal within $Seconds seconds."
-  Write-Warn "The VM may still be booting. Check it before detonating."
+  if ($pingable) {
+    Write-Warn "The guest IS reachable on $Address but reports no logged-in session,"
+    Write-Warn "so it is most likely sitting at the login screen. Log in, or raise"
+    Write-Warn "-WaitSeconds if this machine simply boots slowly."
+  } elseif ($lastUsers -eq "unavailable") {
+    Write-Warn "No Guest Additions properties were readable, so there is no"
+    Write-Warn "readiness signal to wait for. Pass -GuestAddress to use a ping instead."
+  } else {
+    Write-Warn "The VM may still be booting. Check it before detonating."
+  }
   return $false
 }
 
