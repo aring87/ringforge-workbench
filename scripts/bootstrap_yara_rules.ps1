@@ -88,30 +88,6 @@ function Get-ScriptDir {
   return (Get-Location).Path
 }
 
-function Find-YaraRulesRoot {
-  param([Parameter(Mandatory=$true)][string]$ExtractPath)
-
-  # The directory holding the most rule files, which handles both a top-level
-  # yara/ folder and rules scattered at the archive root.
-  $best = $null
-  $bestCount = 0
-
-  $dirs = @(Get-Item -LiteralPath $ExtractPath) +
-          @(Get-ChildItem -Path $ExtractPath -Directory -Recurse -ErrorAction SilentlyContinue)
-
-  foreach ($dir in $dirs) {
-    $count = @(Get-ChildItem -Path $dir.FullName -File -ErrorAction SilentlyContinue |
-               Where-Object { $_.Extension -in @(".yar", ".yara") }).Count
-    if ($count -gt $bestCount) {
-      $bestCount = $count
-      $best = $dir.FullName
-    }
-  }
-
-  if ($bestCount -eq 0) { return $null }
-  return $best
-}
-
 function Test-RuleCompilation {
   param(
     [Parameter(Mandatory=$true)][string]$RulesDir,
@@ -238,7 +214,6 @@ function Install-RuleSet {
   }
 
   $tmpArchive = Join-Path $TmpRoot ("{0}.zip" -f $slug)
-  $tmpExtract = Join-Path $TmpRoot ("{0}-extract" -f $slug)
 
   Write-Info "Downloading..."
   try {
@@ -250,25 +225,45 @@ function Install-RuleSet {
     return 0
   }
 
-  Write-Info "Extracting..."
-  Expand-Archive -LiteralPath $tmpArchive -DestinationPath $tmpExtract -Force
+  # Only .yar/.yara entries are extracted, straight into the destination,
+  # rather than expanding the whole archive and then copying.
+  #
+  # This is not just tidier. Expand-Archive on elastic/protections-artifacts
+  # fails outright: it also ships behavior rules as .toml under
+  # behavior\rules\cross-platform\ with names like
+  # credential_access_potential_credential_validation_via_sudo_from_unusual_parent.toml,
+  # and a temp path plus those blows past the 260-character MAX_PATH limit
+  # mid-extraction. Nothing here wants those files anyway.
+  Write-Info "Extracting rule files..."
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-  $sourceRoot = Find-YaraRulesRoot -ExtractPath $tmpExtract
-  if (-not $sourceRoot) {
-    Write-Warn ("No .yar or .yara files found in {0}; skipping." -f $Repo)
+  $count = 0
+  try {
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($tmpArchive)
+    try {
+      foreach ($entry in $zip.Entries) {
+        if ($entry.Name -notmatch '\.(yar|yara)$') { continue }
+
+        $dest = Join-Path $target $entry.Name
+        if (Test-Path -LiteralPath $dest) {
+          # Same filename in two directories of one archive. Keep both rather
+          # than letting the second silently replace the first.
+          $dest = Join-Path $target ("{0}__{1}" -f $count, $entry.Name)
+        }
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+        $count++
+      }
+    } finally {
+      $zip.Dispose()
+    }
+  } catch {
+    Write-Warn ("Extraction failed for {0}: {1}" -f $Repo, $_.Exception.Message)
     return 0
   }
-  Write-Info ("Rules root: {0}" -f $sourceRoot)
-
-  New-Item -ItemType Directory -Force -Path $target | Out-Null
-  Copy-Item -Force -Path (Join-Path $sourceRoot "*.yar") -Destination $target -ErrorAction SilentlyContinue
-  Copy-Item -Force -Path (Join-Path $sourceRoot "*.yara") -Destination $target -ErrorAction SilentlyContinue
-
-  $count = @(Get-ChildItem -Path $target -File -ErrorAction SilentlyContinue |
-              Where-Object { $_.Extension -in @(".yar", ".yara") }).Count
 
   if ($count -eq 0) {
-    Write-Warn ("No rule files installed from {0}." -f $Repo)
+    Write-Warn ("No .yar or .yara files found in {0}; skipping." -f $Repo)
     return 0
   }
 
@@ -297,20 +292,33 @@ try {
   $tmpRoot = Join-Path $env:TEMP ("yara_rules_bootstrap_" + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
+  # Staged, then swapped in only once something actually downloaded.
+  #
+  # Deleting the live rules folder first and rebuilding in place means any
+  # failure -- a network blip, an archive that will not extract, a typo in this
+  # script -- leaves the guest with no rules at all, which is strictly worse
+  # than not having run the script. That happened twice in one session, and the
+  # second time the run afterwards would have scanned nothing and reported it
+  # as a clean result.
   $targetRules = Join-Path $destFull "rules"
-  if (Test-Path -LiteralPath $targetRules) {
-    Write-Warn "Existing rules folder found. Replacing: $targetRules"
-    Remove-Item -Recurse -Force -LiteralPath $targetRules
+  $stagingRules = Join-Path $destFull "rules.staging"
+
+  if (Test-Path -LiteralPath $stagingRules) {
+    Remove-Item -Recurse -Force -LiteralPath $stagingRules
   }
-  New-Item -ItemType Directory -Force -Path $targetRules | Out-Null
+  New-Item -ItemType Directory -Force -Path $stagingRules | Out-Null
 
   $totalRules = 0
   foreach ($repoName in $Repos) {
     $totalRules += Install-RuleSet -Repo $repoName -Branch $Branch `
-                                   -RulesRoot $targetRules -TmpRoot $tmpRoot -Headers $headers
+                                   -RulesRoot $stagingRules -TmpRoot $tmpRoot -Headers $headers
   }
 
   if ($totalRules -eq 0) {
+    Remove-Item -Recurse -Force -LiteralPath $stagingRules -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $targetRules) {
+      Write-Warn "Nothing downloaded. The existing ruleset has been left untouched."
+    }
     throw "No rule files were installed from any ruleset. Inspect: $tmpRoot"
   }
 
@@ -327,7 +335,7 @@ try {
     if ($localFiles.Count -gt 0) {
       # A subdirectory rather than the rules root, so a local filename can never
       # silently overwrite a downloaded rule of the same name.
-      $localTarget = Join-Path $targetRules "local"
+      $localTarget = Join-Path $stagingRules "local"
       New-Item -ItemType Directory -Force -Path $localTarget | Out-Null
       foreach ($file in $localFiles) {
         Copy-Item -LiteralPath $file.FullName -Destination $localTarget -Force
@@ -337,6 +345,13 @@ try {
   } else {
     Write-Info "No tools\yara\local directory; skipping local rules."
   }
+
+  # Swap only now, when the staged tree is known to hold rules.
+  if (Test-Path -LiteralPath $targetRules) {
+    Remove-Item -Recurse -Force -LiteralPath $targetRules
+  }
+  Move-Item -LiteralPath $stagingRules -Destination $targetRules
+  Write-Ok ("Ruleset installed at {0}" -f $targetRules)
 
   if (-not $SkipCompileCheck) {
     Write-Info "Test-compiling the ruleset..."
