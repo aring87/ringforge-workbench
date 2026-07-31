@@ -206,13 +206,19 @@ try {
     }
   }
 
-  if ($vmState.State -notmatch 'running') {
-    throw ("VM '$VMName' is not running (state: $($vmState.State)). " +
-           "Link state can only be changed on a running VM; start it first, " +
-           "or change the adapter in the VM settings while powered off.")
-  }
-
+  # A running VM takes link changes live through controlvm; a stopped one needs
+  # modifyvm, which edits the saved configuration instead.
+  #
+  # Handling the stopped case matters for snapshot restores. A snapshot brings
+  # back the cable state it was taken with, so a baseline captured while armed
+  # would boot armed. Disarming before the VM starts closes that window
+  # entirely, rather than racing to disarm a machine that is already up.
+  $isRunning = ($vmState.State -match 'running')
   $desired = if ($Arm) { "on" } else { "off" }
+
+  if (-not $isRunning) {
+    Write-Info "VM is $($vmState.State); changing the saved adapter configuration."
+  }
 
   foreach ($adapter in $targets) {
     if ($adapter.Cable -eq $desired) {
@@ -220,7 +226,11 @@ try {
       continue
     }
     Write-Info "Setting NIC $($adapter.Nic) ($($adapter.Attachment)) cable $desired..."
-    & $exe controlvm $VMName ("setlinkstate{0}" -f $adapter.Nic) $desired
+    if ($isRunning) {
+      & $exe controlvm $VMName ("setlinkstate{0}" -f $adapter.Nic) $desired
+    } else {
+      & $exe modifyvm $VMName ("--cableconnected{0}" -f $adapter.Nic) $desired
+    }
     if ($LASTEXITCODE -ne 0) {
       throw "VBoxManage failed to set link state on NIC $($adapter.Nic)."
     }
