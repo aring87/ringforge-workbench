@@ -56,7 +56,10 @@
   when you are deliberately restoring a snapshot in order to go online.
 
 .PARAMETER WaitSeconds
-  How long to wait for the guest to come up after starting. Default 180.
+  How long to wait for the guest to come up after starting. Default 300. A cold
+  boot from snapshot to a logged-in desktop measured 182 seconds on the
+  reference VM, so anything much tighter reports a failure that is really just
+  impatience.
 
 .PARAMETER GuestAddress
   Host-only address to ping as a readiness check when Guest Additions are not
@@ -91,7 +94,7 @@ param(
   [string]$Description = "",
   [switch]$NoStart,
   [switch]$KeepNetworkState,
-  [int]$WaitSeconds = 180,
+  [int]$WaitSeconds = 300,
   [string]$GuestAddress = "",
   [switch]$Headless,
   [switch]$Force,
@@ -240,15 +243,29 @@ function Stop-VmHard {
 function Get-GuestIPv4 {
   param([string]$Exe, [string]$Name)
 
-  # Guest Additions publish this when present. The analysis VM is debloated, so
-  # treat its absence as normal rather than as a fault.
+  # Guest Additions publish these when present. The analysis VM is debloated, so
+  # treat their absence as normal rather than as a fault.
+  #
+  # Every adapter is collected rather than the first usable one, because the
+  # guest has two and only one of them is any use here. The NAT address is
+  # published first and is unreachable from the host by design -- and it is
+  # disconnected anyway while contained -- so returning it produces an address
+  # that can never be pinged.
+  $candidates = @()
   foreach ($index in 0..3) {
     $prop = "/VirtualBox/GuestInfo/Net/$index/V4/IP"
     $probe = Invoke-VBox -Exe $Exe -Arguments @("guestproperty", "get", $Name, $prop)
     if ($probe.ExitCode -eq 0 -and ($probe.Output -join ' ') -match 'Value:\s*(\d{1,3}(?:\.\d{1,3}){3})') {
       $ip = $matches[1]
-      # The host-only address is the one reachable while disarmed.
-      if ($ip -notmatch '^(0\.|169\.254\.)') { return $ip }
+      if ($ip -notmatch '^(0\.|169\.254\.)') { $candidates += $ip }
+    }
+  }
+
+  # Whichever one actually answers is the right one, which avoids hard-coding
+  # any assumption about the host-only subnet.
+  foreach ($ip in $candidates) {
+    if (Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction SilentlyContinue) {
+      return $ip
     }
   }
   return ""
@@ -278,6 +295,8 @@ function Wait-GuestReady {
     # "still booting" from "booted but sitting at the login screen".
     if (-not $Address) { $Address = Get-GuestIPv4 -Exe $Exe -Name $Name }
     if ($Address -and -not $pingable) {
+      # Get-GuestIPv4 only returns an address that answered, so a caller-supplied
+      # one is the only case still needing a check here.
       $pingable = Test-Connection -ComputerName $Address -Count 1 -Quiet -ErrorAction SilentlyContinue
     }
 
@@ -289,7 +308,7 @@ function Wait-GuestReady {
       if ([int]$matches[1] -ge 1) {
         $elapsed = [int]((Get-Date) - $started).TotalSeconds
         Write-Ok "Guest reports a logged-in session after ${elapsed}s."
-        if ($Address) { Write-Ok "Reachable on $Address." }
+        if ($pingable) { Write-Ok "Reachable on $Address." }
         return $true
       }
     }
@@ -421,6 +440,17 @@ try {
       Write-Warn "Cancelled."
       exit 1
     }
+
+    Write-Step "Deleting snapshot '$Delete'"
+    # Powered off first, for the same reason -Take is.
+    #
+    # Deleting a snapshot does not discard data, it merges the differencing disk
+    # into its parent. On a running VM that is a *live* merge against the disk
+    # the guest is running from, and it makes the guest unresponsive for as long
+    # as it takes -- VirtualBox even names the state "deletingsnapshotlive". A
+    # merge of a few hundred megabytes froze this VM for over five minutes and
+    # looked exactly like a crash. Offline it is faster and disturbs nothing.
+    Stop-VmHard -Exe $exe -Name $VMName
     $deleted = Invoke-VBox -Exe $exe -Arguments @("snapshot", $VMName, "delete", $Delete)
     if ($deleted.ExitCode -ne 0) {
       throw ("VBoxManage failed to delete the snapshot: " + ($deleted.Output -join ' '))
