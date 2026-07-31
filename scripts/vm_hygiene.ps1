@@ -75,7 +75,13 @@
 
 .PARAMETER AutoLogonPassword
   That account's password. Prompted for if omitted; stored in plaintext either
-  way.
+  way. A Windows Hello PIN will not work -- Hello is a TPM-backed unlock for an
+  account that still has a password underneath, and that password is what is
+  needed here.
+
+.PARAMETER AutoLogonDomain
+  Logon domain. Defaults to the computer name for a local account, and to the
+  literal "MicrosoftAccount" when the user name looks like an email address.
 
 .PARAMETER Force
   Proceed even when this does not look like a virtual machine. Required on a VM
@@ -98,6 +104,7 @@ param(
   [switch]$EnableAutoLogon,
   [string]$AutoLogonUser = "",
   [string]$AutoLogonPassword = "",
+  [string]$AutoLogonDomain = "",
   [switch]$Force
 )
 
@@ -637,7 +644,7 @@ function Enable-AutoLogon {
     instead, which is marginally better but still readable by anything running
     elevated, so it is not the meaningful protection it appears to be.
   #>
-  param([string]$User, [string]$Password)
+  param([string]$User, [string]$Password, [string]$Domain)
 
   Write-Step "Automatic logon"
 
@@ -648,6 +655,48 @@ function Enable-AutoLogon {
     $Password = Read-Host "Password for $User"
   }
 
+  # A Windows Hello PIN is not a credential here. It is a TPM-backed unlock for
+  # an account that still has a password underneath, and AutoAdminLogon needs
+  # that password. A PIN in DefaultPassword simply fails at boot.
+  if ($Password -match '^\d{4,8}$') {
+    Write-Warn "That looks like a PIN rather than a password."
+    Write-Warn "Windows Hello PINs do not work for automatic logon -- use the"
+    Write-Warn "account's actual password. Continuing anyway in case it is one."
+  }
+
+  # A Microsoft account needs the literal domain "MicrosoftAccount" and the full
+  # email as the user name. Writing the computer name there, which is right for
+  # a local account, fails silently: the machine simply sits at the login screen
+  # exactly as it would with no setting at all.
+  if (-not $Domain) {
+    if ($User -match '@') {
+      $Domain = "MicrosoftAccount"
+      Write-Info "Username looks like a Microsoft account; using domain 'MicrosoftAccount'."
+    } else {
+      $Domain = $env:COMPUTERNAME
+    }
+  }
+
+  # Windows 11 commonly enforces "only allow Windows Hello sign-in for Microsoft
+  # accounts on this device", which disables password sign-in and blocks
+  # AutoAdminLogon outright however correct the password is. This is the setting
+  # behind most "autologin just does not work" reports on Win11.
+  $passwordless = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device"
+  try {
+    $current = (Get-ItemProperty -Path $passwordless -Name "DevicePasswordLessBuildVersion" -ErrorAction Stop).DevicePasswordLessBuildVersion
+    if ([int]$current -ne 0) {
+      if ($DryRun) {
+        Write-Skip "Dry run: would set DevicePasswordLessBuildVersion 0 (currently $current) to re-enable password sign-in."
+      } else {
+        Set-ItemProperty -Path $passwordless -Name "DevicePasswordLessBuildVersion" -Value 0 -Type DWord
+        Write-Ok "Re-enabled password sign-in (DevicePasswordLessBuildVersion 0)."
+        Write-Info "Hello-only sign-in would otherwise have blocked automatic logon."
+      }
+    }
+  } catch {
+    Write-Skip "Hello-only sign-in policy not present; nothing to relax."
+  }
+
   $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 
   Write-Danger "The password will be stored in plaintext at:"
@@ -655,14 +704,14 @@ function Enable-AutoLogon {
   Write-Danger "Anything running in this guest can read it, samples included."
 
   if ($DryRun) {
-    Write-Skip "Dry run: would set AutoAdminLogon=1, DefaultUserName=$User for $env:COMPUTERNAME."
+    Write-Skip "Dry run: would set AutoAdminLogon=1, DefaultUserName=$User, DefaultDomainName=$Domain."
     return
   }
 
   try {
     Set-ItemProperty -Path $key -Name "AutoAdminLogon" -Value "1" -Type String
     Set-ItemProperty -Path $key -Name "DefaultUserName" -Value $User -Type String
-    Set-ItemProperty -Path $key -Name "DefaultDomainName" -Value $env:COMPUTERNAME -Type String
+    Set-ItemProperty -Path $key -Name "DefaultDomainName" -Value $Domain -Type String
     Set-ItemProperty -Path $key -Name "DefaultPassword" -Value $Password -Type String
 
     # Windows decrements AutoLogonCount on each automatic logon and stops once
@@ -674,7 +723,7 @@ function Enable-AutoLogon {
       Write-Info "Removed AutoLogonCount, which would have expired the setting."
     }
 
-    Write-Ok "Automatic logon enabled for $User."
+    Write-Ok "Automatic logon enabled for $User (domain: $Domain)."
     Write-Info "Re-take the baseline snapshot so reverts keep this."
   } catch {
     Write-Warn "Could not enable automatic logon: $($_.Exception.Message)"
@@ -760,7 +809,7 @@ try {
   Show-OptionalSoftware
 
   if ($EnableAutoLogon) {
-    Enable-AutoLogon -User $AutoLogonUser -Password $AutoLogonPassword
+    Enable-AutoLogon -User $AutoLogonUser -Password $AutoLogonPassword -Domain $AutoLogonDomain
   }
 
   if (-not $DryRun) {
