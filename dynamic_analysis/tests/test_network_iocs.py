@@ -11,6 +11,7 @@ swallows a real C2 address is worse than the noise it removes.
 import unittest
 
 from dynamic_analysis.network_capture import (
+    classify_domain,
     extract_network_iocs,
     is_non_routable_ip,
     is_private_ip,
@@ -57,6 +58,45 @@ class SsdpNoiseTests(unittest.TestCase):
         self.assertEqual(iocs["notable_urls"], [])
         # Still present in the unfiltered list, not erased.
         self.assertEqual(len(iocs["urls"]), 1)
+
+
+class DomainClassificationTests(unittest.TestCase):
+    """mDNS from the host LAN is not Windows background traffic.
+
+    Both are suppressed, but reporting a Chromecast announcing itself as
+    "Windows Baseline Traffic" tells the reader something untrue about where it
+    came from.
+    """
+
+    CAPTURE = {
+        "dns_queries": [
+            "c896B2E00000.local",
+            "_spotify-connect._tcp.local",
+            "ctldl.windowsupdate.com",
+            "evil-c2.example",
+        ],
+        "tls_sni": [], "http_requests": [], "connections": [],
+    }
+
+    def test_each_kind_lands_in_its_own_bucket(self) -> None:
+        iocs = extract_network_iocs(self.CAPTURE)
+        self.assertEqual(iocs["notable_domains"], ["evil-c2.example"])
+        self.assertEqual(iocs["baseline_domains"], ["ctldl.windowsupdate.com"])
+        self.assertEqual(
+            sorted(iocs["local_discovery_domains"]),
+            sorted(["c896B2E00000.local", "_spotify-connect._tcp.local"]),
+        )
+
+    def test_nothing_is_counted_twice(self) -> None:
+        counts = extract_network_iocs(self.CAPTURE)["counts"]
+        self.assertEqual(
+            counts["notable_domains"] + counts["baseline_domains"] + counts["local_discovery_domains"],
+            counts["domains"],
+        )
+
+    def test_bare_hostname_is_local_discovery(self) -> None:
+        # The guest's own computer name, resolved via LLMNR/NetBIOS.
+        self.assertEqual(classify_domain("win11"), "local_discovery")
 
 
 class RealIndicatorsSurviveTests(unittest.TestCase):

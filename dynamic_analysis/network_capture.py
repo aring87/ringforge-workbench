@@ -48,9 +48,15 @@ BASELINE_DOMAIN_SUFFIXES = (
     "akamaiedge.net", "edgesuite.net", "edgekey.net",
 )
 
-#: Local and non-routable name traffic: mDNS, reverse lookups, WPAD, and bare
-#: single-label hostnames such as the VM's own computer name.
-BASELINE_DOMAIN_MARKERS = (".local", ".arpa", ".home", ".lan", "wpad", "isatap")
+#: Local service discovery: mDNS/Bonjour, reverse lookups, WPAD, and bare
+#: single-label hostnames such as the VM's own computer name. Distinct from the
+#: Windows suffixes above -- these are the host's LAN talking to itself through
+#: the host-only adapter, not Windows phoning home.
+LOCAL_DISCOVERY_MARKERS = (".local", ".arpa", ".home", ".lan", "wpad", "isatap")
+
+#: Retained name for anything importing it; the classification split into
+#: LOCAL_DISCOVERY_MARKERS and BASELINE_DOMAIN_SUFFIXES.
+BASELINE_DOMAIN_MARKERS = LOCAL_DISCOVERY_MARKERS
 
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
@@ -746,27 +752,57 @@ def parse_pcap(pcap_path: str | Path, tshark_path: str | Path | None = None) -> 
     return summary
 
 
-def is_baseline_domain(name: str) -> bool:
-    """True when a name is ordinary Windows background traffic.
+def is_local_discovery_domain(name: str) -> bool:
+    """True for local service discovery: mDNS, LLMNR, NetBIOS, WPAD.
 
-    Baseline does not mean safe -- it means "this host would have requested it
-    with no sample running", so it must not be presented as a finding.
+    Kept apart from Windows baseline traffic because they are not the same
+    thing and the difference is visible to anyone reading the report. Names like
+    ``_googlecast._tcp.local`` and ``_spotify-connect._tcp.local`` are other
+    devices on the *host's* LAN announcing themselves, arriving through the
+    host-only adapter -- nothing to do with Windows, and nothing to do with the
+    sample. Filing them under "Windows Baseline Traffic" suppressed them for the
+    right reason under the wrong name.
     """
     value = (name or "").strip().lower().rstrip(".")
     if not value:
         return False
 
-    if any(marker in value for marker in BASELINE_DOMAIN_MARKERS):
+    if any(marker in value for marker in LOCAL_DISCOVERY_MARKERS):
         return True
 
     # A bare single-label name is a NetBIOS/LLMNR style local lookup.
-    if "." not in value:
-        return True
+    return "." not in value
+
+
+def is_windows_baseline_domain(name: str) -> bool:
+    """True for the Microsoft, CDN and certificate-authority traffic Windows
+    generates on its own."""
+    value = (name or "").strip().lower().rstrip(".")
+    if not value:
+        return False
 
     return any(
         value == suffix or value.endswith("." + suffix)
         for suffix in BASELINE_DOMAIN_SUFFIXES
     )
+
+
+def is_baseline_domain(name: str) -> bool:
+    """True when a name is not attributable to the sample, of either kind.
+
+    Baseline does not mean safe -- it means "this host would have requested it
+    with no sample running", so it must not be presented as a finding.
+    """
+    return is_local_discovery_domain(name) or is_windows_baseline_domain(name)
+
+
+def classify_domain(name: str) -> str:
+    """Bucket a domain exactly once, so nothing is counted twice."""
+    if is_local_discovery_domain(name):
+        return "local_discovery"
+    if is_windows_baseline_domain(name):
+        return "windows_baseline"
+    return "notable"
 
 
 def _parse_ip(address: str) -> ipaddress._BaseAddress | None:
@@ -854,8 +890,20 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
 
     # Split host background traffic from anything the sample plausibly caused.
     # Both are kept: the analyst decides, but only one is presented as a lead.
-    notable_domains = [d for d in domains if not is_baseline_domain(d)]
-    baseline_domains = [d for d in domains if is_baseline_domain(d)]
+    # Classified once each, so a name cannot land in two buckets and be counted
+    # twice.
+    notable_domains: list[str] = []
+    baseline_domains: list[str] = []
+    local_discovery_domains: list[str] = []
+    for domain in domains:
+        bucket = classify_domain(domain)
+        if bucket == "local_discovery":
+            local_discovery_domains.append(domain)
+        elif bucket == "windows_baseline":
+            baseline_domains.append(domain)
+        else:
+            notable_domains.append(domain)
+
     notable_urls = [
         u for u in urls
         if not is_baseline_domain(_url_host(u)) and not is_non_routable_ip(_url_host(u))
@@ -877,6 +925,7 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
         "urls": urls[:300],
         "notable_domains": notable_domains[:300],
         "baseline_domains": baseline_domains[:300],
+        "local_discovery_domains": local_discovery_domains[:300],
         "notable_urls": notable_urls[:300],
         "external_ips": external_ips[:300],
         "non_routable_ips": non_routable_ips[:300],
@@ -884,6 +933,7 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
             "domains": len(domains),
             "notable_domains": len(notable_domains),
             "baseline_domains": len(baseline_domains),
+            "local_discovery_domains": len(local_discovery_domains),
             "ips": len(ips),
             "external_ips": len(external_ips),
             "non_routable_ips": len(non_routable_ips),

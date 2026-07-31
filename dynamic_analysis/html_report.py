@@ -912,6 +912,7 @@ def _network_sections(summary: dict[str, Any]) -> str:
   {_kv_table("Network Indicators", {
       "Domains (notable)": len(iocs.get("notable_domains", []) or []),
       "Domains (Windows baseline)": len(iocs.get("baseline_domains", []) or []),
+      "Domains (local discovery)": len(iocs.get("local_discovery_domains", []) or []),
       "External IP addresses": len(iocs.get("external_ips", []) or []),
       "Non-routable addresses": len(iocs.get("non_routable_ips", []) or []),
       "URLs (notable)": len(iocs.get("notable_urls", []) or []),
@@ -922,7 +923,8 @@ def _network_sections(summary: dict[str, Any]) -> str:
 {_list_section("Resolved Domains (excluding Windows baseline)", iocs.get("notable_domains", []) or [], emphasize=True, empty_text="Only routine Windows background traffic was resolved. Nothing here is attributable to the sample.")}
 {_list_section("Requested URLs (excluding Windows baseline)", iocs.get("notable_urls", []) or [], emphasize=True, empty_text="No notable plaintext URLs were observed.")}
 {_list_section("Contacted External IP Addresses", iocs.get("external_ips", []) or [], empty_text="No external IP addresses were contacted.")}
-{_list_section("Windows Baseline Traffic (context, not findings)", iocs.get("baseline_domains", []) or [], empty_text="No baseline traffic was recorded.", context=True)}
+{_list_section("Windows Baseline Traffic (context, not findings)", iocs.get("baseline_domains", []) or [], empty_text="No Windows background traffic was recorded.", context=True)}
+{_list_section("Local Network Discovery (context, not findings)", iocs.get("local_discovery_domains", []) or [], empty_text="No mDNS or local name lookups were recorded.", context=True)}
 {_list_section("Non-Routable Addresses (context, not findings)", iocs.get("non_routable_ips", []) or [], empty_text="No multicast or broadcast traffic was recorded.", context=True)}
 {_list_section("TLS Server Names (SNI)", network.get("tls_sni", []) or [], empty_text="No TLS SNI values were observed.")}
 {_dict_list_table("HTTP Requests", network.get("http_requests", []) or [])}
