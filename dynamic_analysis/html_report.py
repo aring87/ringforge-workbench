@@ -709,6 +709,59 @@ def _telemetry_coverage_table(summary: dict[str, Any]) -> str:
     return _kv_table("Telemetry Coverage", data, _section_badge("Active", active))
 
 
+def _degraded_collection_section(summary: dict[str, Any]) -> str:
+    """Report collectors that only succeeded via their fallback path.
+
+    The task and service snapshots try WMI/CIM first and fall back to
+    schtasks.exe and sc.exe. The fallback produces a usable snapshot, so the
+    status is recorded as a success and the run carries on -- which is right,
+    but it means a broken WMI repository leaves no mark anywhere in the report.
+
+    That silence is the problem. WMI is itself a persistence and execution
+    surface, and a guest whose `root\\cimv2` namespace is unreadable may also be
+    failing to record the WMI events Sysmon is configured to watch. "This
+    snapshot came the long way round" is the only warning the reader gets.
+    """
+    collectors = (
+        ("Scheduled tasks", summary.get("tasks_snapshot_status", {}) or {}),
+        ("Services", summary.get("services_snapshot_status", {}) or {}),
+    )
+
+    rows = [
+        {
+            "collector": label,
+            "collected_via": status.get("method", "") or "fallback",
+            # First line only: these carry a full PowerShell stack trace, and
+            # the namespace error on line one is the part that identifies it.
+            "primary_path_error": " ".join(
+                str(status.get("error", "") or "").splitlines()[:1]
+            ).strip()[:300],
+        }
+        for label, status in collectors
+        if status.get("fallback_used")
+    ]
+
+    if not rows:
+        return ""
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Degraded Collection</h2>
+        {_section_badge("Collectors", len(rows))}
+      </div>
+      <p class="muted">
+        These collectors failed on their primary path and succeeded only via a
+        fallback. The snapshot itself is usable, so the diffs above are valid --
+        but the underlying failure is not, and an unreadable WMI namespace can
+        also mean WMI-based persistence and execution go unrecorded elsewhere in
+        this run. Worth repairing in the guest rather than reading past.
+      </p>
+      {_dict_list_table("Collectors That Fell Back", rows)}
+    </section>
+    """
+
+
 def _containment_section(summary: dict[str, Any]) -> str:
     """Warn prominently when the sample could have bypassed the simulated internet.
 
@@ -1335,6 +1388,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
   {_kv_table("Sample Metadata", sample)}
   {_capture_configuration_table(summary)}
   {_telemetry_coverage_table(summary)}
+  {_degraded_collection_section(summary)}
   {_kv_table("Procmon Summary", procmon)}
   {_kv_table("Interesting Procmon Summary", procmon_interesting)}
   {_kv_table("Findings Counts", findings_counts)}
