@@ -752,13 +752,51 @@ def _memory_dump_rows(memory: dict[str, Any]) -> list[dict[str, Any]]:
     pushes the table into horizontal scrolling for no benefit -- the filename is
     the part an analyst carries over to a scanner. The complete path stays in
     memory_dumps.json.
+
+    ``suspended`` becomes a "Capture" column in words. It is the field that says
+    how far the image can be trusted, and a bare "False" states the mechanism
+    while hiding the consequence -- the reader has to already know that an
+    unfrozen dump is a smear to see that the row is qualified.
+
+    Only rewritten when the key is actually present. A memory_dumps.json written
+    before dumps were suspended has no such field, and defaulting it would print
+    a confident "Live (smeared)" about a capture whose state was never recorded.
     """
     rows: list[dict[str, Any]] = []
     for dump in memory.get("dumps", []) or []:
-        row = {key: value for key, value in dump.items() if key != "path"}
+        capture = (
+            ("Frozen" if dump.get("suspended") else "Live (smeared)")
+            if "suspended" in dump
+            else ""
+        )
+
+        # Every other key is passed through untouched, so a field added to the
+        # dump record later shows up in the table without a change here.
+        row: dict[str, Any] = {}
+        for key, value in dump.items():
+            if key in ("path", "suspended"):
+                continue
+            row[key] = value
+            # Placed next to the trigger rather than at the end: the two
+            # together are how the image was captured, and separating them by
+            # size and hash buries the one that qualifies the result.
+            if key == "trigger" and capture:
+                row["capture"] = capture
+
+        if capture and "capture" not in row:
+            row["capture"] = capture
         row["file"] = Path(str(dump.get("path", ""))).name
         rows.append(row)
     return rows
+
+
+def _smeared_dumps(memory: dict[str, Any]) -> list[dict[str, Any]]:
+    """Successful dumps that were read while the process kept running."""
+    return [
+        dump
+        for dump in (memory.get("dumps", []) or [])
+        if "suspended" in dump and not dump.get("suspended")
+    ]
 
 
 def _memory_sections(summary: dict[str, Any]) -> str:
@@ -811,6 +849,30 @@ def _memory_sections(summary: dict[str, Any]) -> str:
         ),
         _dict_list_table("Captured Process Images", _memory_dump_rows(memory)),
     ]
+
+    # A smeared image is not a failure, so it does not belong in "Failed Dumps",
+    # but it does change how a result from it should be read -- and that is
+    # invisible if the only trace is one word in one column of a wide table.
+    smeared = _smeared_dumps(memory)
+    if smeared:
+        sections.append(f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Images Captured While Running</h2>
+        {_section_badge("Dumps", len(smeared))}
+      </div>
+      <p class="muted">
+        {_esc(len(smeared))} of {_esc(counts.get("dumps_succeeded", 0))} dump(s)
+        were read while the process kept running, because it could not be
+        suspended -- typically access denied on a protected process, or it
+        exited between being noticed and being frozen. ProcDump reads such a
+        process over hundreds of megabytes while it is still writing, so the
+        image is not a snapshot of a single instant and may be internally
+        inconsistent. Treat a YARA miss against one of these as weaker evidence
+        than a miss against a frozen image.
+      </p>
+    </section>
+    """)
 
     if memory.get("skipped"):
         sections.append(

@@ -567,6 +567,60 @@ class MemoryDumpSession:
         live.sort(key=lambda p: (p["pid"] != root_pid, p["pid"]))
         return live
 
+    def _suspend(self, pid: int) -> bool:
+        """Freeze a process for the duration of its dump. True if suspended.
+
+        Two reasons, and the second is why this exists.
+
+        A dump of a running process is a smear: ProcDump reads hundreds of
+        megabytes while the target keeps writing, so the image is not a snapshot
+        of any single instant.
+
+        More importantly it removes a race that has already cost a payload. A
+        spawned child is dumped the moment it appears, but one real sample's
+        second-generation process exited mid-read -- ProcDump reported
+        ERROR_PARTIAL_COPY and wrote nothing usable. A suspended process cannot
+        run the code that would exit it, so the window shrinks from "however
+        long the dump takes" to "however long between noticing and suspending".
+
+        A missing handle is the only "cannot suspend" case, and it covers a
+        missing psutil too: the handle map is populated only where psutil is
+        present, so it is empty when psutil is not.
+        """
+        with self._lock:
+            process = self._procs.get(int(pid))
+        if process is None:
+            return False
+
+        try:
+            process.suspend()
+            return True
+        except Exception:
+            # Already gone, or access denied on a protected process. Neither is
+            # worth failing the dump over -- it just proceeds unsuspended.
+            return False
+
+    def _resume(self, pid: int) -> None:
+        """Unfreeze a process. Failures here are deliberately silent.
+
+        Called only from a finally block. A process that died during its own
+        dump cannot be resumed and does not need to be; the thing that must not
+        happen is an exception on this path leaving the sample frozen for the
+        rest of the run.
+
+        Only ever called when the matching ``_suspend`` returned True, so a
+        missing handle here means the process is gone, not that it is frozen.
+        """
+        with self._lock:
+            process = self._procs.get(int(pid))
+        if process is None:
+            return
+
+        try:
+            process.resume()
+        except Exception:
+            pass
+
     def _working_set_mb(self, pid: int) -> int:
         if psutil is None:
             return 0
@@ -677,6 +731,13 @@ class MemoryDumpSession:
         }
 
         started = time.monotonic()
+
+        # Suspended for the dump, and resumed in the finally below whatever
+        # happens. A leaked suspension would freeze the sample for the rest of
+        # the run, which is worse than any dump failure it could prevent.
+        suspended = self._suspend(pid)
+        record["suspended"] = suspended
+
         try:
             # Bytes, not text: ProcDump emits UTF-16 and the locale codec
             # mangles it. Decoded explicitly below.
@@ -697,6 +758,9 @@ class MemoryDumpSession:
             record["error"] = str(error)
             record["duration_seconds"] = int(time.monotonic() - started)
             return record
+        finally:
+            if suspended:
+                self._resume(pid)
 
         record["duration_seconds"] = int(time.monotonic() - started)
 
@@ -754,6 +818,9 @@ def summarize_memory_dumps(dump_result: dict[str, Any]) -> dict[str, Any]:
                 "path": d.get("path", ""),
                 "size_mb": int(int(d.get("size", 0) or 0) / (1024 * 1024)),
                 "sha256": d.get("sha256", ""),
+                # A dump taken unsuspended is a smear rather than a snapshot,
+                # so whether the freeze succeeded is part of reading the result.
+                "suspended": bool(d.get("suspended", False)),
             }
             for d in successful
         ],

@@ -3,7 +3,11 @@ import json
 from pathlib import Path
 
 def extract_lief_metadata(sample_path: Path) -> dict:
-    import lief  # optional dependency
+    # Declared in requirements.txt, not optional: this step feeds the risk
+    # score, and a case run without it is scored on less evidence. Imported
+    # here rather than at module scope so a broken install degrades to one
+    # skipped step (see steps.step_lief_metadata) instead of failing the run.
+    import lief
     try:
         pe = lief.parse(str(sample_path))
         if pe is None:
