@@ -41,6 +41,8 @@ tools/capa-rules/
 # Tools installed into the VM by bootstrap_tools.ps1, not tracked here
 tools/procdump64.exe
 tools/procdump.exe
+tools/fakenet/
+tools/sysmonconfig.xml
 
 # Process memory dumps. These contain the sample's unpacked payload verbatim,
 # so a stray commit publishes live malware.
