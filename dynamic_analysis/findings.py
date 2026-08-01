@@ -33,6 +33,11 @@ KNOWN_NOISE_PROCESSES = {
     "razer synapse service.exe",
     "razercortex.exe",
     "msedge.exe",
+    # The WebView2 host, which is what Office and Copilot actually run in. It
+    # spawns a tree of --type=gpu-process / --type=renderer children under its
+    # own name, so a run with Copilot resident reports several "spawned
+    # processes" that have nothing to do with the sample.
+    "msedgewebview2.exe",
     "teams.exe",
     "epicgameslauncher.exe",
     "epicwebhelper.exe",
@@ -367,9 +372,18 @@ def _is_windows_baseline_process_create(process_name: object, path: object = Non
         "compattelrunner.exe",
         "mousocoreworker.exe",
         "wermgr.exe",
+        # Audio Device Graph Isolation. Started by svchost on its own schedule
+        # whenever anything touches audio, which on a desktop VM is often.
+        "audiodg.exe",
     }
+    #: Trusted homes for the binaries above. System32 is the obvious one;
+    #: %WINDIR%\uus\<arch>\ is the Update Universal Store, which is where
+    #: Windows 11 actually services MoUsoCoreWorker.exe from. Requiring
+    #: System32 alone is why a real canary run still reported
+    #: C:\WINDOWS\uus\AMD64\MoUsoCoreWorker.exe as a spawned process.
+    maintenance_roots = ("\\windows\\system32\\", "\\windows\\uus\\")
     if parent_proc == "svchost.exe" and child_proc in svchost_maintenance:
-        if "\\windows\\system32\\" in path_l and not any(
+        if any(root in path_l for root in maintenance_roots) and not any(
             marker in combined for marker in suspicious_launch_markers
         ):
             return True
