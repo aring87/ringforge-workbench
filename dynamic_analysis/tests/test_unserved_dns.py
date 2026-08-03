@@ -21,7 +21,11 @@ the difference between "no C2 observed" meaning something and meaning nothing.
 
 import unittest
 
-from dynamic_analysis.html_report import _fakenet_dns_empty_text, _unserved_dns_section
+from dynamic_analysis.html_report import (
+    _fakenet_cannot_intercept_section,
+    _fakenet_dns_empty_text,
+    _unserved_dns_section,
+)
 
 
 def _summary(sysmon_queries=None, fakenet_requests=None, enabled=True, parsed=True):
@@ -71,6 +75,51 @@ class UnservedDnsTests(unittest.TestCase):
         )
 
         self.assertEqual(html, "")
+
+
+class CannotInterceptTests(unittest.TestCase):
+    """The root cause, not the symptom.
+
+    The guest's route table held only loopback, the on-link /24, multicast and
+    broadcast. With no default route Windows rejects a send to any off-link
+    address before a packet exists, and FakeNet diverts packets -- so twelve
+    listeners sat configured and unreachable.
+    """
+
+    def _summary(self, egress_count=0, listeners=12, parsed=True, enabled=True):
+        return {
+            "fakenet_enabled": enabled,
+            "fakenet_summary": {
+                "parsed": parsed,
+                "dns_requests": [],
+                "listeners_configured": [f"L{n}" for n in range(listeners)],
+            },
+            "sysmon_summary": {"dns_queries": []},
+            "network_isolation": {"egress_count": egress_count},
+        }
+
+    def test_no_route_means_the_listeners_are_unreachable(self) -> None:
+        html = _fakenet_cannot_intercept_section(self._summary())
+
+        self.assertIn("Simulated Internet Cannot Be Reached", html)
+        self.assertIn("Listeners idle: 12", html)
+
+    def test_one_egress_path_is_fine(self) -> None:
+        # A single default route is what the isolation check already calls
+        # contained; it guards against a second adapter, not against having one.
+        self.assertEqual(
+            _fakenet_cannot_intercept_section(self._summary(egress_count=1)), ""
+        )
+
+    def test_silent_when_fakenet_is_disabled(self) -> None:
+        self.assertEqual(
+            _fakenet_cannot_intercept_section(self._summary(enabled=False)), ""
+        )
+
+    def test_silent_without_isolation_data(self) -> None:
+        summary = self._summary()
+        summary["network_isolation"] = {}
+        self.assertEqual(_fakenet_cannot_intercept_section(summary), "")
 
 
 class EmptyStateWordingTests(unittest.TestCase):

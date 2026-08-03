@@ -811,6 +811,60 @@ def _degraded_collection_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _fakenet_cannot_intercept_section(summary: dict[str, Any]) -> str:
+    """Warn when there is no route for FakeNet to intercept traffic on.
+
+    FakeNet's diverter works on packets. With no default route, Windows rejects
+    a send to any off-link address before a packet exists, so there is nothing
+    to divert: the listeners are up and unreachable, and the simulated internet
+    answers nothing however well it is configured.
+
+    Observed on an AgentTesla run -- twelve listeners enabled, zero DNS
+    requests served, zero diverted connections -- on a guest whose route table
+    held only loopback, the on-link /24, multicast and broadcast. The sample's
+    lookup was recorded by Sysmon and never became a packet. The pcap caught
+    only multicast, which is the traffic that did have a route.
+
+    Not the same warning as an unanswered lookup. That one says this sample
+    went unserved; this one says no sample could be.
+    """
+    if not summary.get("fakenet_enabled"):
+        return ""
+
+    fakenet = summary.get("fakenet_summary", {}) or {}
+    if not fakenet.get("parsed"):
+        return ""
+
+    isolation = summary.get("network_isolation", {}) or {}
+    if not isolation or isolation.get("egress_count", 0):
+        return ""
+
+    listeners = len(fakenet.get("listeners_configured", []) or [])
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Simulated Internet Cannot Be Reached</h2>
+        {_section_badge("Listeners idle", listeners)}
+      </div>
+      <p class="muted">
+        This guest holds no default route, so Windows rejects a send to any
+        off-link address before a packet exists. FakeNet diverts packets, so
+        there is nothing for it to intercept -- {_esc(listeners)} listener(s)
+        are configured and unreachable, and any sample that tries to resolve or
+        connect fails locally. Nothing in this run's network results should be
+        read as evidence about what the sample would do with a working network.
+      </p>
+      <p class="muted">
+        A single default route via the host-only gateway is enough to fix it,
+        and keeps containment intact: the isolation check treats one egress path
+        as contained, because what it guards against is a second adapter
+        letting a sample bypass the redirect.
+      </p>
+    </section>
+    """
+
+
 def _sample_dns_queries(summary: dict[str, Any]) -> list[str]:
     """Names the sample resolved, as Sysmon saw them.
 
@@ -1274,6 +1328,7 @@ def _network_sections(summary: dict[str, Any]) -> str:
 
         blocks.append(
             f"""
+{_fakenet_cannot_intercept_section(summary)}
 {_unserved_dns_section(summary)}
 {_kv_table("Simulated Internet (FakeNet-NG)", overview)}
 {_dict_list_table("Connection Attempts By Process", fakenet.get("process_requests", []) or [])}
