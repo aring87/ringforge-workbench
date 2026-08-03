@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from dynamic_analysis.network_capture import is_baseline_domain
 from dynamic_analysis.report_theme import badge, report_page
 
 
@@ -875,6 +876,44 @@ def _sample_dns_queries(summary: dict[str, Any]) -> list[str]:
     return [q for q in (sysmon.get("dns_queries", []) or []) if q]
 
 
+def _normalize_domain(name: object) -> str:
+    return str(name or "").strip().lower().rstrip(".")
+
+
+def _fakenet_domains(summary: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """FakeNet's served lookups, split into the sample's and the host's own.
+
+    Once the guest had a default route, Windows started reaching the simulated
+    internet on its own -- NCSI connectivity checks to msftconnecttest.com on
+    every run. Rendered unsplit, and in an alert-styled card, that is a warning
+    about Windows checking whether it has internet.
+    """
+    fakenet = summary.get("fakenet_summary", {}) or {}
+    notable: list[str] = []
+    baseline: list[str] = []
+    for name in fakenet.get("dns_requests", []) or []:
+        (baseline if is_baseline_domain(name) else notable).append(name)
+    return notable, baseline
+
+
+def _unserved_sample_domains(summary: dict[str, Any]) -> list[str]:
+    """The sample's lookups that FakeNet did not answer.
+
+    Compared name by name, not by whether FakeNet served anything at all. The
+    first version asked the latter, and Windows' own connectivity checks made
+    "FakeNet served something" true on every run the moment interception
+    started working -- so the check would have gone quiet exactly when it began
+    to matter.
+    """
+    fakenet = summary.get("fakenet_summary", {}) or {}
+    served = {
+        _normalize_domain(d) for d in (fakenet.get("dns_requests", []) or []) if d
+    }
+    return [
+        q for q in _sample_dns_queries(summary) if _normalize_domain(q) not in served
+    ]
+
+
 def _unserved_dns_section(summary: dict[str, Any]) -> str:
     """Warn when the sample resolved a name the simulated internet never answered.
 
@@ -892,10 +931,10 @@ def _unserved_dns_section(summary: dict[str, Any]) -> str:
         return ""
 
     fakenet = summary.get("fakenet_summary", {}) or {}
-    if not fakenet.get("parsed") or fakenet.get("dns_requests"):
+    if not fakenet.get("parsed"):
         return ""
 
-    queries = _sample_dns_queries(summary)
+    queries = _unserved_sample_domains(summary)
     if not queries:
         return ""
 
@@ -923,11 +962,11 @@ def _fakenet_dns_empty_text(summary: dict[str, Any]) -> str:
     The reassuring reading -- "expected for a sample that does not use the
     network" -- is only available when the sample did not in fact try.
     """
-    if _sample_dns_queries(summary):
+    if _unserved_sample_domains(summary):
         return (
-            "No domains reached the simulated internet, but Sysmon recorded name "
-            "resolution from the sample. That is a gap in what was observed, not "
-            "a quiet sample -- see the warning above."
+            "Nothing the sample asked for reached the simulated internet, though "
+            "Sysmon recorded it resolving. That is a gap in what was observed, "
+            "not a quiet sample -- see the warning above."
         )
     return (
         "No domains were requested. With no default route the guest generates "
@@ -1332,7 +1371,8 @@ def _network_sections(summary: dict[str, Any]) -> str:
 {_unserved_dns_section(summary)}
 {_kv_table("Simulated Internet (FakeNet-NG)", overview)}
 {_dict_list_table("Connection Attempts By Process", fakenet.get("process_requests", []) or [])}
-{_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text=_fakenet_dns_empty_text(summary))}
+{_list_section("Domains Requested Against Simulated Internet", _fakenet_domains(summary)[0], emphasize=True, empty_text=_fakenet_dns_empty_text(summary))}
+{_list_section("Windows Baseline Traffic Served (context, not findings)", _fakenet_domains(summary)[1], empty_text="None.", context=True)}
 {_dict_list_table("Requests Served", fakenet.get("http_requests", []) or [])}
 {_list_section("Listeners Configured", fakenet.get("listeners_configured", []) or [], empty_text="No listeners were configured.", context=True)}
 """

@@ -24,6 +24,7 @@ import unittest
 from dynamic_analysis.html_report import (
     _fakenet_cannot_intercept_section,
     _fakenet_dns_empty_text,
+    _fakenet_domains,
     _unserved_dns_section,
 )
 
@@ -75,6 +76,75 @@ class UnservedDnsTests(unittest.TestCase):
         )
 
         self.assertEqual(html, "")
+
+
+class ServedComparisonTests(unittest.TestCase):
+    """Compared name by name, not "did FakeNet serve anything".
+
+    The first version of this warning asked the latter. Once the guest was
+    given a default route and interception started working, Windows began
+    reaching the simulated internet on its own -- NCSI checks to
+    msftconnecttest.com on every run -- so "FakeNet served something" became
+    true regardless of the sample, and the warning would have fallen silent
+    exactly when it started to matter.
+    """
+
+    def _summary(self, served, sysmon):
+        return {
+            "fakenet_enabled": True,
+            "fakenet_summary": {"parsed": True, "dns_requests": list(served)},
+            "sysmon_summary": {"dns_queries": list(sysmon)},
+            "network_isolation": {"egress_count": 1},
+        }
+
+    def test_windows_traffic_does_not_mask_the_sample_going_unserved(self) -> None:
+        html = _unserved_dns_section(
+            self._summary(["www.msftconnecttest.com"], ["ftp.cyberflor.co"])
+        )
+
+        self.assertIn("Name Resolution Was Not Served", html)
+        self.assertIn("ftp.cyberflor.co", html)
+
+    def test_no_warning_once_the_sample_itself_is_served(self) -> None:
+        html = _unserved_dns_section(
+            self._summary(
+                ["www.msftconnecttest.com", "ftp.cyberflor.co"], ["ftp.cyberflor.co"]
+            )
+        )
+
+        self.assertEqual(html, "")
+
+    def test_case_and_trailing_dot_are_not_a_mismatch(self) -> None:
+        html = _unserved_dns_section(
+            self._summary(["FTP.CyberFlor.co."], ["ftp.cyberflor.co"])
+        )
+
+        self.assertEqual(html, "")
+
+    def test_only_the_unserved_names_are_listed(self) -> None:
+        html = _unserved_dns_section(
+            self._summary(["a.example.com"], ["a.example.com", "b.example.com"])
+        )
+
+        self.assertIn("b.example.com", html)
+        self.assertIn("Unanswered: 1", html)
+
+
+class DomainSplitTests(unittest.TestCase):
+    def test_windows_traffic_is_separated_from_the_sample_s(self) -> None:
+        summary = {
+            "fakenet_summary": {
+                "dns_requests": ["www.msftconnecttest.com", "ftp.cyberflor.co"]
+            }
+        }
+
+        notable, baseline = _fakenet_domains(summary)
+
+        self.assertEqual(notable, ["ftp.cyberflor.co"])
+        self.assertEqual(baseline, ["www.msftconnecttest.com"])
+
+    def test_an_empty_log_splits_to_nothing(self) -> None:
+        self.assertEqual(_fakenet_domains({}), ([], []))
 
 
 class CannotInterceptTests(unittest.TestCase):
