@@ -22,6 +22,10 @@ KNOWN_NOISE_PROCESSES = {
     "steamwebhelper.exe",
     "discord.exe",
     "onedrive.exe",
+    # Same product, and the one that actually appears: svchost starts
+    # OneDriveLauncher from AppData, which now reads as an executable in a
+    # user-writable location and would otherwise be a finding on every run.
+    "onedrivelauncher.exe",
     "steelseriesgg.exe",
     "steelseriesengine.exe",
     "steelseriessonar.exe",
@@ -83,36 +87,36 @@ KNOWN_NOISE_PATH_SUBSTRINGS = (
     r"\windows\system32\tasks\microsoft\windows\flighting\onesettings\refreshcache",
     r"\windows\system32\tasks\microsoft\windows\softwareprotectionplatform\svcrestarttask",
     r"\program files\windowsapps\microsoft.desktopappinstaller_",
-    r"\program files (x86)\microsoft\edgeupdate\\",
+    "\\program files (x86)\\microsoft\\edgeupdate\\",
     r"\systemapps\microsoftwindows.client.cbs_",
-    r"\onedrive\logs\\",
-    r"\google\chrome\user data\\",
-    r"\razer\gamemanager3\logs\\",
-    r"\windows\debug\wia\\",
+    "\\onedrive\\logs\\",
+    "\\google\\chrome\\user data\\",
+    "\\razer\\gamemanager3\\logs\\",
+    "\\windows\\debug\\wia\\",
     "startupprofiledata-noninteractive",
     r".vdi",
-    r"g:\vms\\",
-    r"\program files\bitdefender\\",
-    r"\programdata\gog.com\galaxy\logs\\",
-    r"\users\aring\appdata\local\asus\armoury crate diagnosis\\",
+    "g:\\vms\\",
+    "\\program files\\bitdefender\\",
+    "\\programdata\\gog.com\\galaxy\\logs\\",
+    "\\users\\aring\\appdata\\local\\asus\\armoury crate diagnosis\\",
     r"\windows\system32\winevt\logs\microsoft-windows-powershell%4operational.evtx",
-    r"\programdata\microsoft\windows defender\\",
-    r"\programdata\microsoft\windows defender advanced threat protection\\",
-    r"\windows\system32\wbem\repository\\",
-    r"\windows\system32\logfiles\\",
+    "\\programdata\\microsoft\\windows defender\\",
+    "\\programdata\\microsoft\\windows defender advanced threat protection\\",
+    "\\windows\\system32\\wbem\\repository\\",
+    "\\windows\\system32\\logfiles\\",
 )
 
 ANALYZER_NOISE_PATH_SUBSTRINGS = (
     r"\appdata\local\temp\tmp",
     r"__psscriptpolicytest_",
-    r"\cases\\",
-    r"\procmon\\",
-    r"\reports\\dynamic_findings.json",
-    r"\reports\\dynamic_report",
-    r"\persistence\\",
-    r"\metadata\\",
-    r"\files\\dropped_files",
-    r"\autoruns\\",
+    "\\cases\\",
+    "\\procmon\\",
+    r"\reports\dynamic_findings.json",
+    r"\reports\dynamic_report",
+    "\\persistence\\",
+    "\\metadata\\",
+    r"\files\dropped_files",
+    "\\autoruns\\",
     "autoruns_before.csv",
     "autoruns_after.csv",
     "autoruns_diff.json",
@@ -162,12 +166,51 @@ EXECUTION_RELATED_EXTENSIONS = {
     ".msi",
 }
 
+#: Matched with a plain substring test, not a regex, so a single backslash is a
+#: single backslash. These were written r"\temp\\" -- regex escaping -- which
+#: asks for two consecutive backslashes and therefore never matched any real
+#: path. _path_is_user_writable returned False for everything, including
+#: C:\Users\a\AppData\Local\Temp\dropped.exe, so "an executable running from a
+#: user-writable location" has never once fired.
+#: Written as ordinary strings rather than raw ones, because a raw string
+#: cannot end in a backslash -- which is the trap that produced the doubled
+#: form in the first place.
 USER_WRITABLE_PATH_MARKERS = (
-    r"\users\\",
-    r"\programdata\\",
-    r"\appdata\\",
-    r"\temp\\",
-    r"\users\public\\",
+    "\\users\\",
+    "\\programdata\\",
+    "\\appdata\\",
+    "\\temp\\",
+)
+
+#: Command-line shapes that make a process create worth reading whatever
+#: launched it. Shared by the Windows-baseline filter, which refuses to wave a
+#: process through when one is present, and by the lineage split, which refuses
+#: to demote one to context.
+SUSPICIOUS_LAUNCH_MARKERS = (
+    "powershell",
+    "cmd.exe",
+    "rundll32",
+    "regsvr32",
+    "mshta",
+    "wscript",
+    "cscript",
+    "http://",
+    "https://",
+    "-enc",
+    "encodedcommand",
+)
+
+#: The subset strong enough to override lineage and promote a process the
+#: sample did not cause back into the findings.
+#:
+#: Deliberately narrower than the tuple above, which also lists bare URLs and
+#: interpreter names. A URL on a command line is ordinary in enterprise
+#: software -- an Intune agent passes https://manage.microsoft.com on every
+#: check-in -- and the interpreter names are already covered by LOLBIN_NAMES.
+#: An encoded command has no such innocent reading.
+NOTABLE_LAUNCH_MARKERS = (
+    "-enc",
+    "encodedcommand",
 )
 
 LOLBIN_NAMES = {
@@ -303,11 +346,11 @@ def _is_defender_or_wbem_noise(path: object, process_name: object, detail: objec
     if proc_l in {"msmpeng.exe", "nisserv.exe", "wmiprvse.exe"}:
         return True
 
-    if r"\programdata\microsoft\windows defender\\" in path_l:
+    if "\\programdata\\microsoft\\windows defender\\" in path_l:
         return True
-    if r"\windows defender advanced threat protection\\" in path_l:
+    if "\\windows defender advanced threat protection\\" in path_l:
         return True
-    if r"\windows\system32\wbem\\" in path_l or r"\windows\system32\wbem\\" in detail_l:
+    if "\\windows\\system32\\wbem\\" in path_l or "\\windows\\system32\\wbem\\" in detail_l:
         return True
     if "mofcomp" in detail_l:
         return True
@@ -327,19 +370,7 @@ def _is_windows_baseline_process_create(process_name: object, path: object = Non
     detail_l = _normalize_text_lower(detail).replace("/", "\\")
     combined = f"{parent_proc} {child_proc} {path_l} {detail_l}"
 
-    suspicious_launch_markers = (
-        "powershell",
-        "cmd.exe",
-        "rundll32",
-        "regsvr32",
-        "mshta",
-        "wscript",
-        "cscript",
-        "http://",
-        "https://",
-        "-enc",
-        "encodedcommand",
-    )
+    suspicious_launch_markers = SUSPICIOUS_LAUNCH_MARKERS
 
     baseline_children = {
         "dllhost.exe",
@@ -353,6 +384,16 @@ def _is_windows_baseline_process_create(process_name: object, path: object = Non
     }
 
     if child_proc in baseline_children or parent_proc in baseline_children:
+        return True
+
+    #: Waved through as a child only, unlike the set above. Console Window Host
+    #: is attached by Windows to any process that opens a console, so it turns
+    #: up behind whatever happened to run -- four of the six spawns in one
+    #: mimikatz run were conhost, behind MpCmdRun and an Intune agent.
+    #:
+    #: Not accepted as a parent, because conhost spawning something is not
+    #: ordinary housekeeping and is worth reading.
+    if child_proc == "conhost.exe":
         return True
 
     if child_proc == "svchost.exe" and "-s netsetupsvc" in combined:
@@ -566,6 +607,100 @@ def _propagate_analyzer_lineage(
             changed = True
 
 
+def _mark_sample_lineage(
+    records: list[dict[str, Any]],
+    sample_pid: int | None = None,
+    sample_name: str = "",
+) -> bool:
+    """Mark process creates descending from the sample. True if lineage resolved.
+
+    Filtering background activity by name does not converge. Two runs of the
+    same control reported entirely different sets -- one caught a Group Policy
+    service host, the next caught an Intune check-in, OneDrive starting and
+    three Defender console hosts -- because what Windows happens to do during
+    a five-minute window is not a fixed list. Each fix only ever removed the
+    instance in front of it.
+
+    Lineage is the property that actually distinguishes them: the sample was
+    pid 8696, and not one of those six descended from it.
+
+    Returns False when the sample cannot be identified at all, which the caller
+    must treat as "cannot tell" rather than "nothing descends". Getting that
+    backwards would silently empty the findings of a run whose PID was never
+    recorded -- a clean report on an unexamined sample.
+    """
+    sample_proc = _normalize_process_name(sample_name)
+
+    descendant_pids: set[int] = set()
+    if sample_pid:
+        descendant_pids.add(int(sample_pid))
+
+    # Any process running the sample's own image is the sample, whatever its
+    # PID. A dropper relaunching itself is the shape this exists for: one
+    # AgentTesla sample sat dormant for 77 seconds and then launched a second
+    # copy of itself, and what that copy goes on to do is the sample's
+    # behaviour by any reading. Seeding on the launched PID alone would file
+    # all of it as background.
+    if sample_proc:
+        for record in records:
+            child_pid = _child_pid_from_detail(record.get("detail"))
+            if child_pid and _normalize_process_name(record.get("child_process_name")) == sample_proc:
+                descendant_pids.add(child_pid)
+            parent_pid = record.get("pid")
+            if parent_pid and _normalize_process_name(record.get("process_name")) == sample_proc:
+                descendant_pids.add(int(parent_pid))
+
+    if not descendant_pids:
+        return False
+
+    # Fixed point for the same reason the analyzer sweep needs one: a
+    # grandchild can be recorded before the child that connects it.
+    changed = True
+    while changed:
+        changed = False
+        for record in records:
+            if record.get("descends_from_sample"):
+                continue
+            parent_pid = record.get("pid")
+            child_pid = _child_pid_from_detail(record.get("detail"))
+            if parent_pid in descendant_pids or (child_pid and child_pid in descendant_pids):
+                record["descends_from_sample"] = True
+                if child_pid:
+                    descendant_pids.add(child_pid)
+                changed = True
+
+    return True
+
+
+def _is_independently_notable(record: dict[str, Any]) -> bool:
+    """True when a process create is worth reporting whatever launched it.
+
+    Lineage demotes activity that is otherwise unremarkable. It must not demote
+    something already wrong on its own terms, because the case that motivated
+    keeping non-descendants at all -- a sample acting through a process it does
+    not parent, via injection, COM, a service or WMI -- shows up exactly here.
+    In that case the command line is the evidence and the process tree is not.
+    """
+    if record.get("is_lolbin"):
+        return True
+
+    combined = (
+        f"{_normalize_text_lower(record.get('path'))} "
+        f"{_normalize_text_lower(record.get('detail'))}"
+    )
+    if any(marker in combined for marker in NOTABLE_LAUNCH_MARKERS):
+        return True
+
+    path = record.get("path")
+    if path and (
+        _looks_suspicious_path(path)
+        or (_path_is_executable_or_script(path) and _path_is_user_writable(path))
+    ):
+        return True
+
+    return False
+
+
 def _looks_suspicious_path(value: object) -> bool:
     lowered = _normalize_text_lower(value)
     return any(part in lowered for part in SUSPICIOUS_PATH_KEYWORDS)
@@ -712,6 +847,10 @@ def _build_process_create_record(event: dict[str, Any]) -> dict[str, Any]:
         "detail": detail,
         "is_lolbin": _is_lolbin(process_name, path, detail),
         "is_analyzer_activity": _is_analyzer_activity(process_name, path, detail),
+        # Set by _mark_sample_lineage when the created process descends from
+        # the sample. Absent lineage, a process create is something that
+        # happened during the window, not something the sample did.
+        "descends_from_sample": False,
         # Set by _propagate_analyzer_lineage when the record was excluded for
         # its ancestry rather than its own name, so the reason stays visible.
         "analyzer_lineage": False,
@@ -740,6 +879,7 @@ def summarize_dynamic_findings(
     network_counter: Counter[str] = Counter()
 
     process_creates: list[dict[str, Any]] = []
+    background_processes: list[dict[str, Any]] = []
     process_create_records: list[dict[str, Any]] = []
     suspicious_path_hits: list[dict[str, Any]] = []
     persistence_hits: list[dict[str, Any]] = []
@@ -827,6 +967,10 @@ def summarize_dynamic_findings(
 
     _propagate_analyzer_lineage(process_create_records, sample_pid=sample_pid, sample_name=sample_name)
 
+    lineage_resolved = _mark_sample_lineage(
+        process_create_records, sample_pid=sample_pid, sample_name=sample_name
+    )
+
     # Exclude RingForge helper tools and their descendants, known OS noise, and
     # normal Windows packaged-app helper behavior from the sample's findings.
     for record in process_create_records:
@@ -836,6 +980,28 @@ def summarize_dynamic_findings(
             or record["is_windows_baseline"]
         ):
             continue
+
+        # Everything else that ran during the window but did not come from the
+        # sample is context, not a finding: recorded and reportable, but not
+        # counted and not scored. Kept rather than dropped because a sample can
+        # cause a process it does not parent -- through injection, COM, a
+        # service, or WMI -- and that evidence would otherwise be destroyed by
+        # the same filter that removes Windows' housekeeping.
+        #
+        # Only applied when lineage was actually resolved. Without it every
+        # record would land here and the run would report nothing at all.
+        #
+        # And never applied to something suspicious in its own right: a
+        # relocated LOLBin or an encoded command line is a finding whoever
+        # started it, which is the half of this that lineage cannot see.
+        if (
+            lineage_resolved
+            and not record.get("descends_from_sample")
+            and not _is_independently_notable(record)
+        ):
+            background_processes.append(record)
+            continue
+
         process_creates.append(record)
         process_create_count += 1
         if record["is_lolbin"]:
@@ -844,12 +1010,17 @@ def summarize_dynamic_findings(
     findings["top_written_paths"] = [{"path": path, "count": count} for path, count in write_counter.most_common(10)]
     findings["top_network_processes"] = [{"process_name": process_name, "count": count} for process_name, count in network_counter.most_common(10)]
     findings["spawned_processes"] = process_creates[:25]
+    findings["background_processes"] = background_processes[:25]
+    # Distinguishes "nothing ran that the sample did not cause" from "we could
+    # not tell", which are the same empty list otherwise.
+    findings["lineage_resolved"] = lineage_resolved
     findings["suspicious_path_hits"] = suspicious_path_hits[:50]
     findings["persistence_hits"] = persistence_hits[:25]
 
     counts = {
         "interesting_events": len(interesting_events),
         "process_creates": process_create_count,
+        "background_processes": len(background_processes),
         "network_events": network_event_count,
         "file_write_events": file_write_event_count,
         "suspicious_path_hits": len(suspicious_path_hits),

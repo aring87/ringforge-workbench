@@ -530,6 +530,55 @@ def _autoruns_suspicious_sections(summary: dict[str, Any]) -> str:
 
     return "\n".join(html_parts)
     
+def _spawned_empty_text(findings: dict[str, Any]) -> str:
+    """Empty-state wording for the spawned table, which has two empty states.
+
+    "The sample started nothing" and "we could not work out what the sample
+    started" are the same empty list, and only the first is a result.
+    """
+    if not findings.get("lineage_resolved", True):
+        return (
+            "The sample's process could not be identified, so nothing here is "
+            "attributed by lineage. Every process create observed during the "
+            "run is listed as a finding rather than as background."
+        )
+    return "No spawned processes descended from the sample."
+
+
+def _background_processes_section(findings: dict[str, Any]) -> str:
+    """Process creates that ran during the window but not from the sample.
+
+    Context rather than findings. Windows does its own work during any
+    five-minute observation -- Defender scans, Intune check-ins, OneDrive
+    starting -- and attributing that to the sample is how a benign control run
+    reported six spawned processes and scored 92.
+
+    Listed rather than discarded, because a sample can cause a process it does
+    not parent: through injection, COM, a service, or WMI. Dropping these
+    outright would destroy that evidence with the same filter that removes the
+    housekeeping.
+    """
+    rows = findings.get("background_processes", []) or []
+    if not rows:
+        return ""
+
+    return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Background Processes (context, not findings)</h2>
+        <span class="badge sev-none">Count: {_esc(len(rows))}</span>
+      </div>
+      <p class="muted">
+        These ran during the observation window but did not descend from the
+        sample, so they are not counted or scored. Windows does its own work
+        during any run. Worth a glance all the same: a sample can cause a
+        process it does not parent, through injection, COM, a service or WMI.
+      </p>
+      {_spawned_processes_table("", rows, empty_text="None")}
+    </section>
+    """
+
+
 def _spawned_processes_table(
     title: str,
     items: list[dict[str, Any]],
@@ -1414,7 +1463,8 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_autoruns_analyzer_section(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}
 {_dict_list_table("Top Network Processes", findings.get("top_network_processes", []))}
-{_spawned_processes_table("Spawned Processes", findings.get("spawned_processes", []), empty_text="No non-noise spawned processes were attributed to the sample.")}
+{_spawned_processes_table("Spawned Processes", findings.get("spawned_processes", []), empty_text=_spawned_empty_text(findings))}
+{_background_processes_section(findings)}
 {_event_hits_table("Suspicious Path Hits", findings.get("suspicious_path_hits", []), emphasize=True, empty_text="No suspicious path hits were identified.")}
 {_event_hits_table("Persistence Hits", findings.get("persistence_hits", []), emphasize=True, empty_text="No persistence hits were identified.")}
 """
