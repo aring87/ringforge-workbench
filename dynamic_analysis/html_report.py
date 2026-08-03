@@ -811,6 +811,77 @@ def _degraded_collection_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _sample_dns_queries(summary: dict[str, Any]) -> list[str]:
+    """Names the sample resolved, as Sysmon saw them.
+
+    Sysmon's indicator lists already exclude the analyzer's own lookups, so
+    anything left here is the sample's.
+    """
+    sysmon = summary.get("sysmon_summary", {}) or {}
+    return [q for q in (sysmon.get("dns_queries", []) or []) if q]
+
+
+def _unserved_dns_section(summary: dict[str, Any]) -> str:
+    """Warn when the sample resolved a name the simulated internet never answered.
+
+    FakeNet exists so a sample proceeds through its real logic instead of dying
+    at its first lookup. When Sysmon records a query and FakeNet records none,
+    the sample asked and got nothing -- so whatever it would have done with an
+    answer never ran.
+
+    From a real AgentTesla run: the sample resolved ftp.cyberflor.co, Sysmon
+    logged it, FakeNet logged zero DNS requests, and the network sections of the
+    report said nothing was attributable to the sample. Every one of those
+    statements was locally true and the conclusion they invited was wrong.
+    """
+    if not summary.get("fakenet_enabled"):
+        return ""
+
+    fakenet = summary.get("fakenet_summary", {}) or {}
+    if not fakenet.get("parsed") or fakenet.get("dns_requests"):
+        return ""
+
+    queries = _sample_dns_queries(summary)
+    if not queries:
+        return ""
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Name Resolution Was Not Served</h2>
+        {_section_badge("Unanswered", len(queries))}
+      </div>
+      <p class="muted">
+        Sysmon recorded the sample resolving {_esc(len(queries))} name(s) that
+        the simulated internet never answered -- FakeNet logged no DNS requests
+        at all. The sample asked and got nothing back, so whatever it would have
+        done with an answer did not run. Treat the absence of C2 traffic in this
+        run as unobserved, not as absent.
+      </p>
+      <ul>{''.join(f'<li>{_esc(q)}</li>' for q in queries[:25])}</ul>
+    </section>
+    """
+
+
+def _fakenet_dns_empty_text(summary: dict[str, Any]) -> str:
+    """Empty-state wording for FakeNet's requested-domains list.
+
+    The reassuring reading -- "expected for a sample that does not use the
+    network" -- is only available when the sample did not in fact try.
+    """
+    if _sample_dns_queries(summary):
+        return (
+            "No domains reached the simulated internet, but Sysmon recorded name "
+            "resolution from the sample. That is a gap in what was observed, not "
+            "a quiet sample -- see the warning above."
+        )
+    return (
+        "No domains were requested. With no default route the guest generates "
+        "little background traffic, so this is expected for a sample that does "
+        "not use the network."
+    )
+
+
 def _containment_section(summary: dict[str, Any]) -> str:
     """Warn prominently when the sample could have bypassed the simulated internet.
 
@@ -1203,9 +1274,10 @@ def _network_sections(summary: dict[str, Any]) -> str:
 
         blocks.append(
             f"""
+{_unserved_dns_section(summary)}
 {_kv_table("Simulated Internet (FakeNet-NG)", overview)}
 {_dict_list_table("Connection Attempts By Process", fakenet.get("process_requests", []) or [])}
-{_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text="No domains were requested. With no default route the guest generates little background traffic, so this is expected for a sample that does not use the network.")}
+{_list_section("Domains Requested Against Simulated Internet", fakenet.get("dns_requests", []) or [], emphasize=True, empty_text=_fakenet_dns_empty_text(summary))}
 {_dict_list_table("Requests Served", fakenet.get("http_requests", []) or [])}
 {_list_section("Listeners Configured", fakenet.get("listeners_configured", []) or [], empty_text="No listeners were configured.", context=True)}
 """
