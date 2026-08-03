@@ -263,11 +263,31 @@ ANALYZER_TOOL_COMMAND_MARKERS = (
     "autoruns_before.csv",
     "autoruns_after.csv",
     "autoruns_diff.json",
+)
+
+#: The workbench's own directory names. Far broader than the invocations above
+#: -- they match anything anywhere in the project tree, samples included.
+#:
+#: Samples live inside that tree by design: the README says to keep them in
+#: samples\, which is gitignored. So every event involving a sample carried
+#: "ringforge-workbench" in its path and was filed as the analyzer's own
+#: activity. An AgentTesla run reported zero spawned processes while the memory
+#: dumper was recording the child the sample had just spawned, and the score
+#: came out at 45 because the behaviour had been attributed to us.
+#:
+#: Consulted only outside samples\ for that reason. The precise tool
+#: invocations above are unaffected and still match anywhere, so a Procmon
+#: command line that happens to name a sample path is still caught.
+ANALYZER_WORKSPACE_MARKERS = (
     "dynamic_analysis",
     "static-software-malware-analysis",
     "ringforge_analyzer",
     "ringforge-workbench",
 )
+
+#: Where samples are kept, and therefore where the workspace markers above
+#: cannot be trusted to mean "this was the analyzer".
+SAMPLE_DIR_MARKER = "\\samples\\"
 
 
 def _normalize_process_name(value: object) -> str:
@@ -467,7 +487,12 @@ def _is_windows_baseline_process_create(process_name: object, path: object = Non
     return False
 
 
-def _is_analyzer_activity(process_name: object, path: object = None, detail: object = None) -> bool:
+def _is_analyzer_activity(
+    process_name: object,
+    path: object = None,
+    detail: object = None,
+    sample_name: str = "",
+) -> bool:
     """
     Return True when an event was created by RingForge or one of its helper
     tools instead of the sample being analyzed.
@@ -481,6 +506,13 @@ def _is_analyzer_activity(process_name: object, path: object = None, detail: obj
     child_proc = _event_process_image_name(process_name, path, detail)
     combined = f"{proc} {child_proc} {path_l} {detail_l}"
 
+    # The sample is never the analyzer, wherever it is stored. Checked first so
+    # that a sample named after a tool -- which is an evasion technique, not a
+    # coincidence -- is reported rather than suppressed.
+    sample_proc = _normalize_process_name(sample_name)
+    if sample_proc and sample_proc in (proc, child_proc):
+        return False
+
     if proc in ANALYZER_TOOL_PROCESS_NAMES or child_proc in ANALYZER_TOOL_PROCESS_NAMES:
         return True
 
@@ -488,6 +520,14 @@ def _is_analyzer_activity(process_name: object, path: object = None, detail: obj
         return True
 
     if any(marker in combined for marker in ANALYZER_TOOL_COMMAND_MARKERS):
+        return True
+
+    # Broad project-tree markers, trusted only outside samples\. See the note
+    # on ANALYZER_WORKSPACE_MARKERS: samples live inside the workbench, so
+    # matching on the project name attributed their behaviour to us.
+    if SAMPLE_DIR_MARKER not in combined and any(
+        marker in combined for marker in ANALYZER_WORKSPACE_MARKERS
+    ):
         return True
 
     if r"\cases\\" in path_l and any(
@@ -832,7 +872,9 @@ def _event_pid(event: dict[str, Any]) -> int | None:
     return None
 
 
-def _build_process_create_record(event: dict[str, Any]) -> dict[str, Any]:
+def _build_process_create_record(
+    event: dict[str, Any], sample_name: str = ""
+) -> dict[str, Any]:
     process_name = _event_process_name(event)
     path = _event_path(event)
     detail = _event_detail(event)
@@ -846,7 +888,9 @@ def _build_process_create_record(event: dict[str, Any]) -> dict[str, Any]:
         "path": path,
         "detail": detail,
         "is_lolbin": _is_lolbin(process_name, path, detail),
-        "is_analyzer_activity": _is_analyzer_activity(process_name, path, detail),
+        "is_analyzer_activity": _is_analyzer_activity(
+            process_name, path, detail, sample_name=sample_name
+        ),
         # Set by _mark_sample_lineage when the created process descends from
         # the sample. Absent lineage, a process create is something that
         # happened during the window, not something the sample did.
@@ -897,7 +941,9 @@ def summarize_dynamic_findings(
 
         is_noise_proc = _is_noise_process(process_name)
         is_noise_path = _is_noise_path(path)
-        is_analyzer = _is_analyzer_activity(process_name, path, detail)
+        is_analyzer = _is_analyzer_activity(
+            process_name, path, detail, sample_name=sample_name
+        )
         is_windows_baseline = _is_windows_baseline_process_create(process_name, path, detail)
         is_benign_registry = _is_benign_registry_noise(path, operation, detail)
         is_defender_or_wbem = _is_defender_or_wbem_noise(path, process_name, detail)
@@ -912,7 +958,9 @@ def summarize_dynamic_findings(
             # Collected whole and filtered after the loop. Lineage cannot be
             # resolved one event at a time: a child can be seen before the
             # parent that condemns it.
-            process_create_records.append(_build_process_create_record(event))
+            process_create_records.append(
+                _build_process_create_record(event, sample_name=sample_name)
+            )
 
         if "tcp connect" in operation or ("network" in operation and "connect" in operation):
             if process_name and not is_noise_proc and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
