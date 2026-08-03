@@ -30,6 +30,14 @@ ANALYZER_TOOL_IMAGE_MARKERS = (
     "sysmon64",
     "npcap",
     "npf.sys",
+    # The packet capture backend itself, not just its driver. A mimikatz run
+    # reported "<unknown process> -> dumpcap.exe" as process injection and the
+    # ATT&CK mapping raised T1055 against the sample -- for a CreateRemoteThread
+    # into the workbench's own capture tool. npcap and npf.sys were listed;
+    # the binary doing the capturing was not.
+    "dumpcap",
+    "tshark",
+    "\\wireshark\\",
 )
 
 
