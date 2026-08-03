@@ -499,6 +499,54 @@ def _is_lsass_access(event: dict[str, Any]) -> bool:
     return any(flag in granted for flag in _LSASS_ACCESS_FLAGS)
 
 
+#: CreateRemoteThread pairs Windows performs on itself, as
+#: (source image, target image) basenames.
+#:
+#: Injection is a primary malware technique, so this is an allowlist of exact
+#: pairs rather than anything broader, and both images have to be the genuine
+#: System32 binaries -- a copy of dwm.exe elsewhere injecting into a copy of
+#: csrss.exe is the masquerade this must never wave through.
+#:
+#: dwm.exe -> csrss.exe is the Desktop Window Manager talking to its session's
+#: client/server runtime. It fired during a mimikatz detonation and was the
+#: only high-severity finding in the whole report, which then mapped it to
+#: T1055 as though the sample had injected. On a credential dumper that reads
+#: as entirely plausible, which is what makes it worth filtering rather than
+#: leaving for the reader to recognise.
+_OS_INJECTION_PAIRS = {
+    ("dwm.exe", "csrss.exe"),
+}
+
+
+def _image_basename(value: object) -> str:
+    return str(value or "").replace("/", "\\").rsplit("\\", 1)[-1].lower()
+
+
+def _is_system32_image(value: object) -> bool:
+    return "\\windows\\system32\\" in str(value or "").replace("/", "\\").lower()
+
+
+def _is_os_baseline_event(event: dict[str, Any]) -> bool:
+    """True when the event is Windows acting on itself, not the sample.
+
+    Deliberately narrow: this only covers CreateRemoteThread, and only for the
+    exact pairs above running from System32. Everything else Sysmon reports as
+    injection stays a finding.
+    """
+    if event.get("event_id") != 8:
+        return False
+
+    data = event.get("data", {}) or {}
+    source = data.get("SourceImage", "")
+    target = data.get("TargetImage", "")
+
+    pair = (_image_basename(source), _image_basename(target))
+    if pair not in _OS_INJECTION_PAIRS:
+        return False
+
+    return _is_system32_image(source) and _is_system32_image(target)
+
+
 def _is_analyzer_event(event: dict[str, Any]) -> bool:
     """True when the event describes the workbench's own tooling.
 
@@ -571,8 +619,10 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     injections: list[dict[str, str]] = []
     highlights: list[dict[str, Any]] = []
     analyzer_highlights: list[dict[str, Any]] = []
+    os_baseline_highlights: list[dict[str, Any]] = []
     seen_highlights: set[tuple] = set()
     analyzer_events = 0
+    os_baseline_events = 0
 
     for event in events:
         name = event.get("event_name", "unknown")
@@ -589,10 +639,19 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         if is_analyzer:
             analyzer_events += 1
 
+        # Windows acting on itself, which is neither the sample nor the
+        # tooling. Same treatment as an analyzer event for the same reason:
+        # the observation is correct, the attribution is not.
+        is_os_baseline = _is_os_baseline_event(event)
+        if is_os_baseline:
+            os_baseline_events += 1
+
+        attributable = not is_analyzer and not is_os_baseline
+
         # Analyzer events stay in total_events and counts, because Sysmon really
         # did see them, but they are kept out of the indicator lists -- those are
         # read as things the sample did.
-        if not is_analyzer:
+        if attributable:
             if event_id == 22:
                 query = data.get("QueryName", "").strip()
                 if query and query not in dns_queries:
@@ -626,6 +685,9 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                 if is_analyzer:
                     found["analyzer_activity"] = True
                     analyzer_highlights.append(found)
+                elif is_os_baseline:
+                    found["windows_baseline"] = True
+                    os_baseline_highlights.append(found)
                 else:
                     highlights.append(found)
 
@@ -645,6 +707,10 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         # entries, so the tooling can still be confirmed to have loaded.
         "analyzer_highlights": analyzer_highlights[:50],
         "analyzer_highlights_excluded": len(analyzer_highlights),
+        # Same bargain as the analyzer lists above: kept so that "Windows was
+        # quiet" and "Windows was filtered" stay distinguishable.
+        "os_baseline_highlights": os_baseline_highlights[:50],
+        "os_baseline_events_excluded": os_baseline_events,
         # Every event attributed to the tooling, not just those that would have
         # become highlights. Without this the difference between "the tooling was
         # quiet" and "the tooling was filtered" is invisible.

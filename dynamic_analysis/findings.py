@@ -358,6 +358,23 @@ def _is_windows_baseline_process_create(process_name: object, path: object = Non
     if child_proc == "svchost.exe" and "-s netsetupsvc" in combined:
         return True
 
+    # services.exe starting a service host group. This is how Windows starts
+    # every service it hosts, and the groups that appear depend on what the
+    # machine happens to do during the observation window -- GPSvcGroup turned
+    # up in a mimikatz run and had nothing to do with the sample.
+    #
+    # Requires the real System32 svchost and an actual -k group, because a
+    # renamed binary or an svchost launched from anywhere else is a known
+    # masquerade and must still be reported.
+    if (
+        parent_proc == "services.exe"
+        and child_proc == "svchost.exe"
+        and "\\windows\\system32\\svchost.exe" in path_l
+        and "-k " in combined
+        and not any(marker in combined for marker in suspicious_launch_markers)
+    ):
+        return True
+
     # Windows maintenance helpers that svchost starts on its own schedule. They
     # turn up in runs of any length -- three different ones appeared across three
     # mimikatz detonations -- and none of them relate to the sample.

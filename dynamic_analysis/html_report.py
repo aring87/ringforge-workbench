@@ -1073,6 +1073,9 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
         # indicator lists too, of which the highlights are a subset.
         "Analyzer events excluded": sysmon.get("analyzer_events_excluded", 0),
         "Analyzer highlights excluded": sysmon.get("analyzer_highlights_excluded", 0),
+        # Windows acting on itself -- dwm.exe injecting into csrss.exe being the
+        # recurring one. Counted here for the same reason as the analyzer rows.
+        "Windows baseline events excluded": sysmon.get("os_baseline_events_excluded", 0),
     }
 
     injections = [
