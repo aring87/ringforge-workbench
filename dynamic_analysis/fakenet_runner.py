@@ -17,6 +17,7 @@ Requires Administrator rights (it installs a traffic diverter).
 
 from __future__ import annotations
 
+import configparser
 import os
 import re
 import shutil
@@ -35,10 +36,24 @@ _HTTP_REQUEST_RE = re.compile(
     r"\b(GET|POST|HEAD|PUT|PATCH|DELETE|OPTIONS)\s+(\S+)\s+HTTP/\d", re.IGNORECASE
 )
 _HOST_HEADER_RE = re.compile(r"^\s*Host:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
-#: Listener banners, e.g. "[HTTPListener80]" or "[DNS Server]". These appear at
-#: startup as well as when traffic arrives, so a match proves the listener was
-#: configured -- not that anything reached it.
-_LISTENER_RE = re.compile(r"\[([A-Za-z0-9 _\-]*(?:Listener|Server)[A-Za-z0-9 _\-]*)\]")
+#: Module tags that logged something, e.g. "[DNS Server]", "[FTP]".
+#:
+#: This is *not* the set of listeners that are running, and reading it as such
+#: understated a healthy run badly: FakeNet 3.5 tags its modules by short name,
+#: so a real run reported only "DNS Server" -- the one tag that happens to
+#: contain the word "Server" -- while FTP was plainly starting up three lines
+#: below and HTTP never logged at startup at all. A listener that boots quietly
+#: is invisible here no matter how the pattern is written, which is why the
+#: config file below is the authority and this is only the fallback.
+_MODULE_TAG_RE = re.compile(r"^\S+\s+\S+\s+\S+\s+\[\s*([A-Za-z0-9 _\-]+?)\s*\]", re.MULTILINE)
+
+#: Tags that are FakeNet's own plumbing rather than a protocol listener.
+_NON_LISTENER_TAGS = {"fakenet", "diverter"}
+
+#: FakeNet names the config it loaded on its first line. Taken from the log
+#: rather than recomputed, so a run using a custom config through
+#: fakenet_config_path is described by the config it actually used.
+_CONFIG_PATH_RE = re.compile(r"Loaded configuration file:\s*(.+?)\s*$", re.MULTILINE)
 
 #: Process-attributed connection attempts from the diverter, e.g.
 #: "evil.exe (4880) requested UDP 127.0.0.1:52173".
@@ -280,6 +295,45 @@ class FakeNetSession:
 # Log parsing
 # ---------------------------------------------------------------------------
 
+def _enabled_listeners(config_path: str) -> list[str]:
+    """Listener sections FakeNet's config has switched on.
+
+    The authority for "what will be served". A listener section carries a
+    Listener key naming its handler, which is what separates it from the
+    [FakeNet] and [Diverter] sections; Enabled decides whether it runs.
+
+    Returns an empty list rather than raising for anything unreadable -- a
+    parse failure here must cost the listener list and nothing else.
+    """
+    if not config_path:
+        return []
+
+    path = Path(config_path)
+    if not path.exists():
+        return []
+
+    parser = configparser.ConfigParser(strict=False)
+    # FakeNet section names are case-sensitive to a reader ("DNS Server"),
+    # and configparser lowercases option names but not sections, which is
+    # what we want.
+    try:
+        parser.read(path, encoding="utf-8")
+    except Exception:
+        return []
+
+    enabled: list[str] = []
+    for section in parser.sections():
+        if not parser.has_option(section, "listener"):
+            continue
+        try:
+            if parser.getboolean(section, "enabled", fallback=False):
+                enabled.append(section)
+        except ValueError:
+            continue
+
+    return enabled
+
+
 def parse_fakenet_log(log_path: str | Path) -> dict[str, Any]:
     """Recover requested domains, URLs and listener hits from a FakeNet log.
 
@@ -294,6 +348,8 @@ def parse_fakenet_log(log_path: str | Path) -> dict[str, Any]:
         "http_requests": [],
         "hosts": [],
         "listeners_configured": [],
+        "listeners_source": "",
+        "config_path": "",
         "process_requests": [],
         "diverted_connections": [],
         "dns_adapter": "",
@@ -329,11 +385,25 @@ def parse_fakenet_log(log_path: str | Path) -> dict[str, Any]:
         if host and host not in hosts:
             hosts.append(host)
 
-    listeners: list[str] = []
-    for match in _LISTENER_RE.finditer(text):
+    modules: list[str] = []
+    for match in _MODULE_TAG_RE.finditer(text):
         name = match.group(1).strip()
-        if name and name not in listeners:
-            listeners.append(name)
+        if name and name.lower() not in _NON_LISTENER_TAGS and name not in modules:
+            modules.append(name)
+
+    config_path = ""
+    config_match = _CONFIG_PATH_RE.search(text)
+    if config_match:
+        config_path = config_match.group(1).strip()
+
+    listeners = _enabled_listeners(config_path)
+    listeners_source = "config"
+    if not listeners:
+        # No config to read, or it parsed to nothing. The module tags are worse
+        # evidence -- they miss any listener that started quietly -- but they
+        # beat reporting nothing at all.
+        listeners = modules
+        listeners_source = "log"
 
     diverted: list[dict[str, str]] = []
     for match in _DIVERT_RE.finditer(text):
@@ -373,6 +443,9 @@ def parse_fakenet_log(log_path: str | Path) -> dict[str, Any]:
             # Renamed from listeners_hit: these banners are printed at startup,
             # so their presence only proves a listener was configured.
             "listeners_configured": listeners[:50],
+            "listeners_source": listeners_source,
+            "config_path": config_path,
+            "modules_logged": modules[:50],
             "process_requests": process_requests[:300],
             "diverted_connections": diverted[:300],
             "dns_adapter": adapter,
