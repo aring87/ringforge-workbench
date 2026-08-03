@@ -42,6 +42,10 @@ KNOWN_NOISE_PROCESSES = {
     # own name, so a run with Copilot resident reports several "spawned
     # processes" that have nothing to do with the sample.
     "msedgewebview2.exe",
+    # Office Copilot. It was the top network process of an AgentTesla run --
+    # once FakeNet could intercept, every resident Microsoft app started
+    # reaching the simulated internet and counting as the sample's traffic.
+    "m365copilot.exe",
     "teams.exe",
     "epicgameslauncher.exe",
     "epicwebhelper.exe",
@@ -940,6 +944,20 @@ def summarize_dynamic_findings(
         detail = _event_detail(event)
 
         is_noise_proc = _is_noise_process(process_name)
+
+        # On a process create the path names the process being *created*, so a
+        # noise child matters as much as a noise parent. Only the parent was
+        # checked, which is why svchost starting OneDriveLauncher out of AppData
+        # was reported as a suspicious path even with onedrivelauncher.exe
+        # listed as noise -- the name being tested was svchost's.
+        #
+        # Confined to process creates on purpose: for a file write or a registry
+        # set the path is not a process at all, and reading it as one would
+        # suppress on a filename that merely happens to match a noise process.
+        if "process" in operation and "create" in operation:
+            if _is_noise_process(_event_process_image_name(process_name, path, detail)):
+                is_noise_proc = True
+
         is_noise_path = _is_noise_path(path)
         is_analyzer = _is_analyzer_activity(
             process_name, path, detail, sample_name=sample_name
