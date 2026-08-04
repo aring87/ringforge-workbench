@@ -46,6 +46,22 @@ BASELINE_DOMAIN_SUFFIXES = (
     "sectigo.com", "usertrust.com", "globalsign.com", "letsencrypt.org",
     "godaddy.com", "ntp.org", "root-servers.net", "akamaitechnologies.com",
     "akamaiedge.net", "edgesuite.net", "edgekey.net",
+    # Network Error Logging, which Edge and Office report to unprompted.
+    # aefd.nelreports.net turned up in the alert-styled requested-domains card
+    # beside an AgentTesla C2, which is the one place a false positive costs
+    # something: that list is short, and a reader learns to skim it.
+    "nelreports.net",
+    # Not covered by "microsoft.com" -- a different registrable domain, so
+    # www.microsoft365.com matched nothing above.
+    "microsoft365.com",
+    # Microsoft's brand gTLD. Only Microsoft can register under it, which is
+    # what makes a bare suffix safe here; it covers
+    # res.public.onecdn.static.microsoft and its siblings.
+    "microsoft",
+    # An app package family name that reaches the resolver as though it were a
+    # host: Windows looks up microsoft.microsoftofficehub whenever the Office
+    # hub is resident. Not a domain anyone can register.
+    "microsoftofficehub",
 )
 
 #: Local service discovery: mDNS/Bonjour, reverse lookups, WPAD, and bare
