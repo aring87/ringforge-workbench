@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from dynamic_analysis.findings import KNOWN_NOISE_PROCESSES
 from dynamic_analysis.utils import is_analyzer_image
 
 SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
@@ -620,9 +621,11 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     highlights: list[dict[str, Any]] = []
     analyzer_highlights: list[dict[str, Any]] = []
     os_baseline_highlights: list[dict[str, Any]] = []
+    noise_dns_queries: list[str] = []
     seen_highlights: set[tuple] = set()
     analyzer_events = 0
     os_baseline_events = 0
+    noise_dns_events = 0
 
     for event in events:
         name = event.get("event_name", "unknown")
@@ -646,11 +649,33 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         if is_os_baseline:
             os_baseline_events += 1
 
-        attributable = not is_analyzer and not is_os_baseline
+        # Event 22 records the process that asked, which is the only thing that
+        # says whose lookup it was. Office and OneDrive resolving their own
+        # endpoints is not the sample's behaviour: one run recorded seven
+        # queries, six of them Office's, and the unanswered-lookup warning
+        # reported "the sample resolving 7 name(s)".
+        #
+        # Judged on the requesting image rather than on the domain, because a
+        # suffix list has to be extended forever and still misses
+        # microsoft.microsoftofficehub.
+        is_noise_dns = event_id == 22 and (
+            _image_basename(data.get("Image")) in KNOWN_NOISE_PROCESSES
+        )
+        if is_noise_dns:
+            noise_dns_events += 1
+
+        attributable = not is_analyzer and not is_os_baseline and not is_noise_dns
 
         # Analyzer events stay in total_events and counts, because Sysmon really
         # did see them, but they are kept out of the indicator lists -- those are
         # read as things the sample did.
+        if is_noise_dns:
+            # Recorded rather than dropped, so a reader can tell "the sample
+            # resolved nothing" from "its resolution was filtered".
+            query = data.get("QueryName", "").strip()
+            if query and query not in noise_dns_queries:
+                noise_dns_queries.append(query)
+
         if attributable:
             if event_id == 22:
                 query = data.get("QueryName", "").strip()
@@ -688,6 +713,11 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                 elif is_os_baseline:
                     found["windows_baseline"] = True
                     os_baseline_highlights.append(found)
+                elif is_noise_dns:
+                    # Kept out of the findings and out of the count, for the
+                    # same reason the analyzer's own lookups are.
+                    found["noise_process"] = True
+                    os_baseline_highlights.append(found)
                 else:
                     highlights.append(found)
 
@@ -711,6 +741,11 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         # quiet" and "Windows was filtered" stay distinguishable.
         "os_baseline_highlights": os_baseline_highlights[:50],
         "os_baseline_events_excluded": os_baseline_events,
+        # Lookups made by software that was running anyway. Listed so that
+        # "the sample resolved nothing" and "its resolution was filtered"
+        # stay distinguishable.
+        "noise_dns_queries": noise_dns_queries[:200],
+        "noise_dns_excluded": noise_dns_events,
         # Every event attributed to the tooling, not just those that would have
         # become highlights. Without this the difference between "the tooling was
         # quiet" and "the tooling was filtered" is invisible.

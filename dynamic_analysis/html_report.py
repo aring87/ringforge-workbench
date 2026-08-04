@@ -1289,6 +1289,9 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
         # Windows acting on itself -- dwm.exe injecting into csrss.exe being the
         # recurring one. Counted here for the same reason as the analyzer rows.
         "Windows baseline events excluded": sysmon.get("os_baseline_events_excluded", 0),
+        # Lookups by software that was running anyway -- Office and OneDrive
+        # resolving their own endpoints. Counted for the same reason.
+        "Noise-process lookups excluded": sysmon.get("noise_dns_excluded", 0),
     }
 
     injections = [
