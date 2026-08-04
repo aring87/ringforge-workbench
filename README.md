@@ -464,6 +464,14 @@ separately, since they bypass an IPv4-only redirect.
   given. Scoring external IPs alone reported a live AgentTesla run, which
   authenticated to its C2 and uploaded stolen data, as having contacted
   nothing.
+- **Network evidence is attributed before it is scored.** FakeNet's log and the
+  packet capture both record the whole machine, so neither can say what the
+  sample did. Domains come from Sysmon's attributed lookups; connections come
+  from FakeNet's diverter, which names the requesting process. What the host
+  did on its own is counted separately and never scored.
+- The diverter also sees connections the capture does not. On the AgentTesla
+  run the pcap reported zero unusual ports while the diverter had the sample on
+  `:21` and the passive data port `:60009`.
 - Telemetry coverage is stated explicitly. If Sysmon was not running, the
   report says so rather than reading as though no injection occurred.
 - Absence of a category is recorded as not observed, never as not happened.

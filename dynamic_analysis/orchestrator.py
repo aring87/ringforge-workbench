@@ -42,6 +42,7 @@ from dynamic_analysis.memory_yara import (
     summarize_memory_yara,
 )
 from dynamic_analysis.network_capture import (
+    COMMON_PORTS,
     PacketCapture,
     capture_status,
     extract_network_iocs,
@@ -955,6 +956,73 @@ STRONG_CATEGORY_BONUS = 15
 STRONG_MEMORY_ONLY_RULES = 3
 
 
+def _sample_process_names(findings_summary: dict[str, Any]) -> set[str]:
+    """Process names the lineage filter already attributed to the sample.
+
+    Only the *child* of a spawn record: the parent of the first spawn is the
+    analyzer's own python.exe, and taking it would attribute the workbench's
+    network activity to the sample -- which is the failure this whole function
+    exists to avoid.
+    """
+    findings = findings_summary if isinstance(findings_summary, dict) else {}
+    names: set[str] = set()
+
+    for entry in findings.get("top_network_processes", []) or []:
+        name = str(entry.get("process_name", "") or "").strip().lower()
+        if name:
+            names.add(name)
+
+    for entry in findings.get("spawned_processes", []) or []:
+        name = str(entry.get("child_process_name", "") or "").strip().lower()
+        if name:
+            names.add(name)
+
+    return names
+
+
+def _attributed_connections(
+    fakenet_summary: dict[str, Any] | None, sample_names: set[str]
+) -> dict[str, Any]:
+    """Connection attempts FakeNet's diverter recorded for the sample.
+
+    The diverter names the process behind each connection, which makes it the
+    only per-process network attribution a run gets -- the pcap cannot say who
+    sent a packet, and on the AgentTesla run it never saw the FTP session at
+    all: ``unusual_ports`` was 0 while the diverter had the sample on
+    ``:21`` and ``:60009``, the passive data port.
+
+    Everything not attributable to the sample is counted rather than dropped,
+    so a run where the diverter saw traffic it could not place is
+    distinguishable from one where the sample was quiet.
+    """
+    fakenet = fakenet_summary if isinstance(fakenet_summary, dict) else {}
+    destinations: list[str] = []
+    unusual: list[str] = []
+    unattributed = 0
+
+    for request in fakenet.get("process_requests", []) or []:
+        process = str(request.get("process", "") or "").strip().lower()
+        destination = str(request.get("destination", "") or "").strip()
+        if process not in sample_names:
+            unattributed += 1
+            continue
+        if destination and destination not in destinations:
+            destinations.append(destination)
+        _, _, port_text = destination.rpartition(":")
+        try:
+            port = int(port_text)
+        except ValueError:
+            continue
+        if port not in COMMON_PORTS and destination not in unusual:
+            unusual.append(destination)
+
+    return {
+        "destinations": destinations,
+        "unusual_ports": unusual,
+        "unattributed_requests": unattributed,
+    }
+
+
 def _evidence_categories(
     *,
     memory_only_rules: list[Any],
@@ -965,6 +1033,7 @@ def _evidence_categories(
     autoruns_suspicious: int,
     suspicious_dropped: int,
     notable_domains: int,
+    host_domains: int,
     external_destinations: int,
     unusual_ports: int,
     suspicious_scriptblocks: int,
@@ -1036,17 +1105,22 @@ def _evidence_categories(
         },
         {
             "name": "external_contact",
-            # Under FakeNet every destination resolves locally, so the domain
-            # the sample asked for is the evidence -- not the address it got.
+            # Under FakeNet every destination resolves locally, so the name the
+            # sample asked for is the evidence -- not the address it got.
             # Scoring external IPs alone reported the AgentTesla run, which
             # authenticated to its C2 and uploaded stolen data, as having
             # contacted nothing.
+            #
+            # Both halves are attributed to the sample. The host's own lookups
+            # and connections are counted separately and never scored.
             "present": (notable_domains > 0 or external_destinations > 0),
             "strong": unusual_ports > 0,
             "detail": (
-                f"{notable_domains} non-baseline domain(s), "
+                f"{notable_domains} non-baseline domain(s) from the sample, "
                 f"{external_destinations} external destination(s), "
-                f"{unusual_ports} unusual port(s)"
+                f"{unusual_ports} connection(s) on a non-standard port "
+                f"({host_domains} further non-baseline lookup(s) by other "
+                f"processes, not scored)"
             ),
             "reason": (
                 "The sample resolved or connected to a destination that is not "
@@ -1135,22 +1209,43 @@ def calculate_dynamic_score(
         network_destinations = int(network_counts.get("unique_destinations", 0) or 0)
         network_http = int(network_counts.get("http_requests", 0) or 0)
 
-    # Which domains the sample asked for, whoever answered. Under FakeNet the
-    # answer is always local, so the pcap's external-IP count is zero on a run
-    # where the sample reached its C2 and uploaded stolen data -- the name it
-    # looked up is the only place that contact is visible.
+    # Which domains *the sample* asked for.
     #
-    # Merged as a set: the same lookup appears in both the capture and the
-    # FakeNet log, and counting it twice would make one contact look like two.
-    iocs = network_summary.get("iocs", {}) if isinstance(network_summary, dict) else {}
-    domain_names = set(iocs.get("notable_domains", []) or [])
-    if isinstance(fakenet_summary, dict):
-        domain_names.update(
+    # Not FakeNet's log and not the pcap: both record the whole host. A single
+    # AgentTesla run had ten names in the FakeNet log, nine of them Windows' own
+    # -- telemetry, Edge, PTR lookups -- while OneDrive, M365Copilot and
+    # msedgewebview2 all connected during the window. Those nine happened to
+    # classify as baseline, so the count came out right by luck; one
+    # non-baseline lookup by any of those processes would have scored as the
+    # sample's C2 contact.
+    #
+    # Sysmon's DNS list is attributed and already has analyzer and noise
+    # lookups removed, which makes it the only honest source here. This is the
+    # same rule the findings already follow: attribute by lineage or by
+    # requesting process, never by a list of everything else.
+    sysmon_domains = [
+        name
+        for name in (sysmon.get("dns_queries", []) or [])
+        if not is_baseline_domain(name) and not is_local_discovery_domain(name)
+    ]
+    notable_domains = len(set(sysmon_domains))
+
+    # Everything the host asked for that was *not* the sample's, kept so a run
+    # that could not attribute is distinguishable from a quiet one.
+    host_domains = len(
+        {
             name
-            for name in (fakenet_summary.get("dns_requests", []) or [])
+            for name in (
+                (fakenet_summary or {}).get("dns_requests", [])
+                if isinstance(fakenet_summary, dict)
+                else []
+            )
             if not is_baseline_domain(name) and not is_local_discovery_domain(name)
-        )
-    notable_domains = len(domain_names)
+        }
+    ) - notable_domains
+
+    sample_names = _sample_process_names(findings_summary)
+    attributed = _attributed_connections(fakenet_summary, sample_names)
 
     powershell = powershell_summary if isinstance(powershell_summary, dict) else {}
     suspicious_scriptblocks = int(
@@ -1188,8 +1283,11 @@ def calculate_dynamic_score(
         autoruns_suspicious=autoruns_suspicious,
         suspicious_dropped=suspicious_dropped,
         notable_domains=notable_domains,
+        host_domains=max(host_domains, 0),
         external_destinations=network_destinations,
-        unusual_ports=network_unusual_ports,
+        # The diverter's per-process record, not the pcap's host-wide count.
+        # The pcap missed the AgentTesla FTP session entirely.
+        unusual_ports=len(attributed["unusual_ports"]) or network_unusual_ports,
         suspicious_scriptblocks=suspicious_scriptblocks,
     )
 
@@ -1241,6 +1339,17 @@ def calculate_dynamic_score(
         "evidence_counts": {
             "categories_present": len(present),
             "categories_strong": len(strong),
+        },
+        # What was attributed to the sample versus what the host did anyway.
+        # Kept because a scorer that quietly reads host-wide telemetry is
+        # indistinguishable from one that does not, until a sample proves it.
+        "network_attribution": {
+            "sample_processes": sorted(sample_names),
+            "sample_domains": sorted(set(sysmon_domains)),
+            "sample_destinations": attributed["destinations"],
+            "sample_unusual_ports": attributed["unusual_ports"],
+            "other_process_requests": attributed["unattributed_requests"],
+            "other_non_baseline_domains": max(host_domains, 0),
         },
         "severity_floor_applied": floor_applied,
         "severity_floor_reason": floor_reason,

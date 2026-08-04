@@ -81,6 +81,9 @@ that shells out to `powershell -enc` is the way to reach that path.
 | mimikatz (packed) | 69 · Needs Review / Medium | 50 · **Elevated Attention / High** |
 | AgentTesla (live) | 60 · Needs Review / Medium | 85 · **Likely Malicious / High** |
 
+The AgentTesla row is **replayed from the real 03 Aug
+`dynamic_run_summary.json`**, not reconstructed. The other two are fixtures.
+
 `High` required `>120` and nothing reached it, because almost every term in the
 sum was individually capped. The model is now `dynamic-corroboration-v3`: the
 verdict comes from how many independent evidence categories agree, and activity
@@ -90,8 +93,19 @@ The canary staying at Medium is deliberate and is the control's contract. One
 kind of evidence with nothing corroborating it is a single unexplained
 observation, which is exactly what that sample is built to produce.
 
-The "now" column comes from fixtures reconstructed from the recorded runs, not
-from re-detonating. The shape is right; the exact numbers need a real run.
+Replaying the real summary is what caught the first version reading host-wide
+telemetry: FakeNet's log held ten domains, nine of them Windows' own, while
+OneDrive, M365Copilot and three msedgewebview2 processes connected during the
+window. All nine classified as baseline, so the count was right **by luck** —
+one non-baseline lookup from any of those processes would have scored as the
+sample's C2 contact. Network evidence is now attributed before it is scored:
+domains from Sysmon, connections from FakeNet's diverter, which names the
+requesting process.
+
+The same replay showed the pcap is the wrong source for unusual ports. It
+recorded `0` on the run where the sample used the passive FTP port `:60009`;
+the diverter had it. `score_detail.network_attribution` records what was
+attributed to the sample and what the host did anyway.
 
 ### 3. FakeNet's received files are discarded — *implemented, unproven*
 

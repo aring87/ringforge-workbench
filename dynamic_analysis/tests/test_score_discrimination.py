@@ -30,7 +30,10 @@ exactly the single unexplained observation that band is for.
 
 import unittest
 
-from dynamic_analysis.orchestrator import calculate_dynamic_score
+from dynamic_analysis.orchestrator import (
+    _sample_process_names,
+    calculate_dynamic_score,
+)
 
 
 def _score(**kwargs):
@@ -81,15 +84,53 @@ def _mimikatz_upx():
     )
 
 
+#: Verbatim from the 03 Aug run's dynamic_run_summary.json. Windows was busy
+#: during that window -- OneDrive, M365Copilot and three msedgewebview2
+#: processes all connected -- and every one of those lookups and connections
+#: appears in FakeNet's log beside the sample's.
+AGENT_TESLA_FAKENET = {
+    "dns_requests": [
+        "self.events.data.microsoft.com",
+        "123.2.0.192.in-addr.arpa",
+        "255.56.168.192.in-addr.arpa",
+        "edge.microsoft.com",
+        "ftp.cyberflor.co",
+        "1.56.168.192.in-addr.arpa",
+        "251.0.0.224.in-addr.arpa",
+        "aefd.nelreports.net",
+    ],
+    "process_requests": [
+        {"process": "svchost.exe", "pid": "2212", "protocol": "UDP",
+         "destination": "192.168.56.20:53"},
+        {"process": "OneDrive.exe", "pid": "8188", "protocol": "TCP",
+         "destination": "192.0.2.123:443"},
+        {"process": "M365Copilot.exe", "pid": "8800", "protocol": "TCP",
+         "destination": "192.0.2.123:443"},
+        {"process": "msedgewebview2.exe", "pid": "1580", "protocol": "TCP",
+         "destination": "192.0.2.123:443"},
+        {"process": "agenttesla.exe", "pid": "2868", "protocol": "TCP",
+         "destination": "192.0.2.123:21"},
+        {"process": "agenttesla.exe", "pid": "2868", "protocol": "TCP",
+         "destination": "192.0.2.123:60009"},
+    ],
+    "counts": {"dns_requests": 8},
+}
+
+
 def _agent_tesla():
     """Three memory-only rules, plus FTP to a C2 on a passive data port."""
     return _score(
         findings_summary={
             "counts": {
-                "interesting_events": 90,
+                "interesting_events": 21,
                 "process_creates": 2,
                 "network_events": 2,
-            }
+            },
+            "top_network_processes": [{"process_name": "agenttesla.exe", "count": 2}],
+            "spawned_processes": [
+                {"process_name": "python.exe", "child_process_name": "agenttesla.exe"},
+                {"process_name": "agenttesla.exe", "child_process_name": "agenttesla.exe"},
+            ],
         },
         memory_yara_summary={
             "memory_only_rules": [
@@ -97,12 +138,18 @@ def _agent_tesla():
                 "Windows_Trojan_AgentTesla_ebf431a8",
                 "Windows_Generic_Threat_808f680e",
             ],
-            "counts": {"total_matches": 4},
+            "counts": {"total_matches": 6},
         },
-        # Everything resolves to the local responder, so the pcap sees no
-        # external IP at all. The name is the evidence.
-        network_summary={"counts": {"unusual_ports": 2}, "iocs": {"counts": {}}},
-        fakenet_summary={"dns_requests": ["ftp.cyberflor.co"]},
+        # Sysmon attributed exactly one lookup to the sample.
+        sysmon_summary={"dns_queries": ["ftp.cyberflor.co"]},
+        # The real capture recorded no connections at all: it saw multicast and
+        # nothing of the FTP session. unusual_ports was 0 on the run where the
+        # sample used port 60009.
+        network_summary={
+            "counts": {"unusual_ports": 0, "unique_destinations": 0},
+            "iocs": {"counts": {"external_ips": 0, "notable_urls": 0}},
+        },
+        fakenet_summary=AGENT_TESLA_FAKENET,
     )
 
 
@@ -151,6 +198,91 @@ class ReferenceRunTests(unittest.TestCase):
         names = {c["name"] for c in result["evidence_categories"]}
 
         self.assertIn("external_contact", names)
+
+    def test_the_passive_ftp_port_the_capture_missed_is_still_seen(self) -> None:
+        # The pcap recorded unusual_ports: 0 on this run -- it never saw the
+        # FTP session. FakeNet's diverter had the sample on :21 and :60009.
+        result = _agent_tesla()
+        attribution = result["network_attribution"]
+
+        self.assertIn("192.0.2.123:60009", attribution["sample_unusual_ports"])
+
+
+class AttributionTests(unittest.TestCase):
+    """Network evidence must belong to the sample, not to the host.
+
+    FakeNet's log and the pcap both record the whole machine. The 03 Aug
+    AgentTesla run had ten names in the FakeNet log, nine of them Windows' own,
+    while OneDrive, M365Copilot and three msedgewebview2 processes connected
+    during the window. Those nine classified as baseline, so an early version
+    of this scorer produced the right number by luck -- one non-baseline lookup
+    from any of those processes would have scored as the sample's C2 contact.
+
+    This is the same rule the findings already follow, and the reason it is
+    written down: attribute by lineage or by requesting process, never by
+    maintaining a list of everything else.
+    """
+
+    def test_another_process_calling_home_is_not_the_sample_calling_home(self) -> None:
+        result = _score(
+            findings_summary={
+                "top_network_processes": [{"process_name": "sample.exe", "count": 0}],
+                "spawned_processes": [
+                    {"process_name": "python.exe", "child_process_name": "sample.exe"}
+                ],
+            },
+            # Sysmon attributed nothing to the sample.
+            sysmon_summary={"dns_queries": []},
+            fakenet_summary={
+                "dns_requests": ["telemetry.corp-analytics.example"],
+                "process_requests": [
+                    {"process": "msedgewebview2.exe", "protocol": "TCP",
+                     "destination": "192.0.2.123:8888"},
+                ],
+            },
+        )
+        names = {c["name"] for c in result["evidence_categories"]}
+
+        self.assertNotIn("external_contact", names)
+        self.assertEqual(result["severity"], "Low")
+
+    def test_the_hosts_own_lookups_are_counted_not_discarded(self) -> None:
+        # Silence must be distinguishable from absence: a run where the host
+        # was noisy and the sample quiet has to look different from a run
+        # where nothing happened at all.
+        result = _score(
+            findings_summary={"spawned_processes": [
+                {"process_name": "python.exe", "child_process_name": "sample.exe"}
+            ]},
+            sysmon_summary={"dns_queries": []},
+            fakenet_summary={
+                "dns_requests": ["telemetry.corp-analytics.example"],
+                "process_requests": [
+                    {"process": "onedrive.exe", "protocol": "TCP",
+                     "destination": "192.0.2.123:443"},
+                ],
+            },
+        )
+        attribution = result["network_attribution"]
+
+        self.assertEqual(attribution["other_non_baseline_domains"], 1)
+        self.assertEqual(attribution["other_process_requests"], 1)
+        self.assertEqual(attribution["sample_domains"], [])
+
+    def test_the_analyzers_own_launcher_is_never_the_sample(self) -> None:
+        # The parent of the first spawn record is python.exe -- the workbench
+        # launching the sample. Treating a spawn parent as sample lineage would
+        # attribute the analyzer's own traffic to the sample.
+        names = _sample_process_names(
+            {
+                "spawned_processes": [
+                    {"process_name": "python.exe", "child_process_name": "sample.exe"}
+                ]
+            }
+        )
+
+        self.assertIn("sample.exe", names)
+        self.assertNotIn("python.exe", names)
 
 
 class NoiseTests(unittest.TestCase):
@@ -249,7 +381,7 @@ class CorroborationTests(unittest.TestCase):
         # Once the guest had a default route, Windows started reaching the
         # simulated internet by itself on every run.
         result = _score(
-            fakenet_summary={"dns_requests": ["www.msftconnecttest.com", "wpad"]},
+            sysmon_summary={"dns_queries": ["www.msftconnecttest.com", "wpad"]},
         )
 
         self.assertEqual(result["evidence_counts"]["categories_present"], 0)
