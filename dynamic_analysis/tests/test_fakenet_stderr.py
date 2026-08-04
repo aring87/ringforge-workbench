@@ -40,6 +40,44 @@ class _FakeProc:
         return 0
 
 
+class ExitCodeTests(unittest.TestCase):
+    """The shutdown we ask for is not a failure.
+
+    stop() sends CTRL_BREAK_EVENT, and a process that honours it exits with
+    STATUS_CONTROL_C_EXIT. The first healthy run to reach the new exit-code
+    check reported "FakeNet-NG exited with rc=3221225786" as an error, on a run
+    where FakeNet had served an AgentTesla sample's FTP exfiltration from start
+    to finish.
+    """
+
+    def _stop_with(self, code):
+        tmp = Path(tempfile.mkdtemp())
+        binary = tmp / "fakenet.exe"
+        binary.write_bytes(b"stub")
+        session = FakeNetSession(output_dir=tmp, fakenet_path=binary)
+
+        with mock.patch("subprocess.Popen", return_value=_FakeProc()), \
+             mock.patch("time.sleep"):
+            session.start()
+
+        session.process = _FakeProc(poll_value=code)
+        return session.stop()
+
+    def test_the_ctrl_break_exit_is_not_an_error(self) -> None:
+        self.assertEqual(self._stop_with(3221225786)["error"], "")
+
+    def test_its_signed_form_is_not_either(self) -> None:
+        self.assertEqual(self._stop_with(-1073741510)["error"], "")
+
+    def test_a_clean_exit_is_not_an_error(self) -> None:
+        self.assertEqual(self._stop_with(0)["error"], "")
+
+    def test_a_real_crash_is_still_reported(self) -> None:
+        result = self._stop_with(1)
+
+        self.assertIn("rc=1", result["error"])
+
+
 class StderrIsNotAPipeTests(unittest.TestCase):
     def _start(self, poll_value=None):
         tmp = Path(tempfile.mkdtemp())

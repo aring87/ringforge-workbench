@@ -79,6 +79,16 @@ _DIVERT_RE = re.compile(
 #: Windows raises this from CreateProcess when antivirus blocks the image.
 ERROR_VIRUS_INFECTED = 225
 
+#: 0xC000013A. What a process returns after honouring CTRL_BREAK_EVENT, which
+#: is how stop() asks FakeNet to shut down. Windows reports it as a signed
+#: -1073741510 in some tools and as this unsigned value through Popen.
+STATUS_CONTROL_C_EXIT = 3221225786
+
+#: Exit codes that mean FakeNet stopped the way it was asked to. Anything else
+#: means it died on its own, which leaves the sample unserved for the rest of
+#: the run.
+EXPECTED_EXIT_CODES = (0, None, STATUS_CONTROL_C_EXIT, -1073741510)
+
 AV_GUIDANCE = (
     "Antivirus blocked or quarantined fakenet.exe. This is an expected false "
     "positive: FakeNet-NG diverts traffic, so AV classifies it as a HackTool. "
@@ -320,8 +330,14 @@ class FakeNetSession:
 
         # A non-zero exit is worth carrying: FakeNet dying mid-run leaves the
         # sample unserved, and the run would otherwise report a clean result.
+        #
+        # Except the one we cause ourselves. The stop path above sends
+        # CTRL_BREAK_EVENT, and a process that honours it exits with
+        # STATUS_CONTROL_C_EXIT -- so the first healthy run to reach this code
+        # reported "FakeNet-NG exited with rc=3221225786" as an error while
+        # having served the sample's exfil perfectly.
         returncode = self.process.poll()
-        if not error and returncode not in (0, None):
+        if not error and returncode not in EXPECTED_EXIT_CODES:
             detail = " ".join(self._read_stderr().split())[-300:]
             error = f"FakeNet-NG exited with rc={returncode}. {detail}".strip()
 
