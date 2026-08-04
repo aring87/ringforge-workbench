@@ -19,8 +19,8 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.9.0` |
-| Release Name | Tier-2 Process Memory + YARA |
+| Version | `v1.10.0` |
+| Release Name | Attribution and the Simulated Internet |
 | Release Type | Feature release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
@@ -79,7 +79,9 @@ Current dynamic capabilities include:
 - Sysmon telemetry: process injection, image loads, WMI persistence, DNS queries, named pipes
 - Full packet capture with DNS, TLS SNI, HTTP and connection extraction
 - Simulated internet (FakeNet-NG) with per-process connection attribution
-- Process memory dumps of the sample's process tree during the run
+- Process memory dumps of the sample's process tree during the run, each target frozen for the duration of its own dump
+- Dumps triggered by a descendant appearing and by the root exiting, not only at fixed offsets
+- Reconciliation against Sysmon's process tree, so a descendant too short-lived to dump is still reported
 - YARA over those dumps, flagging rules that match memory but not the file on disk
 - Network containment checking before every run
 - Parsed runtime event review
@@ -97,8 +99,10 @@ Current dynamic capabilities include:
 - Capture quality reporting
 - Clean baseline checks
 - Analyst notes
+- Process creates, network connections and DNS lookups attributed to the sample by lineage or by requesting process, with everything else reported as context rather than counted
 - Noise filtering for RingForge tools, Procmon, Autorunsc, Windows helper activity, and common clean-baseline behavior
 - Windows baseline network traffic separated from sample-attributable indicators
+- Explicit warnings when a collector fell back, a lookup went unserved, or the simulated internet could not be reached
 - Telemetry coverage reporting, so a missing source is never mistaken for a clean result
 
 ### Manual API Tester
@@ -213,6 +217,113 @@ Supported module summaries include:
 - Combined Score
 
 The Unified Report now summarizes Manual API Tester findings, API Spec Analysis findings, Browser Extension Analysis status, and available static/dynamic results. It also uses clearer labels such as `Not run` and `Not generated` when a module has no artifacts in the selected case.
+
+---
+
+## What's New in v1.10.0
+
+`v1.10.0` makes a run say whose behaviour it is describing. Everything the
+report attributes to the sample is now decided by process lineage or by the
+requesting process, rather than by maintaining a list of everything else that
+exists on Windows — and the simulated internet, which had never survived more
+than a few seconds of any run, now stays up for the whole observation window.
+
+Validated end to end against a live AgentTesla sample: dormancy, self-spawn,
+unpack, C2 resolution, FTP authentication and the upload of its stolen-data
+report were all captured in a single run.
+
+### Suspend Before Dump
+
+ProcDump reads hundreds of megabytes while the target keeps running, so a dump
+of a live process is a smear rather than a snapshot of any instant. Worse, it
+loses payloads: a second-generation process exited mid-read, ProcDump reported
+`ERROR_PARTIAL_COPY`, and nothing usable was written.
+
+The target is now frozen for the duration of its dump and resumed in a `finally`
+whatever happens, because a leaked suspension would hold the sample frozen for
+the rest of the run — a worse outcome than any dump failure it could prevent.
+
+Whether the freeze succeeded is reported per dump as a **Capture** column
+reading `Frozen` or `Live (smeared)`. A smeared image is not a failure and is
+not filed as one, but a YARA miss against it is weaker evidence than a miss
+against a frozen image, and the report now says so rather than leaving the two
+looking identical.
+
+### Attribution By Lineage
+
+Filtering background activity by name does not converge. Two runs of the same
+control reported entirely different sets — one caught a Group Policy service
+host, the next an Intune check-in, OneDrive starting and three Defender console
+hosts — because what Windows happens to do during a five-minute window is not a
+fixed list.
+
+| Signal | Judged by |
+|---|---|
+| Process creates | Descent from the sample, seeded on the launched PID *and* anything running the sample's own image, because a dropper relaunching itself is the common shape |
+| Network connections | The same descendant set, computed once and shared |
+| DNS lookups | The requesting image from Sysmon event 22, since resolution is performed by `svchost` on another process's behalf |
+
+Non-descendants become **context**: reported, but not counted and not scored. A
+sample can cause a process it does not parent — through injection, COM, a
+service or WMI — so discarding them outright would destroy that evidence with
+the same filter that removes the housekeeping. Anything suspicious in its own
+right is never demoted, and when the sample cannot be identified at all nothing
+is demoted, because "nothing descended from the sample" and "we never
+established what the sample was" are the same empty list.
+
+**The sample is no longer mistaken for the analyzer.** `ANALYZER_TOOL_COMMAND_MARKERS`
+listed the workbench's own directory names next to precise tool invocations, and
+samples live in `samples\` inside that tree exactly as this README prescribes —
+so every event involving a sample carried `ringforge-workbench` in its path and
+was attributed to us. An AgentTesla run reported zero spawned processes while
+the memory dumper was recording the child the sample had just spawned. This had
+been true of every run.
+
+### The Simulated Internet Was Never Running
+
+FakeNet answered for about four seconds of every run and then went silent — DNS
+and TCP together, its log stopping mid-request, listeners configured and
+unreachable. A sample's C2 lookup timed out against a FakeNet that passed every
+check the workbench had, and the run reported a clean result.
+
+Its `stderr` was a `subprocess.PIPE` read only in the branch that catches an
+immediate exit. Once FakeNet survived the startup grace period nothing drained
+it again, and FakeNet echoes every intercepted request including full HTTP
+headers — so the OS buffer filled within seconds and the process blocked forever
+on its next write. It worked when started by hand only because a console drains
+`stderr` continuously, which is why it took five wrong hypotheses to find.
+
+`stderr` now goes to `fakenet.stderr.log` in the run's network folder. A file
+cannot fill, and it keeps the diagnostics that would have identified this in one
+run instead of five.
+
+| Change | Detail |
+|---|---|
+| **Listeners** | Reported from the config FakeNet actually loaded, not from log banners. FakeNet 3.5 tags modules by short name, so a healthy run with twelve listeners reported one — `DNS Server`, the only tag containing the word "Server" — while FTP was starting three lines below |
+| **Exit code** | Carried, so FakeNet dying mid-run cannot read as success. `STATUS_CONTROL_C_EXIT` is excluded, because that is the shutdown the workbench itself asks for |
+| **Served domains** | Split into the sample's and the host's own, so a run does not open with a warning about Windows checking whether it has internet |
+
+### Reporting Honesty
+
+New sections, each rendered only when it has something to say:
+
+| Section | Fires when |
+|---|---|
+| **Simulated Internet Cannot Be Reached** | The guest holds no default route, so Windows rejects a send before a packet exists and FakeNet has nothing to divert |
+| **Name Resolution Was Not Served** | Sysmon recorded the sample resolving a name FakeNet never answered — compared name by name, so Windows' own lookups cannot mask it |
+| **Degraded Collection** | A snapshot succeeded only through its fallback. Both task and service collectors reported success while WMI was unreadable, and nothing in the report mentioned it |
+| **Descended From The Sample But Never Dumped** | Sysmon recorded a descendant the watcher never saw. One sample created two copies of itself seven milliseconds apart; the second was dumped with three rules matching, the first was never observed |
+| **Background Processes / Network** | Ran during the window but not from the sample |
+
+### Supporting Changes
+
+| Change | Detail |
+|---|---|
+| Path markers | The suppression and detection markers were written `r"\temp\\"` — regex escaping — but matched with a plain substring test, so they asked for two consecutive backslashes and matched no real path. 5/5 user-writable, 13/20 noise and 8/17 analyzer markers were dead, meaning "an executable running from a user-writable location" had never once fired. All fixed together, since enabling detection while leaving the matching suppression dead calibrates worse than either |
+| `requirements.txt` | Declares `lief` and `PyYAML`. `step_lief_metadata` runs on every case and feeds `score_risk`, so without lief the score was computed on less evidence; `_load_spec` raises without PyYAML, which is half the accepted OpenAPI formats. lief is pinned at `1.0.0` after checking it against `0.17.4` on a real PE |
+| Analyzer tooling | `dumpcap`, `tshark` and the Wireshark directory count as analyzer images. A `CreateRemoteThread` into the workbench's own capture backend was raising T1055 against the sample |
+| Windows baseline | `dwm.exe → csrss.exe` injection, `services.exe → svchost.exe -k <group>`, `conhost.exe` as a child, and `MoUsoCoreWorker` from `%WINDIR%\uus\` are recognised. Each check keeps its path and command-line requirements, so a relocated LOLBin or an encoded command line is still reported |
+| Baseline domains | `nelreports.net`, `microsoft365.com`, the `.microsoft` gTLD and `microsoftofficehub`. The match is anchored, so `microsoft.com.evil.ru` remains a finding |
 
 ---
 
@@ -1171,10 +1282,12 @@ Note: some compatibility report names are intentionally retained so older GUI bu
 ```text
 ringforge-workbench/
   assets/
+  docs/
   dynamic_analysis/
   gui/
   scripts/
   static_triage_engine/
+  test_specs/
   tools/
   triage_inbox.py
   requirements.txt
@@ -1187,6 +1300,7 @@ Important folders:
 | Folder | Purpose |
 |---|---|
 | `assets/` | Branding and UI assets |
+| `docs/` | `WORKFLOW.md`, the detonation procedure and why each step is ordered as it is. `HANDOFF.md`, the current state of the work: what is validated, what is known-broken, and what is worth doing next |
 | `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting. Includes `sysmon_collector.py`, `network_capture.py`, `fakenet_runner.py`, `memory_dump.py`, and `memory_yara.py` |
 | `gui/` | Tkinter GUI windows, launcher, controllers, and styles. `theme.py` holds the design tokens; `components.py` the shared widgets |
 | `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup), `bootstrap_yara_rules.ps1` (YARA rules), `vm_hygiene.ps1` (guest noise reduction), and `vm_net.ps1` (host containment) |
@@ -1222,10 +1336,24 @@ own hypervisor's tooling instead. Both are single operations there: disconnect
 the network adapter, and revert to a snapshot.
 
 Importantly, you do not lose the *verification*. Containment is checked inside
-the guest by looking for a default route, which is an operating-system fact
-rather than a hypervisor one, so `network_isolation` in the run summary still
-tells you independently whether the machine was actually isolated. That check is
-what you should trust regardless of how you disconnected the adapter.
+the guest by counting egress paths, which is an operating-system fact rather
+than a hypervisor one, so `network_isolation` in the run summary still tells you
+independently whether the machine was actually isolated. That check is what you
+should trust regardless of how you disconnected the adapter.
+
+What it guards against is a **second** adapter letting a sample bypass FakeNet's
+redirect, not the existence of a route. A single egress path over a private
+network reads as contained, and that matters, because:
+
+> **The guest needs one default route for the simulated internet to work at
+> all.** FakeNet diverts packets. With no default route Windows rejects a send
+> to any off-link address before a packet exists, so there is nothing to
+> intercept and the listeners sit configured and unreachable — a sample's C2
+> lookup simply times out. Point a default route at the host-only gateway
+> (`route -p add 0.0.0.0 mask 0.0.0.0 <host-only gateway>`). That segment is not
+> forwarded or NATed, and the internet-facing adapter stays disconnected, so
+> containment is preserved. Without it the report says **Simulated Internet
+> Cannot Be Reached** rather than leaving you to infer it.
 
 `bootstrap_tools.ps1` likewise recognises VMware, QEMU, Xen, Parallels and
 Hyper-V guests, not just VirtualBox, when deciding whether it is safe to install
