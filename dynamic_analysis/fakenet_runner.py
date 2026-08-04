@@ -182,11 +182,38 @@ class FakeNetSession:
         self.startup_grace_seconds = startup_grace_seconds
 
         self.log_path = self.output_dir / "fakenet.log"
+        self.stderr_path = self.output_dir / "fakenet.stderr.log"
         self.stop_flag_path = self.output_dir / "fakenet.stop"
         self.process: Optional[subprocess.Popen] = None
         self.started = False
         self.error = ""
         self._existing_pcaps: set[str] = set()
+        self._stderr_handle: Optional[Any] = None
+
+    # -- stderr -----------------------------------------------------------
+
+    def _close_stderr(self) -> None:
+        """Release the stderr file. Safe to call more than once."""
+        handle, self._stderr_handle = self._stderr_handle, None
+        if handle is None:
+            return
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+    def _read_stderr(self, limit: int = 4000) -> str:
+        """Whatever FakeNet wrote to stderr, for reporting a failure.
+
+        Closes the handle first so the tail is actually on disk. Returns an
+        empty string for anything unreadable -- a diagnostic that cannot be
+        read must not become an error of its own.
+        """
+        self._close_stderr()
+        try:
+            return self.stderr_path.read_text(encoding="utf-8", errors="replace")[-limit:]
+        except Exception:
+            return ""
 
     # -- start ------------------------------------------------------------
 
@@ -208,12 +235,32 @@ class FakeNetSession:
         if self.config_path:
             cmd.extend(["-c", str(self.config_path)])
 
+        # Redirected to a file, never to a pipe.
+        #
+        # stderr was a PIPE that nothing read after the startup check. FakeNet
+        # is verbose -- it echoes every intercepted request, headers included --
+        # so the OS buffer filled within a few seconds and FakeNet blocked
+        # forever on its next write. The symptom was a simulated internet that
+        # answered for about four seconds and then went silent for the rest of
+        # the run: DNS and TCP together, the log stopping mid-request, and a
+        # sample's C2 lookup timing out against listeners that were up but
+        # frozen. It worked when run by hand only because a console drains
+        # stderr continuously.
+        #
+        # A file cannot fill, and it keeps the diagnostics that would have
+        # identified this in one run rather than several.
+        try:
+            self._stderr_handle = open(self.stderr_path, "wb")
+        except Exception as error:
+            self.error = f"could not open FakeNet-NG stderr log: {error}"
+            return {"started": False, "error": self.error}
+
         try:
             self.process = subprocess.Popen(
                 cmd,
                 cwd=str(self.output_dir),  # FakeNet drops its pcap in the cwd
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=self._stderr_handle,
                 stdin=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
@@ -229,11 +276,7 @@ class FakeNetSession:
         time.sleep(max(0, self.startup_grace_seconds))
 
         if self.process.poll() is not None:
-            stderr = ""
-            try:
-                stderr = (self.process.stderr.read() or b"").decode("utf-8", "replace")
-            except Exception:
-                pass
+            stderr = self._read_stderr()
             self.error = (
                 f"FakeNet-NG exited immediately (rc={self.process.returncode}). "
                 f"{stderr.strip()[:300]} It requires Administrator rights."
@@ -267,17 +310,28 @@ class FakeNetSession:
                 except Exception as inner:
                     error = f"failed to stop FakeNet-NG cleanly: {inner}"
 
+        self._close_stderr()
+
         try:
             if self.stop_flag_path.exists():
                 self.stop_flag_path.unlink()
         except Exception:
             pass
 
+        # A non-zero exit is worth carrying: FakeNet dying mid-run leaves the
+        # sample unserved, and the run would otherwise report a clean result.
+        returncode = self.process.poll()
+        if not error and returncode not in (0, None):
+            detail = " ".join(self._read_stderr().split())[-300:]
+            error = f"FakeNet-NG exited with rc={returncode}. {detail}".strip()
+
         return {
             "stopped": True,
             "error": error,
+            "returncode": returncode,
             "log_path": str(self.log_path),
             "log_exists": self.log_path.exists(),
+            "stderr_path": str(self.stderr_path),
             "pcap_path": str(self.find_pcap() or ""),
         }
 
