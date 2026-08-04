@@ -147,9 +147,12 @@ Then, roughly in order of signal:
 | **Spawned Processes** | Analyzer and Windows baseline processes are filtered out. |
 | Context sections | Windows baseline, local discovery, non-routable addresses. Deliberately neutral badges — these are not findings. |
 
-**Score is a band, not a number.** Background noise alone moved a score by nine
-points between two runs of the same sample with identical code. Judge by the
-findings, not the total.
+**Read the evidence categories, not the score.** The verdict comes from how
+many independent kinds of evidence agree — one is Needs Review, one emphatic or
+two of any kind is High, three is Likely Malicious. *Evidence Behind The
+Verdict* lists which fired. The number is descriptive: activity volume is capped
+at 15 points precisely because background noise alone moved a score by nine
+points between two runs of the same sample with identical code.
 
 ---
 

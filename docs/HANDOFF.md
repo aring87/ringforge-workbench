@@ -6,6 +6,10 @@ doing next.
 
 **Last updated:** 2026-08-04 · `main` at `v1.10.0`
 
+> **Since v1.10.0:** gaps 2, 3 and 4 below have been implemented and are
+> covered by unit tests. **None of the three has run against live malware.**
+> They are written, not proven — see *What is implemented but unproven*.
+
 ---
 
 ## Where things stand
@@ -61,32 +65,64 @@ is unanalyzed. A family that drops a payload, installs persistence or injects
 would exercise those paths the way AgentTesla exercised the memory and network
 ones. **This is the highest-value next step.**
 
-### 2. The score does not discriminate
+For a sample chosen deliberately rather than whatever is to hand: the guest is
+contained, so a downloader stalls at its first fetch and its dropped-file path
+stays cold. Pick a family that carries everything it needs — Formbook/XLoader
+or Remcos both hollow a legitimate process, write a copy to `%APPDATA%` and add
+a Run key, all before any C2 contact. PowerShell script blocks need their own
+sample; no PE family reliably produces them, so a `.ps1` or an LNK/HTA loader
+that shells out to `powershell -enc` is the way to reach that path.
 
-| Sample | Score | Verdict |
+### 2. The score does not discriminate — *implemented, unproven*
+
+| Sample | Was | Now (from unit fixtures) |
 |---|---|---|
-| Memory canary (benign) | 24 | Needs Review / Medium |
-| mimikatz (packed) | 69 | Needs Review / Medium |
-| AgentTesla (live) | 60 | Needs Review / Medium |
+| Memory canary (benign) | 24 · Needs Review / Medium | 33 · **Needs Review / Medium** |
+| mimikatz (packed) | 69 · Needs Review / Medium | 50 · **Elevated Attention / High** |
+| AgentTesla (live) | 60 · Needs Review / Medium | 85 · **Likely Malicious / High** |
 
-`High` requires `>120` and nothing reached it. The verdict field currently
-cannot support a decision. This is a usefulness gap rather than a correctness
-one, and it is the largest.
+`High` required `>120` and nothing reached it, because almost every term in the
+sum was individually capped. The model is now `dynamic-corroboration-v3`: the
+verdict comes from how many independent evidence categories agree, and activity
+volume is capped at 15 points so noise cannot move a band.
 
-### 3. FakeNet's received files are discarded
+The canary staying at Medium is deliberate and is the control's contract. One
+kind of evidence with nothing corroborating it is a single unexplained
+observation, which is exactly what that sample is built to produce.
+
+The "now" column comes from fixtures reconstructed from the recorded runs, not
+from re-detonating. The shape is right; the exact numbers need a real run.
+
+### 3. FakeNet's received files are discarded — *implemented, unproven*
 
 AgentTesla's exfil report was written to
 `tools/fakenet/defaultFiles/FakeNet.html` — it overwrote FakeNet's own default
-page — and was found by hand. It is the single most valuable artifact a run
-produces and the next revert destroys it. Files FakeNet receives should be
-collected into the case directory like every other artifact. Small change.
+page — and was found by hand.
 
-### 4. The observation window is fixed against variable dormancy
+Listener roots are now read from the FakeNet config and snapshotted before
+launch, and anything new *or modified* is copied into `network\received\` in the
+case directory, hashed, and listed in the report. Copied, never moved.
+
+Unproven in the way that matters: no sample has uploaded anything since. The
+snapshot-and-diff is exercised by tests against a synthetic FakeNet install, but
+whether the real FTP listener's root resolves the way `listener_roots()` expects
+has not been confirmed against the actual `tools/fakenet/` layout in the guest.
+**Check `network\received\` on the next run that shows an upload.**
+
+### 4. The observation window is fixed against variable dormancy — *implemented, unproven*
 
 180 seconds, while the same binary sat dormant for 21, 37, 38, 41, 44 and 83
-seconds across six runs. A crypter sleeping five minutes produces a clean report
-with no indication anything was missed. An adaptive extension — still alive,
-nothing spawned yet, keep waiting — would close it.
+seconds across six runs.
+
+The window now extends in 30-second steps, to a 600-second cap, while the sample
+is still running and the dump watcher has not seen it spawn anything. Reaching
+the cap while still silent raises **Observation May Be Incomplete** in the
+report, which is the half that closes the original gap: a crypter sleeping five
+minutes no longer produces a clean-looking report.
+
+The extension path has never fired — every recorded run had the sample act well
+inside 180 seconds. A sample that genuinely sleeps past the window is what would
+exercise it.
 
 ### Smaller
 
@@ -99,6 +135,37 @@ nothing spawned yet, keep waiting — would close it.
   (it happened in 2 of 6), and `background_network_processes` needs a
   connecting process the noise filter does not already catch. Both correctly
   reported nothing on clean runs.
+
+---
+
+## What is implemented but unproven
+
+Everything in this section has unit tests and has never run against a live
+sample. Listed together because the failure mode is shared: a feature that is
+only exercised by its own fixtures agrees with the assumptions it was written
+under, and the analyzer-attribution bug is the standing proof that those can be
+wrong on every run for a long time without showing.
+
+| Feature | What would prove it | Watch for |
+|---|---|---|
+| Received-file collection | Any run where the sample uploads | `network\received\` non-empty, and `received_files.roots` naming the real FakeNet root |
+| Adaptive window | A sample dormant past the base window | `observation.extensions > 0`; the run taking longer than the timeout |
+| Corroboration scoring | The next real detonation | The verdict separating from the canary's Needs Review |
+
+The cheapest check on all three at once is the next detonation. Read
+`observation` and `fakenet_summary.received_files` in
+`dynamic_run_summary.json` before reading the verdict.
+
+Two specific things to disbelieve until seen:
+
+- `listener_roots()` resolves FakeNet's config roots against the binary
+  directory, its parent, and the config's directory. That is a guess about how
+  the real install lays out `defaultFiles/`. If `received_files.roots` comes
+  back empty, that is why, and the note field says so.
+- The adaptive window needs the memory dump watcher for its activity probe. A
+  run that is not elevated has no probe, and the window silently stays fixed —
+  recorded as `adaptive_available: false`, which is the field to check rather
+  than assuming extension was available.
 
 ---
 
@@ -132,13 +199,17 @@ Order to check things in, learned the hard way:
 1. **`network_isolation.level`** from the run summary, never the GUI's
    containment line — the GUI can be showing a pre-arm state.
 2. **Warnings first.** Degraded Collection, Cannot Be Reached, Name Resolution
-   Was Not Served. Each one means part of the run is unobserved rather than
-   quiet.
+   Was Not Served, Observation May Be Incomplete. Each one means part of the
+   run is unobserved rather than quiet.
 3. **`Capture` column** on the dumps. `Live (smeared)` qualifies every YARA
    result from that image.
 4. **Memory-only rules.** The actual finding on a packed sample.
 5. **Spawned vs Background processes.** The first is the sample; the second is
    Windows.
+6. **Evidence Behind The Verdict.** Which categories fired, and which were
+   judged strong. The score is descriptive now; this is the reasoning.
+7. **Files Received By The Simulated Internet.** If it is non-empty, that is the
+   run's best artifact — export `network\received\` before reverting.
 
 `suspicious_path_hits` checks the *parent* process name against the noise list
 for non-process-create events, so a noise child under a non-noise parent can

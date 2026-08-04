@@ -35,9 +35,11 @@ Confirm the Dynamic Analysis window reports `Mem YARA: ready`, then run
 | Severity | Medium, raised by the severity floor |
 | Verdict | Needs Review |
 
-The severity floor is the part worth confirming. A memory-only match is weighted
-like process injection, so it must raise severity on its own even though this
-sample does nothing else at all.
+The severity floor is the part worth confirming. One memory-only match is a
+single kind of evidence with nothing corroborating it, so it must raise severity
+on its own even though this sample does nothing else at all -- and must not go
+further than Medium. Both halves matter: a canary that reaches High means the
+model has stopped distinguishing one unexplained observation from a finding.
 
 ## Reading a failure
 

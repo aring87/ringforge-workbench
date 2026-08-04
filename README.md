@@ -367,9 +367,12 @@ Scanning both sides with the same ruleset in the same pass is what makes the
 comparison honest — diffing against a separate static run would compare results
 produced by whatever rules happened to be installed at the time.
 
-- A memory-only match is weighted like process injection and sets the same
-  minimum severity of Medium. Matches present in both memory and on disk score
-  1 point, because the static run already reported them.
+- A memory-only match is one of the evidence categories the verdict is built
+  from, and on its own it sets a minimum severity of Medium. Three or more
+  distinct memory-only rules make that category *strong*, which reaches High
+  without needing anything to corroborate it. Matches present in both memory
+  and on disk count as context only, because the static run already reported
+  them.
 - Match offsets are reported as `dump_file_offset`: byte offsets into the dump
   file, never virtual addresses.
 - Rules built on the `pe` module cannot match a raw dump at all, so the report
@@ -438,14 +441,32 @@ separately, since they bypass an IPv4-only redirect.
 
 ### Scoring and Reporting Honesty
 
+- **The verdict comes from corroboration, not from the total.** A run produces
+  up to seven independent kinds of evidence — a payload only readable in
+  memory, process injection, credential access or tampering, persistence
+  installed, a suspicious dropped file, contact with a non-baseline
+  destination, suspicious PowerShell. One on its own is Medium / Needs Review.
+  One that is emphatic in its own right, or two of any kind, is High. Three
+  agreeing, or two emphatic, is Likely Malicious.
+- **Volume is capped.** Activity counts contribute at most 15 points in total,
+  because they are the part that moves between runs: background noise alone
+  shifted a score by nine points between two runs of the same control on
+  identical code. Noise can colour a verdict; it can never set one.
+- A category fires once however many events back it, so one chatty behaviour
+  cannot outvote several quiet ones.
+- The report lists which categories fired and how each was judged, so the band
+  can be checked rather than taken on trust.
 - A capture records the whole host, so Windows certificate-revocation,
   telemetry and mDNS traffic is classified as baseline and excluded from
   findings and scoring. Both lists are kept, since C2 does hide behind CDNs.
-- Injection, credential access and WMI persistence set a minimum severity of
-  Medium regardless of score, so a sample that does one decisive thing is never
-  reported as Low.
+- Under simulated internet every destination resolves locally, so the domain
+  the sample asked for is what counts as contact — not the address it was
+  given. Scoring external IPs alone reported a live AgentTesla run, which
+  authenticated to its C2 and uploaded stolen data, as having contacted
+  nothing.
 - Telemetry coverage is stated explicitly. If Sysmon was not running, the
   report says so rather than reading as though no injection occurred.
+- Absence of a category is recorded as not observed, never as not happened.
 
 ### The Observation Window
 

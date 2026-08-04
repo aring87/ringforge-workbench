@@ -107,8 +107,14 @@ enabled.
 | Dumps succeeded | 2 or more |
 | Rules matching the sample on disk | the packer/stub rules, if any -- not the mimikatz rules |
 | Rules only in memory | every rule listed as `expected_memory_only_rules` |
-| Severity | Medium or higher, floored by the memory-only match |
-| Verdict | Needs Review or worse |
+| Severity | High -- three or more memory-only rules make that category strong |
+| Verdict | Elevated Attention or worse |
+
+Unlike the canary, this control is expected to clear Medium. Several
+independent rules agreeing about a payload that was unreadable at rest is a
+stronger claim than one marker string, and the model is meant to say so. A
+result of Needs Review here means fewer memory-only rules matched than the
+pre-flight predicted -- read the rules table, not the verdict.
 
 ## Reading a failure
 

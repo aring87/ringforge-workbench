@@ -1005,6 +1005,53 @@ def _fakenet_dns_empty_text(summary: dict[str, Any]) -> str:
     )
 
 
+def _evidence_section(summary: dict[str, Any]) -> str:
+    """The independent kinds of evidence the verdict was built from.
+
+    The verdict used to be a band on a total, and the total could not separate
+    a benign canary (24) from live AgentTesla (60) from packed mimikatz (69) --
+    all three read Needs Review / Medium. It now comes from how many unrelated
+    kinds of evidence agree, which is only a defensible answer if the reader
+    can see which ones did.
+    """
+    detail = summary.get("score_detail", {}) or {}
+    categories = detail.get("evidence_categories", []) or []
+    if not detail:
+        return ""
+
+    rows = [
+        {
+            "evidence": _pretty_key(str(entry.get("name", ""))),
+            "weight": "strong" if entry.get("strong") else "present",
+            "observed": entry.get("detail", ""),
+        }
+        for entry in categories
+    ]
+
+    counts = detail.get("evidence_counts", {}) or {}
+    empty_text = (
+        "No decisive evidence category was observed. That means none was "
+        "recorded, not that none occurred -- check telemetry coverage above "
+        "before reading this as a clean result."
+    )
+
+    return f"""
+    <section class="{'card card-alert' if rows else 'card'}">
+      <div class="section-head">
+        <h2>Evidence Behind The Verdict</h2>
+        {_section_badge("Agreeing", _to_int(counts.get("categories_present", 0)))}
+      </div>
+      <p class="muted">
+        The verdict comes from how many independent kinds of evidence agree,
+        not from the score. One on its own is Needs Review; one strong, or two
+        of any kind, is High. Activity volume is capped so background noise
+        cannot move the band.
+      </p>
+      {_dict_list_table("Categories Observed", rows, empty_text=empty_text)}
+    </section>
+    """
+
+
 def _observation_window_section(summary: dict[str, Any]) -> str:
     """Warn when the run stopped watching a sample that had not yet acted.
 
@@ -1759,6 +1806,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_summary_tiles(summary)}
 {_containment_section(summary)}
 {_observation_window_section(summary)}
+{_evidence_section(summary)}
 
 <div class="grid">
   {_kv_table("Sample Metadata", sample)}

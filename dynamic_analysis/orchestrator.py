@@ -45,6 +45,8 @@ from dynamic_analysis.network_capture import (
     PacketCapture,
     capture_status,
     extract_network_iocs,
+    is_baseline_domain,
+    is_local_discovery_domain,
     network_isolation_status,
     parse_pcap,
 )
@@ -934,6 +936,133 @@ def diff_autoruns_snapshots(before_csv: Path, after_csv: Path) -> dict[str, Any]
 
 
 
+#: The most that raw activity volume can contribute. Background noise alone
+#: moved a score by nine points between two runs of the same control on
+#: identical code; anything that noisy has to stay a minority of the total.
+MAX_CONTEXT_SCORE = 15
+
+#: Points for a kind of evidence being present at all, and for it being
+#: emphatic enough to stand on its own.
+CATEGORY_POINTS = 20
+STRONG_CATEGORY_BONUS = 15
+
+#: Distinct memory-only rules that make the packed-payload category strong.
+#:
+#: One rule is the memory canary: a single marker string, built at runtime, and
+#: the whole point of that control is that it produces exactly one. Three
+#: independent rules agreeing about a payload that was unreadable at rest is a
+#: different claim -- mimikatz.upx produced five, live AgentTesla three.
+STRONG_MEMORY_ONLY_RULES = 3
+
+
+def _evidence_categories(
+    *,
+    memory_only_rules: list[Any],
+    sysmon_injections: int,
+    sysmon_high: int,
+    suspicious_tasks: int,
+    suspicious_services: int,
+    autoruns_suspicious: int,
+    suspicious_dropped: int,
+    notable_domains: int,
+    external_destinations: int,
+    unusual_ports: int,
+    suspicious_scriptblocks: int,
+) -> list[dict[str, Any]]:
+    """The independent kinds of evidence a run can produce.
+
+    Each entry is one claim about the sample, and they are deliberately
+    unequal in kind rather than in weight: "it unpacked something", "it
+    injected", "it installed persistence", "it called home". Corroboration
+    across them is what the verdict is built on, so a category must fire at
+    most once however many events back it -- otherwise a single chatty
+    behaviour outvotes three quiet ones and the model is volume-driven again.
+
+    ``present`` is the observation; ``strong`` is the observation being
+    emphatic enough that it does not need corroborating.
+    """
+    persistence_total = suspicious_tasks + suspicious_services + autoruns_suspicious
+
+    return [
+        {
+            "name": "packed_payload",
+            "present": bool(memory_only_rules),
+            "strong": len(memory_only_rules) >= STRONG_MEMORY_ONLY_RULES,
+            "detail": f"{len(memory_only_rules)} rule(s) matched memory but not disk",
+            "reason": (
+                "YARA matched in process memory but not on disk "
+                f"({', '.join(str(r) for r in memory_only_rules[:3])}), indicating a "
+                "payload that was packed or encrypted at rest."
+            )
+            if memory_only_rules
+            else "",
+        },
+        {
+            "name": "process_injection",
+            "present": sysmon_injections > 0,
+            "strong": sysmon_injections >= 2,
+            "detail": f"{sysmon_injections} injection event(s)",
+            "reason": "Sysmon recorded process injection (CreateRemoteThread).",
+        },
+        {
+            "name": "credential_access_or_tampering",
+            "present": sysmon_high > 0,
+            "strong": sysmon_high >= 3,
+            "detail": f"{sysmon_high} high-signal Sysmon event(s)",
+            "reason": (
+                "Sysmon recorded high-signal behaviour (credential access, process "
+                "tampering, or WMI persistence)."
+            ),
+        },
+        {
+            "name": "persistence_installed",
+            "present": persistence_total > 0,
+            "strong": persistence_total >= 2,
+            "detail": (
+                f"{suspicious_tasks} task(s), {suspicious_services} service(s), "
+                f"{autoruns_suspicious} autoruns entry(s)"
+            ),
+            "reason": (
+                "A suspicious scheduled task, service or startup entry appeared "
+                "that was not present before the run."
+            ),
+        },
+        {
+            "name": "payload_dropped",
+            "present": suspicious_dropped > 0,
+            "strong": suspicious_dropped >= 2,
+            "detail": f"{suspicious_dropped} suspicious dropped file(s)",
+            "reason": "The sample wrote a file that triages as suspicious.",
+        },
+        {
+            "name": "external_contact",
+            # Under FakeNet every destination resolves locally, so the domain
+            # the sample asked for is the evidence -- not the address it got.
+            # Scoring external IPs alone reported the AgentTesla run, which
+            # authenticated to its C2 and uploaded stolen data, as having
+            # contacted nothing.
+            "present": (notable_domains > 0 or external_destinations > 0),
+            "strong": unusual_ports > 0,
+            "detail": (
+                f"{notable_domains} non-baseline domain(s), "
+                f"{external_destinations} external destination(s), "
+                f"{unusual_ports} unusual port(s)"
+            ),
+            "reason": (
+                "The sample resolved or connected to a destination that is not "
+                "part of the Windows baseline."
+            ),
+        },
+        {
+            "name": "scripted_execution",
+            "present": suspicious_scriptblocks > 0,
+            "strong": suspicious_scriptblocks >= 2,
+            "detail": f"{suspicious_scriptblocks} suspicious script block(s)",
+            "reason": "PowerShell executed script text that triages as suspicious.",
+        },
+    ]
+
+
 def calculate_dynamic_score(
     findings_summary: dict[str, Any],
     task_diff_summary: dict[str, Any],
@@ -944,6 +1073,7 @@ def calculate_dynamic_score(
     network_summary: dict[str, Any] | None = None,
     fakenet_summary: dict[str, Any] | None = None,
     memory_yara_summary: dict[str, Any] | None = None,
+    powershell_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -1005,127 +1135,132 @@ def calculate_dynamic_score(
         network_destinations = int(network_counts.get("unique_destinations", 0) or 0)
         network_http = int(network_counts.get("http_requests", 0) or 0)
 
-    score = 0
-
-    # General activity: useful context, but not automatically suspicious.
-    score += min(interesting_events, 10)
-    score += min(process_creates, 10)
-    score += min(network_events, 10)
-    score += min(file_write_events, 10)
-
-    # Installer-safe weighting. These still matter, but should not dominate
-    # clean installer assessments by themselves.
-    score += min(suspicious_path_hits, 10) * 2
-    score += min(persistence_hits, 10) * 3
-    score += min(lolbin_processes, 3) * 2
-
-    # Persistence diffs are higher signal than raw Procmon hits.
-    score += suspicious_tasks * 6
-    score += suspicious_services * 6
-    score += suspicious_dropped * 8
-
-    # Autoruns is high-value, but legitimate installers can create expected
-    # startup entries, services, or drivers.
-    score += min(autoruns_new, 5) * 1
-    score += min(autoruns_modified, 5) * 1
-    score += autoruns_suspicious * 6
-
-    # Sysmon: injection and credential access are the strongest single
-    # indicators available, and installers essentially never do them.
-    score += min(sysmon_injections, 5) * 10
-    score += min(sysmon_high, 8) * 6
-
-    # A rule that fires against a process's memory but not against the file on
-    # disk is a payload that was packed or encrypted at rest. Weighted like
-    # injection, because it is the same class of evidence: something the sample
-    # did that static inspection could not have revealed.
+    # Which domains the sample asked for, whoever answered. Under FakeNet the
+    # answer is always local, so the pcap's external-IP count is zero on a run
+    # where the sample reached its C2 and uploaded stolen data -- the name it
+    # looked up is the only place that contact is visible.
     #
-    # Matches present both in memory and on disk are worth much less here. The
-    # static run already reported them, and paying twice for one finding would
-    # let a single noisy rule drive the dynamic verdict.
-    score += min(len(memory_only_rules), 5) * 10
-    score += min(memory_yara_matches, 10) * 1
+    # Merged as a set: the same lookup appears in both the capture and the
+    # FakeNet log, and counting it twice would make one contact look like two.
+    iocs = network_summary.get("iocs", {}) if isinstance(network_summary, dict) else {}
+    domain_names = set(iocs.get("notable_domains", []) or [])
+    if isinstance(fakenet_summary, dict):
+        domain_names.update(
+            name
+            for name in (fakenet_summary.get("dns_requests", []) or [])
+            if not is_baseline_domain(name) and not is_local_discovery_domain(name)
+        )
+    notable_domains = len(domain_names)
 
-    # Network: a destination on an odd port is far more telling than volume,
-    # so counts of ordinary traffic stay deliberately cheap.
-    score += min(network_unusual_ports, 5) * 4
-    score += min(network_destinations, 10) * 1
-    score += min(network_http, 10) * 1
-    score += min(fakenet_dns, 10) * 1
-
-    has_persistence_diff_signal = (
-        suspicious_tasks > 0
-        or suspicious_services > 0
-        or autoruns_suspicious > 0
-        or sysmon_injections > 0
-        or sysmon_high > 0
-        or bool(memory_only_rules)
+    powershell = powershell_summary if isinstance(powershell_summary, dict) else {}
+    suspicious_scriptblocks = int(
+        (powershell.get("counts", {}) or {}).get("blocks_suspicious", 0) or 0
     )
 
-    if score <= 10:
-        if has_persistence_diff_signal:
-            severity = "Low"
-            verdict = "Low Suspicion"
-        else:
-            severity = "Low"
-            verdict = "Benign / Clean Baseline"
-    elif score <= 45:
+    # --- Context: how busy the run was ------------------------------------
+    #
+    # Volume is not evidence. Two runs of the same control produced scores nine
+    # points apart on identical code, purely from background noise, so this is
+    # clamped as a whole: it can colour a verdict but it must never set one.
+    context_score = 0
+    context_score += min(interesting_events, 10)
+    context_score += min(process_creates, 10)
+    context_score += min(network_events, 10)
+    context_score += min(file_write_events, 10)
+    context_score += min(suspicious_path_hits, 10) * 2
+    context_score += min(persistence_hits, 10) * 3
+    context_score += min(lolbin_processes, 3) * 2
+    context_score += min(autoruns_new, 5)
+    context_score += min(autoruns_modified, 5)
+    context_score += min(memory_yara_matches, 10)
+    context_score += min(network_destinations, 10)
+    context_score += min(network_http, 10)
+    context_score += min(fakenet_dns, 10)
+    context_score = min(context_score, MAX_CONTEXT_SCORE)
+
+    # --- Evidence: what the sample was actually seen to do -----------------
+    categories = _evidence_categories(
+        memory_only_rules=memory_only_rules,
+        sysmon_injections=sysmon_injections,
+        sysmon_high=sysmon_high,
+        suspicious_tasks=suspicious_tasks,
+        suspicious_services=suspicious_services,
+        autoruns_suspicious=autoruns_suspicious,
+        suspicious_dropped=suspicious_dropped,
+        notable_domains=notable_domains,
+        external_destinations=network_destinations,
+        unusual_ports=network_unusual_ports,
+        suspicious_scriptblocks=suspicious_scriptblocks,
+    )
+
+    present = [c for c in categories if c["present"]]
+    strong = [c for c in present if c["strong"]]
+
+    score = context_score
+    score += len(present) * CATEGORY_POINTS
+    score += len(strong) * STRONG_CATEGORY_BONUS
+
+    # --- Verdict: corroboration, not volume --------------------------------
+    #
+    # The old model banded on the total, and the total could not tell a benign
+    # canary (24) from live AgentTesla (60) from packed mimikatz (69): all three
+    # landed in Needs Review / Medium, and High at >120 was unreachable. What
+    # separates them is not how much they did but how many independent kinds of
+    # evidence agree, and how emphatic each one is.
+    #
+    # One weak category is a single unexplained observation -- exactly what the
+    # memory canary is built to produce, and it must stay at Medium so that
+    # control keeps its meaning. Two agreeing categories, or one emphatic
+    # enough to stand alone, is a finding.
+    if not present:
         severity = "Low"
-        verdict = "Low Suspicion"
-    elif score <= 120:
+        verdict = "Low Suspicion" if score > 10 else "Benign / Clean Baseline"
+    elif len(present) == 1 and not strong:
         severity = "Medium"
         verdict = "Needs Review"
+    elif len(present) >= 3 or len(strong) >= 2:
+        severity = "High"
+        verdict = "Likely Malicious"
     else:
         severity = "High"
         verdict = "Elevated Attention"
 
-    # Severity floor for qualitative signals.
-    #
-    # The numeric model is volume-driven, so a sample that does exactly one
-    # decisive thing -- inject into another process, touch LSASS, or register a
-    # WMI consumer -- can otherwise land in the same band as a chatty
-    # installer. Those behaviours are categorically different from "lots of
-    # file writes", so they set a minimum severity rather than adding points.
-    escalation_reason = ""
-    if memory_only_rules:
-        escalation_reason = (
-            "YARA matched in process memory but not on disk "
-            f"({', '.join(memory_only_rules[:3])}), indicating a payload that was "
-            "packed or encrypted at rest."
-        )
-    elif sysmon_injections > 0:
-        escalation_reason = "Sysmon recorded process injection (CreateRemoteThread)."
-    elif sysmon_high > 0:
-        escalation_reason = (
-            "Sysmon recorded high-signal behaviour (credential access, process "
-            "tampering, or WMI persistence)."
-        )
-
-    if escalation_reason and severity == "Low":
-        severity = "Medium"
-        verdict = "Needs Review"
+    # Retained under their original names: the report and the controls read
+    # these. The floor is now the single-category case -- one decisive
+    # observation with nothing corroborating it -- which is what the old
+    # qualitative escalation was reaching for.
+    floor_applied = severity == "Medium" and bool(present)
+    floor_reason = present[0]["reason"] if floor_applied else ""
 
     return {
         "score": score,
         "severity": severity,
         "verdict": verdict,
-        "severity_floor_applied": bool(escalation_reason and score <= 45),
-        "severity_floor_reason": escalation_reason if score <= 45 else "",
-        "score_model": "dynamic-installer-aware-v2",
+        "context_score": context_score,
+        "evidence_categories": present,
+        "evidence_counts": {
+            "categories_present": len(present),
+            "categories_strong": len(strong),
+        },
+        "severity_floor_applied": floor_applied,
+        "severity_floor_reason": floor_reason,
+        "score_model": "dynamic-corroboration-v3",
         "score_notes": [
-            "Installer-aware scoring caps repetitive Procmon persistence/path hits.",
-            "LOLBin usage is weighted lower unless paired with stronger persistence or dropped-file evidence.",
-            "Autoruns changes remain visible but are not automatically treated as malicious.",
-            "Sysmon injection and credential-access events carry the heaviest weight, "
-            "because legitimate installers effectively never perform them.",
-            "Network volume is weighted lightly; unusual destination ports are weighted heavily.",
-            "Injection, credential access and WMI persistence set a minimum severity of "
-            "Medium regardless of score, so a single decisive behaviour is never "
-            "reported as Low.",
-            "A YARA rule matching process memory but not the file on disk is weighted "
-            "like injection and sets the same minimum severity: it means a payload "
-            "that static analysis could not have seen. Matches present in both are "
-            "weighted lightly, because the static run already reported them.",
+            "The verdict comes from how many independent kinds of evidence agree, "
+            "not from the total. Volume is capped at "
+            f"{MAX_CONTEXT_SCORE} points so background noise cannot move a band.",
+            "One kind of evidence on its own is Medium / Needs Review. That is "
+            "deliberately where the benign memory canary lands, and it is the "
+            "band a single unexplained observation belongs in.",
+            "A category counts as strong when it is emphatic in its own right: "
+            f"{STRONG_MEMORY_ONLY_RULES}+ distinct rules matching memory but not "
+            "disk, a connection to a non-standard port, repeat injection. One "
+            "strong category, or two of any kind, reaches High.",
+            "Three agreeing categories, or two strong ones, is Likely Malicious. "
+            "Nothing a legitimate installer does produces that combination.",
+            "Absence of a category means it was not observed, which is not the "
+            "same as it not happening. Check the telemetry coverage and any "
+            "warnings before reading a low verdict as a clean one.",
         ],
     }
 
@@ -1952,6 +2087,7 @@ def run_dynamic_analysis(
         network_summary=network_summary,
         fakenet_summary=fakenet_summary,
         memory_yara_summary=memory_yara_summary,
+        powershell_summary=powershell_summary,
     )
 
     if cancelled:
@@ -1993,6 +2129,9 @@ def run_dynamic_analysis(
         "score": score_data["score"],
         "severity": score_data["severity"],
         "verdict": score_data["verdict"],
+        # What the verdict was actually built from. Without this the band is an
+        # assertion; with it the reader can check the reasoning and disagree.
+        "score_detail": score_data,
         "procmon_summary": procmon_summary,
         "procmon_interesting_summary": procmon_interesting_summary,
         "task_diff_summary": task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {},
