@@ -1005,6 +1005,50 @@ def _fakenet_dns_empty_text(summary: dict[str, Any]) -> str:
     )
 
 
+def _fakenet_received_section(summary: dict[str, Any]) -> str:
+    """Files the sample uploaded to the simulated internet.
+
+    Emphasised because it is the strongest artifact a run can produce: not
+    evidence that the sample exfiltrated, but the exfiltrated data itself.
+    """
+    fakenet = summary.get("fakenet_summary", {}) or {}
+    received = fakenet.get("received_files", {}) or {}
+    if not received:
+        return ""
+
+    files = received.get("files", []) or []
+    rows = [
+        {
+            "File": entry.get("name", ""),
+            "Size": entry.get("size", 0),
+            "State": (
+                "overwrote a served file"
+                if entry.get("state") == "overwritten"
+                else "new"
+            ),
+            "SHA256": entry.get("sha256", "") or "not hashed",
+            "Collected to": entry.get("saved_as", "") or entry.get("error", "not collected"),
+            "Uploaded to": entry.get("source_path", ""),
+        }
+        for entry in files
+    ]
+
+    if received.get("collected"):
+        empty_text = received.get("note") or "Nothing was uploaded to the simulated internet."
+    else:
+        empty_text = received.get("note") or (
+            "Uploads were not collected for this run, so a file the sample sent "
+            "would not appear here."
+        )
+
+    return _dict_list_table(
+        "Files Received By The Simulated Internet",
+        rows,
+        emphasize=True,
+        empty_text=empty_text,
+    )
+
+
 def _containment_section(summary: dict[str, Any]) -> str:
     """Warn prominently when the sample could have bypassed the simulated internet.
 
@@ -1439,6 +1483,7 @@ def _network_sections(summary: dict[str, Any]) -> str:
 {_fakenet_cannot_intercept_section(summary)}
 {_unserved_dns_section(summary)}
 {_kv_table("Simulated Internet (FakeNet-NG)", overview)}
+{_fakenet_received_section(summary)}
 {_dict_list_table("Connection Attempts By Process", fakenet.get("process_requests", []) or [])}
 {_list_section("Domains Requested Against Simulated Internet", _fakenet_domains(summary)[0], emphasize=True, empty_text=_fakenet_dns_empty_text(summary))}
 {_list_section("Windows Baseline Traffic Served (context, not findings)", _fakenet_domains(summary)[1], empty_text="None.", context=True)}

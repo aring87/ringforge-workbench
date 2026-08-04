@@ -103,6 +103,12 @@ destroys. Copy out what you need. The two files worth keeping are the HTML
 report and `dynamic_run_summary.json`; the JSON is the one to keep if you only
 keep one, since everything in the report derives from it.
 
+**And `network\received\`, when it exists.** Anything the sample uploaded to
+the simulated internet is collected there — an exfil report, a stolen-credential
+dump, whatever it sent. It is the most valuable artifact a run produces and it
+is worth more than the report describing it. The report's *Files Received By
+The Simulated Internet* card lists what landed.
+
 **Do not copy `.dmp` files to the host.** They contain the sample's unpacked
 payload verbatim — that is the entire point of them — and they are gitignored
 for the same reason.

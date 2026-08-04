@@ -1690,6 +1690,25 @@ def run_dynamic_analysis(
                 except Exception as error:
                     _emit(status_cb, f"Simulated internet parse warning: {error}")
 
+            # Lifted out of the session record and written whether or not the
+            # log parsed. A file the sample uploaded is the run's most valuable
+            # artifact, and it must not be reachable only through a nested key
+            # that a failed log parse can cost.
+            received_files = fakenet_stop_result.get("received_files")
+            if isinstance(received_files, dict):
+                fakenet_summary["received_files"] = received_files
+                received_counts = received_files.get("counts", {}) or {}
+                if received_counts.get("files"):
+                    _emit(
+                        status_cb,
+                        f"Simulated internet received {received_counts.get('files', 0)} file(s) "
+                        f"from the sample ({received_counts.get('overwritten', 0)} overwriting a "
+                        f"served file); collected into {received_files.get('output_dir', '')}.",
+                    )
+                elif received_files.get("note"):
+                    _emit(status_cb, f"Simulated internet: {received_files['note']}")
+                write_json(fakenet_summary_json, fakenet_summary)
+
             # Scanned last: it is the slowest step in teardown, and it depends
             # on the dumps having been written and closed.
             scannable = successful_dumps(memory_dump_result)

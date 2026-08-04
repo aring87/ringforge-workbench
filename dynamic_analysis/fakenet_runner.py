@@ -12,6 +12,10 @@ out to a third party nor signals the operator that the sample was executed.
 FakeNet writes its own pcap into the working directory, so the process is
 started with ``cwd`` set to the run's network folder.
 
+Its listeners, however, serve and receive files from their own roots inside the
+FakeNet installation, which is outside the case directory -- see
+``_collect_received_files``.
+
 Requires Administrator rights (it installs a traffic diverter).
 """
 
@@ -26,6 +30,8 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+from dynamic_analysis.utils import sha256_file
 
 #: DNS request lines, e.g. "Received A request for domain 'evil.com'".
 _DNS_RE = re.compile(
@@ -74,6 +80,22 @@ _DNS_ADAPTER_RE = re.compile(
 _DIVERT_RE = re.compile(
     r"(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})\s*(?:->|to)\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})"
 )
+
+
+#: Config keys naming a directory a listener serves from. A listener that
+#: serves a directory also *writes* to it: an FTP STOR and an HTTP PUT both
+#: land in the root, which is how a sample's uploaded file ends up inside the
+#: FakeNet installation instead of the case directory.
+_LISTENER_ROOT_KEYS = ("webroot", "ftproot", "tftproot")
+
+#: FakeNet ships every listener pointed at this directory by default, so it is
+#: worth watching even when no config could be read.
+_DEFAULT_ROOT_NAME = "defaultFiles"
+
+#: Received files are exfiltrated documents and stolen-credential reports --
+#: kilobytes, not megabytes. Anything larger is recorded and left in place
+#: rather than copied, so a misconfigured root cannot fill the case directory.
+MAX_RECEIVED_FILE_BYTES = 25 * 1024 * 1024
 
 
 #: Windows raises this from CreateProcess when antivirus blocks the image.
@@ -145,6 +167,112 @@ def find_fakenet(configured: str | Path | None = None) -> Optional[Path]:
     return Path(found) if found else None
 
 
+def _load_config(config_path: str | Path | None) -> Optional[configparser.ConfigParser]:
+    """Parse a FakeNet config, or None for anything unreadable.
+
+    Returns None rather than raising: a config that cannot be parsed must cost
+    only the information derived from it.
+    """
+    if not config_path:
+        return None
+
+    path = Path(config_path)
+    if not path.exists():
+        return None
+
+    parser = configparser.ConfigParser(strict=False)
+    # FakeNet section names are case-sensitive to a reader ("DNS Server"),
+    # and configparser lowercases option names but not sections, which is
+    # what we want.
+    try:
+        parser.read(path, encoding="utf-8")
+    except Exception:
+        return None
+    return parser
+
+
+def _resolve_root(value: str, bases: list[Path]) -> Optional[Path]:
+    """Turn a config root value into a directory that exists.
+
+    FakeNet's roots are conventionally relative ("defaultFiles/"), and what
+    they are relative to depends on how it was invoked. Rather than guess,
+    every plausible base is tried and the first that exists wins.
+    """
+    raw = value.strip().strip('"').strip("'")
+    if not raw:
+        return None
+
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        return candidate.resolve() if candidate.is_dir() else None
+
+    for base in bases:
+        resolved = base / raw
+        if resolved.is_dir():
+            return resolved.resolve()
+    return None
+
+
+def listener_roots(
+    config_path: str | Path | None = None,
+    binary: str | Path | None = None,
+    extra_bases: list[Path] | None = None,
+) -> list[Path]:
+    """Directories FakeNet's listeners serve from, and therefore receive into.
+
+    The FTP listener is a real FTP server rooted at a real directory. When
+    AgentTesla uploaded its stolen-credential report, the file was written
+    there -- over the top of FakeNet's own default page -- and nothing in the
+    case directory recorded that it had happened.
+    """
+    bases: list[Path] = []
+    if binary:
+        binary_dir = Path(binary).resolve().parent
+        bases.extend([binary_dir, binary_dir.parent])
+    if config_path:
+        bases.append(Path(config_path).resolve().parent)
+    if extra_bases:
+        bases.extend(Path(base) for base in extra_bases)
+
+    roots: list[Path] = []
+
+    def _remember(path: Optional[Path]) -> None:
+        if path is not None and path not in roots:
+            roots.append(path)
+
+    parser = _load_config(config_path)
+    if parser is not None:
+        for section in parser.sections():
+            for key in _LISTENER_ROOT_KEYS:
+                if parser.has_option(section, key):
+                    _remember(_resolve_root(parser.get(section, key, fallback=""), bases))
+
+    # The default every listener ships pointed at. Included unconditionally,
+    # because a run with no readable config is exactly the run where an upload
+    # would otherwise go uncollected.
+    for base in bases:
+        _remember(_resolve_root(_DEFAULT_ROOT_NAME, [base]))
+
+    return roots
+
+
+def _snapshot_root(root: Path) -> dict[str, tuple[int, int]]:
+    """Size and mtime of every file under a root, keyed by relative path."""
+    entries: dict[str, tuple[int, int]] = {}
+    try:
+        for path in root.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            entries[str(path.relative_to(root))] = (stat.st_size, stat.st_mtime_ns)
+    except Exception:
+        pass
+    return entries
+
+
 def fakenet_status(configured: str | Path | None = None) -> dict[str, Any]:
     """Preflight summary describing whether simulated internet is available."""
     binary = find_fakenet(configured)
@@ -194,11 +322,14 @@ class FakeNetSession:
         self.log_path = self.output_dir / "fakenet.log"
         self.stderr_path = self.output_dir / "fakenet.stderr.log"
         self.stop_flag_path = self.output_dir / "fakenet.stop"
+        self.received_dir = self.output_dir / "received"
         self.process: Optional[subprocess.Popen] = None
         self.started = False
         self.error = ""
         self._existing_pcaps: set[str] = set()
         self._stderr_handle: Optional[Any] = None
+        self._listener_roots: list[Path] = []
+        self._root_snapshots: dict[str, dict[str, tuple[int, int]]] = {}
 
     # -- stderr -----------------------------------------------------------
 
@@ -237,6 +368,19 @@ class FakeNetSession:
 
         # Remember pre-existing pcaps so we only claim the one this run creates.
         self._existing_pcaps = {p.name for p in self.output_dir.glob("*.pcap")}
+
+        # ...and the contents of every listener root, so a file the sample
+        # uploads can be told apart from the ones FakeNet ships with. Taken
+        # before launch: the sample is what changes these directories, and
+        # after the fact there is no way to know which files were already there.
+        self._listener_roots = listener_roots(
+            config_path=self.config_path,
+            binary=binary,
+            extra_bases=[self.output_dir],
+        )
+        self._root_snapshots = {
+            str(root): _snapshot_root(root) for root in self._listener_roots
+        }
 
         if self.stop_flag_path.exists():
             self.stop_flag_path.unlink()
@@ -341,6 +485,21 @@ class FakeNetSession:
             detail = " ".join(self._read_stderr().split())[-300:]
             error = f"FakeNet-NG exited with rc={returncode}. {detail}".strip()
 
+        # After the listeners are down, so a file still being written cannot be
+        # copied half-finished. A failure here must not turn a served run into
+        # a failed one.
+        try:
+            received = self._collect_received_files()
+        except Exception as collect_error:
+            received = {
+                "collected": False,
+                "note": f"could not collect received files: {collect_error}",
+                "roots": [str(root) for root in self._listener_roots],
+                "output_dir": str(self.received_dir),
+                "files": [],
+                "counts": {"files": 0, "new": 0, "overwritten": 0, "not_copied": 0},
+            }
+
         return {
             "stopped": True,
             "error": error,
@@ -349,7 +508,113 @@ class FakeNetSession:
             "log_exists": self.log_path.exists(),
             "stderr_path": str(self.stderr_path),
             "pcap_path": str(self.find_pcap() or ""),
+            "received_files": received,
         }
+
+    # -- received files ---------------------------------------------------
+
+    def _collect_received_files(self) -> dict[str, Any]:
+        """Copy anything the sample uploaded into the case directory.
+
+        FakeNet's listeners serve from directories inside the FakeNet
+        installation, and an upload is written there. That is outside the case
+        directory, so the next revert destroys it -- and it is the single most
+        valuable artifact a run produces. AgentTesla's stolen-credential report
+        was found by hand in ``tools/fakenet/defaultFiles/FakeNet.html``, having
+        overwritten FakeNet's own default page, which is why a modified file
+        counts here and not just a new one.
+
+        Files are copied, never moved: the roots belong to FakeNet, and a run
+        must not leave its installation missing the files it serves.
+        """
+        result: dict[str, Any] = {
+            "collected": False,
+            "note": "",
+            "roots": [str(root) for root in self._listener_roots],
+            "output_dir": str(self.received_dir),
+            "files": [],
+            "counts": {"files": 0, "new": 0, "overwritten": 0, "not_copied": 0},
+        }
+
+        if not self._listener_roots:
+            result["note"] = (
+                "No FakeNet listener root could be located, so an uploaded file "
+                "would not have been collected. Check the Webroot/FTPRoot paths "
+                "in the FakeNet config."
+            )
+            return result
+
+        collected: list[dict[str, Any]] = []
+        used_names: set[str] = set()
+
+        for root in self._listener_roots:
+            before = self._root_snapshots.get(str(root), {})
+            after = _snapshot_root(root)
+
+            for relative, (size, mtime_ns) in sorted(after.items()):
+                previous = before.get(relative)
+                if previous == (size, mtime_ns):
+                    continue
+
+                source = root / relative
+                entry: dict[str, Any] = {
+                    "name": Path(relative).name,
+                    "relative_path": relative,
+                    "root": str(root),
+                    "source_path": str(source),
+                    "size": size,
+                    "state": "new" if previous is None else "overwritten",
+                    "sha256": "",
+                    "saved_as": "",
+                    "copied": False,
+                    "error": "",
+                }
+
+                if size > MAX_RECEIVED_FILE_BYTES:
+                    entry["error"] = (
+                        f"left in place: {size} bytes exceeds the "
+                        f"{MAX_RECEIVED_FILE_BYTES} byte collection limit"
+                    )
+                    collected.append(entry)
+                    continue
+
+                # Roots can share a basename ("defaultFiles" under two
+                # listeners), so a destination name that is already taken gets
+                # a suffix rather than silently overwriting a sibling.
+                destination_name = f"{root.name}__{relative}".replace("\\", "_").replace("/", "_")
+                candidate = destination_name
+                suffix = 2
+                while candidate in used_names:
+                    candidate = f"{destination_name}.{suffix}"
+                    suffix += 1
+                used_names.add(candidate)
+
+                try:
+                    self.received_dir.mkdir(parents=True, exist_ok=True)
+                    destination = self.received_dir / candidate
+                    shutil.copy2(source, destination)
+                    entry["saved_as"] = str(destination)
+                    entry["copied"] = True
+                    entry["sha256"] = sha256_file(destination)
+                except Exception as error:
+                    entry["error"] = f"could not collect: {error}"
+
+                collected.append(entry)
+
+        result["collected"] = True
+        result["files"] = collected
+        result["counts"] = {
+            "files": len(collected),
+            "new": sum(1 for entry in collected if entry["state"] == "new"),
+            "overwritten": sum(1 for entry in collected if entry["state"] == "overwritten"),
+            "not_copied": sum(1 for entry in collected if not entry["copied"]),
+        }
+        if not collected:
+            result["note"] = (
+                f"{len(self._listener_roots)} listener root(s) watched; nothing "
+                "was uploaded to them."
+            )
+        return result
 
     def find_pcap(self) -> Optional[Path]:
         """The pcap FakeNet created during this session, if any."""
@@ -375,20 +640,8 @@ def _enabled_listeners(config_path: str) -> list[str]:
     Returns an empty list rather than raising for anything unreadable -- a
     parse failure here must cost the listener list and nothing else.
     """
-    if not config_path:
-        return []
-
-    path = Path(config_path)
-    if not path.exists():
-        return []
-
-    parser = configparser.ConfigParser(strict=False)
-    # FakeNet section names are case-sensitive to a reader ("DNS Server"),
-    # and configparser lowercases option names but not sections, which is
-    # what we want.
-    try:
-        parser.read(path, encoding="utf-8")
-    except Exception:
+    parser = _load_config(config_path)
+    if parser is None:
         return []
 
     enabled: list[str] = []

@@ -447,6 +447,18 @@ separately, since they bypass an IPv4-only redirect.
 - Telemetry coverage is stated explicitly. If Sysmon was not running, the
   report says so rather than reading as though no injection occurred.
 
+### Files Received By The Simulated Internet
+
+FakeNet's listeners are real servers rooted at real directories, so a sample
+that uploads gets its file written inside the FakeNet installation — outside
+the case directory, and destroyed by the next revert. AgentTesla's
+stolen-credential report landed on top of FakeNet's own default page and was
+found by hand.
+
+Listener roots are snapshotted before launch and anything new *or modified* is
+copied into the case directory as a normal artifact, hashed and listed in the
+report. Copied, never moved: the roots belong to FakeNet.
+
 ### Resilience
 
 - Scheduled task and service snapshots fall back to `schtasks.exe` and
