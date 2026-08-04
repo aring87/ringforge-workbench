@@ -129,6 +129,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.installer_observation_mode_var = tk.BooleanVar(
             value=bool(cfg.get("dynamic_installer_observation_mode", True))
         )
+        # The timeout above is a guess about how long a sample stays dormant,
+        # and dormancy varies run to run for the same binary. These let the
+        # window follow the sample instead: keep waiting while it is still
+        # running and has not been seen to do anything.
+        self.adaptive_observation_var = tk.BooleanVar(
+            value=bool(cfg.get("dynamic_adaptive_observation", True))
+        )
+        self.max_observation_var = tk.IntVar(
+            value=int(cfg.get("dynamic_max_observation_seconds", 600))
+        )
 
         project_root = Path(__file__).resolve().parents[1]
         self.procmon_path_var = tk.StringVar(
@@ -179,7 +189,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
             value=(
                 f"Min {self.minimum_observation_var.get()} sec | "
                 f"Post-exit {self.post_exit_observation_var.get()} sec | "
-                f"{'Installer mode' if self.installer_observation_mode_var.get() else 'Standard mode'}"
+                f"{'Installer mode' if self.installer_observation_mode_var.get() else 'Standard mode'} | "
+                + (
+                    f"Extend to {self.max_observation_var.get()} sec"
+                    if self.adaptive_observation_var.get()
+                    else "Fixed window"
+                )
             )
         )
 
@@ -613,7 +628,27 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self.installer_observation_mode_var,
             command=self._refresh_summary_from_inputs,
             parent_bg=T.BG,
+        ).pack(side="left", padx=(0, 14))
+
+        Checkbox(
+            observation_row,
+            "Extend if dormant",
+            self.adaptive_observation_var,
+            command=self._refresh_summary_from_inputs,
+            parent_bg=T.BG,
         ).pack(side="left")
+
+        ttk.Label(observation_row, text="up to:").pack(side="left", padx=(6, 0))
+
+        ttk.Spinbox(
+            observation_row,
+            from_=0,
+            to=7200,
+            textvariable=self.max_observation_var,
+            width=8,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 0))
 
         runtime_row = ttk.Frame(header)
         runtime_row.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(8, 10))
@@ -1269,7 +1304,12 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.summary_observation_var.set(
             f"Min {self.minimum_observation_var.get()}s | "
             f"Post {self.post_exit_observation_var.get()}s | "
-            f"{'Installer' if self.installer_observation_mode_var.get() else 'Standard'}"
+            f"{'Installer' if self.installer_observation_mode_var.get() else 'Standard'} | "
+            + (
+                f"Extend to {self.max_observation_var.get()}s"
+                if self.adaptive_observation_var.get()
+                else "Fixed"
+            )
         )
 
         enabled = [
@@ -1299,6 +1339,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_minimum_observation_seconds"] = int(self.minimum_observation_var.get())
         self.app.cfg["dynamic_post_exit_observation_seconds"] = int(self.post_exit_observation_var.get())
         self.app.cfg["dynamic_installer_observation_mode"] = bool(self.installer_observation_mode_var.get())
+        self.app.cfg["dynamic_adaptive_observation"] = bool(self.adaptive_observation_var.get())
+        self.app.cfg["dynamic_max_observation_seconds"] = int(self.max_observation_var.get())
         self.app.cfg["dynamic_sysmon_enabled"] = bool(self.sysmon_enabled_var.get())
         self.app.cfg["dynamic_pcap_enabled"] = bool(self.pcap_enabled_var.get())
         self.app.cfg["dynamic_fakenet_enabled"] = bool(self.fakenet_enabled_var.get())
@@ -1924,6 +1966,8 @@ ul {{ margin-top: 8px; }}
             "minimum_observation_seconds": minimum_observation_seconds,
             "post_exit_observation_seconds": post_exit_observation_seconds,
             "installer_observation_mode": installer_observation_mode,
+            "adaptive_observation": bool(self.adaptive_observation_var.get()),
+            "max_observation_seconds": int(self.max_observation_var.get()),
             "procmon_enabled": bool(self.procmon_enabled_var.get()),
             "procmon_path": str(procmon_path),
             "procmon_config_path": procmon_config,
@@ -1954,6 +1998,11 @@ ul {{ margin-top: 8px; }}
         self.output.insert("end", f"  case_home={case_home}\n")
         self.output.insert("end", f"  dynamic_output={dynamic_output}\n")
         self.output.insert("end", f"  timeout_seconds={timeout_seconds}\n")
+        self.output.insert(
+            "end",
+            f"  adaptive_observation={config['adaptive_observation']} "
+            f"max_observation_seconds={config['max_observation_seconds']}\n",
+        )
         self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n")
         self.output.insert("end", f"  procmon_path={procmon_path}\n")
         self.output.insert("end", f"  procmon_config={procmon_config or '-'}\n")

@@ -96,6 +96,21 @@ PowerShell was used" and "we were not listening".
 a sample that sits resident. Raise it only for something that stages behaviour
 over minutes — installers, droppers with sleep timers.
 
+**Extend if dormant.** On by default, capped at 600 seconds. The timeout above
+is the *base* window; if it expires while the sample is still running and
+nothing has been seen to spawn, the run keeps waiting in 30-second steps up to
+the cap. A sample that has exited, or that has already spawned something, is
+never extended — so this costs nothing on a run that went normally.
+
+It needs the memory dump watcher to know whether anything has happened. Without
+it (not elevated, or ProcDump missing) the window stays fixed and the run
+summary records that extension was unavailable rather than pretending the
+window was adequate.
+
+If a run ends at the cap with the sample still running and still silent, the
+report carries **Observation May Be Incomplete**. Raise the cap and re-run
+before reading that result as clean.
+
 ## 4. Export before you revert
 
 Reports land in the case directory inside the guest, which the next revert

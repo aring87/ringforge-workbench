@@ -222,10 +222,14 @@ def run_sample(
     minimum_observation_seconds: int = 30,
     post_exit_observation_seconds: int = 120,
     installer_observation_mode: bool = True,
+    adaptive_observation: bool = True,
+    max_observation_seconds: int = 600,
+    observation_extension_seconds: int = 30,
+    activity_probe: Optional[Callable[[], bool]] = None,
     cancel_event: CancelEvent = None,
     status_cb: StatusCallback = None,
     on_launch: Optional[Callable[[int], None]] = None,
-) -> int:
+) -> dict[str, Any]:
     """
     Launch the sample and observe runtime behavior.
 
@@ -235,8 +239,27 @@ def run_sample(
     - If the initial process exits, RingForge keeps observing for
       post_exit_observation_seconds so child installers, msiexec handoffs,
       services, scheduled tasks, and background setup activity can be captured.
-    - The run never exceeds timeout_seconds.
     - Analyst cancellation is honored during observation.
+
+    Adaptive window:
+    - timeout_seconds is the base window, and on its own it is a guess about
+      how long a sample will stay dormant. One AgentTesla binary sat dormant
+      for 21, 37, 38, 41, 44 and 83 seconds across six runs of the same file,
+      so there is no fixed number that is right twice.
+    - When the base window expires while the sample is *still running and has
+      not yet been seen to do anything*, the window is extended in
+      observation_extension_seconds steps up to max_observation_seconds. That
+      is the only case where waiting longer can change the result: a sample
+      that has exited, or that has already acted, has given the run what it
+      came for.
+    - activity_probe reports whether anything has been observed yet. Without
+      one, adaptive extension is unavailable and the base window stands --
+      recorded as such, because extending blindly would turn every quiet run
+      into a ten-minute one.
+
+    Returns the observation record rather than a bare exit code: how long the
+    run actually watched, and why it stopped, decides whether a quiet report
+    means a quiet sample. ``exit_code`` carries what this used to return.
 
     on_launch receives the sample's PID immediately after launch. Memory
     dumping needs the PID while the process is alive, and the exit code this
@@ -264,6 +287,42 @@ def run_sample(
     process_exit_time: float | None = None
     last_notice_second = -1
 
+    can_extend = bool(adaptive_observation and activity_probe is not None)
+    window_seconds = int(timeout_seconds)
+    extensions = 0
+    activity_seen = False
+
+    def _observed_activity() -> bool:
+        """Whether the sample has been seen to act. Sticky, and never raises.
+
+        A probe that throws must not end the observation early, and must not
+        be read as activity either -- the last known answer stands.
+        """
+        nonlocal activity_seen
+        if activity_seen or activity_probe is None:
+            return activity_seen
+        try:
+            activity_seen = bool(activity_probe())
+        except Exception as error:
+            _emit(status_cb, f"Activity probe warning: {error}")
+        return activity_seen
+
+    def _result(ended_because: str, elapsed: float) -> dict[str, Any]:
+        return {
+            "exit_code": -1 if exit_code is None else int(exit_code),
+            "sample_exited": exit_code is not None,
+            "elapsed_seconds": int(elapsed),
+            "base_window_seconds": int(timeout_seconds),
+            "window_seconds": window_seconds,
+            "max_observation_seconds": int(max_observation_seconds),
+            "adaptive_observation": bool(adaptive_observation),
+            "adaptive_available": can_extend,
+            "extensions": extensions,
+            "extended": extensions > 0,
+            "activity_observed": activity_seen,
+            "ended_because": ended_because,
+        }
+
     while True:
         if _cancel_requested(cancel_event):
             if proc.poll() is None:
@@ -288,23 +347,51 @@ def run_sample(
                 f"Initial sample process exited with code {exit_code}; continuing observation for installer/background activity.",
             )
 
-        if elapsed >= timeout_seconds:
-            if proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+        if elapsed >= window_seconds:
+            still_running = proc.poll() is None
 
-            if exit_code is None:
-                return -1
+            # The one case where waiting longer can still change the result.
+            if (
+                can_extend
+                and still_running
+                and not _observed_activity()
+                and window_seconds < max_observation_seconds
+            ):
+                window_seconds = min(
+                    window_seconds + int(observation_extension_seconds),
+                    int(max_observation_seconds),
+                )
+                extensions += 1
+                _emit(
+                    status_cb,
+                    f"Sample is still running and nothing has been observed yet; "
+                    f"extending observation to {window_seconds}s "
+                    f"(cap {int(max_observation_seconds)}s).",
+                )
+            else:
+                if still_running:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
 
-            return int(exit_code)
+                if not still_running or not can_extend:
+                    ended_because = "window_elapsed"
+                elif _observed_activity():
+                    ended_because = "window_elapsed_after_activity"
+                else:
+                    # Still running, still silent, and out of extensions. This
+                    # is the case that produces a clean-looking report for a
+                    # sample that had simply not started yet.
+                    ended_because = "extension_cap_reached"
+
+                return _result(ended_because, elapsed)
 
         minimum_elapsed = elapsed >= minimum_observation_seconds
 
         if not installer_observation_mode:
             if exit_code is not None and minimum_elapsed:
-                return int(exit_code)
+                return _result("sample_exited", elapsed)
 
         if installer_observation_mode and exit_code is not None and minimum_elapsed:
             post_exit_elapsed = 0
@@ -316,12 +403,7 @@ def run_sample(
                     status_cb,
                     f"Post-exit observation completed after {post_exit_elapsed} seconds.",
                 )
-                return int(exit_code)
-
-        if exit_code is None and minimum_elapsed and not installer_observation_mode:
-            # Defensive fallback. In normal non-installer mode this only returns
-            # once the original process exits.
-            pass
+                return _result("post_exit_observation_complete", elapsed)
 
         elapsed_int = int(elapsed)
         if elapsed_int % 30 == 0 and elapsed_int != last_notice_second:
@@ -329,13 +411,13 @@ def run_sample(
             if exit_code is None:
                 _emit(
                     status_cb,
-                    f"Observation still running... elapsed={elapsed_int}s timeout={timeout_seconds}s",
+                    f"Observation still running... elapsed={elapsed_int}s window={window_seconds}s",
                 )
             else:
                 post_exit_elapsed = int(now - process_exit_time) if process_exit_time else 0
                 _emit(
                     status_cb,
-                    f"Post-exit observation still running... elapsed={elapsed_int}s post_exit={post_exit_elapsed}s/{post_exit_observation_seconds}s timeout={timeout_seconds}s",
+                    f"Post-exit observation still running... elapsed={elapsed_int}s post_exit={post_exit_elapsed}s/{post_exit_observation_seconds}s window={window_seconds}s",
                 )
 
         time.sleep(1)
@@ -1060,6 +1142,17 @@ def run_dynamic_analysis(
     post_exit_observation_seconds = int(config.get("post_exit_observation_seconds", 120))
     installer_observation_mode = bool(config.get("installer_observation_mode", True))
 
+    # The base window above is a guess about dormancy, and dormancy is not a
+    # property of the sample: one AgentTesla binary sat quiet for between 21 and
+    # 83 seconds across six runs of the same file. The cap is what a sample
+    # sleeping out a short analysis -- five minutes is the common choice -- has
+    # to outlast before the run gives up on it.
+    adaptive_observation = bool(config.get("adaptive_observation", True))
+    max_observation_seconds = max(
+        int(config.get("max_observation_seconds", 600)), timeout_seconds
+    )
+    observation_extension_seconds = int(config.get("observation_extension_seconds", 30))
+
     run_profile = str(config.get("run_profile", "standard") or "standard").strip().lower()
     if run_profile not in {"quick", "standard", "deep"}:
         run_profile = "standard"
@@ -1214,6 +1307,23 @@ def run_dynamic_analysis(
 
     started_at = utc_now_iso()
     exit_code: int | None = None
+
+    # Pre-seeded so a run cancelled or failed before launch still describes its
+    # observation window rather than omitting the field entirely.
+    observation: dict[str, Any] = {
+        "exit_code": -1,
+        "sample_exited": False,
+        "elapsed_seconds": 0,
+        "base_window_seconds": timeout_seconds,
+        "window_seconds": timeout_seconds,
+        "max_observation_seconds": max_observation_seconds,
+        "adaptive_observation": adaptive_observation,
+        "adaptive_available": False,
+        "extensions": 0,
+        "extended": False,
+        "activity_observed": False,
+        "ended_because": "not observed",
+    }
 
     sample_info: dict[str, Any] = {}
     procmon_summary: dict[str, int] = {}
@@ -1426,11 +1536,20 @@ def run_dynamic_analysis(
         _raise_if_cancelled(cancel_event)
 
 
+        # The dump watcher is already tracking the sample's process tree, so it
+        # is the cheapest honest answer to "has this sample done anything yet".
+        # Without it -- not elevated, or procdump missing -- there is no probe,
+        # and the window stays fixed rather than extending on no evidence.
+        activity_probe = (
+            memory_session.activity_observed if memory_session is not None else None
+        )
+
         _emit(
             status_cb,
             f"Launching sample and observing for at least {minimum_observation_seconds} seconds "
             f"(post-exit observation: {post_exit_observation_seconds} seconds, "
-            f"installer mode: {installer_observation_mode}, timeout: {timeout_seconds} seconds)...",
+            f"installer mode: {installer_observation_mode}, base window: {timeout_seconds} seconds, "
+            f"adaptive: {'up to ' + str(max_observation_seconds) + 's' if (adaptive_observation and activity_probe) else 'unavailable'})...",
         )
 
         sample_launch_attempted = True
@@ -1443,17 +1562,34 @@ def run_dynamic_analysis(
             if memory_session is not None:
                 memory_session.set_root_pid(pid)
 
-        exit_code = run_sample(
+        observation = run_sample(
             sample_path,
             timeout_seconds,
             minimum_observation_seconds=minimum_observation_seconds,
             post_exit_observation_seconds=post_exit_observation_seconds,
             installer_observation_mode=installer_observation_mode,
+            adaptive_observation=adaptive_observation,
+            max_observation_seconds=max_observation_seconds,
+            observation_extension_seconds=observation_extension_seconds,
+            activity_probe=activity_probe,
             cancel_event=cancel_event,
             status_cb=status_cb,
             on_launch=_on_sample_launch,
         )
-        _emit(status_cb, f"Sample observation completed with exit code {exit_code}.")
+        exit_code = observation.get("exit_code")
+        _emit(
+            status_cb,
+            f"Sample observation completed with exit code {exit_code} after "
+            f"{observation.get('elapsed_seconds', 0)}s ({observation.get('ended_because', '')}).",
+        )
+        if observation.get("ended_because") == "extension_cap_reached":
+            _emit(
+                status_cb,
+                "WARNING: the sample was still running and had done nothing "
+                f"observable when the {max_observation_seconds}s cap was reached. "
+                "The findings below describe a sample that may simply not have "
+                "started yet.",
+            )
 
     except DynamicAnalysisCancelled as cancel_error:
         cancelled = True
@@ -1789,7 +1925,8 @@ def run_dynamic_analysis(
     elif timed_out:
         capture_quality["status"] = "timed_out"
         capture_quality["note"] = (
-            "Sample observation reached the configured timeout before the sample exited. "
+            f"Sample observation reached its {observation.get('window_seconds', timeout_seconds)}s "
+            f"window before the sample exited ({observation.get('ended_because', '')}). "
             "This can be normal for GUI applications that remain open."
         )
 
@@ -1834,6 +1971,10 @@ def run_dynamic_analysis(
         "minimum_observation_seconds": minimum_observation_seconds,
         "post_exit_observation_seconds": post_exit_observation_seconds,
         "installer_observation_mode": installer_observation_mode,
+        # How long the run actually watched, and why it stopped. Without this a
+        # report cannot distinguish a sample that did nothing from one that had
+        # not started yet.
+        "observation": observation,
         "sample": sample_info,
         "started_at_utc": started_at,
         "ended_at_utc": ended_at,

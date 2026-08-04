@@ -1005,6 +1005,48 @@ def _fakenet_dns_empty_text(summary: dict[str, Any]) -> str:
     )
 
 
+def _observation_window_section(summary: dict[str, Any]) -> str:
+    """Warn when the run stopped watching a sample that had not yet acted.
+
+    The window was fixed at 180 seconds while the same AgentTesla binary sat
+    dormant for between 21 and 83 seconds across six runs. Nothing said what
+    would happen at 200. A sample that sleeps out the window produces a report
+    identical to one that ran and did nothing -- and the second reading is the
+    one an analyst reaches for.
+
+    Silent when the window closed on a sample that had exited or had already
+    been seen to act: those runs observed what there was to observe.
+    """
+    observation = summary.get("observation", {}) or {}
+    ended_because = str(observation.get("ended_because", "") or "")
+    if ended_because != "extension_cap_reached":
+        return ""
+
+    elapsed = _to_int(observation.get("elapsed_seconds", 0))
+    base = _to_int(observation.get("base_window_seconds", 0))
+    cap = _to_int(observation.get("max_observation_seconds", 0))
+    extensions = _to_int(observation.get("extensions", 0))
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Observation May Be Incomplete</h2>
+        {_section_badge("Observed for", f"{elapsed}s")}
+      </div>
+      <p class="muted">
+        The sample was still running and had not been seen to spawn anything
+        when observation stopped at the {cap}s cap
+        (base window {base}s, extended {extensions} time(s)). Everything below
+        describes a sample that may simply not have started yet: a dormancy
+        longer than the cap, a sandbox-evasion sleep, or a wait on something the
+        contained guest never provided. Treat an empty result here as
+        unobserved rather than clean, and re-run with a longer
+        <code>max_observation_seconds</code> before concluding anything.
+      </p>
+    </section>
+    """
+
+
 def _fakenet_received_section(summary: dict[str, Any]) -> str:
     """Files the sample uploaded to the simulated internet.
 
@@ -1716,6 +1758,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
     body_html = f"""
 {_summary_tiles(summary)}
 {_containment_section(summary)}
+{_observation_window_section(summary)}
 
 <div class="grid">
   {_kv_table("Sample Metadata", sample)}

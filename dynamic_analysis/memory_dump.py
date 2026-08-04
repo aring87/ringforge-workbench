@@ -276,6 +276,21 @@ class MemoryDumpSession:
                     pass
         self._root_pid_event.set()
 
+    def activity_observed(self) -> bool:
+        """True once the sample has been seen to spawn something.
+
+        The observation window asks this to tell a sample that is still dormant
+        from one that has already acted. Sticky by construction: ``_known``
+        accumulates and is never pruned, so a child that has since exited still
+        counts. A probe that only looked at live children would report a
+        loader which spawned and collapsed as having done nothing, and the
+        window would then extend for the full cap waiting for behaviour that
+        had already happened.
+        """
+        with self._lock:
+            root = self._root_pid
+            return any(pid != root for pid in self._known)
+
     def stop(self, timeout: float = _DUMP_TIMEOUT_SECONDS + 30) -> dict[str, Any]:
         """Stop watching and return everything collected."""
         self._stop_event.set()

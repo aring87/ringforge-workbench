@@ -447,6 +447,21 @@ separately, since they bypass an IPv4-only redirect.
 - Telemetry coverage is stated explicitly. If Sysmon was not running, the
   report says so rather than reading as though no injection occurred.
 
+### The Observation Window
+
+The window follows the sample rather than a fixed number. One AgentTesla binary
+sat dormant for 21, 37, 38, 41, 44 and 83 seconds across six runs of the same
+file, so no fixed timeout is right twice.
+
+When the base window expires while the sample is **still running and has not
+been seen to spawn anything**, it is extended in steps up to a cap — the only
+case where waiting longer can change the result. A sample that has exited, or
+that has already acted, has given the run what it came for and is not extended.
+
+Reaching the cap while the sample is still silent is reported as
+**Observation May Be Incomplete**, because a sample that sleeps out the window
+and a sample that ran and did nothing otherwise produce identical reports.
+
 ### Files Received By The Simulated Internet
 
 FakeNet's listeners are real servers rooted at real directories, so a sample
