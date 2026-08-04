@@ -843,6 +843,112 @@ def summarize_memory_dumps(dump_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _sysmon_process_creates(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ProcessCreate records, normalised to what the reconciliation needs."""
+    creates: list[dict[str, Any]] = []
+    for event in events or []:
+        if event.get("event_id") != 1:
+            continue
+        data = event.get("data", {}) or {}
+        pid = _safe_pid(data.get("ProcessId"))
+        if pid is None:
+            continue
+        creates.append(
+            {
+                "pid": pid,
+                "parent_pid": _safe_pid(data.get("ParentProcessId")),
+                "image": str(data.get("Image", "") or ""),
+                "parent_image": str(data.get("ParentImage", "") or ""),
+                "command_line": str(data.get("CommandLine", "") or ""),
+                "timestamp": str(event.get("timestamp", "") or ""),
+            }
+        )
+    return creates
+
+
+def _safe_pid(value: object) -> Optional[int]:
+    try:
+        pid = int(str(value).strip())
+    except Exception:
+        return None
+    return pid if pid > 0 else None
+
+
+def _image_name(value: object) -> str:
+    return str(value or "").replace("/", "\\").rsplit("\\", 1)[-1].lower()
+
+
+def reconcile_with_sysmon(
+    dump_result: dict[str, Any],
+    sysmon_events: list[dict[str, Any]],
+    sample_pid: int | None = None,
+    sample_name: str = "",
+) -> list[dict[str, Any]]:
+    """Descendants Sysmon recorded that the watcher never saw.
+
+    The watcher walks the process tree twice a second, so a child has to
+    outlive one interval to be noticed at all. One AgentTesla sample created
+    two copies of itself seven milliseconds apart: the second was dumped with
+    three rules matching, the first was never observed, and nothing in the run
+    said it had existed.
+
+    Sysmon's ProcessCreate is a kernel callback and misses nothing, so the
+    difference between its tree and the watcher's is precisely what the poll
+    dropped.
+
+    Reported, never dumped. A process that lived milliseconds is gone long
+    before ProcDump could attach, and no poll interval fixes that -- shortening
+    it only moves the threshold. What this fixes is a payload staged in a
+    process nobody knew had run, which is the same failure the spawn trigger
+    was built for one level down.
+    """
+    creates = _sysmon_process_creates(sysmon_events)
+    if not creates:
+        return []
+
+    sample_image = _image_name(sample_name)
+
+    # Seed the same way the findings lineage does: the launched PID, plus any
+    # process running the sample's own image, because a dropper relaunching
+    # itself is the shape this exists for.
+    descendants: set[int] = set()
+    if sample_pid:
+        descendants.add(int(sample_pid))
+    if sample_image:
+        for create in creates:
+            if _image_name(create["image"]) == sample_image:
+                descendants.add(create["pid"])
+
+    if not descendants:
+        return []
+
+    changed = True
+    while changed:
+        changed = False
+        for create in creates:
+            parent = create["parent_pid"]
+            if parent in descendants and create["pid"] not in descendants:
+                descendants.add(create["pid"])
+                changed = True
+
+    observed = {
+        _safe_pid(p.get("pid"))
+        for p in (dump_result.get("observed_processes", []) or [])
+    }
+    observed.discard(None)
+
+    missed: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for create in creates:
+        pid = create["pid"]
+        if pid in observed or pid in seen or pid not in descendants:
+            continue
+        seen.add(pid)
+        missed.append(create)
+
+    return missed
+
+
 def dump_paths(dump_result: dict[str, Any]) -> list[Path]:
     """Paths of the dumps that were actually written."""
     dumps = dump_result.get("dumps", []) if isinstance(dump_result, dict) else []

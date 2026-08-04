@@ -1140,6 +1140,42 @@ def _memory_sections(summary: dict[str, Any]) -> str:
     </section>
     """)
 
+    # Sysmon saw the whole tree; the watcher saw what it could catch at two
+    # polls a second. Anything in the gap ran and was never examined.
+    missed = memory.get("missed_descendants", []) or []
+    if missed:
+        rows = [
+            {
+                "pid": record.get("pid"),
+                "image": record.get("image", ""),
+                "parent_pid": record.get("parent_pid"),
+                "first_seen": record.get("timestamp", ""),
+            }
+            for record in missed
+        ]
+        sections.append(f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Descended From The Sample But Never Dumped</h2>
+        {_section_badge("Processes", len(rows))}
+      </div>
+      <p class="muted">
+        Sysmon recorded these as descendants of the sample. The dump watcher
+        polls the process tree twice a second, so a process has to outlive one
+        interval to be seen at all -- these did not, and no memory of them was
+        captured. Shortening the interval only moves the threshold; a process
+        that lives milliseconds cannot be dumped by anything that polls.
+      </p>
+      <p class="muted">
+        Worth reading rather than ignoring. A payload staged into a process
+        this short-lived leaves no dump and no YARA result, so the run's memory
+        evidence is silent about whatever ran here. The command line below is
+        Sysmon's, and it is the only record of it.
+      </p>
+      {_dict_list_table("Missed Descendants", rows)}
+    </section>
+    """)
+
     if memory.get("skipped"):
         sections.append(
             _dict_list_table("Processes Not Dumped", memory.get("skipped", []) or [])

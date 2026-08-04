@@ -33,6 +33,7 @@ from dynamic_analysis.memory_dump import (
     MemoryDumpSession,
     memory_dump_status,
     successful_dumps,
+    reconcile_with_sysmon,
     summarize_memory_dumps,
 )
 from dynamic_analysis.memory_yara import (
@@ -1566,6 +1567,30 @@ def run_dynamic_analysis(
             except Exception as error:
                 sysmon_status_result = {"success": False, "error": str(error)}
                 _emit(status_cb, f"Sysmon collection warning: {error}")
+
+        # Sysmon's process tree is a kernel callback and misses nothing; the
+        # dump watcher polls twice a second and misses whatever does not
+        # outlive an interval. Comparing them is the only way a process that
+        # lived milliseconds gets mentioned at all -- it cannot be dumped, but
+        # it can stop being invisible.
+        if memory_summary and sysmon_events:
+            try:
+                missed = reconcile_with_sysmon(
+                    memory_dump_result,
+                    sysmon_events,
+                    sample_pid=sample_pid_seen.get("pid"),
+                    sample_name=sample_path.name,
+                )
+                memory_summary["missed_descendants"] = missed
+                memory_summary.setdefault("counts", {})["missed_descendants"] = len(missed)
+                for record in missed:
+                    _emit(
+                        status_cb,
+                        f"Sysmon saw pid {record['pid']} descend from the sample, "
+                        "but it exited before the watcher could dump it.",
+                    )
+            except Exception as error:
+                _emit(status_cb, f"Memory/Sysmon reconciliation warning: {error}")
 
         if cancelled:
             _emit(status_cb, "Skipping after snapshots and Procmon export because run was cancelled.")
