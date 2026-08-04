@@ -546,6 +546,36 @@ def _spawned_empty_text(findings: dict[str, Any]) -> str:
     return "No spawned processes descended from the sample."
 
 
+def _background_network_section(findings: dict[str, Any]) -> str:
+    """Connections made during the window by processes that were not the sample.
+
+    Once FakeNet could actually intercept, every resident service on the guest
+    began reaching the simulated internet -- svchost, Defender, OneDrive,
+    Copilot -- and each one counted as the sample's network activity. Judged by
+    lineage now, the same as process creates, and reported here rather than
+    dropped for the same reason.
+    """
+    rows = findings.get("background_network_processes", []) or []
+    if not rows:
+        return ""
+
+    return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Background Network Activity (context, not findings)</h2>
+        <span class="badge sev-none">Count: {_esc(sum(int(r.get("count", 0) or 0) for r in rows))}</span>
+      </div>
+      <p class="muted">
+        These connected during the observation window but did not descend from
+        the sample, so they are not counted or scored. A simulated internet
+        answers everything, so every service that would normally fail to reach
+        the network now succeeds against it.
+      </p>
+      {_dict_list_table("", rows)}
+    </section>
+    """
+
+
 def _background_processes_section(findings: dict[str, Any]) -> str:
     """Process creates that ran during the window but not from the sample.
 
@@ -1669,6 +1699,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_autoruns_analyzer_section(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}
 {_dict_list_table("Top Network Processes", findings.get("top_network_processes", []))}
+{_background_network_section(findings)}
 {_spawned_processes_table("Spawned Processes", findings.get("spawned_processes", []), empty_text=_spawned_empty_text(findings))}
 {_background_processes_section(findings)}
 {_event_hits_table("Suspicious Path Hits", findings.get("suspicious_path_hits", []), emphasize=True, empty_text="No suspicious path hits were identified.")}

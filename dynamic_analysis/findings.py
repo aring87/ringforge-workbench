@@ -655,8 +655,13 @@ def _mark_sample_lineage(
     records: list[dict[str, Any]],
     sample_pid: int | None = None,
     sample_name: str = "",
-) -> bool:
-    """Mark process creates descending from the sample. True if lineage resolved.
+) -> set[int] | None:
+    """Mark process creates descending from the sample.
+
+    Returns the descendant PIDs, or None when the sample could not be
+    identified. The set is returned rather than a flag because network events
+    need the same answer and are judged after this runs -- a connection is the
+    sample's for exactly the same reason a process create is.
 
     Filtering background activity by name does not converge. Two runs of the
     same control reported entirely different sets -- one caught a Group Policy
@@ -695,7 +700,7 @@ def _mark_sample_lineage(
                 descendant_pids.add(int(parent_pid))
 
     if not descendant_pids:
-        return False
+        return None
 
     # Fixed point for the same reason the analyzer sweep needs one: a
     # grandchild can be recorded before the child that connects it.
@@ -713,7 +718,7 @@ def _mark_sample_lineage(
                     descendant_pids.add(child_pid)
                 changed = True
 
-    return True
+    return descendant_pids
 
 
 def _is_independently_notable(record: dict[str, Any]) -> bool:
@@ -925,6 +930,8 @@ def summarize_dynamic_findings(
 
     write_counter: Counter[str] = Counter()
     network_counter: Counter[str] = Counter()
+    background_network_counter: Counter[str] = Counter()
+    network_records: list[dict[str, Any]] = []
 
     process_creates: list[dict[str, Any]] = []
     background_processes: list[dict[str, Any]] = []
@@ -982,8 +989,14 @@ def summarize_dynamic_findings(
 
         if "tcp connect" in operation or ("network" in operation and "connect" in operation):
             if process_name and not is_noise_proc and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
-                network_counter[process_name] += 1
-                network_event_count += 1
+                # Collected with its PID and judged after the loop, for the
+                # same reason process creates are: lineage cannot be resolved
+                # one event at a time. A connection from svchost or Defender is
+                # the machine's, not the sample's, and naming every such
+                # process is the approach that already failed for spawns.
+                network_records.append(
+                    {"process_name": process_name, "pid": _event_pid(event)}
+                )
 
         if _is_high_signal_write(path, operation):
             if path and not is_noise_path and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
@@ -1033,9 +1046,26 @@ def summarize_dynamic_findings(
 
     _propagate_analyzer_lineage(process_create_records, sample_pid=sample_pid, sample_name=sample_name)
 
-    lineage_resolved = _mark_sample_lineage(
+    descendant_pids = _mark_sample_lineage(
         process_create_records, sample_pid=sample_pid, sample_name=sample_name
     )
+    lineage_resolved = descendant_pids is not None
+
+    # Network connections judged the same way. Without this, an AgentTesla run
+    # counted svchost and MpDefenderCoreService among the sample's network
+    # events -- once FakeNet could intercept, every resident service started
+    # reaching the simulated internet and reading as the sample's traffic.
+    #
+    # Unresolved lineage counts everything, as it does for process creates:
+    # "we could not tell whose connection this was" must not silently empty the
+    # network findings.
+    for record in network_records:
+        pid = record.get("pid")
+        if lineage_resolved and pid not in descendant_pids:
+            background_network_counter[record["process_name"]] += 1
+            continue
+        network_counter[record["process_name"]] += 1
+        network_event_count += 1
 
     # Exclude RingForge helper tools and their descendants, known OS noise, and
     # normal Windows packaged-app helper behavior from the sample's findings.
@@ -1075,6 +1105,12 @@ def summarize_dynamic_findings(
 
     findings["top_written_paths"] = [{"path": path, "count": count} for path, count in write_counter.most_common(10)]
     findings["top_network_processes"] = [{"process_name": process_name, "count": count} for process_name, count in network_counter.most_common(10)]
+    # Context, like the background process creates: these connected during the
+    # window but not from the sample, so they are reported and not scored.
+    findings["background_network_processes"] = [
+        {"process_name": process_name, "count": count}
+        for process_name, count in background_network_counter.most_common(10)
+    ]
     findings["spawned_processes"] = process_creates[:25]
     findings["background_processes"] = background_processes[:25]
     # Distinguishes "nothing ran that the sample did not cause" from "we could
@@ -1087,6 +1123,7 @@ def summarize_dynamic_findings(
         "interesting_events": len(interesting_events),
         "process_creates": process_create_count,
         "background_processes": len(background_processes),
+        "background_network_events": sum(background_network_counter.values()),
         "network_events": network_event_count,
         "file_write_events": file_write_event_count,
         "suspicious_path_hits": len(suspicious_path_hits),
