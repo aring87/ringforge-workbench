@@ -47,6 +47,14 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 - **Hard power-offs corrupt git refs occasionally.** `-Take` powers the VM off
   hard by design. A broken `ORIG_HEAD` showed up once; deleting the file fixes
   it, and `git fsck` confirmed no other damage. The guest clone is disposable.
+- **Two guest settings are load-bearing and neither is a default.** Sysmon
+  Event 25 (`ProcessTampering`) is commented out in SwiftOnSecurity's config,
+  and Windows Error Reporting writes no memory image unless `LocalDumps` is
+  configured. Without the first, process hollowing is invisible; without the
+  second, a process that crashes leaves metadata and nothing else.
+  `bootstrap_tools.ps1` now applies both, so a rebuilt VM comes up correct —
+  before that they lived only in the baseline snapshot, and re-running the
+  bootstrap would have silently reverted them.
 - **A wedged VirtualBox session needs VBoxSVC restarted, and that takes every
   other VM with it.** VBoxManage returns when a state change is *queued*, not
   done. Issuing anything while the VM is in a transient state — `restoringsnapshot`
@@ -75,6 +83,21 @@ Persistence hits, dropped files and process injection are still `0` on every
 run. They may work. So might the analyzer-attribution filter have, until a
 sample proved otherwise — that bug had been silently costing findings on
 **every run ever performed**, and was only found because a sample exercised it.
+
+**Injection's zero was partly the detector, not the samples.** Formbook hollowed
+`RegSvcs.exe` and the category stayed silent, because Sysmon Event 8 is
+`CreateRemoteThread` and hollowing does not use it —
+`NtUnmapViewOfSection`, `WriteProcessMemory` and `SetThreadContext` raise
+nothing. Two detectors were added rather than one, since either can be absent:
+
+- Sysmon **Event 25** (`ProcessTampering`), the purpose-built hollowing event,
+  now enabled by `bootstrap_tools.ps1`.
+- **Application Error 1000 with a faulting module of `unknown`**, which means
+  the fault address belongs to no loaded image — the process was executing
+  privately allocated memory. Windows already logs it; the pipeline was
+  discarding it.
+
+Neither has fired on a run yet. The next Formbook detonation tests both.
 
 The Formbook run did not reach them: it spawned `RegSvcs.exe`, the .NET
 hollowing target, and `RegSvcs` faulted (two `WerFault.exe -u -p 1404`, plus a

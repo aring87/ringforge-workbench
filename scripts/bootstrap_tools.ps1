@@ -5,10 +5,12 @@
 .DESCRIPTION
   Sets up the tools that close the gaps Procmon cannot see:
 
-    Sysmon        process injection, image loads, WMI persistence, DNS queries
+    Sysmon        process injection, hollowing, image loads, WMI, DNS queries
     Wireshark     dumpcap + tshark, and the Npcap driver, for full packet capture
     FakeNet-NG    a simulated internet so samples proceed through their real logic
     ProcDump      process memory images, for scanning what a packer unpacked
+    Crash dumps   a full image of any process that faults, which is the only
+                  way to capture one that dies between dump offsets
 
   Scanning those images also needs YARA rules, which this script does not
   install. Run scripts\bootstrap_yara_rules.ps1 for those.
@@ -40,7 +42,14 @@
 
 .PARAMETER SysmonConfigUrl
   Sysmon configuration to install. Defaults to the SwiftOnSecurity config, which
-  is a well-tested general-purpose baseline.
+  is a well-tested general-purpose baseline. ProcessTampering (Event 25) is
+  switched on afterwards -- the shipped config leaves it commented out, and
+  without it process hollowing is invisible.
+
+.PARAMETER CrashDumpFolder
+  Where Windows writes a full memory dump when a process crashes. Configured
+  alongside ProcDump, because a process that lives less time than the gap
+  between dump offsets can only be captured at the fault.
 
 .PARAMETER AddExclusions
   Exclude the tools and temp directories from Defender before downloading.
@@ -83,6 +92,7 @@ param(
   [switch]$SkipUpx,
   [switch]$SkipScriptBlockLogging,
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
+  [string]$CrashDumpFolder = "C:\werdumps",
   [string]$FakeNetRepo = "mandiant/flare-fakenet-ng",
   [string]$UpxRepo = "upx/upx",
   [switch]$AddExclusions,
@@ -242,6 +252,7 @@ function Install-Sysmon {
   try {
     Invoke-WebRequest -Uri $ConfigUrl -OutFile $configPath
     Write-Ok "Config: $configPath"
+    Enable-ProcessTampering -ConfigPath $configPath
   } catch {
     Write-Warn "Could not download the Sysmon config: $($_.Exception.Message)"
     Write-Warn "Installing with the built-in default config instead (noisier, fewer events)."
@@ -273,6 +284,105 @@ function Install-Sysmon {
     Write-Ok "Sysmon service is running."
   } else {
     Write-Warn "Sysmon service state is '$state'. Injection and WMI telemetry will be unavailable."
+  }
+}
+
+function Enable-ProcessTampering {
+  <#
+    .SYNOPSIS
+      Switch on Sysmon Event 25 in a downloaded configuration.
+
+    .DESCRIPTION
+      SwiftOnSecurity's config ships ProcessTampering commented out, so a
+      freshly bootstrapped VM cannot see process hollowing at all. That is not
+      a small gap: Sysmon's other injection event is Event 8,
+      CreateRemoteThread, and hollowing does not use it -- NtUnmapViewOfSection,
+      WriteProcessMemory and SetThreadContext raise nothing.
+
+      A Formbook sample hollowed RegSvcs.exe on this workbench and the run
+      reported injection_events: 0. The technique was invisible, and the empty
+      result looked exactly like a sample that had not injected.
+
+      Enabled here rather than by hand because this function overwrites the
+      config on every run: a change made in the guest survives only until the
+      next bootstrap, and would then vanish with nothing to say it had gone.
+
+      The tooling is excluded. ProcDump suspends and reads process memory,
+      which is the behaviour the event exists to catch.
+  #>
+  param([string]$ConfigPath)
+
+  if (-not (Test-Path $ConfigPath)) { return }
+
+  $xml = Get-Content $ConfigPath -Raw
+
+  # Comments are stripped before testing. The shipped config *documents*
+  # ProcessTampering in a commented-out example, so a plain text match finds it
+  # and concludes there is nothing to do -- which is exactly what happened the
+  # first time this was done by hand.
+  $stripped = [regex]::Replace($xml, '(?s)<!--.*?-->', '')
+  if ($stripped -match '<ProcessTampering') {
+    Write-Info "Sysmon config already enables ProcessTampering (Event 25)."
+    return
+  }
+
+  if ($xml -notmatch '</EventFiltering>') {
+    Write-Warn "Sysmon config has no </EventFiltering>; leaving Event 25 disabled."
+    return
+  }
+
+  $block = @'
+  <RuleGroup name="" groupRelation="or">
+    <ProcessTampering onmatch="exclude">
+      <Image condition="image">Sysmon64.exe</Image>
+      <Image condition="image">procdump64.exe</Image>
+    </ProcessTampering>
+  </RuleGroup>
+</EventFiltering>
+'@
+
+  try {
+    Set-Content -LiteralPath $ConfigPath -Value $xml.Replace('</EventFiltering>', $block) -Encoding utf8
+    Write-Ok "Enabled ProcessTampering (Event 25) for process-hollowing detection."
+  } catch {
+    Write-Warn "Could not enable ProcessTampering: $($_.Exception.Message)"
+  }
+}
+
+function Enable-CrashDumps {
+  <#
+    .SYNOPSIS
+      Make Windows write a full memory dump when any process crashes.
+
+    .DESCRIPTION
+      The dump watcher works on a schedule, and a hollowed process that lives
+      four seconds falls between offsets. Two Formbook runs produced nine dumps
+      between them and no image of RegSvcs.exe after the payload was written
+      into it -- while Windows was logging the crash and discarding the memory,
+      because local dumps are off by default and only Report.wer gets written.
+
+      A crash dump is taken at the one moment worth having: after the payload
+      was written and while it was executing.
+
+      Machine-wide and correct only for a disposable analysis VM. DumpCount
+      bounds retention; DumpType 2 is full memory, and a minidump may omit the
+      injected region, which is the whole point of collecting it.
+  #>
+  param([string]$DumpFolder = "C:\werdumps", [int]$DumpCount = 20)
+
+  Write-Step "Crash dumps"
+
+  $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+  try {
+    New-Item -Path $key -Force | Out-Null
+    New-ItemProperty -Path $key -Name "DumpFolder" -PropertyType ExpandString -Value $DumpFolder -Force | Out-Null
+    New-ItemProperty -Path $key -Name "DumpType" -PropertyType DWord -Value 2 -Force | Out-Null
+    New-ItemProperty -Path $key -Name "DumpCount" -PropertyType DWord -Value $DumpCount -Force | Out-Null
+    New-Item -ItemType Directory -Path $DumpFolder -Force | Out-Null
+    Write-Ok "Full crash dumps will be written to $DumpFolder (keeping $DumpCount)."
+  } catch {
+    Write-Warn "Could not configure crash dumps: $($_.Exception.Message)"
+    Write-Warn "A crashing payload will leave metadata and no memory image."
   }
 }
 
@@ -762,6 +872,11 @@ try {
 
   if (-not $SkipProcDump)  { Install-ProcDump -ToolsDir $toolsDir -TempDir $tempDir }
   else                     { Write-Step "ProcDump"; Write-Warn "Skipped by request." }
+
+  # Paired with the dump watcher rather than optional alongside it: the watcher
+  # cannot capture a process that lives less time than the gap between its
+  # offsets, and a crash dump is taken at exactly that moment.
+  if (-not $SkipProcDump)  { Enable-CrashDumps -DumpFolder $CrashDumpFolder }
 
   if (-not $SkipUpx)       { Install-Upx -ToolsDir $toolsDir -TempDir $tempDir -Repo $UpxRepo }
   else                     { Write-Step "UPX"; Write-Warn "Skipped by request." }
