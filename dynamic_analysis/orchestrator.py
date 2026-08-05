@@ -1095,6 +1095,7 @@ def _evidence_categories(
     memory_only_rules: list[Any],
     sysmon_injections: int,
     unmapped_memory_crashes: int,
+    hollowing_target_crashes: int,
     sysmon_high: int,
     suspicious_tasks: int,
     suspicious_services: int,
@@ -1146,17 +1147,34 @@ def _evidence_categories(
             # A crash whose faulting module is unknown says code was executing
             # where no image is mapped. That is the same claim by a different
             # route, and it costs nothing: Windows already logged it.
+            #
+            # Only *strong* when the process is one loaders hollow, though.
+            # In a managed process, JIT-compiled code also lives in private
+            # allocations with no module mapped, so an ordinary .NET
+            # application faulting in its own JITted code produces the same
+            # record. The identity of the process is what separates them:
+            # nothing legitimate starts RegSvcs.exe and has it fault in
+            # anonymous memory.
             "present": (sysmon_injections > 0 or unmapped_memory_crashes > 0),
-            "strong": (sysmon_injections >= 2 or unmapped_memory_crashes > 0),
+            "strong": (sysmon_injections >= 2 or hollowing_target_crashes > 0),
             "detail": (
                 f"{sysmon_injections} injection event(s), "
-                f"{unmapped_memory_crashes} crash(es) in unmapped memory"
+                f"{unmapped_memory_crashes} crash(es) in unmapped memory "
+                f"({hollowing_target_crashes} in a process loaders hollow)"
             ),
             "reason": (
-                "A process in the sample's tree faulted at an address with no "
-                "module mapped there, so it was executing injected code."
-                if unmapped_memory_crashes
-                else "Sysmon recorded process injection (CreateRemoteThread)."
+                "A binary loaders commonly hollow, started by the sample, "
+                "faulted at an address with no module mapped there -- it was "
+                "executing injected code."
+                if hollowing_target_crashes
+                else (
+                    "A process in the sample's tree faulted at an address with "
+                    "no module mapped there. In a managed process that can also "
+                    "be JIT-compiled code, so this is reported without being "
+                    "treated as decisive on its own."
+                    if unmapped_memory_crashes
+                    else "Sysmon recorded process injection (CreateRemoteThread)."
+                )
             ),
         },
         {
@@ -1343,6 +1361,9 @@ def calculate_dynamic_score(
     unmapped_memory_crashes = int(
         (crashes.get("counts", {}) or {}).get("crashes_in_unmapped_memory", 0) or 0
     )
+    hollowing_target_crashes = int(
+        (crashes.get("counts", {}) or {}).get("crashes_in_hollowing_target", 0) or 0
+    )
 
     # --- Context: how busy the run was ------------------------------------
     #
@@ -1370,6 +1391,7 @@ def calculate_dynamic_score(
         memory_only_rules=memory_only_rules,
         sysmon_injections=sysmon_injections,
         unmapped_memory_crashes=unmapped_memory_crashes,
+        hollowing_target_crashes=hollowing_target_crashes,
         sysmon_high=sysmon_high,
         suspicious_tasks=suspicious_tasks,
         suspicious_services=suspicious_services,
@@ -1456,8 +1478,9 @@ def calculate_dynamic_score(
             "band a single unexplained observation belongs in.",
             "A category counts as strong when it is emphatic in its own right: "
             f"{STRONG_MEMORY_ONLY_RULES}+ distinct rules matching memory but not "
-            "disk, a connection to a non-standard port, repeat injection. One "
-            "strong category, or two of any kind, reaches High.",
+            "disk, a connection to a non-standard port, repeat injection, or a "
+            "crash inside a binary loaders hollow. One strong category, or two "
+            "of any kind, reaches High.",
             "Three agreeing categories, or two strong ones, is Likely Malicious. "
             "Nothing a legitimate installer does produces that combination.",
             "Absence of a category means it was not observed, which is not the "

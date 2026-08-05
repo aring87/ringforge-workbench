@@ -49,6 +49,7 @@ def _score(**kwargs):
         fakenet_summary={},
         memory_yara_summary={},
         powershell_summary={},
+        crash_summary={},
     )
     base.update(kwargs)
     return calculate_dynamic_score(**base)
@@ -420,6 +421,47 @@ class CorroborationTests(unittest.TestCase):
             once["evidence_counts"]["categories_present"],
             many["evidence_counts"]["categories_present"],
         )
+
+    def test_a_crash_in_a_hollowing_target_is_strong(self) -> None:
+        # The Formbook run: RegSvcs.exe, started by the sample, faulting at an
+        # address with no module mapped. Sysmon saw no injection at all,
+        # because Event 8 is CreateRemoteThread and hollowing does not use it.
+        result = _score(
+            crash_summary={
+                "counts": {
+                    "crashes": 1,
+                    "crashes_in_unmapped_memory": 1,
+                    "crashes_in_hollowing_target": 1,
+                }
+            },
+        )
+        injection = next(
+            c for c in result["evidence_categories"] if c["name"] == "process_injection"
+        )
+
+        self.assertTrue(injection["strong"])
+        self.assertEqual(result["severity"], "High")
+
+    def test_a_managed_app_crashing_in_jit_is_present_but_not_strong(self) -> None:
+        # JIT-compiled code has no module mapped either, so an ordinary .NET
+        # program faulting in its own code produces the same record. Reported,
+        # because it might be injection; not decisive, because it might not be.
+        result = _score(
+            crash_summary={
+                "counts": {
+                    "crashes": 1,
+                    "crashes_in_unmapped_memory": 1,
+                    "crashes_in_hollowing_target": 0,
+                }
+            },
+        )
+        injection = next(
+            c for c in result["evidence_categories"] if c["name"] == "process_injection"
+        )
+
+        self.assertTrue(injection["present"])
+        self.assertFalse(injection["strong"])
+        self.assertEqual(result["severity"], "Medium")
 
     def test_suspicious_powershell_is_a_category(self) -> None:
         # One of the paths that has never fired on real malware. It scores when

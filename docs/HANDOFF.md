@@ -105,7 +105,22 @@ nothing. Two detectors were added rather than one, since either can be absent:
   privately allocated memory. Windows already logs it; the pipeline was
   discarding it.
 
-Neither has fired on a run yet. The next Formbook detonation tests both.
+**Event 25 did not fire; the crash signal carried the finding alone.** On the
+05 Aug run Sysmon logged `ProcessCreate`, `RegistrySetValue`, `FileCreate`,
+`DnsQuery`, `DriverLoad`, `ProcessTerminate` and `CreateRemoteThread` — no
+`ProcessTampering`, despite being enabled and confirmed active in the live
+config. So the purpose-built hollowing detector misses this technique. Building
+both was what made the difference.
+
+**`unknown` is weaker than it looks, and the rule is narrowed accordingly.**
+JIT-compiled code also lives in private allocations with no module mapped, so
+an ordinary .NET application faulting in its own JITted code produces the same
+Application Error. The fault in the RegSvcs crash was at `0x011b2c7c`, outside
+the 57 KB payload image carved from the dump, so it may well have been JITted
+code from the injected assembly. The category is `present` for any such crash
+and `strong` only when the process is one loaders hollow — `RegSvcs`, `RegAsm`,
+`InstallUtil`, `MSBuild` and friends. Nothing legitimate starts `RegSvcs.exe`
+and has it fault in anonymous memory.
 
 The Formbook run did not reach them: it spawned `RegSvcs.exe`, the .NET
 hollowing target, and `RegSvcs` faulted (two `WerFault.exe -u -p 1404`, plus a
@@ -400,8 +415,30 @@ Kept for comparison against a run where the chain completes.
 | Chain | sample → `powershell.exe Add-MpPreference -ExclusionPath <self>` → `RegSvcs.exe` |
 | Outcome | `RegSvcs` faulted: 2× `WerFault -u -p 1404`, plus a second `RegSvcs` that exited before it could be dumped |
 | Memory YARA | 0 matches across 6 dumps — the payload never unpacked |
-| Score | 35 · Needs Review / Medium, on `scripted_execution` alone |
-| Dormancy | PowerShell and `RegSvcs` at +20 to +24s; sample exits immediately after |
+| Score | 70 · Elevated Attention / High, on `process_injection` (strong) + `scripted_execution` |
+| Dormancy | +20s, +24s and +42s across three runs — it moves, so fixed offsets keep missing it |
+| Payload | .NET EXE, 57,344 bytes, compiled 2025-06-18, carved from the crash dump at offset `0x4a6a7` |
+
+**The payload was recovered on 05 Aug**, from the WER crash dump rather than any
+scheduled dump. A foreign x86 .NET assembly is mapped inside `RegSvcs.exe`
+alongside the real image — RegSvcs's own header carries timestamp `0x5ff2b99b`,
+matching what the Application Error reported, and the second one carries a 2025
+timestamp. That is process hollowing confirmed independently of any detector.
+
+**It has no plaintext indicators at all.** 428 strings in the payload region:
+no URLs, no domains, no IPs, no credential or wallet paths, no persistence
+strings, no family markers. A 56 KB obfuscated .NET stage-2 with its config in
+a 2,380-byte `.rsrc` blob. That is why YARA matched nothing across nine images
+while the UPX control passes — there is no plaintext for a signature to key on.
+
+**And it explains three runs of empty findings.** The chain dies at stage 2:
+the loader hollows `RegSvcs`, stage-2 starts, and it faults before decrypting
+stage 3. There was never going to be a C2 connection, a Run key or a dropped
+file. Persistence and dropped-files staying at `0` is a property of this
+sample, not a gap in the pipeline.
+
+**"Formbook" is unverified.** It is MalwareBazaar's label; no artifact from any
+run attributes a family.
 
 **The crash is deterministic.** Two runs on 04 and 05 Aug produced the same
 chain and the same failure at the same point — `RegSvcs` faulting four to eleven

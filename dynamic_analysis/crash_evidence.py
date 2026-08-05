@@ -76,6 +76,29 @@ _FIELD_ORDER = (
 #: image. Windows writes "unknown"; some builds leave it empty.
 _UNMAPPED_MODULE_VALUES = {"", "unknown"}
 
+#: Signed Microsoft binaries that loaders hollow, because they are present on
+#: every machine, run without arguments, and attract no attention.
+#:
+#: The distinction matters because "faulting module: unknown" is weaker than it
+#: first appears. In a *managed* process, JIT-compiled code also lives in
+#: private allocations with no module mapped, so an ordinary .NET application
+#: that faults in its own JITted code produces the same record as one running
+#: injected code. A crash in one of these, spawned by the sample, is a
+#: different claim: nothing legitimate starts RegSvcs.exe and has it fault in
+#: anonymous memory.
+HOLLOWING_TARGETS = {
+    "regsvcs.exe", "regasm.exe", "installutil.exe", "msbuild.exe",
+    "aspnet_compiler.exe", "addinprocess.exe", "addinprocess32.exe",
+    "addinutil.exe", "ngen.exe", "jsc.exe", "csc.exe", "vbc.exe",
+    "cvtres.exe", "ilasm.exe", "regsvr32.exe", "rundll32.exe",
+    "svchost.exe", "explorer.exe", "wuauclt.exe", "notepad.exe",
+}
+
+
+def is_hollowing_target(image_name: object) -> bool:
+    """True for a binary loaders commonly hollow."""
+    return _image_name(image_name) in HOLLOWING_TARGETS
+
 #: Registry location that makes Windows write a dump on every crash.
 _LOCAL_DUMPS_KEY = (
     r"HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
@@ -194,6 +217,7 @@ def summarize_crashes(
         crashes.append(record)
 
     unmapped = [c for c in crashes if c["executed_from_unmapped_memory"]]
+    in_target = [c for c in unmapped if is_hollowing_target(c.get("app_name"))]
 
     return {
         "collected": True,
@@ -202,6 +226,11 @@ def summarize_crashes(
         "counts": {
             "crashes": len(crashes),
             "crashes_in_unmapped_memory": len(unmapped),
+            # The subset that is emphatic rather than merely unexplained. See
+            # HOLLOWING_TARGETS: a managed process faulting in JITted code
+            # looks identical to one faulting in injected code, so the identity
+            # of the process is what separates them.
+            "crashes_in_hollowing_target": len(in_target),
             "other_process_crashes_excluded": other,
         },
         "crashes": crashes[:50],
@@ -215,6 +244,7 @@ def summarize_crashes(
                 "fault_offset": c["fault_offset"],
                 "path": c["app_path"],
                 "timestamp": c["timestamp"],
+                "hollowing_target": is_hollowing_target(c.get("app_name")),
             }
             for c in unmapped[:20]
         ],
@@ -229,6 +259,7 @@ def empty_crash_summary(note: str = "") -> dict[str, Any]:
         "counts": {
             "crashes": 0,
             "crashes_in_unmapped_memory": 0,
+            "crashes_in_hollowing_target": 0,
             "other_process_crashes_excluded": 0,
         },
         "crashes": [],

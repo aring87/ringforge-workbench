@@ -27,6 +27,7 @@ was unreachable.
 import unittest
 
 from dynamic_analysis.crash_evidence import (
+    is_hollowing_target,
     parse_crash_event,
     summarize_crashes,
 )
@@ -117,6 +118,47 @@ class UnmappedMemoryTests(unittest.TestCase):
         self.assertEqual(
             summary["unmapped_memory_crashes"][0]["process"], "RegSvcs.exe"
         )
+
+
+class HollowingTargetTests(unittest.TestCase):
+    """`unknown` is weaker than it looks in a managed process.
+
+    JIT-compiled code lives in private allocations with no module mapped, so an
+    ordinary .NET application faulting in its own JITted code produces exactly
+    the same Application Error as one running injected code. The RegSvcs crash
+    that proved this technique faulted at 0x011b2c7c -- outside the 57 KB
+    payload image carved from the dump -- so it may well have been JITted code
+    from the injected assembly rather than the assembly itself.
+
+    That does not make the finding wrong; it makes the *reason* narrower. What
+    separates the two is which process it was. Nothing legitimate starts
+    RegSvcs.exe and has it fault in anonymous memory.
+    """
+
+    def test_a_hollowing_target_is_recognised(self) -> None:
+        self.assertTrue(is_hollowing_target("RegSvcs.exe"))
+        self.assertTrue(is_hollowing_target("MSBuild.exe"))
+        self.assertTrue(is_hollowing_target(r"C:\Windows\...\InstallUtil.exe"))
+
+    def test_an_ordinary_managed_application_is_not(self) -> None:
+        self.assertFalse(is_hollowing_target("MyLineOfBusinessApp.exe"))
+        self.assertFalse(is_hollowing_target("devenv.exe"))
+
+    def test_the_summary_counts_the_emphatic_subset(self) -> None:
+        summary = summarize_crashes(_events(HOLLOWED), sample_pids={0x2034})
+
+        self.assertEqual(summary["counts"]["crashes_in_unmapped_memory"], 1)
+        self.assertEqual(summary["counts"]["crashes_in_hollowing_target"], 1)
+        self.assertTrue(summary["unmapped_memory_crashes"][0]["hollowing_target"])
+
+    def test_a_managed_app_crashing_in_jit_is_reported_but_not_emphatic(self) -> None:
+        # Reported, because it might be injection. Not counted as decisive,
+        # because it might equally be a bug in someone's own .NET program.
+        managed = ("BusinessApp.exe", "unknown", "c0000005", "0x2034")
+        summary = summarize_crashes(_events(managed), sample_pids={0x2034})
+
+        self.assertEqual(summary["counts"]["crashes_in_unmapped_memory"], 1)
+        self.assertEqual(summary["counts"]["crashes_in_hollowing_target"], 0)
 
 
 class AttributionTests(unittest.TestCase):
