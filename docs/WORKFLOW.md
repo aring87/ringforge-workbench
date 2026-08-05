@@ -96,11 +96,24 @@ PowerShell was used" and "we were not listening".
 a sample that sits resident. Raise it only for something that stages behaviour
 over minutes — installers, droppers with sleep timers.
 
-**Extend if dormant.** On by default, capped at 600 seconds. The timeout above
+**Extend if dormant.** On by default, capped at 300 seconds. The timeout above
 is the *base* window; if it expires while the sample is still running and
 nothing has been seen to spawn, the run keeps waiting in 30-second steps up to
 the cap. A sample that has exited, or that has already spawned something, is
 never extended — so this costs nothing on a run that went normally.
+
+**Untick it for anything resident.** Both controls, and any sample that sits at
+a prompt or idles in-process. The probe cannot tell "alive and waiting for
+input" from "asleep and about to unpack", so a resident sample runs to the cap
+every time. `mimikatz.upx.exe` did exactly that: 14 extensions, and a run of
+1148 seconds against 271 for the same control on a fixed window.
+
+The extra observation time is the smaller half of the cost. Procmon captured
+113,000 events instead of 45,000, all of which get parsed, and Windows' idle
+maintenance fired partway through — putting seven LOLBins and a PowerShell
+troubleshooting script into the findings. Some of this pipeline's attribution
+is bounded by the window rather than by lineage, and a longer window makes
+every part of that noisier.
 
 It needs the memory dump watcher to know whether anything has happened. Without
 it (not elevated, or ProcDump missing) the window stays fixed and the run

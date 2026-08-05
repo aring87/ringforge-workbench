@@ -98,7 +98,14 @@ snapshot here, so the post-detonation revert is one step.
 ## Running it
 
 Detonate `samples\mimikatz.upx.exe` with **Memory dump** and **Memory YARA**
-enabled.
+enabled, and **`Extend if dormant` unticked**.
+
+mimikatz with no arguments sits at its interactive prompt: alive, and it never
+spawns anything. The activity probe cannot tell that from a crypter asleep, so
+the window extends to the cap every time. Leaving it on turned a 271-second
+control into an 1148-second one, and gave Windows' idle maintenance long enough
+to put seven LOLBins and a PowerShell troubleshooting script into the findings.
+Everything this control checks is captured by +25s.
 
 ## Expected result
 

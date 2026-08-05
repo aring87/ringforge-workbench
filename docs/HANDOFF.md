@@ -151,7 +151,7 @@ The extension path has never fired — every recorded run had the sample act wel
 inside 180 seconds. A sample that genuinely sleeps past the window is what would
 exercise it.
 
-### 5. PowerShell script blocks are attributed by time, not by lineage
+### 5. PowerShell script blocks were attributed by time, not by lineage — *fixed*
 
 `collect_scriptblocks` takes every block in the Sysmon window and calls it the
 sample's unless it is analyzer activity. A mimikatz control run — a sample that
@@ -164,13 +164,27 @@ part in.
 The verdict survived by luck: `packed_payload` was already strong, and one
 strong category reaches High on its own. It will not always survive.
 
-This is the same class as the network-attribution bug in `1f73560`, and the
-fix is the same shape — 4104 events carry a ProcessId, so blocks can be
-filtered to the sample's descendants the way process creates and connections
-already are.
+Same class as the network-attribution bug in `1f73560`. Blocks are now filtered
+to the sample's tree, resolved from Sysmon's ProcessCreate records via
+`sample_descendant_pids`. Two details worth knowing:
 
-**It fires more the longer the window runs**, which makes it worse now than it
-was: see the note on the adaptive window below.
+- 4104 carries **no EventData ProcessId**. The executing PID is an attribute of
+  the System block's `Execution` element, so the XML parser had to expose it —
+  `execution_process_id`, deliberately separate from `process_id`, which for
+  Sysmon means the process an event is *about* rather than the one that emitted
+  it.
+- Script blocks are now collected **after** Sysmon rather than before, because
+  the lineage they are filtered against comes from Sysmon.
+
+Blocks from other processes are counted (`other_process_blocks_excluded`), not
+dropped, and kept in a different bucket from analyzer blocks so the two stay
+tellable apart. `attributed_by_lineage` records whether the filter was
+available at all; when lineage cannot be resolved, everything is counted the
+way the findings degrade, and the run says so.
+
+**Unproven on a real run.** The next detonation with PowerShell activity is
+what confirms it — Formbook is the obvious candidate, since its
+`Add-MpPreference` block must survive the filter.
 
 ### Smaller
 
@@ -240,10 +254,12 @@ first and corrosive to the second:**
 - Windows Troubleshooting ran PowerShell, raising a false
   `scripted_execution` category. See gap 5.
 
-So: extension should be off for anything known to be resident, both controls
-included, and the 600s default cap buys less than it costs. A smaller cap still
-outlasts the common five-minute evasion sleep while halving the damage when the
-probe guesses wrong — which this run shows it does.
+The cap is now **300s**, and both control READMEs say to untick *Extend if
+dormant* — neither sample can benefit, and both are resident by construction.
+The probe still cannot tell "waiting at a prompt" from "asleep before
+unpacking", and there is no cheap signal that does: both are alive, quiet and
+childless. Turning it off where the answer is known in advance is the whole
+mitigation.
 
 ---
 

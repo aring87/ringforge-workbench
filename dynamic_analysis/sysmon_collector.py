@@ -462,6 +462,18 @@ def _event_to_dict(node: ET.Element) -> dict[str, Any]:
     time_node = system.find("TimeCreated")
     timestamp = time_node.get("SystemTime", "") if time_node is not None else ""
 
+    # The PID that *emitted* the event, from the System block.
+    #
+    # Kept separate from the EventData "ProcessId" below, which for Sysmon is
+    # the process the event is *about*. For PowerShell 4104 there is no
+    # EventData ProcessId at all, and this attribute is the only thing tying a
+    # script block to the process that ran it -- which is what stops Windows'
+    # own scheduled PowerShell from being reported as the sample's.
+    execution_node = system.find("Execution")
+    execution_pid = (
+        execution_node.get("ProcessID", "") if execution_node is not None else ""
+    )
+
     data: dict[str, str] = {}
     event_data = node.find("EventData")
     if event_data is not None:
@@ -475,6 +487,7 @@ def _event_to_dict(node: ET.Element) -> dict[str, Any]:
         "event_name": EVENT_NAMES.get(event_id, f"Event{event_id}"),
         "timestamp": timestamp,
         "process_id": data.get("ProcessId", ""),
+        "execution_process_id": execution_pid,
         "image": data.get("Image", ""),
         "user": data.get("User", ""),
         "data": data,

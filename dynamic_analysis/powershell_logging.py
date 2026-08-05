@@ -237,6 +237,9 @@ def reassemble(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "script_block_id": str(data.get("ScriptBlockId", "") or ""),
             "path": str(data.get("Path", "") or ""),
             "timestamp": first.get("timestamp", ""),
+            # Which powershell.exe ran it. 4104 carries no EventData ProcessId,
+            # so this comes from the System block's Execution element.
+            "process_id": str(first.get("execution_process_id", "") or ""),
             "text": text,
             "parts": len(parts),
             "parts_expected": expected,
@@ -265,16 +268,44 @@ def classify_script(text: str) -> list[dict[str, str]]:
     return findings
 
 
-def summarize_scriptblocks(blocks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Reduce reassembled blocks to the shape the run summary carries."""
+def summarize_scriptblocks(
+    blocks: list[dict[str, Any]],
+    sample_pids: set[int] | None = None,
+) -> dict[str, Any]:
+    """Reduce reassembled blocks to the shape the run summary carries.
+
+    ``sample_pids`` is the sample's process tree. Without it every block in the
+    window counts as the sample's, which is how a mimikatz control run --
+    a sample that spawned nothing at all -- reported 24 blocks from the sample
+    and one suspicious: Windows Troubleshooting had run
+    ``C:\\WINDOWS\\TEMP\\SDIAG_*\\TS_DiagnosticHistory.ps1`` during the window,
+    and it raised a scripted_execution finding against a process the sample
+    never touched.
+
+    Passing an empty set is not the same as passing none. None means lineage
+    could not be resolved and everything is counted, the way the findings
+    degrade; an empty set would mean the sample provably ran nothing.
+    """
     sample_blocks: list[dict[str, Any]] = []
     analyzer_count = 0
+    other_process_count = 0
     seen_text: set[str] = set()
 
     for block in blocks:
         if _is_analyzer_script(block.get("text", ""), block.get("path", "")):
             analyzer_count += 1
             continue
+
+        if sample_pids is not None:
+            try:
+                pid = int(str(block.get("process_id", "")).strip())
+            except (TypeError, ValueError):
+                pid = -1
+            if pid not in sample_pids:
+                # Recorded, not discarded: a run where the host was busy and
+                # the sample quiet has to look different from a quiet run.
+                other_process_count += 1
+                continue
 
         text = block.get("text", "")
         # PowerShell re-logs a block every time it is compiled, so a loop or a
@@ -305,11 +336,13 @@ def summarize_scriptblocks(blocks: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "collected": True,
+        "attributed_by_lineage": sample_pids is not None,
         "counts": {
             "blocks_total": len(blocks),
             "blocks_from_sample": len(sample_blocks),
             "blocks_suspicious": len(suspicious),
             "analyzer_blocks_excluded": analyzer_count,
+            "other_process_blocks_excluded": other_process_count,
             "incomplete_blocks": sum(1 for b in sample_blocks if not b["complete"]),
         },
         "behaviours": sorted({b for block in sample_blocks for b in block["behaviours"]}),
@@ -343,14 +376,23 @@ def empty_summary(note: str = "") -> dict[str, Any]:
     }
 
 
-def collect(since_utc: str, max_events: int = 5000) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Collect and summarise script blocks for a completed run."""
+def collect(
+    since_utc: str,
+    max_events: int = 5000,
+    sample_pids: set[int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Collect and summarise script blocks for a completed run.
+
+    ``sample_pids`` restricts the result to PowerShell the sample's own tree
+    ran. Without it the window is the only filter, and anything Windows
+    scheduled during the run counts as the sample's behaviour.
+    """
     status = powershell_logging_status()
     if not status["available"]:
         return [], empty_summary(status["note"])
 
     events = query_scriptblocks(since_utc, max_events=max_events)
     blocks = reassemble(events)
-    summary = summarize_scriptblocks(blocks)
+    summary = summarize_scriptblocks(blocks, sample_pids=sample_pids)
     summary["note"] = status["note"]
     return blocks, summary

@@ -34,6 +34,7 @@ from dynamic_analysis.memory_dump import (
     memory_dump_status,
     successful_dumps,
     reconcile_with_sysmon,
+    sample_descendant_pids,
     summarize_memory_dumps,
 )
 from dynamic_analysis.memory_yara import (
@@ -226,7 +227,7 @@ def run_sample(
     post_exit_observation_seconds: int = 120,
     installer_observation_mode: bool = True,
     adaptive_observation: bool = True,
-    max_observation_seconds: int = 600,
+    max_observation_seconds: int = 300,
     observation_extension_seconds: int = 30,
     activity_probe: Optional[Callable[[], bool]] = None,
     cancel_event: CancelEvent = None,
@@ -1408,12 +1409,20 @@ def run_dynamic_analysis(
 
     # The base window above is a guess about dormancy, and dormancy is not a
     # property of the sample: one AgentTesla binary sat quiet for between 21 and
-    # 83 seconds across six runs of the same file. The cap is what a sample
-    # sleeping out a short analysis -- five minutes is the common choice -- has
-    # to outlast before the run gives up on it.
+    # 83 seconds across six runs of the same file.
+    #
+    # The cap was 600s and is 300s, because extending is not free. A mimikatz
+    # control sat at its interactive prompt -- alive and childless, which the
+    # probe cannot tell from a crypter asleep -- and ran to the full cap. The
+    # run took 1148s against 271s for the same control on a fixed window, and
+    # 548s of that was teardown: 113k Procmon events instead of ~45k, all of
+    # which get parsed. Worse, Windows' idle maintenance fired four minutes in
+    # and landed seven LOLBins plus a PowerShell troubleshooting script in the
+    # findings. Half the attribution here is time-windowed rather than
+    # lineage-based, and a longer window degrades every part of it.
     adaptive_observation = bool(config.get("adaptive_observation", True))
     max_observation_seconds = max(
-        int(config.get("max_observation_seconds", 600)), timeout_seconds
+        int(config.get("max_observation_seconds", 300)), timeout_seconds
     )
     observation_extension_seconds = int(config.get("observation_extension_seconds", 30))
 
@@ -1919,28 +1928,6 @@ def run_dynamic_analysis(
                 fakenet_stop_result = {"stopped": False, "error": str(error)}
                 _emit(status_cb, f"FakeNet-NG stop warning: {error}")
 
-        if sysmon_since:
-            # Reuses the Sysmon window: both read Windows event channels bounded
-            # by when the sample was launched.
-            _emit(status_cb, "Collecting PowerShell script blocks...")
-            try:
-                powershell_preflight = powershell_logging_status()
-                scriptblocks, powershell_summary = collect_scriptblocks(sysmon_since)
-                write_json(powershell_blocks_json, scriptblocks)
-                counts = powershell_summary.get("counts", {}) or {}
-                if powershell_summary.get("collected"):
-                    _emit(
-                        status_cb,
-                        f"PowerShell: {counts.get('blocks_from_sample', 0)} script block(s) "
-                        f"from the sample, {counts.get('blocks_suspicious', 0)} suspicious "
-                        f"({counts.get('analyzer_blocks_excluded', 0)} analyzer block(s) excluded).",
-                    )
-                else:
-                    _emit(status_cb, f"PowerShell script blocks: {powershell_summary.get('note', '')}")
-            except Exception as error:
-                powershell_summary = empty_powershell_summary(f"collection failed: {error}")
-                _emit(status_cb, f"PowerShell collection warning: {error}")
-
         if sysmon_enabled and sysmon_since:
             _emit(status_cb, "Collecting Sysmon telemetry...")
             try:
@@ -1967,6 +1954,47 @@ def run_dynamic_analysis(
             except Exception as error:
                 sysmon_status_result = {"success": False, "error": str(error)}
                 _emit(status_cb, f"Sysmon collection warning: {error}")
+
+        # After Sysmon, not before it. Script blocks are attributed by the PID
+        # that ran them, and Sysmon's ProcessCreate records are what resolve the
+        # sample's tree. Collected first -- as this was -- the only filter is
+        # the time window, and a mimikatz control that spawned nothing reported
+        # 24 blocks "from the sample" because Windows Troubleshooting ran during
+        # the run.
+        if sysmon_since:
+            _emit(status_cb, "Collecting PowerShell script blocks...")
+            try:
+                powershell_preflight = powershell_logging_status()
+                sample_pids = sample_descendant_pids(
+                    sysmon_events,
+                    sample_pid=sample_pid_seen.get("pid"),
+                    sample_name=sample_path.name,
+                ) or None
+                if sample_pids is None:
+                    _emit(
+                        status_cb,
+                        "PowerShell: lineage could not be resolved, so every block "
+                        "in the window is counted. Treat the attribution as unproven.",
+                    )
+                scriptblocks, powershell_summary = collect_scriptblocks(
+                    sysmon_since, sample_pids=sample_pids
+                )
+                write_json(powershell_blocks_json, scriptblocks)
+                counts = powershell_summary.get("counts", {}) or {}
+                if powershell_summary.get("collected"):
+                    _emit(
+                        status_cb,
+                        f"PowerShell: {counts.get('blocks_from_sample', 0)} script block(s) "
+                        f"from the sample, {counts.get('blocks_suspicious', 0)} suspicious "
+                        f"({counts.get('analyzer_blocks_excluded', 0)} analyzer, "
+                        f"{counts.get('other_process_blocks_excluded', 0)} other-process "
+                        "block(s) excluded).",
+                    )
+                else:
+                    _emit(status_cb, f"PowerShell script blocks: {powershell_summary.get('note', '')}")
+            except Exception as error:
+                powershell_summary = empty_powershell_summary(f"collection failed: {error}")
+                _emit(status_cb, f"PowerShell collection warning: {error}")
 
         # Sysmon's process tree is a kernel callback and misses nothing; the
         # dump watcher polls twice a second and misses whatever does not

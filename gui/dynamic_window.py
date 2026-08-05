@@ -137,7 +137,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             value=bool(cfg.get("dynamic_adaptive_observation", True))
         )
         self.max_observation_var = tk.IntVar(
-            value=int(cfg.get("dynamic_max_observation_seconds", 600))
+            value=int(cfg.get("dynamic_max_observation_seconds", 300))
         )
 
         project_root = Path(__file__).resolve().parents[1]

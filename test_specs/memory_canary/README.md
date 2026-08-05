@@ -22,7 +22,11 @@ The rule ships in `tools\yara\local\`, which `bootstrap_yara_rules.ps1` installs
 into the scanned rules directory on every run, so no manual copying is needed.
 Confirm the Dynamic Analysis window reports `Mem YARA: ready`, then run
 `test_specs\memory_canary\canary.ps1` as the sample with **Memory dump** and
-**Memory YARA** enabled.
+**Memory YARA** enabled, and **`Extend if dormant` unticked**.
+
+The canary holds its marker in memory and does not spawn, so the activity probe
+reads it as dormant and extends the window to the cap for nothing. The marker
+exists from startup; both dumps have it by +25s.
 
 ## Expected result
 

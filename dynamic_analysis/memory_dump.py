@@ -913,6 +913,54 @@ def _image_name(value: object) -> str:
     return str(value or "").replace("/", "\\").rsplit("\\", 1)[-1].lower()
 
 
+def sample_descendant_pids(
+    sysmon_events: list[dict[str, Any]],
+    sample_pid: int | None = None,
+    sample_name: str = "",
+) -> set[int]:
+    """Every PID in the sample's tree, from Sysmon's ProcessCreate records.
+
+    Sysmon's ProcessCreate is a kernel callback and misses nothing, which makes
+    it the authority on lineage -- better than the dump watcher's poll, which
+    only sees a child that outlives one interval.
+
+    Seeded the same way the findings lineage is: the launched PID, plus any
+    process running the sample's own image, because a dropper relaunching
+    itself is the shape this exists for. Then walked transitively.
+
+    Returns an empty set when there is nothing to seed from, which callers must
+    read as "lineage could not be resolved" rather than "the sample had no
+    descendants" -- the two want opposite handling.
+    """
+    creates = _sysmon_process_creates(sysmon_events)
+    if not creates:
+        return set()
+
+    sample_image = _image_name(sample_name)
+
+    descendants: set[int] = set()
+    if sample_pid:
+        descendants.add(int(sample_pid))
+    if sample_image:
+        for create in creates:
+            if _image_name(create["image"]) == sample_image:
+                descendants.add(create["pid"])
+
+    if not descendants:
+        return set()
+
+    changed = True
+    while changed:
+        changed = False
+        for create in creates:
+            parent = create["parent_pid"]
+            if parent in descendants and create["pid"] not in descendants:
+                descendants.add(create["pid"])
+                changed = True
+
+    return descendants
+
+
 def reconcile_with_sysmon(
     dump_result: dict[str, Any],
     sysmon_events: list[dict[str, Any]],
@@ -941,30 +989,9 @@ def reconcile_with_sysmon(
     if not creates:
         return []
 
-    sample_image = _image_name(sample_name)
-
-    # Seed the same way the findings lineage does: the launched PID, plus any
-    # process running the sample's own image, because a dropper relaunching
-    # itself is the shape this exists for.
-    descendants: set[int] = set()
-    if sample_pid:
-        descendants.add(int(sample_pid))
-    if sample_image:
-        for create in creates:
-            if _image_name(create["image"]) == sample_image:
-                descendants.add(create["pid"])
-
+    descendants = sample_descendant_pids(sysmon_events, sample_pid, sample_name)
     if not descendants:
         return []
-
-    changed = True
-    while changed:
-        changed = False
-        for create in creates:
-            parent = create["parent_pid"]
-            if parent in descendants and create["pid"] not in descendants:
-                descendants.add(create["pid"])
-                changed = True
 
     observed = {
         _safe_pid(p.get("pid"))
