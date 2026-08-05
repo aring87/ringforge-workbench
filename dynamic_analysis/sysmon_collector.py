@@ -475,12 +475,19 @@ def _event_to_dict(node: ET.Element) -> dict[str, Any]:
     )
 
     data: dict[str, str] = {}
+    # Legacy providers -- Application Error is one -- write unnamed <Data>
+    # elements, where the order *is* the schema. Collecting only named ones
+    # returned an empty dict for every 1000 event, and the faulting-module
+    # field lives at index 3.
+    values: list[str] = []
     event_data = node.find("EventData")
     if event_data is not None:
         for item in event_data.findall("Data"):
+            text = (item.text or "").strip()
+            values.append(text)
             name = item.get("Name")
             if name:
-                data[name] = (item.text or "").strip()
+                data[name] = text
 
     return {
         "event_id": event_id,
@@ -488,6 +495,7 @@ def _event_to_dict(node: ET.Element) -> dict[str, Any]:
         "timestamp": timestamp,
         "process_id": data.get("ProcessId", ""),
         "execution_process_id": execution_pid,
+        "data_values": values,
         "image": data.get("Image", ""),
         "user": data.get("User", ""),
         "data": data,

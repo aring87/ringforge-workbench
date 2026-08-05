@@ -23,6 +23,12 @@ from dynamic_analysis.fakenet_runner import (
     parse_fakenet_log,
 )
 from dynamic_analysis.attack_mapping import map_run, summarize_attack
+from dynamic_analysis.crash_evidence import (
+    CrashDumpCollector,
+    collect_crashes,
+    empty_crash_summary,
+    wer_local_dump_status,
+)
 from dynamic_analysis.findings import summarize_dynamic_findings
 from dynamic_analysis.powershell_logging import (
     collect as collect_scriptblocks,
@@ -1079,6 +1085,7 @@ def _evidence_categories(
     *,
     memory_only_rules: list[Any],
     sysmon_injections: int,
+    unmapped_memory_crashes: int,
     sysmon_high: int,
     suspicious_tasks: int,
     suspicious_services: int,
@@ -1120,10 +1127,28 @@ def _evidence_categories(
         },
         {
             "name": "process_injection",
-            "present": sysmon_injections > 0,
-            "strong": sysmon_injections >= 2,
-            "detail": f"{sysmon_injections} injection event(s)",
-            "reason": "Sysmon recorded process injection (CreateRemoteThread).",
+            # Sysmon Event 8 is CreateRemoteThread, and process hollowing does
+            # not use it -- NtUnmapViewOfSection, WriteProcessMemory and
+            # SetThreadContext raise nothing. A Formbook sample hollowed
+            # RegSvcs.exe and this category stayed silent, which made
+            # "injection has never fired" partly a statement about the
+            # detector rather than about the samples.
+            #
+            # A crash whose faulting module is unknown says code was executing
+            # where no image is mapped. That is the same claim by a different
+            # route, and it costs nothing: Windows already logged it.
+            "present": (sysmon_injections > 0 or unmapped_memory_crashes > 0),
+            "strong": (sysmon_injections >= 2 or unmapped_memory_crashes > 0),
+            "detail": (
+                f"{sysmon_injections} injection event(s), "
+                f"{unmapped_memory_crashes} crash(es) in unmapped memory"
+            ),
+            "reason": (
+                "A process in the sample's tree faulted at an address with no "
+                "module mapped there, so it was executing injected code."
+                if unmapped_memory_crashes
+                else "Sysmon recorded process injection (CreateRemoteThread)."
+            ),
         },
         {
             "name": "credential_access_or_tampering",
@@ -1200,6 +1225,7 @@ def calculate_dynamic_score(
     fakenet_summary: dict[str, Any] | None = None,
     memory_yara_summary: dict[str, Any] | None = None,
     powershell_summary: dict[str, Any] | None = None,
+    crash_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -1304,6 +1330,11 @@ def calculate_dynamic_score(
         (powershell.get("counts", {}) or {}).get("blocks_suspicious", 0) or 0
     )
 
+    crashes = crash_summary if isinstance(crash_summary, dict) else {}
+    unmapped_memory_crashes = int(
+        (crashes.get("counts", {}) or {}).get("crashes_in_unmapped_memory", 0) or 0
+    )
+
     # --- Context: how busy the run was ------------------------------------
     #
     # Volume is not evidence. Two runs of the same control produced scores nine
@@ -1329,6 +1360,7 @@ def calculate_dynamic_score(
     categories = _evidence_categories(
         memory_only_rules=memory_only_rules,
         sysmon_injections=sysmon_injections,
+        unmapped_memory_crashes=unmapped_memory_crashes,
         sysmon_high=sysmon_high,
         suspicious_tasks=suspicious_tasks,
         suspicious_services=suspicious_services,
@@ -1574,6 +1606,14 @@ def run_dynamic_analysis(
         config.get("memory_dump_max_total_mb") or DEFAULT_MAX_TOTAL_MB
     )
 
+    # A crashing descendant is the case the scheduled offsets cannot cover: a
+    # hollowed process that lives four seconds falls between them, and the
+    # crash dump is taken at the one moment the payload is both written and
+    # running.
+    crash_evidence_enabled = bool(config.get("crash_evidence_enabled", True))
+    crash_dumps_json = paths["memory"] / "crash_dumps.json"
+    crash_events_json = paths["sysmon"] / "crash_events.json"
+
     memory_yara_enabled = bool(config.get("memory_yara_enabled", True))
     yara_rules_dir = config.get("yara_rules_dir") or ""
     memory_yara_timeout = int(config.get("memory_yara_timeout_seconds", 300))
@@ -1597,6 +1637,11 @@ def run_dynamic_analysis(
         if (memory_dump_enabled and memory_yara_enabled)
         else {"available": False, "note": "Memory YARA scanning disabled for this run."}
     )
+    crash_dump_preflight = wer_local_dump_status() if crash_evidence_enabled else {
+        "available": False, "note": "Crash evidence collection disabled for this run."
+    }
+    if crash_evidence_enabled and not crash_dump_preflight.get("available"):
+        _emit(status_cb, f"Crash dumps: {crash_dump_preflight.get('note', '')}")
 
     # Containment check. A second adapter lets a sample bypass FakeNet entirely
     # and reach real infrastructure, and nothing in the resulting artifacts
@@ -1624,6 +1669,14 @@ def run_dynamic_analysis(
     pcap_stop_result: dict[str, Any] = {}
     fakenet_start_result: dict[str, Any] = {"started": False}
     fakenet_stop_result: dict[str, Any] = {}
+
+    crash_summary: dict[str, Any] = empty_crash_summary("not collected")
+    crash_dump_result: dict[str, Any] = {"collected": False, "note": "not collected"}
+    crash_collector: CrashDumpCollector | None = None
+    # Shared by the crash-event and crash-dump collectors below. Seeded with
+    # the sample's own name so a run whose Sysmon lineage came back empty can
+    # still attribute the obvious case.
+    crash_names: set[str] = {sample_path.name.lower()}
 
     memory_dump_result: dict[str, Any] = {}
     memory_summary: dict[str, Any] = {}
@@ -1867,6 +1920,16 @@ def run_dynamic_analysis(
             else:
                 _emit(status_cb, f"Memory dumps unavailable: {memory_preflight.get('note', '')}")
 
+        # Before launch, for the same reason FakeNet's listener roots are: the
+        # dump folder is shared with the whole machine, and afterwards there is
+        # no way to tell this run's crash dumps from an older one's.
+        if crash_evidence_enabled and crash_dump_preflight.get("available"):
+            crash_collector = CrashDumpCollector(
+                output_dir=paths["memory"] / "crash_dumps",
+                dump_folder=crash_dump_preflight.get("dump_folder") or None,
+            )
+            crash_collector.snapshot()
+
         _raise_if_cancelled(cancel_event)
 
 
@@ -2057,6 +2120,66 @@ def run_dynamic_analysis(
                 powershell_summary = empty_powershell_summary(f"collection failed: {error}")
                 _emit(status_cb, f"PowerShell collection warning: {error}")
 
+        # Crash evidence, after Sysmon for the same reason: attribution needs
+        # the lineage Sysmon's ProcessCreate records resolve.
+        if crash_evidence_enabled and sysmon_since:
+            _emit(status_cb, "Collecting crash evidence...")
+            try:
+                crash_pids = sample_descendant_pids(
+                    sysmon_events,
+                    sample_pid=sample_pid_seen.get("pid"),
+                    sample_name=sample_path.name,
+                ) or None
+                crash_names |= {
+                    str(p.get("name", "") or "").lower()
+                    for p in (memory_summary.get("observed_processes", []) or [])
+                }
+                crash_names -= {""}
+
+                crash_records, crash_summary = collect_crashes(
+                    sysmon_since, sample_pids=crash_pids, sample_names=crash_names
+                )
+                write_json(crash_events_json, crash_records)
+
+                counts = crash_summary.get("counts", {}) or {}
+                unmapped = int(counts.get("crashes_in_unmapped_memory", 0) or 0)
+                if counts.get("crashes"):
+                    _emit(
+                        status_cb,
+                        f"Crashes: {counts.get('crashes', 0)} in the sample's tree, "
+                        f"{unmapped} inside unmapped memory "
+                        f"({counts.get('other_process_crashes_excluded', 0)} other-process "
+                        "crash(es) excluded).",
+                    )
+                if unmapped:
+                    for entry in crash_summary.get("unmapped_memory_crashes", []):
+                        _emit(
+                            status_cb,
+                            f"  {entry.get('process')} faulted at {entry.get('fault_offset')} "
+                            f"({entry.get('exception_code')}) with no module mapped there -- "
+                            "code was running in injected memory.",
+                        )
+            except Exception as error:
+                crash_summary = empty_crash_summary(f"collection failed: {error}")
+                _emit(status_cb, f"Crash evidence warning: {error}")
+
+        if crash_collector is not None:
+            try:
+                crash_dump_result = crash_collector.collect(sample_names=crash_names)
+                write_json(crash_dumps_json, crash_dump_result)
+                counts = crash_dump_result.get("counts", {}) or {}
+                if counts.get("dumps"):
+                    _emit(
+                        status_cb,
+                        f"Crash dumps: {counts.get('dumps', 0)} collected "
+                        f"({counts.get('attributed', 0)} from the sample's tree).",
+                    )
+                elif crash_dump_result.get("note"):
+                    _emit(status_cb, f"Crash dumps: {crash_dump_result['note']}")
+            except Exception as error:
+                crash_dump_result = {"collected": False, "note": str(error)}
+                _emit(status_cb, f"Crash dump collection warning: {error}")
+
         # Sysmon's process tree is a kernel callback and misses nothing; the
         # dump watcher polls twice a second and misses whatever does not
         # outlive an interval. Comparing them is the only way a process that
@@ -2200,7 +2323,14 @@ def run_dynamic_analysis(
 
             # Scanned last: it is the slowest step in teardown, and it depends
             # on the dumps having been written and closed.
-            scannable = successful_dumps(memory_dump_result)
+            # Crash dumps join the scan. A hollowed process that lives four
+            # seconds falls between the scheduled offsets, so its crash image
+            # is often the only one taken after the payload was written.
+            scannable = successful_dumps(memory_dump_result) + [
+                d
+                for d in (crash_dump_result.get("dumps", []) or [])
+                if d.get("success") and d.get("attributed_to_sample")
+            ]
             if memory_dump_enabled and memory_yara_enabled and scannable:
                 if memory_yara_preflight.get("available"):
                     _emit(status_cb, "Scanning process memory with YARA...")
@@ -2306,6 +2436,7 @@ def run_dynamic_analysis(
         fakenet_summary=fakenet_summary,
         memory_yara_summary=memory_yara_summary,
         powershell_summary=powershell_summary,
+        crash_summary=crash_summary,
     )
 
     if cancelled:
@@ -2390,6 +2521,10 @@ def run_dynamic_analysis(
         "memory_yara_enabled": memory_yara_enabled,
         "memory_yara_preflight": memory_yara_preflight,
         "memory_yara_summary": memory_yara_summary,
+        "crash_evidence_enabled": crash_evidence_enabled,
+        "crash_dump_preflight": crash_dump_preflight,
+        "crash_summary": crash_summary,
+        "crash_dumps": crash_dump_result,
         "powershell_preflight": powershell_preflight,
         "powershell_summary": powershell_summary,
     }

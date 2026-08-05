@@ -1052,6 +1052,66 @@ def _evidence_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _crash_evidence_section(summary: dict[str, Any]) -> str:
+    """Crashes in the sample's tree, and what they say about injection.
+
+    A fault at an address with no module mapped there means code was executing
+    in privately allocated memory. Formbook hollowed RegSvcs.exe and died
+    inside its own injected region; Sysmon saw nothing, because Event 8 is
+    CreateRemoteThread and hollowing does not use it.
+    """
+    crashes = summary.get("crash_summary", {}) or {}
+    preflight = summary.get("crash_dump_preflight", {}) or {}
+    dumps = summary.get("crash_dumps", {}) or {}
+    if not crashes and not preflight:
+        return ""
+
+    counts = crashes.get("counts", {}) or {}
+    unmapped = crashes.get("unmapped_memory_crashes", []) or []
+
+    rows = [
+        {
+            "Process": entry.get("process", ""),
+            "PID": entry.get("pid", ""),
+            "Exception": entry.get("exception_code", ""),
+            "Fault offset": entry.get("fault_offset", ""),
+            "Image": entry.get("path", ""),
+        }
+        for entry in unmapped
+    ]
+
+    dump_note = ""
+    if not preflight.get("available"):
+        dump_note = f"<p class='muted'>{_esc(preflight.get('note', ''))}</p>"
+    elif (dumps.get("counts", {}) or {}).get("dumps"):
+        dump_note = (
+            f"<p class='muted'>{_to_int((dumps.get('counts') or {}).get('dumps', 0))} "
+            f"crash dump(s) collected into {_esc(dumps.get('output_dir', ''))} and "
+            "scanned with the memory ruleset.</p>"
+        )
+
+    return f"""
+    <section class="{'card card-alert' if rows else 'card'}">
+      <div class="section-head">
+        <h2>Crashes In The Sample's Tree</h2>
+        {_section_badge("In unmapped memory", _to_int(counts.get("crashes_in_unmapped_memory", 0)))}
+      </div>
+      <p class="muted">
+        A fault at an address where no module is mapped means the process was
+        executing privately allocated memory -- injected code. Sysmon's
+        injection event is CreateRemoteThread, which process hollowing does not
+        use, so this is often the only record that it happened.
+        {_to_int(counts.get("crashes", 0))} crash(es) in the sample's tree,
+        {_to_int(counts.get("other_process_crashes_excluded", 0))} elsewhere on
+        the host excluded.
+      </p>
+      {_dict_list_table("Executed From Unmapped Memory", rows, emphasize=True,
+                        empty_text="No crash in the sample's tree faulted outside a loaded module.")}
+      {dump_note}
+    </section>
+    """
+
+
 def _observation_window_section(summary: dict[str, Any]) -> str:
     """Warn when the run stopped watching a sample that had not yet acted.
 
@@ -1506,6 +1566,7 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
 
 {_dict_list_table("Sysmon Highlights", highlights)}
 {_dict_list_table("Process Injection (CreateRemoteThread)", injections)}
+{_crash_evidence_section(summary)}
 {_list_section("Sysmon DNS Queries", sysmon.get("dns_queries", []) or [], empty_text="No DNS queries were recorded by Sysmon.")}
 {_list_section("Named Pipes", sysmon.get("named_pipes", []) or [], empty_text="No named pipes were recorded.")}
 """
