@@ -973,12 +973,26 @@ def _sample_process_names(findings_summary: dict[str, Any]) -> set[str]:
     findings = findings_summary if isinstance(findings_summary, dict) else {}
     names: set[str] = set()
 
+    # Already lineage-filtered where lineage could be resolved.
     for entry in findings.get("top_network_processes", []) or []:
         name = str(entry.get("process_name", "") or "").strip().lower()
         if name:
             names.add(name)
 
+    # spawned_processes is *not* purely the sample's tree. A LOLBin or an
+    # encoded command line is kept as a finding whoever started it, which is
+    # right for the report and wrong here: a mimikatz control run listed
+    # cmd.exe, reg.exe and rundll32.exe as the sample's processes, all of them
+    # Windows' own scheduled maintenance that fired because the observation
+    # window ran long. Only descendants count.
+    #
+    # When lineage could not be resolved nothing carries the flag, and
+    # filtering on it would empty the set silently. The findings degrade the
+    # same way -- counting everything rather than nothing -- so this does too.
+    lineage_resolved = bool(findings.get("lineage_resolved"))
     for entry in findings.get("spawned_processes", []) or []:
+        if lineage_resolved and not entry.get("descends_from_sample"):
+            continue
         name = str(entry.get("child_process_name", "") or "").strip().lower()
         if name:
             names.add(name)

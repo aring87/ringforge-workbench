@@ -151,6 +151,27 @@ The extension path has never fired — every recorded run had the sample act wel
 inside 180 seconds. A sample that genuinely sleeps past the window is what would
 exercise it.
 
+### 5. PowerShell script blocks are attributed by time, not by lineage
+
+`collect_scriptblocks` takes every block in the Sysmon window and calls it the
+sample's unless it is analyzer activity. A mimikatz control run — a sample that
+spawned **nothing**, `processes_observed: 1` — reported `blocks_from_sample: 24`
+and one suspicious block, because Windows Troubleshooting ran
+`C:\WINDOWS\TEMP\SDIAG_*\TS_DiagnosticHistory.ps1` during the window. That
+raised a `scripted_execution` evidence category for behaviour the sample had no
+part in.
+
+The verdict survived by luck: `packed_payload` was already strong, and one
+strong category reaches High on its own. It will not always survive.
+
+This is the same class as the network-attribution bug in `1f73560`, and the
+fix is the same shape — 4104 events carry a ProcessId, so blocks can be
+filtered to the sample's descendants the way process creates and connections
+already are.
+
+**It fires more the longer the window runs**, which makes it worse now than it
+was: see the note on the adaptive window below.
+
 ### Smaller
 
 - No anti-analysis detection. Nothing reports "the sample checked for a VM and
@@ -184,7 +205,7 @@ wrong on every run for a long time without showing.
 | Feature | Status after the Formbook run |
 |---|---|
 | Received-file collection | **Root resolution proven.** `received_files.roots` named the real `tools\fakenet\defaultFiles`, so `listener_roots()` matches the actual install. The *collection* path is still unproven — nothing was uploaded |
-| Adaptive window | **Still unproven.** The run ended via post-exit observation at 144s of a 180s window, so the extension branch never ran. Needs a sample dormant past the base window |
+| Adaptive window | **Fired, and it is too expensive.** See below |
 | Corroboration scoring | **Ran on a second real sample.** Landed at 35 / Needs Review on one category, which is the honest reading of a sample that crashed before doing anything else |
 | Network attribution | **Working.** `other_process_requests: 11` against 1 sample destination on a run where Windows was busy |
 
@@ -196,6 +217,33 @@ Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window
 silently stays fixed — recorded as `adaptive_available: false`, which is the
 field to check rather than assuming extension was available.
+
+### The adaptive window is more expensive than it looks
+
+The UPX control fired it: `mimikatz.upx.exe` sits at its interactive prompt, so
+it is alive and childless forever, which the probe cannot tell from a crypter
+asleep. 14 extensions, `extension_cap_reached` at 600s.
+
+The run took **1148 seconds** against 271 and 282 for the two 180s runs before
+it. Only 600 of that is the window; teardown was 548, because Procmon captured
+**113,367 events** against ~41–50k, and all of them get parsed. Longer window,
+more events, longer parse.
+
+The time is the smaller cost. **The pipeline's attribution is half
+lineage-based and half window-based, and lengthening the window is free for the
+first and corrosive to the second:**
+
+- Windows scheduled maintenance fired four minutes in, putting seven LOLBins
+  (`hpatchmonTask.cmd`, `reg query …\HotPatch`, `rundll32 Startupscan.dll`) into
+  the sample's Spawned Processes. Correct policy — a LOLBin is a finding
+  whoever started it — but they are only there because the run was long.
+- Windows Troubleshooting ran PowerShell, raising a false
+  `scripted_execution` category. See gap 5.
+
+So: extension should be off for anything known to be resident, both controls
+included, and the 600s default cap buys less than it costs. A smaller cap still
+outlasts the common five-minute evasion sleep while halving the damage when the
+probe guesses wrong — which this run shows it does.
 
 ---
 

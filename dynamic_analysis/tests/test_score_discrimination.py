@@ -126,10 +126,19 @@ def _agent_tesla():
                 "process_creates": 2,
                 "network_events": 2,
             },
+            "lineage_resolved": True,
             "top_network_processes": [{"process_name": "agenttesla.exe", "count": 2}],
             "spawned_processes": [
-                {"process_name": "python.exe", "child_process_name": "agenttesla.exe"},
-                {"process_name": "agenttesla.exe", "child_process_name": "agenttesla.exe"},
+                {
+                    "process_name": "python.exe",
+                    "child_process_name": "agenttesla.exe",
+                    "descends_from_sample": True,
+                },
+                {
+                    "process_name": "agenttesla.exe",
+                    "child_process_name": "agenttesla.exe",
+                    "descends_from_sample": True,
+                },
             ],
         },
         memory_yara_summary={
@@ -268,6 +277,52 @@ class AttributionTests(unittest.TestCase):
         self.assertEqual(attribution["other_non_baseline_domains"], 1)
         self.assertEqual(attribution["other_process_requests"], 1)
         self.assertEqual(attribution["sample_domains"], [])
+
+    def test_an_independently_notable_lolbin_is_not_sample_lineage(self) -> None:
+        # spawned_processes keeps a LOLBin as a finding whoever started it,
+        # which is right for the report. A mimikatz control run listed cmd.exe,
+        # reg.exe and rundll32.exe among the sample's processes -- all Windows
+        # scheduled maintenance that fired because the window ran to 600s. The
+        # sample had spawned nothing at all.
+        names = _sample_process_names(
+            {
+                "lineage_resolved": True,
+                "spawned_processes": [
+                    {
+                        "child_process_name": "mimikatz.upx.exe",
+                        "descends_from_sample": True,
+                    },
+                    {
+                        "child_process_name": "rundll32.exe",
+                        "descends_from_sample": False,
+                        "is_lolbin": True,
+                    },
+                    {
+                        "child_process_name": "reg.exe",
+                        "descends_from_sample": False,
+                        "is_lolbin": True,
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(names, {"mimikatz.upx.exe"})
+
+    def test_unresolved_lineage_counts_everything_rather_than_nothing(self) -> None:
+        # Without lineage nothing carries the flag, and filtering on it would
+        # empty the set silently. The findings degrade by counting everything;
+        # so does this.
+        names = _sample_process_names(
+            {
+                "lineage_resolved": False,
+                "spawned_processes": [
+                    {"child_process_name": "sample.exe"},
+                    {"child_process_name": "rundll32.exe"},
+                ],
+            }
+        )
+
+        self.assertEqual(names, {"sample.exe", "rundll32.exe"})
 
     def test_the_analyzers_own_launcher_is_never_the_sample(self) -> None:
         # The parent of the first spawn record is python.exe -- the workbench
