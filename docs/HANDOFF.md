@@ -226,12 +226,14 @@ only exercised by its own fixtures agrees with the assumptions it was written
 under, and the analyzer-attribution bug is the standing proof that those can be
 wrong on every run for a long time without showing.
 
-| Feature | Status after the Formbook run |
+| Feature | Status |
 |---|---|
-| Received-file collection | **Root resolution proven.** `received_files.roots` named the real `tools\fakenet\defaultFiles`, so `listener_roots()` matches the actual install. The *collection* path is still unproven — nothing was uploaded |
-| Adaptive window | **Fired, and it is too expensive.** See below |
-| Corroboration scoring | **Ran on a second real sample.** Landed at 35 / Needs Review on one category, which is the honest reading of a sample that crashed before doing anything else |
-| Network attribution | **Working.** `other_process_requests: 11` against 1 sample destination on a run where Windows was busy |
+| Received-file collection | **Root resolution proven.** `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded yet |
+| Adaptive window | **Fired, on the wrong case.** See below |
+| Corroboration scoring | **Ran on two real samples**, landing 35 / Needs Review and 70 / Elevated Attention |
+| Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes on the second Formbook run |
+| `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
+| PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's `Add-MpPreference` survived, so the filter is not too tight |
 
 Two features came off the unexercised list in the same run:
 `missed_descendants` recorded 1 (a `WerFault` Sysmon saw and the dump watcher
@@ -368,11 +370,32 @@ Kept for comparison against a run where the chain completes.
 | Outcome | `RegSvcs` faulted: 2× `WerFault -u -p 1404`, plus a second `RegSvcs` that exited before it could be dumped |
 | Memory YARA | 0 matches across 6 dumps — the payload never unpacked |
 | Score | 35 · Needs Review / Medium, on `scripted_execution` alone |
-| Dormancy | PowerShell at +23s, `RegSvcs` at +24s, sample exited ~+24s |
+| Dormancy | PowerShell and `RegSvcs` at +20 to +24s; sample exits immediately after |
 
-The sample's own process was dumped **once, at +5s**, before it had spawned
-anything. It exited with the +25s offset due on the same tick, which suppresses
-the exit dump by design; that skip is now recorded rather than silent.
+**The crash is deterministic.** Two runs on 04 and 05 Aug produced the same
+chain and the same failure at the same point — `RegSvcs` faulting four to eleven
+seconds after being spawned. That rules out flaky hollowing. Defender is not
+responsible either: `RealTimeProtectionEnabled` and `BehaviorMonitorEnabled` are
+both `False` in the baseline and no detection events were logged, so every run
+so far has had it off. What remains is anti-analysis or a broken sample.
+
+**Neither run has actually seen the payload**, which is why the zero YARA
+matches are not yet a conclusion:
+
+- The sample's own process was dumped **once, at +5s**, before it had spawned
+  anything, and never again — it exits at ~+20s and the +25s offset misses it
+  both times.
+- The second `RegSvcs`, spawned by the first, was never dumped at all. The
+  process cap was 5 and the chain is 6.
+
+Both are now configurable, and the next run should use an offset just before
++20s with a higher cap. If that still comes back empty, "never unpacked" is a
+real finding rather than an artifact of where the dumps landed.
+
+Worth getting from the next run **before reverting**, since the revert discards
+it: Application event 1000/1001 for `RegSvcs`, which carries the faulting module
+and exception code. An access violation at an odd address is failed hollowing; a
+.NET exception is something else.
 
 Expected on a clean run: 4 dumps all `Frozen`, scheduled offsets matching 0
 rules, spawn and exit dumps matching 3, `network_events: 2`, and

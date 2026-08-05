@@ -52,7 +52,17 @@ _POLL_INTERVAL_SECONDS = 0.5
 #: Default guard rails. A full (-ma) dump is the size of the working set, so an
 #: unbounded run against something chatty fills the case directory with
 #: gigabytes of browser heap.
-DEFAULT_MAX_PROCESSES = 5
+#:
+#: The process cap was 5, which is smaller than an ordinary loader chain. A
+#: Formbook sample produced six -- itself, powershell.exe, conhost.exe,
+#: RegSvcs.exe, a second RegSvcs.exe spawned by the first, and WerFault.exe --
+#: and the cap fell exactly on the second RegSvcs, the process most likely to
+#: hold the unpacked payload. It was recorded as "process cap reached" rather
+#: than lost silently, which is how this was found, but the image is still gone.
+#:
+#: The total-size cap is the one that really protects the case directory, and it
+#: is unchanged. Raising the process count only allows more *small* dumps.
+DEFAULT_MAX_PROCESSES = 12
 DEFAULT_MAX_WORKING_SET_MB = 1024
 DEFAULT_MAX_TOTAL_MB = 4096
 

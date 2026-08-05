@@ -30,6 +30,9 @@ from dynamic_analysis.powershell_logging import (
     powershell_logging_status,
 )
 from dynamic_analysis.memory_dump import (
+    DEFAULT_MAX_PROCESSES,
+    DEFAULT_MAX_TOTAL_MB,
+    DEFAULT_MAX_WORKING_SET_MB,
     MemoryDumpSession,
     memory_dump_status,
     successful_dumps,
@@ -963,6 +966,34 @@ STRONG_CATEGORY_BONUS = 15
 STRONG_MEMORY_ONLY_RULES = 3
 
 
+def _parse_offsets(value: Any) -> list[int]:
+    """Dump offsets from a list or a "5, 15, 20" string.
+
+    The GUI hands this over as text, so a stray comma or a blank entry must
+    fall back to the profile default rather than failing the run. Sorted and
+    deduplicated because the watcher pops them in order and two identical
+    offsets would write two identical images.
+    """
+    if not value:
+        return []
+
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.replace(";", ",").split(",")]
+    else:
+        parts = list(value)
+
+    offsets: set[int] = set()
+    for part in parts:
+        try:
+            seconds = int(str(part).strip())
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            offsets.add(seconds)
+
+    return sorted(offsets)
+
+
 def _sample_process_names(findings_summary: dict[str, Any]) -> set[str]:
     """Process names the lineage filter already attributed to the sample.
 
@@ -1518,12 +1549,30 @@ def run_dynamic_analysis(
     # the launched process exited at ~1s and only a surviving child was ever
     # dumped. The early dump is pre-unpacking and mediocre on its own; it is the
     # difference between a mediocre image and none at all.
+    # No set of offsets is right for every family, which is why they are
+    # overridable per run. Formbook spawned its hollowing target at +20s and
+    # exited immediately after, so standard's [5, 25] bracketed the entire
+    # interesting window: the sample was captured once, at +5s, before it had
+    # unpacked anything, and never again. Two runs produced nine dumps and no
+    # image of the sample at the moment that mattered.
     default_offsets = {
         "quick": [4, 15],
         "standard": [5, 25],
         "deep": [3, 20, 60],
     }[run_profile]
-    memory_dump_offsets = config.get("memory_dump_offsets") or default_offsets
+    memory_dump_offsets = _parse_offsets(config.get("memory_dump_offsets")) or default_offsets
+
+    # The guard rails, overridable for the same reason. The process cap in
+    # particular is a property of the chain being analysed, not of the tool.
+    memory_max_processes = int(
+        config.get("memory_dump_max_processes") or DEFAULT_MAX_PROCESSES
+    )
+    memory_max_working_set_mb = int(
+        config.get("memory_dump_max_working_set_mb") or DEFAULT_MAX_WORKING_SET_MB
+    )
+    memory_max_total_mb = int(
+        config.get("memory_dump_max_total_mb") or DEFAULT_MAX_TOTAL_MB
+    )
 
     memory_yara_enabled = bool(config.get("memory_yara_enabled", True))
     yara_rules_dir = config.get("yara_rules_dir") or ""
@@ -1801,6 +1850,9 @@ def run_dynamic_analysis(
                     output_dir=paths["memory"],
                     procdump_path=procdump_path or None,
                     dump_offsets=list(memory_dump_offsets),
+                    max_processes=memory_max_processes,
+                    max_working_set_mb=memory_max_working_set_mb,
+                    max_total_mb=memory_max_total_mb,
                     status_cb=status_cb,
                 )
                 memory_start_result = memory_session.start()
@@ -2325,6 +2377,13 @@ def run_dynamic_analysis(
         # --- Tier 2 telemetry ------------------------------------------------
         "memory_dump_enabled": memory_dump_enabled,
         "memory_dump_offsets": list(memory_dump_offsets),
+        # Recorded because "process cap reached" in the skipped list only makes
+        # sense next to the cap that was reached.
+        "memory_dump_limits": {
+            "max_processes": memory_max_processes,
+            "max_working_set_mb": memory_max_working_set_mb,
+            "max_total_mb": memory_max_total_mb,
+        },
         "memory_preflight": memory_preflight,
         "memory_dump_start": memory_start_result,
         "memory_summary": memory_summary,

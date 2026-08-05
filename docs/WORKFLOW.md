@@ -140,6 +140,25 @@ If a run ends at the cap with the sample still running and still silent, the
 report carries **Observation May Be Incomplete**. Raise the cap and re-run
 before reading that result as clean.
 
+**Memory dumps: offsets and the process cap.** Both default to values that suit
+a resident sample and can be wrong for a loader.
+
+*Offsets* are seconds after launch at which the whole tree is dumped; blank uses
+the profile default of `5, 25`. If the sample exits early, those two can bracket
+the only window that mattered. Formbook spawned its hollowing target at +20s and
+exited immediately after, so across two runs it was captured once at +5s —
+before it had unpacked — and never again. When the previous run's
+*Spawned Processes* shows the sample acting at a particular second, put an
+offset just before it.
+
+*Max processes* caps how many the watcher will dump. The Formbook chain ran to
+six — sample, `powershell.exe`, `conhost.exe`, `RegSvcs.exe`, a second
+`RegSvcs.exe`, `WerFault.exe` — and the old cap of five fell on the second
+`RegSvcs`, the process most likely to hold the payload. The *Processes Not
+Dumped* card names the cap when it is hit; if you see `process cap reached`,
+raise it and re-run. The total-size cap is what actually protects the case
+directory, and raising the process count only permits more small dumps.
+
 ## 4. Export before you revert
 
 Reports land in the case directory inside the guest, which the next revert

@@ -139,6 +139,20 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.max_observation_var = tk.IntVar(
             value=int(cfg.get("dynamic_max_observation_seconds", 600))
         )
+        # Seconds after launch at which the whole tree is dumped. Blank uses the
+        # profile default. No set of offsets suits every family: Formbook
+        # spawned its hollowing target at +20s and exited, so the standard
+        # [5, 25] captured the sample once at +5s -- before it had unpacked --
+        # and never again.
+        self.dump_offsets_var = tk.StringVar(
+            value=str(cfg.get("dynamic_memory_dump_offsets", ""))
+        )
+        # The chain, not the tool, decides how many processes are worth
+        # dumping. A six-process loader chain hit the old cap of 5 exactly on
+        # the process most likely to hold the payload.
+        self.dump_max_processes_var = tk.IntVar(
+            value=int(cfg.get("dynamic_memory_dump_max_processes", 12))
+        )
 
         project_root = Path(__file__).resolve().parents[1]
         self.procmon_path_var = tk.StringVar(
@@ -672,6 +686,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ).pack(side="left", padx=(14, 0))
 
         self._build_telemetry_row(header)
+        self._build_memory_row(header)
 
         workspace = ttk.Frame(frm)
         workspace.grid(row=1, column=0, sticky="nsew", pady=(6 if compact else 8, 0))
@@ -1090,6 +1105,45 @@ class DynamicAnalysisWindow(tk.Toplevel):
         except Exception:
             pass
 
+    def _build_memory_row(self, header):
+        """Dump offsets and the process cap.
+
+        Both are properties of the sample being analysed rather than of the
+        tool, and both went wrong on the same Formbook run: the standard
+        offsets bracketed the window in which it unpacked, and the cap of five
+        fell on the sixth process in its chain -- the one most likely to hold
+        the payload.
+        """
+        ttk.Label(header, text="Memory dumps:").grid(
+            row=4, column=0, sticky="w", padx=(10, 0), pady=(0, 10)
+        )
+
+        row = ttk.Frame(header)
+        row.grid(row=4, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10))
+
+        ttk.Label(row, text="Offsets (s):").pack(side="left")
+
+        ttk.Entry(
+            row,
+            textvariable=self.dump_offsets_var,
+            width=18,
+            style="Dark.TEntry",
+        ).pack(side="left", padx=(6, 4))
+
+        ttk.Label(row, text="blank = profile default (5, 25)").pack(side="left", padx=(0, 16))
+
+        ttk.Label(row, text="Max processes:").pack(side="left")
+
+        ttk.Spinbox(
+            row,
+            from_=1,
+            to=64,
+            textvariable=self.dump_max_processes_var,
+            width=6,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 0))
+
     def _build_telemetry_row(self, header):
         """Toggles for the tier-1 telemetry sources, with live availability."""
         ttk.Label(header, text="Telemetry:").grid(
@@ -1346,6 +1400,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_fakenet_enabled"] = bool(self.fakenet_enabled_var.get())
         self.app.cfg["dynamic_fakenet_path"] = self.fakenet_path_var.get().strip()
         self.app.cfg["dynamic_memory_dump_enabled"] = bool(self.memory_dump_enabled_var.get())
+        self.app.cfg["dynamic_memory_dump_offsets"] = self.dump_offsets_var.get().strip()
+        self.app.cfg["dynamic_memory_dump_max_processes"] = int(self.dump_max_processes_var.get())
         self.app.cfg["dynamic_memory_yara_enabled"] = bool(self.memory_yara_enabled_var.get())
 
         config_path = self._project_root() / "config.json"
@@ -1977,6 +2033,10 @@ ul {{ margin-top: 8px; }}
             "fakenet_path": self.fakenet_path_var.get().strip(),
             "memory_dump_enabled": bool(self.memory_dump_enabled_var.get()),
             "memory_yara_enabled": bool(self.memory_yara_enabled_var.get()),
+            # Blank offsets fall back to the run profile's defaults in the
+            # orchestrator, which parses the text.
+            "memory_dump_offsets": self.dump_offsets_var.get().strip(),
+            "memory_dump_max_processes": int(self.dump_max_processes_var.get()),
         }
 
         self._save_cfg()
@@ -2002,6 +2062,11 @@ ul {{ margin-top: 8px; }}
             "end",
             f"  adaptive_observation={config['adaptive_observation']} "
             f"max_observation_seconds={config['max_observation_seconds']}\n",
+        )
+        self.output.insert(
+            "end",
+            f"  memory_dump_offsets={config['memory_dump_offsets'] or 'profile default'} "
+            f"max_processes={config['memory_dump_max_processes']}\n",
         )
         self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n")
         self.output.insert("end", f"  procmon_path={procmon_path}\n")
