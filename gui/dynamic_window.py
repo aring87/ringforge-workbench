@@ -19,6 +19,10 @@ from typing import Dict, Optional
 from PIL import Image, ImageTk
 
 from dynamic_analysis.html_report import write_dynamic_html_report
+from dynamic_analysis.memory_dump import (
+    DEFAULT_MAX_PROCESSES,
+    DEFAULT_SPAWN_REDUMP_SECONDS,
+)
 from dynamic_analysis.orchestrator import ContainmentError, run_dynamic_analysis
 from static_triage_engine.scoring import combined_score_from_case_dir
 from gui import theme as T
@@ -151,7 +155,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
         # dumping. A six-process loader chain hit the old cap of 5 exactly on
         # the process most likely to hold the payload.
         self.dump_max_processes_var = tk.IntVar(
-            value=int(cfg.get("dynamic_memory_dump_max_processes", 12))
+            value=int(
+                cfg.get("dynamic_memory_dump_max_processes", DEFAULT_MAX_PROCESSES)
+            )
+        )
+        # A child is dumped the moment it appears, which for a hollowing loader
+        # is before anything has been written into it -- the target is created
+        # suspended, then unmapped and written. This is how long to wait before
+        # taking the second image that has the payload in it. 0 turns it off.
+        self.dump_redump_var = tk.IntVar(
+            value=int(
+                cfg.get(
+                    "dynamic_memory_dump_spawn_redump_seconds",
+                    DEFAULT_SPAWN_REDUMP_SECONDS,
+                )
+            )
         )
 
         project_root = Path(__file__).resolve().parents[1]
@@ -1164,7 +1182,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
             width=6,
             style="Dark.TSpinbox",
             command=self._refresh_summary_from_inputs,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(6, 16))
+
+        ttk.Label(row, text="Re-dump children after (s):").pack(side="left")
+
+        ttk.Spinbox(
+            row,
+            from_=0,
+            to=120,
+            textvariable=self.dump_redump_var,
+            width=6,
+            style="Dark.TSpinbox",
+            command=self._refresh_summary_from_inputs,
+        ).pack(side="left", padx=(6, 4))
+
+        ttk.Label(row, text="0 = off").pack(side="left")
 
     def _build_telemetry_row(self, header):
         """Toggles for the tier-1 telemetry sources, with live availability."""
@@ -1484,6 +1516,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_memory_dump_enabled"] = bool(self.memory_dump_enabled_var.get())
         self.app.cfg["dynamic_memory_dump_offsets"] = self.dump_offsets_var.get().strip()
         self.app.cfg["dynamic_memory_dump_max_processes"] = int(self.dump_max_processes_var.get())
+        self.app.cfg["dynamic_memory_dump_spawn_redump_seconds"] = int(self.dump_redump_var.get())
         self.app.cfg["dynamic_memory_yara_enabled"] = bool(self.memory_yara_enabled_var.get())
 
         config_path = self._project_root() / "config.json"
@@ -2137,6 +2170,7 @@ ul {{ margin-top: 8px; }}
             # orchestrator, which parses the text.
             "memory_dump_offsets": self.dump_offsets_var.get().strip(),
             "memory_dump_max_processes": int(self.dump_max_processes_var.get()),
+            "memory_dump_spawn_redump_seconds": int(self.dump_redump_var.get()),
         }
 
         self._save_cfg()
@@ -2166,7 +2200,8 @@ ul {{ margin-top: 8px; }}
         self.output.insert(
             "end",
             f"  memory_dump_offsets={config['memory_dump_offsets'] or 'profile default'} "
-            f"max_processes={config['memory_dump_max_processes']}\n",
+            f"max_processes={config['memory_dump_max_processes']} "
+            f"spawn_redump={config['memory_dump_spawn_redump_seconds'] or 'off'}\n",
         )
         self.output.insert("end", f"  procmon_enabled={config['procmon_enabled']}\n")
         self.output.insert("end", f"  procmon_path={procmon_path}\n")

@@ -4,7 +4,9 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-05 · `main` at `55dd5f5`
+**Last updated:** 2026-08-05, after the spawn re-dump landed. The commit that
+last touched this file is the anchor — `git log -1 docs/HANDOFF.md` — rather
+than a hash written inline, which has been stale here before.
 
 ---
 
@@ -124,16 +126,40 @@ only when the process is one loaders hollow — `RegSvcs`, `RegAsm`,
 `InstallUtil`, `MSBuild` and friends. Nothing legitimate starts `RegSvcs.exe`
 and has it fault in anonymous memory.
 
-### 3. The spawn-triggered dump always fires too early
+### 3. The spawn-triggered dump fires too early — re-dump added, unproven
 
 The watcher dumps a new descendant the moment it appears, which is before
 hollowing completes. Across three runs, every `RegSvcs` image is ~15 MB of
-empty shell, and the payload was only ever captured by the crash dump.
+empty shell, and the payload was only ever captured by the crash dump — an
+artifact that exists only because that payload happened to crash.
 
-Fixed offsets cannot cover this either: observed dormancy was +20s, +24s and
-+42s for the same binary, so an offset tuned to one run misses the next. **A
-re-dump at spawn + N seconds would land where the payload lives**, and the
-watcher already knows when each child appeared.
+Fixed offsets cannot cover this: observed dormancy was +20s, +24s and +42s for
+the same binary, so an offset tuned to one run misses the next.
+
+**A second dump per child now fires at spawn + 10s**, measured from that
+child's own first sighting rather than from launch, which is what makes it a
+property of the technique instead of of the sample's dormancy. Trigger
+`spawn-redump`, filename suffix `_redump`, `memory_dump_spawn_redump_seconds`
+in the run summary, and a spinbox next to Max processes in the GUI. `0` turns
+it off.
+
+The pairing is the point: the spawn dump is the child before the loader touched
+it and the re-dump is the same PID after, so a payload is visible as a
+difference between two images rather than having to be recognised in one.
+
+Three things to check on the first run that uses it:
+
+- **10s is an estimate, not a measurement.** Hollowing completes in well under
+  a second, so anything past ~1s has the payload; the pressure the other way is
+  that a faulting payload takes the process with it. If the skipped list says
+  `exited before its +10s re-dump`, lower it.
+- **The process cap went 12 → 20**, because the cap counts dumps rather than
+  processes and re-dumps are taken last — a cap that binds drops precisely the
+  image this exists to collect.
+- **A re-dump still owed when the watcher stops is recorded**, and the reason
+  distinguishes the two cases: `exited before` means the delay wants lowering,
+  `observation ended before` means the window was too short and the process may
+  still have been holding the payload at teardown.
 
 ### 4. No anti-analysis detection
 
@@ -189,6 +215,7 @@ run for a long time without showing.
 | Adaptive window | **Fired, on the wrong case** — see below |
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since |
+| Spawn re-dump | **Unproven on a sample.** Timing verified against a real process tree — each child re-dumped on its own clock — but no detonation has used it |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -279,7 +306,9 @@ Order to check things in, learned the hard way:
    Was Not Served, Observation May Be Incomplete. Each one means part of the
    run is unobserved rather than quiet.
 3. **`Capture` column** on the dumps. `Live (smeared)` qualifies every YARA
-   result from that image.
+   result from that image. A PID appearing twice, once `process-spawn` and once
+   `spawn-redump`, is a before/after pair — a size jump between them is a
+   payload being written in.
 4. **Evidence Behind The Verdict.** Which categories fired and which were judged
    strong. The score is descriptive; this is the reasoning.
 5. **Crashes In The Sample's Tree.** A fault outside any mapped module is

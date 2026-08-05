@@ -62,9 +62,37 @@ _POLL_INTERVAL_SECONDS = 0.5
 #:
 #: The total-size cap is the one that really protects the case directory, and it
 #: is unchanged. Raising the process count only allows more *small* dumps.
-DEFAULT_MAX_PROCESSES = 12
+#:
+#: Raised again, from 12, when the delayed re-dump below was added: it takes a
+#: second image of every child, so the same chain now consumes close to twice as
+#: many. The cap counts dumps rather than distinct processes, and re-dumps are
+#: the last to be taken -- so a cap that binds drops precisely the image the
+#: re-dump exists to collect.
+DEFAULT_MAX_PROCESSES = 20
 DEFAULT_MAX_WORKING_SET_MB = 1024
 DEFAULT_MAX_TOTAL_MB = 4096
+
+#: Seconds after a descendant first appears to dump it a second time.
+#:
+#: The spawn dump fires the instant a child is seen, which is by construction
+#: before anything has been written into it. A loader that hollows its child
+#: creates it suspended, unmaps, writes the payload and only then resumes, so
+#: the image captured at first sighting is an empty shell. Across three runs of
+#: one .NET loader every RegSvcs.exe dump was ~15 MB of untouched host image,
+#: and the payload was only ever recovered from a WER crash dump -- which exists
+#: only because that particular payload crashed.
+#:
+#: A fixed offset from launch cannot substitute. The same binary spawned its
+#: target at +20s, +24s and +42s across three runs, so an offset tuned to one
+#: run misses the next; measured from the spawn instead, the delay is a property
+#: of the technique rather than of the sample's dormancy.
+#:
+#: 10s is an estimate, not a measurement. Hollowing completes in well under a
+#: second, so anything past ~1s captures the mapped payload; the pressure the
+#: other way is that a payload which faults takes the process with it. It is
+#: recorded in the run summary and overridable per run so the first runs that
+#: use it can tune it.
+DEFAULT_SPAWN_REDUMP_SECONDS = 10
 
 #: Per-process ProcDump timeout. Full dumps of a large working set are slow on
 #: a VM's virtual disk, but a hang here would hold up the whole run teardown.
@@ -195,11 +223,14 @@ class MemoryDumpSession:
         max_processes: int = DEFAULT_MAX_PROCESSES,
         max_working_set_mb: int = DEFAULT_MAX_WORKING_SET_MB,
         max_total_mb: int = DEFAULT_MAX_TOTAL_MB,
+        spawn_redump_seconds: int = DEFAULT_SPAWN_REDUMP_SECONDS,
         status_cb: StatusCallback = None,
     ):
         self.output_dir = Path(output_dir)
         self.procdump_path = procdump_path
         self.dump_offsets = sorted(set(int(o) for o in (dump_offsets or [25]) if int(o) >= 0))
+        #: 0 disables the second dump entirely; the spawn dump is unaffected.
+        self.spawn_redump_seconds = max(0, int(spawn_redump_seconds))
         self.max_processes = int(max_processes)
         self.max_working_set_mb = int(max_working_set_mb)
         self.max_total_mb = int(max_total_mb)
@@ -219,6 +250,14 @@ class MemoryDumpSession:
         #: PIDs already considered for a spawn dump, successful or not, so a
         #: process is never dumped twice or retried every tick.
         self._spawn_dumped: set[int] = set()
+        #: PID -> elapsed seconds when it was first seen, which is what the
+        #: second dump is measured from. Populated for every PID the spawn dump
+        #: considers, including ones it could not capture: a child that was
+        #: already gone cannot be re-dumped either, and recording it here keeps
+        #: the two decisions reading from the same set.
+        self._spawn_seen: dict[int, float] = {}
+        #: PIDs already considered for the delayed second dump.
+        self._redumped: set[int] = set()
 
         # PID -> descriptor, accumulated while processes are alive so a tree
         # that has already collapsed can still be reported.
@@ -265,6 +304,7 @@ class MemoryDumpSession:
             "error": "",
             "procdump_path": str(self.procdump),
             "dump_offsets": list(self.dump_offsets),
+            "spawn_redump_seconds": self.spawn_redump_seconds,
         }
 
     def set_root_pid(self, pid: int) -> None:
@@ -326,6 +366,7 @@ class MemoryDumpSession:
             "procdump_path": str(self.procdump) if self.procdump else "",
             "root_pid": self._root_pid,
             "dump_offsets": list(self.dump_offsets),
+            "spawn_redump_seconds": self.spawn_redump_seconds,
             "dumps": dumps,
             "skipped": skipped,
             "observed_processes": observed,
@@ -355,6 +396,18 @@ class MemoryDumpSession:
         launched_at = time.monotonic()
         pending = list(self.dump_offsets)
 
+        try:
+            self._watch_loop(launched_at, pending)
+        finally:
+            # Every exit from the loop is a point where a scheduled re-dump can
+            # still be outstanding -- the tree collapsed, or the run ended
+            # first. Recorded rather than dropped, so "the payload window closed
+            # before we could look again" cannot read as "we looked and found
+            # nothing".
+            self._flush_pending_redumps(time.monotonic() - launched_at)
+
+    def _watch_loop(self, launched_at: float, pending: list[int]) -> None:
+        """The poll loop itself. Split out so every exit runs the flush above."""
         # Not `while pending`: a tree that has finished its scheduled offsets can
         # still spawn the process that matters. The loop now runs until the
         # session is stopped or nothing of the sample is left alive.
@@ -383,6 +436,12 @@ class MemoryDumpSession:
             # tree looks like at a chosen moment -- and the spawn dump excludes
             # the root, so they do not duplicate each other.
             self._dump_spawned_children(elapsed)
+
+            # And again once the child has had time to be written into. The
+            # spawn dump above necessarily catches it before that: a hollowing
+            # loader creates its target suspended and only then unmaps and
+            # writes, so first sighting is always an empty shell.
+            self._dump_spawn_redumps(elapsed)
 
             # The root exiting is the last moment anything can be salvaged from
             # a tree that may be about to disappear entirely, so it triggers an
@@ -492,6 +551,13 @@ class MemoryDumpSession:
                 )
                 continue
 
+            # Queued for the delayed second dump only once the spawn dump is
+            # actually going ahead. A child that was already gone, or that a cap
+            # turned away, has been recorded as skipped once already, and the
+            # re-dump could only record the same thing a second time.
+            with self._lock:
+                self._spawn_seen[pid] = elapsed
+
             self._emit(
                 f"Memory dump at +{int(elapsed)}s (process-spawn): "
                 f"new process pid {pid} ({target.get('name') or '?'})"
@@ -516,6 +582,125 @@ class MemoryDumpSession:
                 )
 
         return dumped_any
+
+    def _dump_spawn_redumps(self, elapsed: float) -> bool:
+        """Dump spawned children again once they have had time to be written.
+
+        The pairing is the point. The spawn dump says what the process looked
+        like before the loader touched it and this one says what it looks like
+        after, so a payload that appears between them is visible as a
+        difference between two images of the same PID rather than having to be
+        recognised in isolation.
+        """
+        if not self.spawn_redump_seconds:
+            return False
+
+        with self._lock:
+            due_pids = [
+                pid
+                for pid, seen_at in self._spawn_seen.items()
+                if pid not in self._redumped
+                and elapsed >= seen_at + self.spawn_redump_seconds
+            ]
+            candidates = [
+                dict(self._known[pid]) for pid in due_pids if pid in self._known
+            ]
+
+        dumped_any = False
+        for target in candidates:
+            if self._stop_event.is_set():
+                return dumped_any
+
+            pid = int(target["pid"])
+            # Marked before the attempt, for the same reason as the spawn dump:
+            # a failure must not become a retry on every subsequent tick.
+            with self._lock:
+                self._redumped.add(pid)
+
+            if not self._pid_alive(pid):
+                # The interesting case, and the reason this is recorded rather
+                # than passed over. A hollowed process that faults takes the
+                # payload with it, so "died before the re-dump" says the window
+                # closed early -- and points at the WER crash dump as the only
+                # remaining source for that image.
+                self._record_skip(
+                    target,
+                    int(elapsed),
+                    f"process exited before its +{self.spawn_redump_seconds}s re-dump",
+                )
+                continue
+
+            with self._lock:
+                total_mb = self._total_bytes / (1024 * 1024)
+                already = len([d for d in self._dumps if d.get("success")])
+
+            if already >= self.max_processes:
+                self._record_skip(target, int(elapsed), "process cap reached")
+                continue
+            if total_mb >= self.max_total_mb:
+                self._record_skip(target, int(elapsed), "total dump size cap reached")
+                continue
+
+            working_set = self._working_set_mb(pid)
+            if working_set > self.max_working_set_mb:
+                self._record_skip(
+                    target,
+                    int(elapsed),
+                    f"working set {working_set} MB exceeds the {self.max_working_set_mb} MB limit",
+                )
+                continue
+
+            self._emit(
+                f"Memory dump at +{int(elapsed)}s (spawn-redump): "
+                f"pid {pid} ({target.get('name') or '?'}), "
+                f"{self.spawn_redump_seconds}s after it appeared"
+            )
+
+            record = self._dump_one(target, int(elapsed), "spawn-redump")
+            with self._lock:
+                self._dumps.append(record)
+                self._total_bytes += int(record.get("size", 0) or 0)
+
+            if record.get("success"):
+                dumped_any = True
+                self._emit(
+                    f"  dumped pid {record['pid']} ({record['name'] or '?'}) "
+                    f"-> {Path(record['path']).name} "
+                    f"({int(record.get('size', 0)) // (1024 * 1024)} MB)"
+                )
+            else:
+                self._emit(
+                    f"  dump failed for pid {record['pid']} "
+                    f"({record['name'] or '?'}): {record.get('error', 'unknown error')}"
+                )
+
+        return dumped_any
+
+    def _flush_pending_redumps(self, elapsed: float) -> None:
+        """Record re-dumps that were still owed when the watcher stopped."""
+        if not self.spawn_redump_seconds:
+            return
+
+        with self._lock:
+            outstanding = [
+                dict(self._known[pid])
+                for pid in self._spawn_seen
+                if pid not in self._redumped and pid in self._known
+            ]
+            self._redumped.update(int(t["pid"]) for t in outstanding)
+
+        for target in outstanding:
+            # Which of the two ran out first is the whole content of this
+            # record. "It died" says the payload window was shorter than the
+            # delay and the delay wants lowering; "the run ended" says the
+            # observation window was too short and the process may well still
+            # have been holding the payload when the run was torn down.
+            reason = (
+                f"observation ended before its +{self.spawn_redump_seconds}s re-dump"
+                if self._pid_alive(int(target["pid"]))
+                else f"process exited before its +{self.spawn_redump_seconds}s re-dump"
+            )
+            self._record_skip(target, int(elapsed), reason)
 
     def _pid_alive(self, pid: int | None) -> bool:
         if pid is None:
@@ -755,8 +940,10 @@ class MemoryDumpSession:
         safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
         # The trigger is part of the filename because an exit-triggered dump can
         # land on the same whole second as a scheduled one, and the two are
-        # different evidence.
-        suffix = "_exit" if trigger == "process-exit" else ""
+        # different evidence. The re-dump needs it for a sharper reason: a
+        # scheduled offset landing on the same second would otherwise overwrite
+        # the one image taken after the payload was written.
+        suffix = {"process-exit": "_exit", "spawn-redump": "_redump"}.get(trigger, "")
         out_path = self.output_dir / f"{safe_name}_{pid}_t{offset}{suffix}.dmp"
 
         record: dict[str, Any] = {

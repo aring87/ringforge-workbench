@@ -39,6 +39,7 @@ from dynamic_analysis.memory_dump import (
     DEFAULT_MAX_PROCESSES,
     DEFAULT_MAX_TOTAL_MB,
     DEFAULT_MAX_WORKING_SET_MB,
+    DEFAULT_SPAWN_REDUMP_SECONDS,
     MemoryDumpSession,
     memory_dump_status,
     successful_dumps,
@@ -1009,6 +1010,22 @@ def _parse_offsets(value: Any) -> list[int]:
     return sorted(offsets)
 
 
+def _parse_redump_seconds(value: Any) -> int:
+    """The spawn re-dump delay, from a number or a GUI text field.
+
+    Unlike the offsets, `0` is meaningful here -- it turns the second dump off
+    -- so blank and zero cannot share a fallback. Blank, or anything that is not
+    a number, takes the default; a real `0` disables.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return DEFAULT_SPAWN_REDUMP_SECONDS
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_SPAWN_REDUMP_SECONDS
+    return max(0, seconds)
+
+
 def _sample_process_names(findings_summary: dict[str, Any]) -> set[str]:
     """Process names the lineage filter already attributed to the sample.
 
@@ -1638,6 +1655,15 @@ def run_dynamic_analysis(
         config.get("memory_dump_max_total_mb") or DEFAULT_MAX_TOTAL_MB
     )
 
+    # Seconds after a child appears to dump it a second time. Measured from the
+    # spawn rather than from launch, because what it is waiting for -- a loader
+    # unmapping its child and writing a payload into it -- happens on the
+    # child's clock, while dormancy before the spawn varies run to run.
+    # `0` disables it. See DEFAULT_SPAWN_REDUMP_SECONDS for why 10.
+    memory_spawn_redump_seconds = _parse_redump_seconds(
+        config.get("memory_dump_spawn_redump_seconds")
+    )
+
     # A crashing descendant is the case the scheduled offsets cannot cover: a
     # hollowed process that lives four seconds falls between them, and the
     # crash dump is taken at the one moment the payload is both written and
@@ -1962,7 +1988,14 @@ def run_dynamic_analysis(
                 _emit(
                     status_cb,
                     "Starting process memory dump watcher "
-                    f"(offsets: {', '.join(f'+{o}s' for o in memory_dump_offsets)})...",
+                    f"(offsets: {', '.join(f'+{o}s' for o in memory_dump_offsets)}"
+                    + (
+                        f"; children re-dumped +{memory_spawn_redump_seconds}s "
+                        "after they appear"
+                        if memory_spawn_redump_seconds
+                        else "; spawn re-dump disabled"
+                    )
+                    + ")...",
                 )
                 memory_session = MemoryDumpSession(
                     output_dir=paths["memory"],
@@ -1971,6 +2004,7 @@ def run_dynamic_analysis(
                     max_processes=memory_max_processes,
                     max_working_set_mb=memory_max_working_set_mb,
                     max_total_mb=memory_max_total_mb,
+                    spawn_redump_seconds=memory_spawn_redump_seconds,
                     status_cb=status_cb,
                 )
                 memory_start_result = memory_session.start()
@@ -2573,6 +2607,10 @@ def run_dynamic_analysis(
         # --- Tier 2 telemetry ------------------------------------------------
         "memory_dump_enabled": memory_dump_enabled,
         "memory_dump_offsets": list(memory_dump_offsets),
+        # The delay a `spawn-redump` row was taken at, and the one that a
+        # "exited before its +Ns re-dump" skip was measured against. A run that
+        # collected no re-dumps reads differently at 10s than at 0.
+        "memory_dump_spawn_redump_seconds": memory_spawn_redump_seconds,
         # Recorded because "process cap reached" in the skipped list only makes
         # sense next to the cap that was reached.
         "memory_dump_limits": {
