@@ -46,6 +46,34 @@ That one command does four things in an order that matters:
 Reverting discards the guest's `cases\` directory. Export anything you still
 want before this step; that is what the prompt is for, and `-Force` skips it.
 
+### Replacing the baseline: revert first
+
+`-Delete` **merges** a snapshot into its parent and `-Take` captures the current
+state. Neither reverts anything, so replacing the baseline without reverting
+first bakes in whatever is on the disk right now — including the last
+detonation.
+
+```
+revert  →  make the change  →  -Delete  →  -Take
+```
+
+Missing the revert has produced a post-detonation baseline twice, and both
+times the only symptom was a stray `cases\<hash>` folder that someone happened
+to notice. It is worth checking for explicitly before you take the snapshot:
+
+```powershell
+dir cases ; dir samples
+```
+
+`samples\` should hold `mimikatz.exe`, `mimikatz.upx.exe` and
+`upx_control.json` and nothing else — a live sample left there is present on
+every future revert. `cases\` should not exist.
+
+Note that deleting the old snapshot leaves **no clean restore point** until the
+new one is taken. If the state turns out to be dirty after the delete, there is
+nothing to go back to, which is why the check belongs before the delete rather
+than after.
+
 ## 2. Getting the sample in
 
 The VM is contained, so there is no network path in. Options, in order of
