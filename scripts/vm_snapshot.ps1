@@ -191,6 +191,70 @@ function Get-VmRunState {
   return "unknown"
 }
 
+#: States VirtualBox passes *through*. None of them is a resting place, and
+#: nothing that changes a VM may be issued while one is current.
+$script:TransientStates = @(
+  'restoring', 'restoringsnapshot', 'deletingsnapshot', 'deletingsnapshotlive',
+  'deletingsnapshotlivepaused', 'settingup', 'saving', 'stopping', 'starting',
+  'snapshotting', 'onlinesnapshotting', 'livesnapshotting', 'teleporting'
+)
+
+function Wait-VmSettled {
+  <#
+    .SYNOPSIS
+      Block until the VM is out of a transient state.
+
+    .DESCRIPTION
+      VBoxManage returns as soon as it has *queued* a state change, not when the
+      change is done. `snapshot restore` is the worst of them: it returns while
+      VirtualBox is still in "restoringsnapshot", and issuing anything else in
+      that window can wedge the session in a transient state that no VBoxManage
+      command clears -- the only way out is restarting VBoxSVC, which takes
+      every other VM on the host down with it.
+
+      That is not hypothetical. Two `-Baseline -Force` runs back to back did
+      exactly this: the second restore was still in flight when the script
+      reported "VM is restoring snapshot; changing the saved adapter
+      configuration", carried on to modifyvm and startvm, and left the machine
+      stuck in restoringsnapshot with no process behind it.
+
+      Reverting twice in a row is a normal thing to do, so waiting is the
+      script's job rather than the operator's. Every state-changing step calls
+      this first.
+  #>
+  param(
+    [string]$Exe,
+    [string]$Name,
+    [int]$Seconds = 120,
+    [string]$Because = ""
+  )
+
+  $state = Get-VmRunState -Exe $Exe -Name $Name
+  if ($script:TransientStates -notcontains $state) { return $state }
+
+  $label = if ($Because) { " ($Because)" } else { "" }
+  Write-Info "Waiting for VirtualBox to finish '$state'$label..."
+
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 700
+    $state = Get-VmRunState -Exe $Exe -Name $Name
+    if ($script:TransientStates -notcontains $state) {
+      Write-Ok "Settled ($state)."
+      return $state
+    }
+  }
+
+  # Naming the remedy here matters: the failure is opaque otherwise, and the
+  # obvious next move -- run the command again -- makes it worse.
+  throw ("VM '$Name' is stuck in '$state' after $Seconds seconds. " +
+         "VirtualBox will not accept another operation until it settles. " +
+         "If it never does, the session is wedged: save or stop any other " +
+         "running VM, close the VirtualBox Manager window, then " +
+         "'Stop-Process -Name VBoxSVC -Force' and retry. VBoxSVC restarts on " +
+         "the next VBoxManage call and disk images are not touched.")
+}
+
 function Get-Snapshots {
   param([string]$Exe, [string]$Name)
 
@@ -216,7 +280,8 @@ function Get-Snapshots {
 function Stop-VmHard {
   param([string]$Exe, [string]$Name)
 
-  $state = Get-VmRunState -Exe $Exe -Name $Name
+  # A poweroff issued mid-transition is one of the ways the session wedges.
+  $state = Wait-VmSettled -Exe $Exe -Name $Name -Because "before powering off"
   if ($state -match 'poweroff|aborted') {
     Write-Info "VM is already stopped ($state)."
     return
@@ -427,6 +492,9 @@ try {
       throw ("VBoxManage failed to take the snapshot: " + ($taken.Output -join ' '))
     }
 
+    # Left settled, not merely queued: the next thing an operator runs is
+    # usually another one of these, and it would arrive mid-transition.
+    Wait-VmSettled -Exe $exe -Name $VMName -Because "snapshot being written" | Out-Null
     Write-Ok "Snapshot '$Take' taken."
     exit 0
   }
@@ -455,6 +523,11 @@ try {
     if ($deleted.ExitCode -ne 0) {
       throw ("VBoxManage failed to delete the snapshot: " + ($deleted.Output -join ' '))
     }
+    # Deleting merges a differencing disk into its parent, which is the
+    # slowest operation here. -Delete is almost always followed by -Take, so
+    # returning before the merge finishes hands the next command a transient
+    # state.
+    Wait-VmSettled -Exe $exe -Name $VMName -Seconds 900 -Because "merging the differencing disk" | Out-Null
     Write-Ok "Snapshot '$Delete' deleted."
     exit 0
   }
@@ -480,6 +553,11 @@ try {
   if ($restored.ExitCode -ne 0) {
     throw ("VBoxManage failed to restore '$target': " + ($restored.Output -join ' '))
   }
+
+  # The restore is queued, not finished. Everything below changes the VM --
+  # modifyvm for containment, then startvm -- and either one issued now is what
+  # wedges the session.
+  Wait-VmSettled -Exe $exe -Name $VMName -Because "restore in progress" | Out-Null
   Write-Ok "Restored to '$target'."
 
   # Before starting, never after. A snapshot restores the cable state it was
@@ -500,10 +578,15 @@ try {
   }
 
   Write-Step "Starting"
+  Wait-VmSettled -Exe $exe -Name $VMName -Because "before starting" | Out-Null
   $type = if ($Headless) { "headless" } else { "gui" }
   $started = Invoke-VBox -Exe $exe -Arguments @("startvm", $VMName, "--type", $type)
   if ($started.ExitCode -ne 0) {
-    throw ("VBoxManage failed to start '$VMName': " + ($started.Output -join ' '))
+    # E_FAIL with no detail is what a launch into a transient state returns,
+    # and the state is the only thing that explains it.
+    $now = Get-VmRunState -Exe $exe -Name $VMName
+    throw ("VBoxManage failed to start '$VMName' (state: $now): " +
+           ($started.Output -join ' '))
   }
 
   $ready = Wait-GuestReady -Exe $exe -Name $VMName -Seconds $WaitSeconds -Address $GuestAddress

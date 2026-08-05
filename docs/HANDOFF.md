@@ -47,6 +47,16 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 - **Hard power-offs corrupt git refs occasionally.** `-Take` powers the VM off
   hard by design. A broken `ORIG_HEAD` showed up once; deleting the file fixes
   it, and `git fsck` confirmed no other damage. The guest clone is disposable.
+- **A wedged VirtualBox session needs VBoxSVC restarted, and that takes every
+  other VM with it.** VBoxManage returns when a state change is *queued*, not
+  done. Issuing anything while the VM is in a transient state — `restoringsnapshot`
+  is the usual one — can leave it stuck there with no process behind it, and no
+  VBoxManage command clears it: `startvm` returns a bare `E_FAIL`. The way out
+  is to save or stop every other running VM, close the Manager window, then
+  `Stop-Process -Name VBoxSVC -Force`; it respawns on the next VBoxManage call
+  and disk images are untouched. `vm_snapshot.ps1` now waits for the state to
+  settle before each step, so the script no longer causes this — but a manual
+  VBoxManage command still can.
 
 ---
 
