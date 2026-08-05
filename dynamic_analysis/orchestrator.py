@@ -227,7 +227,7 @@ def run_sample(
     post_exit_observation_seconds: int = 120,
     installer_observation_mode: bool = True,
     adaptive_observation: bool = True,
-    max_observation_seconds: int = 300,
+    max_observation_seconds: int = 600,
     observation_extension_seconds: int = 30,
     activity_probe: Optional[Callable[[], bool]] = None,
     cancel_event: CancelEvent = None,
@@ -1411,18 +1411,27 @@ def run_dynamic_analysis(
     # property of the sample: one AgentTesla binary sat quiet for between 21 and
     # 83 seconds across six runs of the same file.
     #
-    # The cap was 600s and is 300s, because extending is not free. A mimikatz
+    # The cap is *total* observation, not extra: the window starts at
+    # timeout_seconds and grows toward this. So it has to clear the sleep being
+    # outlasted with room to watch what happens afterwards. 600s covers the
+    # five-minute evasion sleep this exists for and leaves five minutes to
+    # observe the wake; a 300s cap would buy four extension steps and could not
+    # catch that sleep at all.
+    #
+    # It only ever applies to a sample still running and still silent. Anything
+    # that exits, or spawns, ends on the normal path, so a high cap costs
+    # nothing on a run that goes normally.
+    #
+    # Where it does cost is a sample that is resident by design. A mimikatz
     # control sat at its interactive prompt -- alive and childless, which the
-    # probe cannot tell from a crypter asleep -- and ran to the full cap. The
-    # run took 1148s against 271s for the same control on a fixed window, and
-    # 548s of that was teardown: 113k Procmon events instead of ~45k, all of
-    # which get parsed. Worse, Windows' idle maintenance fired four minutes in
-    # and landed seven LOLBins plus a PowerShell troubleshooting script in the
-    # findings. Half the attribution here is time-windowed rather than
-    # lineage-based, and a longer window degrades every part of it.
+    # probe cannot distinguish from a crypter asleep -- and ran to the full cap
+    # for nothing: 1148s against 271s on a fixed window. That is what the
+    # per-run switch is for, and both control READMEs say to turn it off.
+    # Lowering the cap is the wrong lever; it penalises the real samples this
+    # is meant to catch without fixing the resident case.
     adaptive_observation = bool(config.get("adaptive_observation", True))
     max_observation_seconds = max(
-        int(config.get("max_observation_seconds", 300)), timeout_seconds
+        int(config.get("max_observation_seconds", 600)), timeout_seconds
     )
     observation_extension_seconds = int(config.get("observation_extension_seconds", 30))
 

@@ -254,12 +254,24 @@ first and corrosive to the second:**
 - Windows Troubleshooting ran PowerShell, raising a false
   `scripted_execution` category. See gap 5.
 
-The cap is now **300s**, and both control READMEs say to untick *Extend if
-dormant* — neither sample can benefit, and both are resident by construction.
-The probe still cannot tell "waiting at a prompt" from "asleep before
-unpacking", and there is no cheap signal that does: both are alive, quiet and
-childless. Turning it off where the answer is known in advance is the whole
-mitigation.
+Both control READMEs now say to untick *Extend if dormant* — neither sample can
+benefit, and both are resident by construction. The probe still cannot tell
+"waiting at a prompt" from "asleep before unpacking", and there is no cheap
+signal that does: both are alive, quiet and childless. Turning it off where the
+answer is known in advance is the whole mitigation.
+
+**The cap stays at 600s.** It was briefly dropped to 300 and put back, because
+lowering it is the wrong lever: the cap is *total* observation, not extra, so
+300 buys four extension steps and cannot outlast the five-minute sleep the
+feature exists for. It penalises the real samples this is meant to catch
+without helping the resident case at all — a resident sample still runs to
+whatever the cap is.
+
+After the PowerShell fix above, the only *scored* input that still scales with
+window length is the persistence diff, and it held clean across a ten-minute
+run with a full round of Windows idle maintenance in it. LOLBin counts and
+Procmon volume feed only the context score, which is capped at 15, so they
+degrade the report rather than the verdict.
 
 ---
 

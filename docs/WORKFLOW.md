@@ -96,24 +96,40 @@ PowerShell was used" and "we were not listening".
 a sample that sits resident. Raise it only for something that stages behaviour
 over minutes — installers, droppers with sleep timers.
 
-**Extend if dormant.** On by default, capped at 300 seconds. The timeout above
+**Extend if dormant.** On by default, capped at 600 seconds. The timeout above
 is the *base* window; if it expires while the sample is still running and
 nothing has been seen to spawn, the run keeps waiting in 30-second steps up to
 the cap. A sample that has exited, or that has already spawned something, is
 never extended — so this costs nothing on a run that went normally.
 
+**The cap is total observation, not extra.** The window starts at the timeout
+and grows toward it, so the cap has to clear the sleep you are outlasting with
+room to watch what happens next. 600s covers the five-minute evasion sleep this
+exists for and leaves five minutes to see the wake. Raise it only with a reason
+— a family documented as sleeping longer, or a previous run that ended
+`extension_cap_reached` with nothing observed. Past about 900s you are mostly
+buying Windows housekeeping.
+
 **Untick it for anything resident.** Both controls, and any sample that sits at
 a prompt or idles in-process. The probe cannot tell "alive and waiting for
 input" from "asleep and about to unpack", so a resident sample runs to the cap
-every time. `mimikatz.upx.exe` did exactly that: 14 extensions, and a run of
-1148 seconds against 271 for the same control on a fixed window.
+every time. `mimikatz.upx.exe` did exactly that: 14 extensions, 1148 seconds
+against 271 for the same control on a fixed window, with 113,000 Procmon events
+to parse instead of 45,000.
 
-The extra observation time is the smaller half of the cost. Procmon captured
-113,000 events instead of 45,000, all of which get parsed, and Windows' idle
-maintenance fired partway through — putting seven LOLBins and a PowerShell
-troubleshooting script into the findings. Some of this pipeline's attribution
-is bounded by the window rather than by lineage, and a longer window makes
-every part of that noisier.
+What a long window costs, in order:
+
+- **The persistence diffs are the only scored input that scales with it.**
+  Tasks, services and autoruns are before/after snapshots, so anything Windows
+  installs mid-run can move `suspicious_new_or_modified` and fire the
+  persistence category. On the 10-minute control run a full round of idle
+  maintenance — NGen, cleanmgr, TrustedInstaller, DISM — left all three at
+  zero, so the filters hold, but this is the one to check.
+- **LOLBin counts and Procmon volume cannot move a verdict.** They feed only
+  the context score, which is capped at 15. They still make the report noisier:
+  that run listed seven Windows maintenance LOLBins under Spawned Processes.
+- **Teardown grows with the event count**, which is most of the wall-clock cost
+  beyond the window itself.
 
 It needs the memory dump watcher to know whether anything has happened. Without
 it (not elevated, or ProcDump missing) the window stays fixed and the run
