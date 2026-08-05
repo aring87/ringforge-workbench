@@ -52,13 +52,26 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 
 ## Known gaps, ranked
 
-### 1. Four code paths have never fired on real malware
+### 1. Three code paths have never fired on real malware
 
-Persistence hits, dropped files, PowerShell script blocks, and process
-injection were all `0` on every run of this session. They may work. So might
-the analyzer-attribution filter have, until a sample proved otherwise — that
-bug had been silently costing findings on **every run ever performed**, and was
-only found because a sample exercised it.
+**PowerShell script blocks now have.** A Formbook sample
+(`422e30edd409936c649905ba4a8f58ed533287da77965268342ec38221d28231`, run
+2026-08-05) spawned `powershell.exe` with
+`Add-MpPreference -ExclusionPath <its own path>`: 12 blocks captured, 1
+suspicious, behaviour `Defender modification`, mapped to `T1562.001`. That path
+had been `0` on every run ever performed. It works.
+
+Persistence hits, dropped files and process injection are still `0` on every
+run. They may work. So might the analyzer-attribution filter have, until a
+sample proved otherwise — that bug had been silently costing findings on
+**every run ever performed**, and was only found because a sample exercised it.
+
+The Formbook run did not reach them: it spawned `RegSvcs.exe`, the .NET
+hollowing target, and `RegSvcs` faulted (two `WerFault.exe -u -p 1404`, plus a
+second `RegSvcs` that exited before it could be dumped). No payload ever
+materialised — 0 YARA matches across 6 dumps. Failed hollowing, or a sample
+that recognised the guest and bailed; the pipeline cannot currently tell those
+apart.
 
 `samples/74eb42416b47c082fc867764b577ceac6f1bd68e192695d79a9e48a7bd3fdd69.zip`
 is unanalyzed. A family that drops a payload, installs persistence or injects
@@ -141,7 +154,15 @@ exercise it.
 ### Smaller
 
 - No anti-analysis detection. Nothing reports "the sample checked for a VM and
-  left."
+  left." The Formbook run is the case that wants it: `RegSvcs.exe` faulted
+  immediately after being spawned, and a deliberate bail looks identical from
+  outside. **`WerFault.exe -u -p <pid>` naming a sample descendant is already in
+  `spawned_processes` and unused** — "a descendant of the sample crashed" is a
+  cheap note with real value.
+- `WerFault.exe` counts as sample lineage for network attribution, correctly
+  (the sample caused the crash) but misleadingly: Windows Error Reporting's
+  `:443` is not C2. It did not matter on the Formbook run; it would if WER ever
+  used a non-standard port.
 - Dumps are full 100–160 MB images with no payload reconstruction, which limits
   what can be done with them downstream.
 - Two features are correct but **unexercised in the case they exist for**: the
@@ -160,26 +181,21 @@ only exercised by its own fixtures agrees with the assumptions it was written
 under, and the analyzer-attribution bug is the standing proof that those can be
 wrong on every run for a long time without showing.
 
-| Feature | What would prove it | Watch for |
-|---|---|---|
-| Received-file collection | Any run where the sample uploads | `network\received\` non-empty, and `received_files.roots` naming the real FakeNet root |
-| Adaptive window | A sample dormant past the base window | `observation.extensions > 0`; the run taking longer than the timeout |
-| Corroboration scoring | The next real detonation | The verdict separating from the canary's Needs Review |
+| Feature | Status after the Formbook run |
+|---|---|
+| Received-file collection | **Root resolution proven.** `received_files.roots` named the real `tools\fakenet\defaultFiles`, so `listener_roots()` matches the actual install. The *collection* path is still unproven — nothing was uploaded |
+| Adaptive window | **Still unproven.** The run ended via post-exit observation at 144s of a 180s window, so the extension branch never ran. Needs a sample dormant past the base window |
+| Corroboration scoring | **Ran on a second real sample.** Landed at 35 / Needs Review on one category, which is the honest reading of a sample that crashed before doing anything else |
+| Network attribution | **Working.** `other_process_requests: 11` against 1 sample destination on a run where Windows was busy |
 
-The cheapest check on all three at once is the next detonation. Read
-`observation` and `fakenet_summary.received_files` in
-`dynamic_run_summary.json` before reading the verdict.
+Two features came off the unexercised list in the same run:
+`missed_descendants` recorded 1 (a `WerFault` Sysmon saw and the dump watcher
+missed), and `background_network_processes` populated with four processes.
 
-Two specific things to disbelieve until seen:
-
-- `listener_roots()` resolves FakeNet's config roots against the binary
-  directory, its parent, and the config's directory. That is a guess about how
-  the real install lays out `defaultFiles/`. If `received_files.roots` comes
-  back empty, that is why, and the note field says so.
-- The adaptive window needs the memory dump watcher for its activity probe. A
-  run that is not elevated has no probe, and the window silently stays fixed —
-  recorded as `adaptive_available: false`, which is the field to check rather
-  than assuming extension was available.
+Still worth disbelieving: the adaptive window needs the memory dump watcher for
+its activity probe. A run that is not elevated has no probe and the window
+silently stays fixed — recorded as `adaptive_available: false`, which is the
+field to check rather than assuming extension was available.
 
 ---
 
@@ -248,6 +264,29 @@ against, and any regression will show up as a change here.
 
 The report format is itself a durable signature — a YARA rule could be written
 against a captured upload rather than against the binary.
+
+The 03 Aug exfil upload was recovered by hand from
+`tools/fakenet/defaultFiles/FakeNet.html` before the baseline was rebuilt, and
+is the reference artifact for that format.
+
+---
+
+## Formbook reference data
+
+Kept for comparison against a run where the chain completes.
+
+| | |
+|---|---|
+| SHA256 | `422e30edd409936c649905ba4a8f58ed533287da77965268342ec38221d28231` |
+| Chain | sample → `powershell.exe Add-MpPreference -ExclusionPath <self>` → `RegSvcs.exe` |
+| Outcome | `RegSvcs` faulted: 2× `WerFault -u -p 1404`, plus a second `RegSvcs` that exited before it could be dumped |
+| Memory YARA | 0 matches across 6 dumps — the payload never unpacked |
+| Score | 35 · Needs Review / Medium, on `scripted_execution` alone |
+| Dormancy | PowerShell at +23s, `RegSvcs` at +24s, sample exited ~+24s |
+
+The sample's own process was dumped **once, at +5s**, before it had spawned
+anything. It exited with the +25s offset due on the same tick, which suppresses
+the exit dump by design; that skip is now recorded rather than silent.
 
 Expected on a clean run: 4 dumps all `Frozen`, scheduled offsets matching 0
 rules, spawn and exit dumps matching 3, `network_events: 2`, and

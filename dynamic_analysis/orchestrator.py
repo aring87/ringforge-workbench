@@ -311,6 +311,12 @@ def run_sample(
         return activity_seen
 
     def _result(ended_because: str, elapsed: float) -> dict[str, Any]:
+        # Asked here, not only on the extension path. A Formbook run ended
+        # through post-exit observation without the window ever expiring, so
+        # the probe was never consulted and the record said
+        # activity_observed: false -- for a sample that had spawned four
+        # processes. "Never asked" and "nothing happened" must not look alike.
+        _observed_activity()
         return {
             "exit_code": -1 if exit_code is None else int(exit_code),
             "sample_exited": exit_code is not None,

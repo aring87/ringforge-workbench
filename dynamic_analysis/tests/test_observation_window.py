@@ -194,6 +194,38 @@ class ObservationWindowTests(unittest.TestCase):
         self.assertFalse(result["activity_observed"])
         self.assertEqual(result["ended_because"], "extension_cap_reached")
 
+    def test_activity_is_recorded_even_when_the_window_never_expires(self) -> None:
+        # The Formbook run ended through post-exit observation at 144s of a
+        # 180s window, so the extension branch never ran and the probe was
+        # never consulted. The record said activity_observed: false for a
+        # sample that had spawned powershell.exe, RegSvcs.exe and two
+        # WerFault.exe. "Never asked" must not read as "nothing happened".
+        result = self._run(
+            _FakeProcess(exit_after_polls=2, returncode=0),
+            timeout_seconds=180,
+            minimum_observation_seconds=5,
+            post_exit_observation_seconds=5,
+            max_observation_seconds=600,
+            activity_probe=lambda: True,
+        )
+
+        self.assertEqual(result["ended_because"], "post_exit_observation_complete")
+        self.assertLess(result["elapsed_seconds"], 180)
+        self.assertTrue(result["activity_observed"])
+
+    def test_a_genuinely_quiet_sample_still_reports_no_activity(self) -> None:
+        # The other half: asking the probe must not turn every run into one
+        # that claims activity.
+        result = self._run(
+            _FakeProcess(exit_after_polls=2, returncode=0),
+            timeout_seconds=180,
+            minimum_observation_seconds=5,
+            post_exit_observation_seconds=5,
+            activity_probe=lambda: False,
+        )
+
+        self.assertFalse(result["activity_observed"])
+
     def test_activity_seen_once_stays_seen(self) -> None:
         # A loader that spawns and collapses has acted. A probe reading only
         # live children would go back to False, and the window would then run

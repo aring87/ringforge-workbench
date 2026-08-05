@@ -386,6 +386,14 @@ class MemoryDumpSession:
             #
             # Skipped when a scheduled dump is already due on this same tick,
             # which would otherwise write two near-identical images.
+            #
+            # That skip is recorded. A Formbook run exited at ~t24 with the
+            # +25s offset due on the same tick, so the exit dump was suppressed
+            # and the scheduled dump covered only the surviving children -- the
+            # sample's own process was captured once, at +5s, before it had
+            # spawned anything. Nothing in the report said the exit dump had
+            # been skipped, which left "we chose not to" looking exactly like
+            # "there was nothing to take".
             if not root_alive and not self._root_exit_handled:
                 self._root_exit_handled = True
                 if not due:
@@ -393,6 +401,18 @@ class MemoryDumpSession:
                         offset=int(elapsed),
                         elapsed=elapsed,
                         trigger="process-exit",
+                    )
+                else:
+                    with self._lock:
+                        root = dict(self._known.get(self._root_pid or -1) or {})
+                    self._record_skip(
+                        {
+                            "pid": self._root_pid,
+                            "name": root.get("name", ""),
+                        },
+                        int(elapsed),
+                        "exit dump not taken: a scheduled dump was due on the "
+                        f"same tick (+{', +'.join(str(o) for o in due)}s)",
                     )
 
             for offset in due:
