@@ -19,7 +19,7 @@ from typing import Dict, Optional
 from PIL import Image, ImageTk
 
 from dynamic_analysis.html_report import write_dynamic_html_report
-from dynamic_analysis.orchestrator import run_dynamic_analysis
+from dynamic_analysis.orchestrator import ContainmentError, run_dynamic_analysis
 from static_triage_engine.scoring import combined_score_from_case_dir
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
@@ -1205,12 +1205,34 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self._refresh_telemetry_availability()
 
-    def _refresh_telemetry_availability(self):
+    def _refresh_isolation(self):
+        """Re-read containment only. Cheap enough to run before every launch.
+
+        The strip used to be computed once when the window was built, so a
+        guest armed afterwards still showed its pre-arm state -- reassuring and
+        wrong, which is why WORKFLOW says to trust the run summary over this
+        line. Refreshing before the run makes the line agree with the check
+        that actually gates the detonation.
+        """
+        try:
+            from dynamic_analysis.network_capture import network_isolation_status
+
+            self._isolation = network_isolation_status()
+        except Exception as error:
+            self._isolation = {"level": "unknown", "note": str(error), "egress_count": 0}
+        self._refresh_telemetry_availability(isolation_only=True)
+
+    def _refresh_telemetry_availability(self, isolation_only: bool = False):
         """Show which tier-1 tools are actually installed, before a run starts.
 
         Checked once at build time rather than per keystroke: each probe shells
-        out to wevtutil/sc/dumpcap.
+        out to wevtutil/sc/dumpcap. ``isolation_only`` re-renders from the
+        cached probes, for when only containment has been re-read.
         """
+        if isolation_only:
+            self._render_isolation_label()
+            return
+
         try:
             from dynamic_analysis.sysmon_collector import sysmon_status
             from dynamic_analysis.network_capture import capture_status, network_isolation_status
@@ -1250,11 +1272,19 @@ class DynamicAnalysisWindow(tk.Toplevel):
         except Exception:
             pass
 
+        self._render_isolation_label()
+
+    def _render_isolation_label(self):
         # Containment is a separate, louder line: a second adapter lets a
         # sample bypass the simulated internet and reach real infrastructure.
         try:
             level = self._isolation.get("level")
-            if level == "warning":
+            if level == "uncontained":
+                self.isolation_label.configure(
+                    text=f"ARMED - WILL NOT DETONATE: {self._isolation.get('note', '')}",
+                    foreground=T.DANGER,
+                )
+            elif level == "warning":
                 count = self._isolation.get("egress_count", 0)
                 if count > 1:
                     detail = f"{count} network egress paths - disable all but one adapter"
@@ -1969,6 +1999,24 @@ ul {{ margin-top: 8px; }}
         if self.worker_thread and self.worker_thread.is_alive():
             return
 
+        # Re-read containment now rather than trusting what was true when the
+        # window opened. A guest armed since then showed its pre-arm state,
+        # which is how a sample got detonated with a live network path and
+        # nothing said so.
+        self._refresh_isolation()
+        if self._isolation.get("level") == "uncontained":
+            messagebox.showerror(
+                "Not contained",
+                f"{self._isolation.get('note', '')}\n\n"
+                "The run has not been started. Disarm the guest with\n"
+                "    .\\scripts\\vm_net.ps1 -Disarm\n"
+                "and try again.",
+            )
+            self._set_step("Pre-checks", 100, "blocked")
+            self.status_var.set("Idle")
+            self.summary_status_var.set("Not contained")
+            return
+
         sample = Path(self.sample_var.get().strip())
         case_home, dynamic_output = self._ensure_case_layout()
         
@@ -2136,6 +2184,17 @@ ul {{ margin-top: 8px; }}
 
                 self.output_q.put(json.dumps(summary, indent=2))
                 self.after(0, lambda s=summary: self._on_done(s))
+            except ContainmentError as e:
+                # The control working, not a failure. Said differently from a
+                # crash so nobody reads it as one and reaches for the override.
+                self.output_q.put(f"\n[BLOCKED] {e}\n")
+                self.after(
+                    0,
+                    lambda err=str(e): (
+                        messagebox.showerror("Not contained - run blocked", err),
+                        self._on_error("blocked: not contained"),
+                    ),
+                )
             except Exception as e:
                 self.output_q.put(f"[error] {e}\n")
                 self.after(0, lambda err=str(e): self._on_error(err))

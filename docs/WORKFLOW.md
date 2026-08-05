@@ -91,10 +91,17 @@ If you arm to fetch a sample:
 .\scripts\vm_net.ps1 -Disarm     # host
 ```
 
-**Do not detonate anything in the armed state.** This is the step that has been
-missed more than once, and the failure is silent: the run completes and looks
-normal while the sample talks to real infrastructure. Step 5 is the check that
-catches it.
+**Do not detonate anything in the armed state.** This is now enforced rather
+than advised: a run whose guest holds a default route through a hypervisor NAT
+gateway is refused before the sample launches, both by the GUI and by the
+orchestrator. Setting `allow_uncontained` in the run config overrides it, and
+that is deliberately not a checkbox.
+
+It used to be advice only. A deliberate test detonation with the guest armed
+produced no prompt, no dialog and no abort — the run emitted one line into the
+Output pane and carried on. Worse, `network_isolation.level` reported `ok`,
+because it counted default routes rather than asking where they went, and
+VirtualBox's NAT gateway is a private address like any other.
 
 Put samples in `samples\`, which is gitignored.
 
@@ -206,11 +213,19 @@ for the same reason.
 
 ## 5. Reading the result
 
-**Read `network_isolation.level` first, every time.** Not the GUI's containment
-line, which can be showing a pre-arm state. If it does not say `ok`, the run
-happened with a live network path and the findings describe a sample that could
-reach real infrastructure. Nothing else on the page matters until that is
-confirmed.
+**Read `network_isolation.level` first, every time.** `ok` now means contained
+— it used to mean "exactly one default route exists", which is not the same
+thing and let an armed guest report a clean line. `uncontained` blocks the run
+outright; `warning` means the run went ahead with something worth knowing about,
+such as two adapters or an IPv6 default route.
+
+Each entry in `network_isolation.egress` carries a `reaches` field: `contained`,
+`internet`, or `unexpected`. That is the one to look at when the level is not
+`ok` — it names which path is the problem.
+
+The GUI's containment line is now re-read immediately before each launch rather
+than when the window opened, so it should agree with the summary. The summary
+is still the authority.
 
 Then, roughly in order of signal:
 

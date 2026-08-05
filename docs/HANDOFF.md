@@ -47,6 +47,14 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 - **Hard power-offs corrupt git refs occasionally.** `-Take` powers the VM off
   hard by design. A broken `ORIG_HEAD` showed up once; deleting the file fixes
   it, and `git fsck` confirmed no other damage. The guest clone is disposable.
+- **The containment control was documentation until 05 Aug.** A deliberate
+  test detonation with the guest armed produced no prompt and no abort, and
+  `network_isolation.level` said `ok` — it counted default routes rather than
+  asking where they went, and VirtualBox's NAT gateway (`10.0.x.2`) is a
+  private address like the host-only one. A run is now refused before launch
+  when a route reaches a NAT gateway, overridable only by `allow_uncontained`
+  in the run config. Set `contained_gateway` to the host-only gateway for the
+  stricter rule, where anything else is treated as uncontained.
 - **Two guest settings are load-bearing and neither is a default.** Sysmon
   Event 25 (`ProcessTampering`) is commented out in SwiftOnSecurity's config,
   and Windows Error Reporting writes no memory image unless `LocalDumps` is

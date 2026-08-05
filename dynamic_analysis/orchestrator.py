@@ -104,6 +104,15 @@ class DynamicAnalysisCancelled(Exception):
     """Raised when the analyst cancels a dynamic analysis run."""
 
 
+class ContainmentError(Exception):
+    """Raised when the guest can reach the internet and a run was requested.
+
+    Its own type rather than a generic failure because the caller has to be
+    able to tell "we refused to detonate" from "the run broke": one is the
+    control working and the other is a bug.
+    """
+
+
 def _cancel_requested(cancel_event: CancelEvent) -> bool:
     return bool(cancel_event is not None and cancel_event.is_set())
 
@@ -1610,6 +1619,12 @@ def run_dynamic_analysis(
     # hollowed process that lives four seconds falls between them, and the
     # crash dump is taken at the one moment the payload is both written and
     # running.
+    # Containment. allow_uncontained is deliberately not exposed in the GUI:
+    # detonating with a live network path should take a deliberate edit rather
+    # than a checkbox somebody can leave ticked.
+    allow_uncontained = bool(config.get("allow_uncontained", False))
+    contained_gateway = str(config.get("contained_gateway", "") or "").strip()
+
     crash_evidence_enabled = bool(config.get("crash_evidence_enabled", True))
     crash_dumps_json = paths["memory"] / "crash_dumps.json"
     crash_events_json = paths["sysmon"] / "crash_events.json"
@@ -1646,17 +1661,44 @@ def run_dynamic_analysis(
     # Containment check. A second adapter lets a sample bypass FakeNet entirely
     # and reach real infrastructure, and nothing in the resulting artifacts
     # would say so, hence checking before the sample is ever launched.
-    isolation = network_isolation_status(dumpcap_path or None)
+    isolation = network_isolation_status(
+        dumpcap_path or None, contained_gateway=contained_gateway
+    )
     if isolation.get("level") != "ok":
         _emit(status_cb, f"CONTAINMENT WARNING: {isolation.get('note', '')}")
         for path in isolation.get("egress", []):
             _emit(
                 status_cb,
                 f"  egress: {path.get('adapter') or '?'} "
-                f"({path.get('interface_ip')} -> {path.get('gateway')})",
+                f"({path.get('interface_ip')} -> {path.get('gateway')}) "
+                f"[{path.get('reaches', '?')}]",
             )
     else:
         _emit(status_cb, f"Network isolation: {isolation.get('note', '')}")
+
+    # Refused, not warned about.
+    #
+    # This used to emit the line above and launch anyway, which made the
+    # containment control a piece of documentation: WORKFLOW says "do not
+    # detonate anything in the armed state" and nothing enforced it. A test
+    # detonation run while armed produced no prompt, no dialog and no abort --
+    # exactly the silent failure the warning text describes.
+    #
+    # Deliberately raised before any telemetry starts, so there is nothing to
+    # tear down and nothing half-collected to interpret.
+    if isolation.get("level") == "uncontained" and not allow_uncontained:
+        raise ContainmentError(
+            f"{isolation.get('note', 'The guest is not contained.')} "
+            "Refusing to launch the sample. Set allow_uncontained in the run "
+            "config if you intend to detonate with a live network path."
+        )
+    if isolation.get("level") == "uncontained" and allow_uncontained:
+        _emit(
+            status_cb,
+            "PROCEEDING UNCONTAINED because allow_uncontained was set. The "
+            "sample can reach real infrastructure, and every network finding "
+            "below describes live traffic.",
+        )
 
     sysmon_summary: dict[str, Any] = {}
     powershell_preflight: dict[str, Any] = {}

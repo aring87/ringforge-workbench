@@ -352,19 +352,52 @@ def has_ipv6_default_route() -> bool:
     return any("::/0" in line for line in (result.stdout or "").splitlines())
 
 
-def network_isolation_status(dumpcap_path: str | Path | None = None) -> dict[str, Any]:
-    """Report how many ways traffic can leave this machine.
+#: Gateways that are a hypervisor's NAT, which reaches the real internet.
+#:
+#: VirtualBox hands the guest 10.0.x.15 with the gateway at 10.0.x.2, where x
+#: increments per NAT adapter. The address is private, so a check that asks
+#: only "is this a private address" calls it contained -- which it is not: it
+#: is the exact adapter `vm_net.ps1 -Arm` connects.
+_VM_NAT_GATEWAY_RE = re.compile(r"^10\.0\.\d{1,3}\.2$")
+
+
+def is_vm_nat_gateway(gateway: str) -> bool:
+    """True for a gateway that is a hypervisor NAT rather than an isolated net."""
+    return bool(_VM_NAT_GATEWAY_RE.match(str(gateway or "").strip()))
+
+
+def network_isolation_status(
+    dumpcap_path: str | Path | None = None,
+    contained_gateway: str = "",
+) -> dict[str, Any]:
+    """Report whether traffic can leave this machine for the real internet.
 
     FakeNet redirects DNS on the adapter it is bound to. When a VM has both a
     host-only and a NAT/bridged adapter, a sample can simply use the other one
     and reach real infrastructure -- which is a containment failure, not just
     noisy data. The failure is silent, so it is checked before every run.
+
+    **`ok` means contained, not "exactly one way out".** It used to mean the
+    latter, which left a hole big enough to drive the whole control through: a
+    guest whose only default route was the NAT adapter reported
+
+        level: ok
+        note:  Single egress path via Intel(R) PRO/1000 MT Desktop Adapter
+
+    -- a fully internet-connected machine, described as contained, by the
+    field WORKFLOW tells you to read first. Counting routes says nothing about
+    where they go.
+
+    A route via a hypervisor NAT gateway is now `uncontained`, which the
+    orchestrator refuses to launch into. ``contained_gateway`` makes it
+    stricter still: set it and any route via anything else is uncontained,
+    which is the right setting for a guest whose isolated network is known.
     """
     routes = default_route_interfaces()
     ipv6 = has_ipv6_default_route()
     adapters = list_interfaces(dumpcap_path)
+    expected = str(contained_gateway or "").strip()
 
-    # Name each egress path by matching its address against the capture list.
     egress: list[dict[str, str]] = []
     for route in routes:
         name = ""
@@ -372,19 +405,54 @@ def network_isolation_status(dumpcap_path: str | Path | None = None) -> dict[str
             if route["interface_ip"] in (adapter.get("addrs") or []):
                 name = adapter.get("description") or adapter.get("name", "")
                 break
+
+        gateway = route["gateway"]
+        if is_vm_nat_gateway(gateway):
+            reaches = "internet"
+        elif expected and gateway != expected:
+            reaches = "unexpected"
+        else:
+            reaches = "contained"
+
         egress.append(
             {
                 "interface_ip": route["interface_ip"],
-                "gateway": route["gateway"],
+                "gateway": gateway,
                 "adapter": name,
                 "private": "yes" if is_private_ip(route["interface_ip"]) else "no",
+                "reaches": reaches,
             }
         )
 
     count = len(egress)
     isolated = count == 0 and not ipv6
+    internet_paths = [e for e in egress if e["reaches"] == "internet"]
+    unexpected_paths = [e for e in egress if e["reaches"] == "unexpected"]
 
-    if count > 1:
+    # Ordered by severity: a live path out is decided before anything else,
+    # because everything below is about how well a contained run is set up and
+    # this one is about whether the run is contained at all.
+    if internet_paths:
+        level = "uncontained"
+        adapters_named = ", ".join(
+            f"{e['adapter'] or e['interface_ip']} -> {e['gateway']}" for e in internet_paths
+        )
+        note = (
+            f"A default route reaches the internet through a NAT gateway "
+            f"({adapters_named}). The guest is ARMED. Disarm it with "
+            "scripts\\vm_net.ps1 -Disarm before detonating anything."
+        )
+    elif unexpected_paths:
+        level = "uncontained"
+        adapters_named = ", ".join(
+            f"{e['adapter'] or e['interface_ip']} -> {e['gateway']}" for e in unexpected_paths
+        )
+        note = (
+            f"A default route goes somewhere other than the configured contained "
+            f"gateway {expected} ({adapters_named}). Treated as uncontained: an "
+            "unrecognised path out is not a verified one."
+        )
+    elif count > 1:
         level = "warning"
         note = (
             f"{count} adapters hold a default route. FakeNet-NG redirects DNS on one "
@@ -410,8 +478,11 @@ def network_isolation_status(dumpcap_path: str | Path | None = None) -> dict[str
     return {
         "level": level,
         "isolated": isolated,
+        "contained": level == "ok",
         "egress_count": count,
         "egress": egress,
+        "internet_egress_count": len(internet_paths),
+        "contained_gateway": expected,
         "ipv6_default_route": ipv6,
         "note": note,
     }
