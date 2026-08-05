@@ -555,9 +555,31 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self._build_top_banner(outer)
 
+        # Containment banner. Hidden unless the guest is armed, and impossible
+        # to miss when it is not: a run was detonated with a live network path
+        # and the only sign was a muted grey line further down the header,
+        # which had also gone stale.
+        #
+        # A tk.Label rather than ttk, because a solid fill across the full
+        # width is the point and ttk styling makes that fight the theme.
+        self.armed_banner = tk.Label(
+            self,
+            text="",
+            bg="#7f1d1d",
+            fg="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+            padx=12,
+            pady=7,
+        )
+
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, **outer)
         frm.columnconfigure(0, weight=1)
+        # Kept so the banner can be packed above it on demand: re-packing a
+        # forgotten widget appends it to the end otherwise, and a warning
+        # underneath the output pane is a warning nobody reads.
+        self._main_frame = frm
 
         # Header should keep its requested height. The workspace/output area
         # gets the extra space instead.
@@ -1198,9 +1220,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.telemetry_status_label.pack(side="left", padx=(16, 0))
 
+        # Row 5: row 4 is the memory-dump controls.
         self.isolation_label = ttk.Label(header, text="", style="Muted.TLabel")
         self.isolation_label.grid(
-            row=4, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10)
+            row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10)
         )
 
         self._refresh_telemetry_availability()
@@ -1274,7 +1297,36 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self._render_isolation_label()
 
+    def _render_armed_banner(self):
+        """Show or hide the containment banner.
+
+        Packed and unpacked rather than recoloured, so a contained run has no
+        red on screen at all and the banner never becomes wallpaper.
+        """
+        try:
+            if self._isolation.get("level") == "uncontained":
+                paths = [
+                    f"{e.get('adapter') or e.get('interface_ip')} -> {e.get('gateway')}"
+                    for e in (self._isolation.get("egress", []) or [])
+                    if e.get("reaches") in ("internet", "unexpected")
+                ]
+                detail = f"  ({', '.join(paths)})" if paths else ""
+                self.armed_banner.configure(
+                    text=(
+                        "*** VM IS STILL ARMED - the guest can reach the internet."
+                        f"{detail}    Detonation is blocked. "
+                        "Disarm with:  .\\scripts\\vm_net.ps1 -Disarm ***"
+                    )
+                )
+                self.armed_banner.pack(fill="x", side="top", before=self._main_frame)
+            else:
+                self.armed_banner.pack_forget()
+        except Exception:
+            pass
+
     def _render_isolation_label(self):
+        self._render_armed_banner()
+
         # Containment is a separate, louder line: a second adapter lets a
         # sample bypass the simulated internet and reach real infrastructure.
         try:
