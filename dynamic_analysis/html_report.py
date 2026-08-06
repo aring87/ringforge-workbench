@@ -417,6 +417,11 @@ def _autoruns_entry_table(
             "<tr>"
             f"<td>{_esc(item.get('time', ''))}</td>"
             f"<td>{_esc(item.get('category', ''))}</td>"
+            # Without the location, two entries of the same name in different
+            # hives render as identical rows. Remcos wrote TRY150-6P1GV6 to both
+            # HKCU\\...\\Run and HKLM\\...\\Wow6432Node\\...\\Run, and the report
+            # showed what looked like one entry duplicated.
+            f"<td>{_esc(item.get('entry_location', ''))}</td>"
             f"<td>{_esc(item.get('entry', ''))}</td>"
             f"<td>{_esc(item.get('company', ''))}</td>"
             f"<td>{_esc(item.get('image_path', ''))}</td>"
@@ -441,6 +446,7 @@ def _autoruns_entry_table(
             <tr>
               <th>Time</th>
               <th>Category</th>
+              <th>Location</th>
               <th>Entry</th>
               <th>Company</th>
               <th>Image Path</th>

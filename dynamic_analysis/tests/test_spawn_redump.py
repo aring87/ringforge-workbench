@@ -212,6 +212,33 @@ class SpawnRedumpSelectionTests(unittest.TestCase):
         dump_one.assert_not_called()
         self.assertIn("cap", session._skipped[0]["reason"])
 
+    def test_a_root_that_was_never_dumped_is_recorded(self) -> None:
+        # The Remcos run wrote five dumps, all of the dropped child, while the
+        # parent -- the process that did the unpacking -- exited at ~t1 with the
+        # first offset at +5. The root has only one route to being dumped: an
+        # offset coming due while it is alive. The spawn dump excludes it and
+        # the exit dump runs when it is already unreadable. `dumps_skipped` read
+        # 0, so "the packer held nothing" and "the packer was never opened"
+        # looked identical.
+        session = self._session()
+        self._known(session, [100, 9416])
+
+        session._record_root_never_dumped(elapsed=1.4)
+
+        self.assertEqual(len(session._skipped), 1)
+        self.assertEqual(session._skipped[0]["pid"], 100)
+        self.assertIn("never dumped", session._skipped[0]["reason"])
+        self.assertIn("+5s", session._skipped[0]["reason"])
+
+    def test_a_root_that_was_dumped_is_not_recorded(self) -> None:
+        session = self._session()
+        self._known(session, [100, 9416])
+        session._dumps.append({"pid": 100, "success": True})
+
+        session._record_root_never_dumped(elapsed=30.0)
+
+        self.assertEqual(session._skipped, [])
+
     def test_the_two_images_of_one_pid_do_not_collide_on_disk(self) -> None:
         # The point of the pair is comparing them, which needs both files. A
         # scheduled offset landing on the same second as the re-dump would

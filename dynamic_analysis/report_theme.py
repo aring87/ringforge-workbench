@@ -277,7 +277,7 @@ li {
 
 .autoruns-table {
   table-layout: fixed;
-  min-width: 1100px;
+  min-width: 1360px;
 }
 
 .autoruns-table th,
@@ -299,20 +299,27 @@ li {
   white-space: nowrap;
 }
 
+/* Location. Wide because a registry hive path is what distinguishes two
+   entries of the same name, and truncating it undoes the reason it is here. */
 .autoruns-table th:nth-child(3),
 .autoruns-table td:nth-child(3) {
-  width: 140px;
+  width: 260px;
 }
 
 .autoruns-table th:nth-child(4),
 .autoruns-table td:nth-child(4) {
-  width: 160px;
+  width: 140px;
 }
 
 .autoruns-table th:nth-child(5),
-.autoruns-table td:nth-child(5),
+.autoruns-table td:nth-child(5) {
+  width: 160px;
+}
+
 .autoruns-table th:nth-child(6),
-.autoruns-table td:nth-child(6) {
+.autoruns-table td:nth-child(6),
+.autoruns-table th:nth-child(7),
+.autoruns-table td:nth-child(7) {
   width: 270px;
 }
 

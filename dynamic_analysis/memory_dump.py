@@ -465,6 +465,7 @@ class MemoryDumpSession:
             # "there was nothing to take".
             if not root_alive and not self._root_exit_handled:
                 self._root_exit_handled = True
+                self._record_root_never_dumped(elapsed)
                 if not due:
                     self._dump_tree(
                         offset=int(elapsed),
@@ -675,6 +676,44 @@ class MemoryDumpSession:
                 )
 
         return dumped_any
+
+    def _record_root_never_dumped(self, elapsed: float) -> None:
+        """Say so when the sample's own process was never captured.
+
+        The root has exactly one route to being dumped: a scheduled offset that
+        comes due while it is still alive. The spawn dump excludes it by design
+        and the exit dump runs after it is already gone and unreadable. So a
+        sample that spawns a child and exits inside the first offset is never
+        imaged at all.
+
+        That is the process that matters most on a dropper -- it is the one that
+        did the unpacking. A Remcos run wrote five dumps, all of them of the
+        dropped child, while the parent exited at ~t1 with the first offset at
+        +5. `dumps_skipped` read 0, so the report could not distinguish "the
+        packer was captured and held nothing" from "the packer was never
+        looked at".
+        """
+        root_pid = self._root_pid
+        if root_pid is None:
+            return
+
+        with self._lock:
+            dumped = any(
+                d.get("pid") == root_pid and d.get("success") for d in self._dumps
+            )
+            root = dict(self._known.get(root_pid) or {})
+
+        if dumped:
+            return
+
+        pending = ", ".join(f"+{o}s" for o in self.dump_offsets)
+        self._record_skip(
+            {"pid": root_pid, "name": root.get("name", "")},
+            int(elapsed),
+            "the sample's own process exited before any scheduled offset came "
+            f"due (offsets: {pending or 'none'}) and was never dumped; only the "
+            "processes it spawned were captured",
+        )
 
     def _flush_pending_redumps(self, elapsed: float) -> None:
         """Record re-dumps that were still owed when the watcher stopped."""

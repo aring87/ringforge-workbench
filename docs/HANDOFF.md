@@ -4,8 +4,8 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-05, after the spawn re-dump, the PE carver, and
-selecting the Remcos sample. The commit that
+**Last updated:** 2026-08-06, after the Remcos run and the four bugs it
+exposed. The commit that
 last touched this file is the anchor — `git log -1 docs/HANDOFF.md` — rather
 than a hash written inline, which has been stale here before.
 
@@ -80,9 +80,19 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 
 ## Known gaps, ranked
 
-### 1. Persistence and dropped files have never fired on real malware
+### 1. Dropped files have never fired — and the reason turned out to be a bug
 
-Both are still `0` on every run ever performed. They may work. So might the
+**Persistence is closed.** Remcos `aa4d6427…` fired `persistence_installed`
+**strong** on 06 Aug with two Run keys. That leaves dropped files.
+
+Its `0` was never a property of the samples. The Remcos run dropped a PE to
+`%APPDATA%\Roaming\Config\smng.exe` and the pipeline discarded every one of the
+11,636 file writes Procmon recorded, because the user-writable path markers
+could not match any real path. Fixed on 06 Aug; **unproven until a re-run** —
+the same sample is the cheapest way to prove it, and the case data is already
+recorded below.
+
+The historical text below stands as the reasoning that led here. They may work. So might the
 analyzer-attribution filter have, until a sample proved otherwise — that bug
 had been silently costing findings on **every run**, and was only found because
 a sample exercised it.
@@ -266,8 +276,10 @@ run for a long time without showing.
 | Adaptive window | **Fired, on the wrong case** — see below |
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since |
-| Spawn re-dump | **Unproven on a sample.** Timing verified against a real process tree — each child re-dumped on its own clock — but no detonation has used it |
-| PE carve | **Unproven on a sample.** Parses a real Windows-written minidump correctly (38 modules, 0 false positives after the resource-only fix) and carves a synthetic hollow, but no detonation has used it |
+| Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
+| PE carve | **Runs clean on real dumps** — 43 modules, 0 rejected, 0 false positives across five ProcDump images of live malware. Its finding path is still unproven: no run has yet produced an unmapped image |
+| File writes / dropped files | **Fixed, unproven.** Discarded on every run ever performed until 06 Aug; needs a re-run to demonstrate |
+| `external_contact` on a bare IP | **Fixed, unproven.** Never fired for an IP-only C2; replaying the Remcos inputs now scores it strong |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -341,6 +353,14 @@ test, and the same shape of mistake appeared three times on 05 Aug.
 
 **A control's contract is directional.** The UPX control says "anything less
 means the dump or the delta logic is at fault." More is fine.
+
+**A substring list is not a regex, and nothing will tell you.** Four path-marker
+lists were written with regex-style doubled separators and matched with a plain
+`in` test, so every marker ending in `\\` matched nothing for the life of the
+project. It cost every file write and every file create on every run, and 332
+tests passed over it, because no test ever asserted a real path against them.
+When a detector is a list of literals, test it with a string that must match —
+not with the constants, which are the thing that is wrong.
 
 **A signal that fires on everything says nothing about anything.** The PE carver
 reported eleven unmapped images in an idle Python process, all of them real and
@@ -457,14 +477,16 @@ that is a static-analysis job on the carved image, not another detonation.
 
 ---
 
-## Remcos, selected but not yet run (`aa4d6427…`)
+## Remcos reference data (`aa4d6427…`) — run 06 Aug
 
-**Everything below is predicted, not observed.** It comes from a Hybrid
-Analysis report, not from this pipeline, and it is written down *before* the
-run on purpose: an expectation recorded in advance makes the detonation a
-pass/fail test of the pipeline instead of a description of the sample. Replace
-each row with what actually happened once it has run, and keep whatever
-disagreed.
+Recorded as a prediction before the run, which is why it was worth running: four
+of the expectations held and three failed, and every one of the three failures
+was a pipeline bug rather than a property of the sample. A run described only
+afterwards would have read as a clean success.
+
+**What the run produced:** 70 · Elevated Attention / High, 2 categories agreeing
+(`packed_payload`, `persistence_installed` strong). After the four fixes below,
+the same inputs score **105 · Likely Malicious**, 3 present and 2 strong.
 
 | | |
 |---|---|
@@ -481,36 +503,63 @@ disagreed.
 | IDS | `ET MALWARE Remcos 3.x Unencrypted Checkin/Server Response` |
 | Outcome | No `WerFault` child. It completes — which is why it was chosen |
 
-### What each gap should get out of it
+### Prediction against outcome
 
-- **Gap 1, both halves.** Two autostart entries should put
-  `autoruns_suspicious` at 2 and `persistence_installed` at **strong** — a
-  category that has never fired on any run. The dropped file is a **PE**, not
-  the SQLite browser copies another Remcos candidate produced, so
-  `dropped_file_triage` should have no trouble calling it suspicious.
-- **Gap 3.** Suspended-create followed by a remote write is the exact window the
-  spawn re-dump was built for: the spawn dump catches `smng.exe` empty, the
-  +10s re-dump should catch it populated. **This is the first sample that can
-  prove or disprove that feature.**
-- **Gap 5.** The carver should find the written image inside `smng.exe`. Expect
-  `present`, **not** `strong` — `smng.exe` is Remcos's own dropped copy, not a
-  signed Microsoft binary, so it is correctly not in `HOLLOWING_TARGETS`. A
-  weaker classification here is the design working, not the carver missing.
-- **Gap 2.** `Set`/`GetThreadContext` raise no Sysmon Event 8, so
-  `sysmon_injection_events: 0` is the expected result and not a failure.
-- **Score.** `persistence_installed` (strong), `external_contact` (strong, port
-  24042 is not in `COMMON_PORTS`), `payload_dropped`, `process_injection`, and
-  plausibly `packed_payload` — Remcos has real public YARA coverage, unlike the
-  obfuscated stage-2. Four or five agreeing categories would be the first run to
-  reach High on corroboration rather than on one emphatic signal.
+| Predicted | Outcome |
+|---|---|
+| Run keys in HKCU and HKLM\Wow6432Node, value `TRY150-6P1GV6` | **Exact.** Both, same value, same target |
+| `persistence_installed` strong | **Held.** First time this category has fired on any run |
+| Drop to `%APPDATA%\Config\smng.exe` | **The file was written; the pipeline did not see it.** Bug 1 |
+| C2 `62.60.226.68:24042` | **Exact.** Attributed to `smng.exe` by the diverter |
+| `external_contact` strong | **Failed.** Attribution worked and the category still did not fire. Bug 2 |
+| Spawn re-dump catches `smng.exe` populated | **Fired at t11**, child first seen t1 — feature works |
+| Carver reports `present`, not `strong` | **Reported 0.** Correct: see below |
+| `sysmon_injection_events: 0` | **Held**, as designed |
 
-### The one thing that could still leave gap 1 at zero
+**The re-dump worked but had nothing to reveal.** All five dumps matched the same
+three Remcos rules, because `smng.exe` was already Remcos at t1 — this sample
+drops and executes rather than hollowing. Whatever it wrote into the suspended
+child was configuration, not an image, which is also why the carver's 0 is
+correct rather than a miss.
 
-The guest is contained, so if this variant installs persistence only *after* a
-successful C2 check-in, the Run key never gets written and the whole point of
-the run is lost. Remcos's normal install routine precedes its first beacon and
-the HA timeline is consistent with that, so this is unlikely — but it is the
-failure mode to check first if `persistence_installed` comes back silent.
+**The carver's first run on real dumps was clean**: 43 modules, 250–274 regions
+per image, `rejected: 0`, `resource_only: 0`, no false positives on live
+malware.
+
+### Four bugs this run exposed, all fixed
+
+1. **Every file write and file create was silently discarded.** The path markers
+   in `procmon_parser` are matched with a plain `in` test but were written
+   regex-style — `r"\users\\"` is a literal *double* backslash and appears in no
+   Windows path. `_path_is_user_writable` therefore returned False universally:
+   the only condition on `file_create`, and half the condition on `file_write`
+   and `image_load`. The run recorded 8,130 creates and 11,636 writes and
+   surfaced zero of each, so the drop never became a finding or a dropped-file
+   candidate. The noise list had the identical defect and had to be fixed in the
+   same change — repairing only the writable markers would have flooded findings
+   with the analyzer's own case-directory writes. `\currentcontrolset\services\`
+   was broken too, so service persistence had never been detectable.
+2. **`external_contact` could not fire for an IP-only C2.** `present` gated on
+   `notable_domains > 0 or external_destinations > 0`. Remcos dialled a
+   hard-coded IP, so there was no DNS lookup; FakeNet diverted the connection, so
+   the pcap logged none. The diverter's per-process record had it,
+   `sample_unusual_ports` named it exactly — and `strong` is only consulted for a
+   category already `present`. A C2 contact the pipeline watched, attributed and
+   flagged scored nothing, costing a whole verdict band. `unusual_ports` now
+   makes the category present in its own right.
+3. **The sample's own process was never dumped, and nothing said so.** The root
+   has one route to being imaged — a scheduled offset coming due while it is
+   alive. The spawn dump excludes it by design and the exit dump runs when it is
+   already unreadable. The parent exited at ~t1 with the first offset at +5, so
+   all five dumps were of the child, and `dumps_skipped` read 0. **That was the
+   process that did the unpacking.** A skip is now recorded naming the offsets
+   that were pending.
+4. **A blank autoruns row counted as suspicious.** Two genuine Run keys were
+   reported as three; the extra row had a category and a hive location and
+   nothing else, and qualified purely by being "Logon" with no signer.
+
+Also: the report's autoruns table had no **Location** column, which is why the
+two genuine entries rendered as an apparent duplicate.
 
 ### Why this one, after two rejections
 

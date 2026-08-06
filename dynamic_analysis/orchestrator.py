@@ -862,6 +862,15 @@ def _is_suspicious_autorun(row: dict[str, str]) -> bool:
     if enabled and enabled not in {"enabled", "true", "yes"}:
         return False
 
+    # An entry that names nothing cannot be evidence of anything. Autoruns emits
+    # rows carrying only a category and a location -- section markers, and keys
+    # whose value could not be read -- and one of those counted toward
+    # `autoruns_suspicious` on the Remcos run, inflating two genuine Run keys to
+    # three. It qualified purely by having category "Logon" and no signer, which
+    # is true of every blank row.
+    if not (row.get("Entry", "").strip() or image_path.strip() or launch.strip()):
+        return False
+
     if any(marker in image_path or marker in launch for marker in AUTORUNS_SUSPICIOUS_PATH_MARKERS):
         return True
 
@@ -1274,7 +1283,23 @@ def _evidence_categories(
             #
             # Both halves are attributed to the sample. The host's own lookups
             # and connections are counted separately and never scored.
-            "present": (notable_domains > 0 or external_destinations > 0),
+            #
+            # A connection on a non-standard port makes this present in its own
+            # right, and not only strong. A Remcos run dialled a hard-coded
+            # 62.60.226.68:24042 with no DNS lookup at all, so notable_domains
+            # was 0; FakeNet diverted the connection so the pcap logged none and
+            # external_destinations was 0 too. The diverter's per-process record
+            # had it, attribution resolved it to the sample's own smng.exe, and
+            # `sample_unusual_ports` named it exactly -- and then the category
+            # never fired, because `strong` is only ever consulted for a
+            # category that is already present. A C2 contact the pipeline
+            # watched, attributed and flagged scored nothing, and the run landed
+            # a whole verdict band low.
+            "present": (
+                notable_domains > 0
+                or external_destinations > 0
+                or unusual_ports > 0
+            ),
             "strong": unusual_ports > 0,
             "detail": (
                 f"{notable_domains} non-baseline domain(s) from the sample, "

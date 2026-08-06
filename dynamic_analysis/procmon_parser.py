@@ -23,21 +23,43 @@ INTERESTING_OPS = {
     "UDP Receive": "network",
 }
 
+# NOTE ON THE BACKSLASHES BELOW.
+#
+# Every list here is matched with a plain `in` substring test, not a regex. They
+# were originally written with regex-style doubled separators -- `r"\users\\"`,
+# which is the eight characters \ u s e r s \ \ -- and a real Windows path never
+# contains two consecutive backslashes. So every marker that ended that way
+# matched nothing, ever.
+#
+# The cost was total and silent. `_path_is_user_writable` returned False for
+# every path in existence, which is the *only* condition on `file_create` and
+# half the condition on `file_write` and `image_load`. A Remcos run recorded
+# 8,130 file creates and 11,636 file writes in Procmon and surfaced 0 of each:
+# the sample dropped `%APPDATA%\Roaming\Config\smng.exe`, and the drop never
+# became a finding or a dropped-file candidate.
+#
+# The noise list had the same defect, which is why both had to be fixed
+# together -- repairing the writable markers alone would have flooded the
+# findings with the analyzer's own case-directory writes.
+#
+# A marker that has to anchor on a directory boundary ends with one backslash.
+# Those are written as ordinary escaped strings rather than raw ones, because a
+# raw string cannot end in a backslash at all -- which is very likely how the
+# doubled separators got here in the first place.
 SUSPICIOUS_PATH_KEYWORDS = [
     r"\appdata\roaming\microsoft\windows\start menu\programs\startup",
     r"\windows\system32\tasks",
     r"\windows\tasks",
     r"currentversion\run",
     r"currentversion\runonce",
-    r"\currentcontrolset\services\\",
+    "\\currentcontrolset\\services\\",
 ]
 
 USER_WRITABLE_MARKERS = [
-    r"\users\\",
-    r"\programdata\\",
-    r"\appdata\\",
-    r"\temp\\",
-    r"\users\public\\",
+    "\\users\\",
+    "\\programdata\\",
+    "\\appdata\\",
+    "\\temp\\",
 ]
 
 EXECUTION_RELATED_EXTENSIONS = {
@@ -60,16 +82,16 @@ EXECUTION_RELATED_EXTENSIONS = {
 }
 
 NOISE_PATH_SUBSTRINGS = (
-    r"\programdata\microsoft\windows defender\\",
-    r"\programdata\microsoft\windows defender advanced threat protection\\",
-    r"\windows\system32\wbem\\",
-    r"\windows\debug\wia\\",
+    "\\programdata\\microsoft\\windows defender\\",
+    "\\programdata\\microsoft\\windows defender advanced threat protection\\",
+    "\\windows\\system32\\wbem\\",
+    "\\windows\\debug\\wia\\",
     r"\appdata\local\temp\tmp",
-    r"\cases\\",
-    r"\procmon\\",
-    r"\metadata\\",
-    r"\files\\",
-    r"\persistence\\",
+    "\\cases\\",
+    "\\procmon\\",
+    "\\metadata\\",
+    "\\files\\",
+    "\\persistence\\",
 )
 
 NOISE_PROCESSES = {

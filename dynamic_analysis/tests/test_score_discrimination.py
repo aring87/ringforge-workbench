@@ -549,6 +549,66 @@ class CorroborationTests(unittest.TestCase):
             [],
         )
 
+    def test_a_bare_ip_c2_on_an_odd_port_is_contact(self) -> None:
+        # The Remcos run. It dialled a hard-coded 62.60.226.68:24042 with no DNS
+        # lookup, so notable_domains was 0; FakeNet diverted the connection so
+        # the pcap logged none and external_destinations was 0 too. The
+        # diverter's per-process record had it and attribution resolved it to
+        # the sample's own smng.exe -- and the category still did not fire,
+        # because `strong` is only consulted once `present` is true.
+        result = _score(
+            findings_summary={
+                "counts": {},
+                "spawned_processes": [
+                    {"child_process_name": "smng.exe", "descends_from_sample": True},
+                ],
+            },
+            fakenet_summary={
+                "process_requests": [
+                    {
+                        "process": "smng.exe",
+                        "pid": "10756",
+                        "protocol": "TCP",
+                        "destination": "62.60.226.68:24042",
+                    },
+                ],
+            },
+        )
+        contact = next(
+            c for c in result["evidence_categories"] if c["name"] == "external_contact"
+        )
+
+        self.assertTrue(contact["present"])
+        self.assertTrue(contact["strong"])
+
+    def test_a_connection_on_a_common_port_still_needs_a_domain(self) -> None:
+        # The widening is specifically about non-standard ports. An attributed
+        # connection to :443 with no non-baseline name behind it is what every
+        # updater on the machine does.
+        result = _score(
+            findings_summary={
+                "counts": {},
+                "spawned_processes": [
+                    {"child_process_name": "smng.exe", "descends_from_sample": True},
+                ],
+            },
+            fakenet_summary={
+                "process_requests": [
+                    {
+                        "process": "smng.exe",
+                        "pid": "10756",
+                        "protocol": "TCP",
+                        "destination": "192.0.2.123:443",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(
+            [c for c in result["evidence_categories"] if c["name"] == "external_contact"],
+            [],
+        )
+
     def test_suspicious_powershell_is_a_category(self) -> None:
         # One of the paths that has never fired on real malware. It scores when
         # it does.
