@@ -4,11 +4,13 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-06, with gap 4's registry-read collection path built —
-the reads now reach the event stream, which needed a Procmon config change rather
-than only a parser one, and nothing about it has run live yet. Before that, the
-Remcos sample finished: gap 1 closed on both halves, and seven fixes it exposed
-proven on live runs. The commit that
+**Last updated:** 2026-08-06, after the loader's seventh run (`253c1d72`, 20:23).
+It was set up for gap 4's registry-read collection path and tested none of it —
+the guest was a commit behind and the config field was on the default — but it
+proved the chain-crashed warning live, produced the packer's before/after pair
+from the `1, 25` offsets, and reported `unmapped: 0` on every `RegSvcs` image
+including the full-memory crash dump, which is gap 5's own written failure
+criterion. Gap 5 is revised accordingly. The commit that
 last touched this file is the anchor — `git log -1 docs/HANDOFF.md` — rather
 than a hash written inline, which has been stale here before.
 
@@ -28,8 +30,9 @@ unpack, C2 resolution, FTP authentication and the upload of its stolen-data
 report, all captured in one run.
 
 **A .NET loader** (`422e30ed…`, labelled Formbook by MalwareBazaar and not
-otherwise attributed) has been run six times. It hollows `RegSvcs.exe` and its
-stage-2 payload faults before it can decrypt stage 3, identically every time.
+otherwise attributed) has been run **seven** times. It injects into
+`RegSvcs.exe` — how is now in doubt, see gap 5 — and its stage-2 payload faults
+before it can decrypt stage 3, identically every time.
 The pipeline recovered that payload on 06 Aug and static analysis identified it
 end to end: a SmartAssembly-protected reflective loader disguised as a
 sliding-puzzle game, `SmartOptimization.dll`, with no config anywhere in it —
@@ -194,6 +197,22 @@ Three things still worth knowing:
 at ~t1 and the earliest offset tried was +2s; the skip record says so every
 time. `1, 25` is the only remaining option if an image of the packer is wanted.
 
+**On the loader, `1, 25` worked — and produced the before/after pair this feature
+was built for, on the root instead of on a child.** The 20:23 run of 06 Aug dumped
+pid 2448 twice: at t1, **12 MB**, 12 modules, 103 regions, `unmapped: 0`; at t25,
+**123 MB**, 66 modules, 572 regions, `unmapped: 1` — and that one image is the
+payload. The packer is caught before it unpacked and after, and the difference
+between the two images is the payload appearing. Nothing was inferred from a
+single dump.
+
+That is worth reading against the re-dump's own record on the same run, which
+fired nothing: all three children were skipped `exited before its +3s re-dump`,
+and `RegSvcs` 4264 lived **2.14s** (spawned 4:25:33.44, WerFault at 4:25:35.58).
+3s is still too late for this sample. **The lesson is that the pairing matters
+more than the mechanism**: a scheduled offset on the parent got it where a
+spawn-relative delay on the child could not, because the parent is the process
+that lives long enough to be photographed twice.
+
 ### 4. FIRST PIECE BUILT — the chain-crashed warning, 06 Aug
 
 The gap asked for something narrow and honest: nothing reported "the sample's
@@ -290,14 +309,32 @@ adversary technique off a detector whose false-positive rate has never been
 measured on a live run is the thing this project keeps learning not to do. Map it
 after a run shows what it fires on.
 
+**The run meant to exercise this did not carry it.** The 20:23 detonation of
+06 Aug was set up for it and tested none of it, because the guest was one commit
+behind and the config field was still on the default. Two independent witnesses
+in its own summary say so, and either alone would have been enough:
+
+- **`vm_artifact_reads` is absent from `dynamic_run_summary.json`** while
+  `abnormal_termination` is present — so the guest was at `9df8ec0`, the commit
+  before the pass existed.
+- **`procmon_summary` has no `registry_read` category, and `other` is 70 events
+  out of 106,343.** Had the reads been captured, the older parser would have put
+  every one of them in `other` and it would have been in the hundreds of
+  thousands. So the capture used `dynamic_default.pmc`.
+
+Nothing about the collection path is proven or disproven by that run. **Check the
+summary for the field before reading its absence as a result** — see the
+convention on pipeline version below, which this is the first instance of.
+
 **What is still not built** is the detector: "read a VM artifact, then went
-quiet". It wants a live run first, and the loader `422e30ed…` is the case — if its
-`RegSvcs.exe` reads `…\Services\VBoxGuest` before it faults, that is the first
-evidence either way about a deterministic crash six runs deep. Run it with
-`dynamic_registry_reads.pmc` and a short window, and read
+quiet". It wants a live run first, and the loader `422e30ed…` is still the case —
+if its `RegSvcs.exe` reads `…\Services\VBoxGuest` before it faults, that is the
+first evidence either way about a crash that has now been deterministic for seven
+runs. Run it with the guest at `a387991` or later, the Procmon config field
+pointed at `dynamic_registry_reads.pmc`, and read
 `procmon\vm_artifact_reads.json`.
 
-### 5. Carver built and parsing proven; its finding path still has not fired
+### 5. Carver recovers payloads; the `strong` branch has still not fired
 
 Carving the .NET assembly out of the crash dump on 05 Aug was done by hand:
 find `MZ` headers, check `e_lfanew`, compare the timestamp against the host
@@ -358,15 +395,39 @@ live malware it read 43 modules per dump with `rejected: 0` and
 loader-mapped PE, so there is nothing foreign to find, and the loader sample's
 payload was recovered before the carver existed.
 
-**This is the open item, and the sample for it is already here.** `422e30ed…`
-hollows `RegSvcs.exe` — in `HOLLOWING_TARGETS` — and maps its payload
-*alongside* the real image, which is the case the carver can see. It is also the
-case gap 3's re-dump was built for and has likewise not yet had, so one
-detonation closes both. See *Re-run this sample next* under the loader
-reference data, which records the settings and the predicted results.
+**The premise this gap rested on now looks wrong, and the run that tested it is
+the reason.** The plan was that `422e30ed…` maps its payload *alongside* the real
+`RegSvcs.exe` image — the case the carver can see — so one detonation would earn
+the `strong` branch. The 20:23 run of 06 Aug reported `unmapped: 0` on **every**
+`RegSvcs` image: the spawn dump at t48, the exit dump at t48, the second
+`RegSvcs` (pid 3420) at t51, and the WER crash dump — which
+`crash_dump_preflight` confirms was written with full memory, `dump_type: 2`.
+Eleven modules and about a hundred regions each.
 
-`d712b6f9…` is the fallback if that chain proves too fast: vxCube reports
-*"unauthorized injection to a recently created process"* on it.
+This document wrote the failure criterion in advance: *"the carver reporting
+`unmapped_images: 0` on a dump of `RegSvcs` taken after the payload was written
+would mean the payload is written over the host image at its original base after
+all."* The spawn dump alone could be a timing argument; the crash dump cannot,
+because it was written after the fault. **Overwrite-in-place is now the
+better-supported reading, and that is the documented blind spot** — the module
+list is read from the memory the payload occupies, so there is nothing left to
+compare against.
+
+Two things keep this a revision rather than a conclusion. The known-module index
+could in principle have suppressed a payload, and the per-dump breakdown does not
+carry known-module counts, so ruling that out is a deduction: the index suppresses
+only builds that another dump enumerated as *loaded*, and no dump enumerates
+either payload build — `SmartOptimization.dll` was reported unmapped in the root's
+own dump on the same run, so an identical build inside `RegSvcs` would have been
+reported there too. **Adding per-dump classification counts would make that
+directly checkable instead of argued**, and is the cheapest next change here.
+
+So the `strong` branch — `unmapped` inside a `HOLLOWING_TARGETS` process — still
+has not legitimately fired, and this sample may not be able to make it fire.
+`d712b6f9…` is the candidate now rather than the fallback: 1 MB .NET crypter,
+vxCube reports *"unauthorized injection to a recently created process"*. The
+finding path itself is not in doubt — it reported the loader's payload out of the
+root process on this run, cleanly.
 
 ### Smaller
 
@@ -403,22 +464,22 @@ run for a long time without showing.
 | Adaptive window | **Fired, on the wrong case** — see below |
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Proven** on 06 Aug. Guest armed with `vm_net.ps1 -Arm`, canary launched through the Dynamic Analysis window, and the run refused: `Not contained — a default route reaches the internet through a NAT gateway (Ethernet → 10.0.2.2). The guest is ARMED. The run has not been started.` It named the adapter and gateway and blocked *before* launch. The one time this was previously at stake it failed and malware got through; this time it caught it. Tested with the benign canary, so a failure would have cost nothing |
-| Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
+| Spawn re-dump | **Proven as a mechanism, and it has still revealed nothing.** Fired at t11 on a child first seen at t1, on live Remcos, which drops rather than hollows. On the loader at 3s it fired **not at all**: all three children were skipped `exited before its +3s re-dump`, `RegSvcs` having lived 2.14s. The pairing it was built for was finally produced by *scheduled offsets on the root* instead — see gap 3 |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
-| Known-module index | **Proven** on 06 Aug, 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70. The ntdll false positive is gone |
-| Multi-region carve | **Fixed, unproven.** No image in the run spanned ranges, so it has never engaged; it correctly declined to bridge a gap |
-| File-versus-mapped layout | **Fixed, unproven.** Every payload held in file layout reported itself truncated against `SizeOfImage`, which is the mapped footprint |
+| Known-module index | **Proven twice.** 06 Aug 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70 — and again at 20:23 on a two-`RegSvcs` chain with 9 reclassified. The ntdll false positive has not recurred, and the payload was reported both times |
+| Multi-region carve | **Fixed, still unproven.** `regions_spanned: 1` again on 06 Aug 20:23. Two runs now with nothing spanning ranges, so it has never engaged; it correctly declined to bridge a gap |
+| File-versus-mapped layout | **Proven** on 06 Aug 20:23 — the recovered payload reported `layout: "file"`, `truncated: false`. Held in file layout, measured against file layout, reported complete. Before the fix every such payload reported itself truncated against `SizeOfImage`, which is the mapped footprint |
 | Dropped-file lineage | **Fixed, unproven.** Had none at all: a browser's writes counted as the sample's and took `payload_dropped` to strong on a loader that drops nothing |
 | Carve on long paths | **Fixed, unproven.** A hash-named sample produced a 264-character path and the carve failed silently on the best image of the run |
-| Crash-dump `hollowing_target` | **Fixed, unproven.** The bare WER stem lost the `.exe`, so crash-dump images scored `present` where live-dump images scored `strong` |
+| Crash-dump `hollowing_target` | **Fixed, still unproven.** The 06 Aug 20:23 crash dump carried no unmapped image at all, so there was nothing for it to classify. The bare WER stem used to lose the `.exe`, scoring crash-dump images `present` where live-dump images scored `strong` |
 | File writes / dropped files | **Proven** on 06 Aug — 12 write events and the `%APPDATA%` drop, after being 0 on every run ever performed |
 | `external_contact` on a bare IP | **Proven.** Fired strong on `62.60.226.68:24042` with no DNS lookup at all |
 | Lineage on writes / paths / persistence | **Proven** on 06 Aug — persistence 14 → 2, Windows Update out of `top_written_paths`, exclusions counted |
 | Dropped-file probe filtering | **Proven.** 13 candidates → 1, and that one exists on disk |
 | Open-versus-production on file events | **Proven** on 06 Aug, 13:47. Every predicted number landed: hits 42 → 26, DLL probes 9 → 0, `svchost` opens 7 → 0, `file_write_events` 0 → 2 naming the drop |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
-| Chain-crashed warning (gap 4) | **Verified end to end** on the loader's real tree — both witnesses fire, warning renders above the verdict naming `RegSvcs.exe`. Unproven on a *live* run only because no run has been done since it was added |
-| Registry-read collection (gap 4b) | **Built, entirely unproven.** Proven only against a synthetic Procmon CSV, which is the fixture problem this document warns about twice. No run has ever captured a registry read, so the pass has never seen one Windows produced. The first live run answers three things at once: whether Procmon accepts the generated config, what the volume actually costs, and what the markers fire on |
+| Chain-crashed warning (gap 4) | **Proven on a live run**, 06 Aug 20:23 — both witnesses agreed, the card rendered above the verdict naming `RegSvcs.exe (pid 4264)`. The run also exposed `werfault_pid` reporting the crashed PID rather than WerFault's, now fixed; `chain_crashed` and `crashed_pid` were never wrong |
+| Registry-read collection (gap 4b) | **Built, entirely unproven, and one run has already failed to test it.** Proven only against a synthetic Procmon CSV, which is the fixture problem this document warns about twice. The 06 Aug 20:23 detonation was set up for it and carried neither the code nor the config — see gap 4b for the two witnesses that say so. No run has ever captured a registry read. The first real one answers three things at once: whether Procmon accepts the generated config, what the volume costs, and what the markers fire on |
 | `.pmc` filter rewrite | **Round-trip byte-exact** on `dynamic_default.pmc`, and the generated config re-parses. That the *format model* is right is well evidenced; that **Procmon loads it** is not tested and cannot be on the host. Check the run's `Operation` values before trusting an empty result |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -563,6 +624,17 @@ if it is a parser, against a file the operating system wrote rather than one
 this repository built, because a synthetic fixture only contains what its author
 already thought of.
 
+**A change is not in the run until the guest has it, and the summary is what
+says.** The 06 Aug 20:23 detonation was set up specifically to exercise the
+registry-read pass and exercised none of it: the guest was one commit behind and
+the config field still pointed at the default. The report looked completely normal
+— `capture_quality: good`, every predicted number landing — because a *missing*
+pass produces no warning, only an absent key. Two habits follow. Before reading a
+run as evidence about a new feature, grep its `dynamic_run_summary.json` for the
+field that feature writes; and remember the guest's clone is pulled, so
+`revert → pull → disarm → detonate` is an order, not a list — a pull before the
+revert is discarded with everything else.
+
 **A missing signal may be missing upstream of the code.** This document said for
 weeks that registry reads were absent because `INTERESTING_OPS` did not list
 `RegQueryValue`. True, and not the blocker: the Procmon config includes sixteen
@@ -659,7 +731,7 @@ artifact from any run names a family.
 | SHA256 | `422e30edd409936c649905ba4a8f58ed533287da77965268342ec38221d28231` |
 | Chain | sample → `powershell.exe Add-MpPreference -ExclusionPath <self>` → 3× `RegSvcs.exe` within 15 ms |
 | Outcome | one `RegSvcs` faults `0xc0000005` in unmapped memory; the others die inside one poll interval |
-| Dormancy | +20s, +24s, +42s across three runs |
+| Dormancy | +20, +24, +42, +48, +60s across seven runs — still widening |
 | Score | 70 · Elevated Attention / High — `process_injection` (strong) + `scripted_execution` |
 | Payload | x86 .NET EXE, 57,344 bytes, compiled 2025-06-18, at dump offset `0x4a6a7` |
 
@@ -711,7 +783,75 @@ flaky hollowing, and not Defender, which has real-time protection off. What
 remains is anti-analysis or a broken crypter, and the pipeline cannot currently
 tell those apart (gap 4).
 
-### The 06 Aug re-run — the carver's finding path fired
+### The 06 Aug 20:23 run — void for gap 4b, and it moved gap 5
+
+The seventh detonation of this sample, run against the prediction recorded below.
+`run_id 253c1d72`, 311 seconds, 106,343 Procmon events, `capture_quality: good`.
+
+**It tested none of what it was set up for.** Guest one commit behind and the
+Procmon config field still on the default — see gap 4b for the two witnesses. The
+registry-read collection path remains entirely unproven.
+
+**What the prediction got right, exactly:** score **70 · Elevated Attention**,
+`process_injection` **strong** by the crash route with `scripted_execution`
+alongside; PowerShell `blocks_from_sample: 12`, `blocks_suspicious: 1`,
+`other_process_blocks_excluded: 0`; `sysmon_injection_events: 0` with Event 25
+silent again; `RegSvcs.exe` faulting `0xc0000005` at `012b521d` with no faulting
+module, `crashes_in_hollowing_target: 1`.
+
+**The chain-crashed warning fired on a live run for the first time.** Both
+witnesses agreed, naming `RegSvcs.exe (pid 4264)`, and the card rendered above the
+verdict. It had only ever been verified against recorded records before this.
+
+**Three results worth keeping:**
+
+- **The root was dumped at t1 and t25, and the payload is in the second.** The
+  before/after pair, on the parent rather than a child — see gap 3. The carved
+  image is `SmartOptimization.dll` again: 81,920 bytes, x86 .NET, `0x6a71514c` =
+  2026-08-04, at `0x5320000` in `…_2448_t25.dmp`.
+- **The known-module index held a second time, on a different chain shape.**
+  `known_module_images: 9`, `resource_only_images: 22`, `rejected: 0`,
+  `unmapped_in_hollowing_target: 0`. It was already proven at 15:55 with 6; this
+  run had two `RegSvcs` rather than three and reclassified 9, with the
+  six-copies-of-ntdll false positive still absent and the payload still reported.
+  Suppress the system DLLs, keep the payload, which is exactly what it was for.
+- **File-versus-mapped layout is proven too.** The payload reported
+  `layout: "file"`, `truncated: false`, `regions_spanned: 1`. Held in file layout,
+  measured against file layout, and reported complete. The multi-region carve
+  still has not engaged — nothing spanned ranges.
+
+**And one that contradicts the plan:** every `RegSvcs` image reported
+`unmapped: 0`, including the full-memory crash dump. That is this document's own
+written failure criterion for gap 5, and gap 5 now says so.
+
+**Deltas from the previous six runs.** Dormancy **+48s**, so the spread is
++20, +24, +42, +48, +60 — still widening. **Two** `RegSvcs` this time rather than
+three, and `missed_descendants: 0` against 3 on the 05 Aug run. The chain is
+`sample → powershell.exe Add-MpPreference → RegSvcs.exe (4264, faults at +2.1s) →
+WerFault.exe (7976)`, with a second `RegSvcs` (3420) at t51.
+
+**One defect, cosmetic, and one worth watching:**
+
+- `werfault_witnesses[].werfault_pid` reported **4264**, the crashed process's
+  PID. WerFault was **7976**, in the spawn detail. The field was reading the
+  record's own `pid`, which on a process-create event is the *creating* process —
+  and because the crashing process is what spawns WerFault, the wrong value was
+  the right number twice over. Fixed to read the created PID from the detail, with
+  `spawned_by_pid` keeping the other question. `chain_crashed` and `crashed_pid`
+  were always correct, so nothing downstream was wrong. The test fixture had
+  encoded the same misunderstanding, which is why review would not have caught it.
+- **The first Sysmon Event 8 this project has ever recorded — and it was ours.**
+  `<unknown process> → dumpcap.exe`, correctly classified as analyzer activity and
+  excluded, so `injection_events` stayed 0 for the sample. The exclusion did its
+  job on the one occasion it has had.
+- **WER's `192.0.2.123:443` landed in `sample_destinations`.** The smaller gap
+  below, manifesting for real: `WerFault` is sample lineage, so its Windows Error
+  Reporting upload attempt counts as the sample's traffic. It cost nothing — 443
+  is a standard port and no domain was notable, so `external_contact` correctly
+  did not fire — but it is no longer hypothetical. FakeNet's own table names
+  `wermgr.exe` at the same address, which is the corroboration.
+
+### The earlier 06 Aug re-run — the carver's finding path fired
 
 **Gap 5's `strong` branch has now been exercised.** The carver reported
 `unmapped_in_hollowing_target: 2` inside a hollowed `RegSvcs.exe`, so
@@ -728,8 +868,10 @@ runs where nothing was reading the images structurally — nobody could tell the
 shell was not empty. The re-dump remains sound for a slower loader; it was never
 needed here.
 
-**Dormancy is now +20, +24, +42, +60s** across four runs. The spread keeps
-widening, which is the argument for the re-dump rather than against it.
+**Dormancy is now +20, +24, +42, +48, +60s** across seven runs. The spread keeps
+widening, which was the argument for the re-dump — though on this chain the
+re-dump is the wrong instrument regardless, because the children die in 2s. What
+the spread really argues against is a *fixed offset* catching a child at all.
 
 **The 1.8 MB images were `ntdll.dll`, and the finding was a false positive.**
 Static analysis of the carved files settled it: sections `.text`, `RT`, `PAGE`,
@@ -845,6 +987,13 @@ plausible-looking one, so a hash in `TimeDateStamp` reads as absent instead of a
 
 ### The prediction that was recorded before it ran
 
+**It has now been run against, and the scoring is in *The 06 Aug 20:23 run*
+above.** Short version: everything predicted about the chain, the score and the
+crash landed exactly; gap 3's re-dump prediction failed because the children die
+inside 3s; gap 5's failed in the informative direction, which is what revised the
+gap; and gap 4b's was never tested, because the run did not carry the code. Left
+here unedited, because a prediction rewritten after the fact is worth nothing.
+
 **That advice is superseded.** This section used to end "if you return to this
 sample, the `.rsrc` blob is a static-analysis job, not another detonation." That
 was correct when written: nothing in the pipeline would have seen anything new.
@@ -867,7 +1016,7 @@ carrying a 2025 one.
 | Setting | Value | Why |
 |---|---|---|
 | `spawn_redump_seconds` | **3**, not 10 | The payload faults. At 10s the record reads `exited before its +10s re-dump` instead of producing an image. Hollowing completes in well under a second, so 3s is after the write and before the crash |
-| Offsets | **1, 25** | Dormancy is 20–42s, so +1s catches the parent while it is still alive — the process no run has ever imaged |
+| Offsets | **1, 25** | Dormancy is 20–60s, so +1s catches the parent while it is still alive. **This worked**: t1 and t25 imaged the root and the payload is in the second — the pair, on the parent |
 | Max processes | 20 | Six-process chain, plus re-dumps |
 | Procmon config | **`dynamic_registry_reads.pmc`** | The only way a VM check is visible. Unproven with Procmon, so check `export.csv` has `RegQueryValue` rows before reading an empty result as "it did not look" |
 | Window | 180s, and **untick *Extend if dormant*** | Do not shorten it for the reads: dormancy has reached +60s on this sample, and the other two gaps this run is for need the payload to actually start. The volume cost of the read config is paid in teardown instead — that is the right side to pay it on |

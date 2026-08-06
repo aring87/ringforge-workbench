@@ -296,6 +296,18 @@ def _werfault_target_pid(text: object) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+#: A process-create event's detail carries the PID of the process being
+#: *created* -- Procmon writes `PID: 7976, Command line: ...`. The record's own
+#: `pid` field is the process doing the creating, which is a different thing.
+_SPAWNED_PID = re.compile(r"\bpid:\s*(\d+)", re.IGNORECASE)
+
+
+def _spawned_pid(text: object) -> Optional[int]:
+    """The PID of the process a spawn record created, or ``None``."""
+    match = _SPAWNED_PID.search(str(text or ""))
+    return int(match.group(1)) if match else None
+
+
 def werfault_witnesses(
     process_records: list[dict[str, Any]],
     descendant_pids: set[int] | None,
@@ -336,7 +348,18 @@ def werfault_witnesses(
         witnesses.append(
             {
                 "crashed_pid": target,
-                "werfault_pid": record.get("pid"),
+                # WerFault's own PID, read from the spawn detail rather than from
+                # the record's `pid` -- which is the process that *started*
+                # WerFault. On the loader's tree those are the same process, so
+                # the field reported the crashed PID twice and looked right: the
+                # 06 Aug run recorded `crashed_pid: 4264, werfault_pid: 4264`
+                # while WerFault was really 7976. A `-pss` spawn comes from
+                # WerSvc's svchost instead, where the same mistake would have
+                # named a process with nothing to do with the crash.
+                "werfault_pid": _spawned_pid(detail),
+                # Kept because it answers a different question -- who was
+                # holding the crashed process when Windows stepped in.
+                "spawned_by_pid": record.get("pid"),
                 "timestamp": record.get("timestamp", ""),
             }
         )

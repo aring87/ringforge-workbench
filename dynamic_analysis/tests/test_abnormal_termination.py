@@ -21,6 +21,14 @@ from dynamic_analysis.crash_evidence import (
 
 
 def _proc(child, pid, detail):
+    """A spawn record shaped like `_build_process_create_record`'s output.
+
+    ``pid`` is the **creating** process, which is what Procmon puts in the PID
+    column of a process-create event. The created process's PID lives in the
+    detail as `PID: <n>`. The first version of this fixture passed WerFault's own
+    PID here, and `werfault_witnesses` read it back out of the same field -- so
+    the test agreed with the code about something both had wrong.
+    """
     return {"process_name": "regsvcs.exe", "child_process_name": child,
             "pid": pid, "detail": detail, "timestamp": "t"}
 
@@ -39,13 +47,43 @@ class WerFaultParsingTests(unittest.TestCase):
 
 class WerFaultWitnessTests(unittest.TestCase):
     def test_a_werfault_naming_a_sample_pid_is_a_witness(self) -> None:
-        recs = [_proc("werfault.exe", 5592,
+        recs = [_proc("werfault.exe", 9592,
                       "PID: 5592, Command line: WerFault.exe -u -p 9592 -s 220")]
 
         witnesses = werfault_witnesses(recs, descendant_pids={9592, 10956})
 
         self.assertEqual(len(witnesses), 1)
         self.assertEqual(witnesses[0]["crashed_pid"], 9592)
+
+    def test_the_three_pids_are_told_apart(self) -> None:
+        # The 06 Aug loader run, verbatim: RegSvcs 4264 faulted, spawned
+        # WerFault 7976, and WerFault's -p names 4264. The witness used to report
+        # werfault_pid 4264 -- the record's own `pid`, which is the *creating*
+        # process. Same number as the crashed PID here, because the crashing
+        # process is what spawned WerFault, which is exactly why it read as
+        # plausible for two runs.
+        recs = [_proc("werfault.exe", 4264,
+                      r"PID: 7976, Command line: C:\WINDOWS\SysWOW64\WerFault.exe "
+                      "-u -p 4264 -s 240")]
+
+        witness = werfault_witnesses(recs, descendant_pids={4264})[0]
+
+        self.assertEqual(witness["crashed_pid"], 4264)
+        self.assertEqual(witness["werfault_pid"], 7976)
+        self.assertEqual(witness["spawned_by_pid"], 4264)
+
+    def test_a_pss_spawn_does_not_name_the_spawning_service(self) -> None:
+        # The case that makes this more than cosmetic. A -pss WerFault is started
+        # by WerSvc's svchost, so the record's `pid` is svchost's and has nothing
+        # to do with the crash.
+        recs = [_proc("werfault.exe", 1092,
+                      "PID: 8120, Command line: WerFault.exe -pss -s 408 -p 9592 -ip 9592")]
+
+        witness = werfault_witnesses(recs, descendant_pids={9592})[0]
+
+        self.assertEqual(witness["crashed_pid"], 9592)
+        self.assertEqual(witness["werfault_pid"], 8120)
+        self.assertNotEqual(witness["werfault_pid"], witness["spawned_by_pid"])
 
     def test_a_werfault_for_an_unrelated_pid_is_not(self) -> None:
         recs = [_proc("werfault.exe", 5592,
