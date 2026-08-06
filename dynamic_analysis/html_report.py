@@ -1112,6 +1112,102 @@ def _crash_evidence_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _unmapped_pe_section(summary: dict[str, Any]) -> str:
+    """Executables found in memory that the process's loader never mapped.
+
+    The structural counterpart to the YARA pass, and independent of it: a rule
+    has to have been written for the family, while a module list is the
+    process's own record of what Windows put there. The 05 Aug payload matched
+    nothing in the ruleset -- an obfuscated managed assembly with no plaintext
+    indicators at all -- and was conclusive from its headers.
+
+    The two timestamps are shown side by side because that pairing is the
+    finding: an image years newer than the process hosting it did not ship with
+    it.
+    """
+    carve = summary.get("pe_carve_summary", {}) or {}
+    if not carve.get("carved"):
+        return ""
+
+    counts = carve.get("counts", {}) or {}
+    images = carve.get("images", []) or []
+    unmapped = [i for i in images if i.get("classification") == "unmapped"]
+
+    rows = [
+        {
+            "Process": image.get("process", ""),
+            "PID": image.get("pid", ""),
+            "Address": image.get("virtual_address", ""),
+            "Size": image.get("size_of_image", 0),
+            "Arch": ("{} .NET".format(image.get("machine", ""))
+                     if image.get("dotnet") else image.get("machine", "")),
+            "Compiled": image.get("compiled", ""),
+            # Rendered as a comparison because that is what the finding is. One
+            # side as a date and the other as hex leaves the reader converting
+            # between them to see the thing they are meant to see.
+            "Timestamp vs host": (
+                f"{image.get('timestamp_hex', '')} vs "
+                f"{image.get('host_image_timestamp_hex', '') or '?'}"
+            ),
+            "Carved": image.get("carved_file", "") or image.get("error", ""),
+            "From": image.get("dump_file", ""),
+        }
+        for image in unmapped
+    ]
+
+    inside = _to_int(counts.get("inside_module_images", 0))
+    inside_note = (
+        f"<p class='muted'>{inside} further PE image(s) sat inside a module's "
+        "range but not at its base. Ordinary loaders produce that occasionally "
+        "-- an executable held in a resource section -- so they are recorded "
+        "and not treated as evidence.</p>"
+        if inside
+        else ""
+    )
+
+    resource_only = _to_int(counts.get("resource_only_images", 0))
+    resource_note = (
+        f"<p class='muted'>{resource_only} further unmapped PE image(s) carried "
+        "no code at all and were set aside. Windows maps localised resource "
+        "files as data without registering them with the loader, so every "
+        "process on the machine holds a handful; an image with nothing "
+        "executable in it is not a payload.</p>"
+        if resource_only
+        else ""
+    )
+
+    failures = _to_int(counts.get("dumps_failed", 0))
+    failure_note = (
+        f"<p class='muted'>{failures} dump(s) could not be parsed and were not "
+        "searched. A dump written without memory (DumpType=1) carries metadata "
+        "only.</p>"
+        if failures
+        else ""
+    )
+
+    return f"""
+    <section class="{'card card-alert' if rows else 'card'}">
+      <div class="section-head">
+        <h2>Executables The Loader Never Mapped</h2>
+        {_section_badge("Unmapped PE images", _to_int(counts.get("unmapped_images", 0)))}
+      </div>
+      <p class="muted">
+        Every dump carries the process's own module list: what Windows mapped,
+        and where. A PE header at an address no module covers was put there by
+        something else, which is what process hollowing and reflective loading
+        leave behind. This needs no signature, so it works on a payload no rule
+        matches. {_to_int(counts.get("dumps_analyzed", 0))} dump(s) searched,
+        {_to_int(counts.get("carved", 0))} image(s) written out for analysis.
+      </p>
+      {_dict_list_table("Unmapped PE Images", rows, emphasize=True,
+                        empty_text="No PE image was found outside the mapped modules.")}
+      {resource_note}
+      {inside_note}
+      {failure_note}
+    </section>
+    """
+
+
 def _observation_window_section(summary: dict[str, Any]) -> str:
     """Warn when the run stopped watching a sample that had not yet acted.
 
@@ -1332,6 +1428,12 @@ def _memory_sections(summary: dict[str, Any]) -> str:
                 "Total size (MB)": counts.get("total_mb", 0),
                 "Dump offsets (s)": ", ".join(
                     str(o) for o in (summary.get("memory_dump_offsets", []) or [])
+                ),
+                # A run that collected no re-dumps reads differently at 10s than
+                # at 0, so the delay belongs next to the offsets rather than
+                # only in the JSON.
+                "Child re-dump (s)": (
+                    summary.get("memory_dump_spawn_redump_seconds", 0) or "off"
                 ),
             },
             _section_badge("Written", counts.get("dumps_succeeded", 0)),
@@ -1892,6 +1994,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_powershell_sections(summary)}
 {_network_sections(summary)}
 {_memory_sections(summary)}
+{_unmapped_pe_section(summary)}
 {_autoruns_suspicious_sections(summary)}
 {_autoruns_analyzer_section(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}

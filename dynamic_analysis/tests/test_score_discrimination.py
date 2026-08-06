@@ -50,6 +50,7 @@ def _score(**kwargs):
         memory_yara_summary={},
         powershell_summary={},
         crash_summary={},
+        pe_carve_summary={},
     )
     base.update(kwargs)
     return calculate_dynamic_score(**base)
@@ -462,6 +463,91 @@ class CorroborationTests(unittest.TestCase):
         self.assertTrue(injection["present"])
         self.assertFalse(injection["strong"])
         self.assertEqual(result["severity"], "Medium")
+
+    def test_an_unmapped_pe_in_a_hollowing_target_is_strong(self) -> None:
+        # The route that does not need the payload to crash. Event 25 is silent
+        # on this technique and the crash route only fires when something
+        # faults, so a loader that hollows and runs cleanly was invisible to
+        # both.
+        result = _score(
+            pe_carve_summary={
+                "carved": True,
+                "counts": {"unmapped_images": 1, "unmapped_in_hollowing_target": 1},
+            },
+        )
+        injection = next(
+            c for c in result["evidence_categories"] if c["name"] == "process_injection"
+        )
+
+        self.assertTrue(injection["strong"])
+        self.assertEqual(result["severity"], "High")
+
+    def test_an_unmapped_pe_anywhere_else_is_present_but_not_strong(self) -> None:
+        # Same reasoning as the JIT case above: a foreign image in an ordinary
+        # process might be injection and might be an executable a program had
+        # legitimate reason to hold in memory.
+        result = _score(
+            pe_carve_summary={
+                "carved": True,
+                "counts": {"unmapped_images": 1, "unmapped_in_hollowing_target": 0},
+            },
+        )
+        injection = next(
+            c for c in result["evidence_categories"] if c["name"] == "process_injection"
+        )
+
+        self.assertTrue(injection["present"])
+        self.assertFalse(injection["strong"])
+        self.assertEqual(result["severity"], "Medium")
+
+    def test_a_hollow_seen_twice_still_counts_once(self) -> None:
+        # The crash and the carved image come from one event. A category that
+        # fires twice for one behaviour is the volume-driven model this design
+        # exists to avoid, so the two routes must agree rather than accumulate.
+        both = _score(
+            crash_summary={
+                "counts": {
+                    "crashes": 1,
+                    "crashes_in_unmapped_memory": 1,
+                    "crashes_in_hollowing_target": 1,
+                }
+            },
+            pe_carve_summary={
+                "carved": True,
+                "counts": {"unmapped_images": 1, "unmapped_in_hollowing_target": 1},
+            },
+        )
+        crash_only = _score(
+            crash_summary={
+                "counts": {
+                    "crashes": 1,
+                    "crashes_in_unmapped_memory": 1,
+                    "crashes_in_hollowing_target": 1,
+                }
+            },
+        )
+
+        self.assertEqual(
+            both["evidence_counts"]["categories_present"],
+            crash_only["evidence_counts"]["categories_present"],
+        )
+        self.assertEqual(both["score"], crash_only["score"])
+
+    def test_an_empty_carve_says_nothing(self) -> None:
+        # A run where the dumps were searched and held no foreign image must
+        # not read as a run where injection was observed.
+        result = _score(
+            pe_carve_summary={
+                "carved": True,
+                "counts": {"unmapped_images": 0, "unmapped_in_hollowing_target": 0},
+            },
+        )
+        # evidence_categories carries only what fired, so the claim is that
+        # injection is absent from it entirely.
+        self.assertEqual(
+            [c for c in result["evidence_categories"] if c["name"] == "process_injection"],
+            [],
+        )
 
     def test_suspicious_powershell_is_a_category(self) -> None:
         # One of the paths that has never fired on real malware. It scores when

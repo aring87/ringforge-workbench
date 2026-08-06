@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-05, after the spawn re-dump landed. The commit that
+**Last updated:** 2026-08-05, after the spawn re-dump and PE carver. The commit that
 last touched this file is the anchor — `git log -1 docs/HANDOFF.md` — rather
 than a hash written inline, which has been stale here before.
 
@@ -171,14 +171,59 @@ runs, and a deliberate bail looks identical to a broken payload from outside.
 and unused; "a descendant of the sample crashed" is a cheap note with real
 value, now that the crash itself is being parsed anyway.
 
-### 5. Dumps are raw images with no payload reconstruction
+### 5. Dumps are raw images — carver added, unproven on a sample
 
 Carving the .NET assembly out of the crash dump on 05 Aug was done by hand:
 find `MZ` headers, check `e_lfanew`, compare the timestamp against the host
 image's. It took one small script and produced the single most informative
-artifact of the whole investigation. Doing it in the pipeline — "this dump
-contains a PE the loader did not map" — would be a strong finding in its own
-right and is not much code.
+artifact of the whole investigation.
+
+**`dynamic_analysis/pe_carve.py` now does it in the pipeline.** Every dump the
+YARA pass scans is also searched structurally, and the images that no module
+covers are written to `memory\carved\` as `.bin_` files — deliberately not an
+extension a double-click runs.
+
+The module list is what makes it precise. A minidump carries the process's own
+loader data, so "a PE at an address no module covers" is answered from the
+process's own record rather than by a heuristic. Four classifications, one of
+which is evidence:
+
+| | |
+|---|---|
+| `unmapped` | No module covers it and it carries code. **The finding.** |
+| `resource_only` | Unmapped, no code. Fires constantly — see below. |
+| `inside_module` | A second PE inside a module's range. Reported, not scored. |
+| `at_module_base` | An ordinary loaded module. Counted and ignored. |
+
+It feeds `process_injection` rather than adding a category. A hollow produces
+the crash and the foreign image from one event, and a category that fires twice
+for one behaviour is the volume-driven model the score design exists to avoid.
+`strong` when the host is a binary loaders hollow, the same test the crash
+evidence uses. **Its value is that it does not need the payload to crash** —
+Event 25 is silent on this technique and the crash route only fires on a fault,
+so a loader that hollows and runs cleanly was invisible to both.
+
+**The false-positive class, found by running it against a real minidump.** An
+idle Python process reported eleven unmapped PE images. All eleven were real:
+two sections, `.rdata` and `.rsrc`, no code — MUI resource files, which Windows
+maps with `LOAD_LIBRARY_AS_DATAFILE` and therefore never registers with the
+loader. Not a parser bug; the images are genuinely there and genuinely
+unmapped. It is a claim problem, and the same one as the analyzer-attribution
+bug in reverse: **a signal that fires on every process on the machine says
+nothing about any of them.** So the test is narrowed from "a PE" to "a PE that
+could execute" — `SizeOfCode`, an entry point, or a section marked executable.
+The count of what was set aside is kept and shown in the report.
+
+The synthetic dumps in the test suite could never have shown this. They contain
+only what the test author thought to put in them, which is the argument for
+checking a new parser against something the operating system wrote.
+
+**What it cannot do.** The classic overwrite-in-place hollow, where the payload
+is written over the host image at its original base, classifies as
+`at_module_base` and is invisible: the module list is read from the same memory
+the payload now occupies, so there is nothing left to compare against. The
+05 Aug sample mapped its payload *alongside* the real image, which is what made
+it visible. This widens injection detection; it does not close it.
 
 ### Smaller
 
@@ -216,6 +261,7 @@ run for a long time without showing.
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since |
 | Spawn re-dump | **Unproven on a sample.** Timing verified against a real process tree — each child re-dumped on its own clock — but no detonation has used it |
+| PE carve | **Unproven on a sample.** Parses a real Windows-written minidump correctly (38 modules, 0 false positives after the resource-only fix) and carves a synthetic hollow, but no detonation has used it |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -290,6 +336,14 @@ test, and the same shape of mistake appeared three times on 05 Aug.
 **A control's contract is directional.** The UPX control says "anything less
 means the dump or the delta logic is at fault." More is fine.
 
+**A signal that fires on everything says nothing about anything.** The PE carver
+reported eleven unmapped images in an idle Python process, all of them real and
+all of them Windows resource files. Correctness was never the problem; the claim
+was. Before trusting a new detector, run it against something known-clean — and
+if it is a parser, against a file the operating system wrote rather than one
+this repository built, because a synthetic fixture only contains what its author
+already thought of.
+
 **Commit messages carry the evidence.** Every fix names the run that exposed it
 and the numbers involved. `git log` is the incident record.
 
@@ -313,8 +367,13 @@ Order to check things in, learned the hard way:
    strong. The score is descriptive; this is the reasoning.
 5. **Crashes In The Sample's Tree.** A fault outside any mapped module is
    injection evidence, and often the only record of hollowing.
-6. **Memory-only rules.** The actual finding on a packed sample — but read gap 5
-   first: an obfuscated payload can be present and match nothing.
+6. **Executables The Loader Never Mapped.** Structural, so it works where a
+   signature does not: the 05 Aug payload matched no rule in the set and was
+   conclusive from its headers. Read the two timestamps side by side — an image
+   years newer than the process hosting it did not ship with it.
+7. **Memory-only rules.** The actual finding on a packed sample — but an
+   obfuscated payload can be present and match nothing, which is exactly the
+   case the row above covers.
 7. **Spawned vs Background processes.** The first is the sample; the second is
    Windows.
 8. **Files Received By The Simulated Internet**, and `memory\crash_dumps\`. If

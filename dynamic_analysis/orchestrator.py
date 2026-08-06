@@ -47,6 +47,10 @@ from dynamic_analysis.memory_dump import (
     sample_descendant_pids,
     summarize_memory_dumps,
 )
+from dynamic_analysis.pe_carve import (
+    carve_dumps,
+    summarize_pe_carve,
+)
 from dynamic_analysis.memory_yara import (
     memory_yara_status,
     scan_memory_dumps,
@@ -1113,6 +1117,8 @@ def _evidence_categories(
     sysmon_injections: int,
     unmapped_memory_crashes: int,
     hollowing_target_crashes: int,
+    unmapped_pe_images: int,
+    unmapped_pe_in_hollowing_target: int,
     sysmon_high: int,
     suspicious_tasks: int,
     suspicious_services: int,
@@ -1172,25 +1178,59 @@ def _evidence_categories(
             # record. The identity of the process is what separates them:
             # nothing legitimate starts RegSvcs.exe and has it fault in
             # anonymous memory.
-            "present": (sysmon_injections > 0 or unmapped_memory_crashes > 0),
-            "strong": (sysmon_injections >= 2 or hollowing_target_crashes > 0),
+            #
+            # The third route is a PE image sitting in a dump at an address the
+            # process's own module list does not cover. It is the same claim
+            # again -- code is present that the loader did not map -- and it is
+            # deliberately folded in here rather than scored as its own
+            # category. A hollow produces the crash and the foreign image from
+            # one event, and a category that fires twice for one behaviour is
+            # the volume-driven model this design exists to avoid.
+            #
+            # Its value is that it does not need the payload to crash. Event 25
+            # is silent on this technique and the crash route only fires when
+            # something faults, so a loader that hollows and runs cleanly was
+            # invisible to both.
+            "present": (
+                sysmon_injections > 0
+                or unmapped_memory_crashes > 0
+                or unmapped_pe_images > 0
+            ),
+            "strong": (
+                sysmon_injections >= 2
+                or hollowing_target_crashes > 0
+                or unmapped_pe_in_hollowing_target > 0
+            ),
             "detail": (
                 f"{sysmon_injections} injection event(s), "
                 f"{unmapped_memory_crashes} crash(es) in unmapped memory "
-                f"({hollowing_target_crashes} in a process loaders hollow)"
+                f"({hollowing_target_crashes} in a process loaders hollow), "
+                f"{unmapped_pe_images} unmapped PE image(s) in memory "
+                f"({unmapped_pe_in_hollowing_target} in a process loaders hollow)"
             ),
             "reason": (
-                "A binary loaders commonly hollow, started by the sample, "
-                "faulted at an address with no module mapped there -- it was "
-                "executing injected code."
-                if hollowing_target_crashes
+                "A PE image was found in the memory of a binary loaders "
+                "commonly hollow, at an address that process's own module list "
+                "does not cover -- an executable the loader never mapped."
+                if unmapped_pe_in_hollowing_target
                 else (
-                    "A process in the sample's tree faulted at an address with "
-                    "no module mapped there. In a managed process that can also "
-                    "be JIT-compiled code, so this is reported without being "
-                    "treated as decisive on its own."
-                    if unmapped_memory_crashes
-                    else "Sysmon recorded process injection (CreateRemoteThread)."
+                    "A binary loaders commonly hollow, started by the sample, "
+                    "faulted at an address with no module mapped there -- it was "
+                    "executing injected code."
+                    if hollowing_target_crashes
+                    else (
+                        "A PE image is present in process memory at an address "
+                        "no loaded module covers."
+                        if unmapped_pe_images
+                        else (
+                            "A process in the sample's tree faulted at an address with "
+                            "no module mapped there. In a managed process that can also "
+                            "be JIT-compiled code, so this is reported without being "
+                            "treated as decisive on its own."
+                            if unmapped_memory_crashes
+                            else "Sysmon recorded process injection (CreateRemoteThread)."
+                        )
+                    )
                 )
             ),
         },
@@ -1270,6 +1310,7 @@ def calculate_dynamic_score(
     memory_yara_summary: dict[str, Any] | None = None,
     powershell_summary: dict[str, Any] | None = None,
     crash_summary: dict[str, Any] | None = None,
+    pe_carve_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -1382,6 +1423,13 @@ def calculate_dynamic_score(
         (crashes.get("counts", {}) or {}).get("crashes_in_hollowing_target", 0) or 0
     )
 
+    carved = pe_carve_summary if isinstance(pe_carve_summary, dict) else {}
+    carve_counts = carved.get("counts", {}) or {}
+    unmapped_pe_images = int(carve_counts.get("unmapped_images", 0) or 0)
+    unmapped_pe_in_hollowing_target = int(
+        carve_counts.get("unmapped_in_hollowing_target", 0) or 0
+    )
+
     # --- Context: how busy the run was ------------------------------------
     #
     # Volume is not evidence. Two runs of the same control produced scores nine
@@ -1409,6 +1457,8 @@ def calculate_dynamic_score(
         sysmon_injections=sysmon_injections,
         unmapped_memory_crashes=unmapped_memory_crashes,
         hollowing_target_crashes=hollowing_target_crashes,
+        unmapped_pe_images=unmapped_pe_images,
+        unmapped_pe_in_hollowing_target=unmapped_pe_in_hollowing_target,
         sysmon_high=sysmon_high,
         suspicious_tasks=suspicious_tasks,
         suspicious_services=suspicious_services,
@@ -1683,6 +1733,15 @@ def run_dynamic_analysis(
     memory_yara_timeout = int(config.get("memory_yara_timeout_seconds", 300))
     memory_yara_json = paths["memory"] / "memory_yara.json"
 
+    # Structure rather than signature: a PE image at an address no module covers
+    # was not mapped by the loader. It is the one question a dump answers that
+    # YARA cannot, and it does not need anyone to have written a rule for the
+    # family -- the 05 Aug payload matched nothing in the set and was still
+    # conclusive from its headers alone.
+    pe_carve_enabled = bool(config.get("pe_carve_enabled", True))
+    pe_carve_json = paths["memory"] / "carved_pe.json"
+    pe_carve_dir = paths["memory"] / "carved"
+
     # Preflight so the report records exactly which telemetry was possible.
     sysmon_preflight = sysmon_status(sysmon_path) if sysmon_enabled else {
         "available": False, "note": "Sysmon collection disabled for this run."
@@ -1774,6 +1833,8 @@ def run_dynamic_analysis(
     memory_start_result: dict[str, Any] = {"started": False}
     memory_yara_result: dict[str, Any] = {}
     memory_yara_summary: dict[str, Any] = {}
+    pe_carve_result: dict[str, Any] = {}
+    pe_carve_summary: dict[str, Any] = {}
 
     sysmon_since: str = ""
     packet_capture: PacketCapture | None = None
@@ -2430,6 +2491,24 @@ def run_dynamic_analysis(
                 for d in (crash_dump_result.get("dumps", []) or [])
                 if d.get("success") and d.get("attributed_to_sample")
             ]
+            # Carved before the YARA pass. It is seconds against minutes, and a
+            # rule set that times out on a 400 MB image must not also cost the
+            # structural finding, which needs no rules at all.
+            if pe_carve_enabled and scannable:
+                _emit(status_cb, "Searching memory dumps for unmapped PE images...")
+                try:
+                    pe_carve_result = carve_dumps(
+                        dump_records=scannable,
+                        output_dir=pe_carve_dir,
+                        status_cb=status_cb,
+                    )
+                    pe_carve_summary = summarize_pe_carve(pe_carve_result)
+                    write_json(pe_carve_json, pe_carve_result)
+                except Exception as error:
+                    pe_carve_result = {"carved": False, "error": str(error)}
+                    pe_carve_summary = summarize_pe_carve(pe_carve_result)
+                    _emit(status_cb, f"PE carve warning: {error}")
+
             if memory_dump_enabled and memory_yara_enabled and scannable:
                 if memory_yara_preflight.get("available"):
                     _emit(status_cb, "Scanning process memory with YARA...")
@@ -2536,6 +2615,7 @@ def run_dynamic_analysis(
         memory_yara_summary=memory_yara_summary,
         powershell_summary=powershell_summary,
         crash_summary=crash_summary,
+        pe_carve_summary=pe_carve_summary,
     )
 
     if cancelled:
@@ -2624,6 +2704,8 @@ def run_dynamic_analysis(
         "memory_yara_enabled": memory_yara_enabled,
         "memory_yara_preflight": memory_yara_preflight,
         "memory_yara_summary": memory_yara_summary,
+        "pe_carve_enabled": pe_carve_enabled,
+        "pe_carve_summary": pe_carve_summary,
         "crash_evidence_enabled": crash_evidence_enabled,
         "crash_dump_preflight": crash_dump_preflight,
         "crash_summary": crash_summary,
