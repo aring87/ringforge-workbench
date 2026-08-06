@@ -189,7 +189,7 @@ Three things still worth knowing:
 at ~t1 and the earliest offset tried was +2s; the skip record says so every
 time. `1, 25` is the only remaining option if an image of the packer is wanted.
 
-### 4. No anti-analysis detection
+### 4. No anti-analysis detection — needs code, not a sample
 
 Nothing reports "the sample checked for a VM and left". The loader sample is
 the case that wants it: deterministic failure at the same point across three
@@ -260,11 +260,15 @@ live malware it read 43 modules per dump with `rejected: 0` and
 loader-mapped PE, so there is nothing foreign to find, and the loader sample's
 payload was recovered before the carver existed.
 
-**This is the open item, and it needs a different sample** — one that hollows a
-*legitimate* binary, so the carver can fire `strong` via `HOLLOWING_TARGETS`.
-`d712b6f9…` is the recorded candidate: vxCube reports *"unauthorized injection
-to a recently created process"*, which is also the case gap 3's re-dump was
-built for and has likewise not yet had. One sample would close both.
+**This is the open item, and the sample for it is already here.** `422e30ed…`
+hollows `RegSvcs.exe` — in `HOLLOWING_TARGETS` — and maps its payload
+*alongside* the real image, which is the case the carver can see. It is also the
+case gap 3's re-dump was built for and has likewise not yet had, so one
+detonation closes both. See *Re-run this sample next* under the loader
+reference data, which records the settings and the predicted results.
+
+`d712b6f9…` is the fallback if that chain proves too fast: vxCube reports
+*"unauthorized injection to a recently created process"* on it.
 
 ### Smaller
 
@@ -300,7 +304,7 @@ run for a long time without showing.
 | Crash-dump collection | **Proven**, and produced the payload |
 | Adaptive window | **Fired, on the wrong case** — see below |
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
-| Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since |
+| Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since. **Test it with `test_specs/memory_canary/`, not malware** — if the refusal fails, a benign canary detonates into a live network path and costs nothing. Five minutes, and it is the one unproven control with real teeth |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
 | PE carve | **Runs clean on real dumps** — 43 modules, 0 rejected, 0 false positives across five ProcDump images of live malware. Its finding path is still unproven: no run has yet produced an unmapped image |
 | File writes / dropped files | **Proven** on 06 Aug — 12 write events and the `%APPDATA%` drop, after being 0 on every run ever performed |
@@ -524,8 +528,64 @@ flaky hollowing, and not Defender, which has real-time protection off. What
 remains is anti-analysis or a broken crypter, and the pipeline cannot currently
 tell those apart (gap 4).
 
-If you return to this sample, the `.rsrc` blob is where the config lives and
-that is a static-analysis job on the carved image, not another detonation.
+### Re-run this sample next — predicted, not yet observed
+
+**That advice is superseded.** This section used to end "if you return to this
+sample, the `.rsrc` blob is a static-analysis job, not another detonation." That
+was correct when written: nothing in the pipeline would have seen anything new.
+Two features have been built since that have never met it, and both were built
+*for* this chain.
+
+Recorded before the run, on the same principle as the Remcos section: an
+expectation written in advance makes the detonation a pass/fail test of the
+pipeline rather than a description of the sample.
+
+**Why this sample and not a new one.** It is the only sample here that hollows a
+binary in `HOLLOWING_TARGETS`, and its payload is mapped *alongside* the real
+`RegSvcs.exe` image rather than over it — which is exactly what the carver can
+see, the overwrite-in-place variant being the documented blind spot. The two PE
+headers were already confirmed by hand: RegSvcs at `0x5ff2b99b`, the payload
+carrying a 2025 one.
+
+**Settings, and both differ from the Remcos runs:**
+
+| Setting | Value | Why |
+|---|---|---|
+| `spawn_redump_seconds` | **3**, not 10 | The payload faults. At 10s the record reads `exited before its +10s re-dump` instead of producing an image. Hollowing completes in well under a second, so 3s is after the write and before the crash |
+| Offsets | **1, 25** | Dormancy is 20–42s, so +1s catches the parent while it is still alive — the process no run has ever imaged |
+| Max processes | 20 | Six-process chain, plus re-dumps |
+
+**What each gap should get:**
+
+- **Gap 5, the finding path.** The carver should report `unmapped` inside
+  `RegSvcs.exe`. Because `RegSvcs` is in `HOLLOWING_TARGETS` this fires
+  **strong** — the branch that has never been exercised on any run. Expect the
+  carved image to be an x86 .NET EXE of 57,344 bytes, compiled 2025-06-18.
+  Compare its SHA256 against the hand-carved copy.
+- **Gap 3, the revelation.** The spawn dump should catch `RegSvcs` as a ~15 MB
+  empty shell and the +3s re-dump the same PID with the payload in it. A size or
+  hash difference between the pair is the whole point of the feature and has
+  never been seen.
+- **Gap 2.** `sysmon_injection_events: 0` again, and Event 25 silent again. The
+  crash route should fire `process_injection` **strong** as it did on 05 Aug.
+- **Gap 4.** Nothing. The detector does not exist yet — but this run is the
+  reference case for building it.
+
+**Expected, from three previous runs:** chain sample → `powershell.exe
+Add-MpPreference -ExclusionPath <self>` → 3× `RegSvcs.exe` within 15 ms; one
+faults `0xc0000005` in unmapped memory, the others die inside one poll interval;
+12 PowerShell blocks with 1 suspicious; score 70 · Elevated Attention with
+`process_injection` (strong) + `scripted_execution`.
+
+**What would make it a failure rather than a finding:** the carver reporting
+`unmapped_images: 0` on a dump of `RegSvcs` taken *after* the payload was
+written. That would mean the payload is written over the host image at its
+original base after all, and the 05 Aug hand-carve found it alongside only
+because the crash dump caught a different moment.
+
+**Still true:** the `.rsrc` blob is where the config lives, and that remains a
+static-analysis job on the carved image rather than something a detonation
+answers.
 
 ---
 
