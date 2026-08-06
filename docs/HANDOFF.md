@@ -637,11 +637,20 @@ says.** The 06 Aug 20:23 detonation was set up specifically to exercise the
 registry-read pass and exercised none of it: the guest was one commit behind and
 the config field still pointed at the default. The report looked completely normal
 — `capture_quality: good`, every predicted number landing — because a *missing*
-pass produces no warning, only an absent key. Two habits follow. Before reading a
-run as evidence about a new feature, grep its `dynamic_run_summary.json` for the
-field that feature writes; and remember the guest's clone is pulled, so
-`revert → pull → disarm → detonate` is an order, not a list — a pull before the
-revert is discarded with everything else.
+pass produces no warning, only an absent key.
+
+**The cause was one step further back than it first looked**, which is the more
+useful half. The work had been committed on the host and never **pushed**: the
+guest's `origin/main` sat at `9df8ec0` because that is what the remote held, so its
+pull was correct and returned nothing. `git log -1` in the guest names the code
+that ran and would have caught it in one line. The chain is
+`commit → push → revert → pull → disarm → detonate`, and it is an order rather
+than a list — a pull before the revert is discarded with everything else, and a
+pull before the push fetches the old commit and looks identical to success.
+
+So: before reading a run as evidence about a new feature, check the guest's HEAD
+before launching, and grep the summary for the field that feature writes
+afterwards. Both are seconds; the run they save is five minutes plus a revert.
 
 **A missing signal may be missing upstream of the code.** This document said for
 weeks that registry reads were absent because `INTERESTING_OPS` did not list
