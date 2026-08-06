@@ -27,6 +27,7 @@ from dynamic_analysis.crash_evidence import (
     CrashDumpCollector,
     collect_crashes,
     empty_crash_summary,
+    summarize_abnormal_termination,
     wer_local_dump_status,
 )
 from dynamic_analysis.findings import summarize_dynamic_findings
@@ -1846,6 +1847,7 @@ def run_dynamic_analysis(
     fakenet_stop_result: dict[str, Any] = {}
 
     crash_summary: dict[str, Any] = empty_crash_summary("not collected")
+    abnormal_termination: dict[str, Any] = {"chain_crashed": False}
     crash_dump_result: dict[str, Any] = {"collected": False, "note": "not collected"}
     crash_collector: CrashDumpCollector | None = None
     # Shared by the crash-event and crash-dump collectors below. Seeded with
@@ -2440,6 +2442,31 @@ def run_dynamic_analysis(
                 )
                 write_json(findings_json, findings_summary)
 
+                # Did the sample's chain end by crash? A deliberate
+                # anti-analysis bail and a broken payload leave the same trace
+                # from outside, so this is not scored -- it is a guard against a
+                # crashed chain reading as a clean run. Built here because it
+                # needs the sample's lineage and its spawned WerFault.
+                resolved = findings_summary.get("descendant_pids")
+                abnormal_termination = summarize_abnormal_termination(
+                    crash_summary,
+                    process_records=findings_summary.get("spawned_processes", []),
+                    descendant_pids=set(resolved) if resolved is not None else None,
+                )
+                if abnormal_termination.get("chain_crashed"):
+                    tail = (
+                        " (seen only via WerFault, no Application Error event)"
+                        if abnormal_termination.get("witnessed_only_by_werfault")
+                        else ""
+                    )
+                    _emit(
+                        status_cb,
+                        "Abnormal termination: a process in the sample's tree "
+                        f"crashed{tail}. A deliberate bail is indistinguishable "
+                        "from a broken payload -- treat a quiet result as "
+                        "inconclusive.",
+                    )
+
                 _emit(status_cb, "Triaging dropped-file candidates...")
                 resolved_pids = findings_summary.get("descendant_pids")
                 dropped_candidates = collect_dropped_file_candidates(
@@ -2747,6 +2774,7 @@ def run_dynamic_analysis(
         "crash_evidence_enabled": crash_evidence_enabled,
         "crash_dump_preflight": crash_dump_preflight,
         "crash_summary": crash_summary,
+        "abnormal_termination": abnormal_termination,
         "crash_dumps": crash_dump_result,
         "powershell_preflight": powershell_preflight,
         "powershell_summary": powershell_summary,

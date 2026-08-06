@@ -191,15 +191,38 @@ Three things still worth knowing:
 at ~t1 and the earliest offset tried was +2s; the skip record says so every
 time. `1, 25` is the only remaining option if an image of the packer is wanted.
 
-### 4. No anti-analysis detection — needs code, not a sample
+### 4. FIRST PIECE BUILT — the chain-crashed warning, 06 Aug
 
-Nothing reports "the sample checked for a VM and left". The loader sample is
-the case that wants it: deterministic failure at the same point across three
-runs, and a deliberate bail looks identical to a broken payload from outside.
+The gap asked for something narrow and honest: nothing reported "the sample's
+chain ended by crash", and a deliberate anti-analysis bail is indistinguishable
+from a broken payload *from outside the guest*. Both leave a crashed process and
+an otherwise quiet run. The pipeline cannot tell them apart, and the fix does
+not pretend to.
 
-`WerFault.exe -u -p <pid>` naming a sample descendant is in `spawned_processes`
-and unused; "a descendant of the sample crashed" is a cheap note with real
-value, now that the crash itself is being parsed anyway.
+What it does instead is refuse to let a crashed chain read as a clean one.
+`summarize_abnormal_termination` (in `crash_evidence`) fires on either of two
+witnesses:
+
+- the Application Error 1000 events already attributed to the sample; and
+- any `WerFault.exe` whose `-p <pid>` names a sample-tree process — the loader's
+  `RegSvcs.exe -> WerFault.exe`, previously in `spawned_processes` and unused.
+
+The second exists because a Windows build can fail to write the event, leaving
+only the WerFault spawn; `witnessed_only_by_werfault` marks that case. It is
+**not scored** — a crash is not evidence of malice, benign software crashes — so
+it renders as a `card-alert` warning above the evidence, the same shape as the
+observation-window caution: *treat an otherwise-empty run as inconclusive rather
+than clean.*
+
+Verified end to end against the loader's real tree: both witnesses agree, the
+warning names `RegSvcs.exe (pid 9592)`, and it sits above the verdict.
+
+**What is still not built** is the *active* half — detecting the sample reading
+a VM artifact (registry keys under `…\Services\VBoxGuest`, `SystemBiosVersion`,
+disk-size or MAC checks) and then going quiet. That needs registry *reads* in
+the event stream, and `INTERESTING_OPS` captures only Create/Set/Delete, not
+`RegQueryValue`. A real anti-analysis detector wants that collection path first;
+this piece is the honest floor, not the ceiling.
 
 ### 5. Carver built and parsing proven; its finding path still has not fired
 
@@ -321,6 +344,7 @@ run for a long time without showing.
 | Dropped-file probe filtering | **Proven.** 13 candidates → 1, and that one exists on disk |
 | Open-versus-production on file events | **Proven** on 06 Aug, 13:47. Every predicted number landed: hits 42 → 26, DLL probes 9 → 0, `svchost` opens 7 → 0, `file_write_events` 0 → 2 naming the drop |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
+| Chain-crashed warning (gap 4) | **Verified end to end** on the loader's real tree — both witnesses fire, warning renders above the verdict naming `RegSvcs.exe`. Unproven on a *live* run only because no run has been done since it was added |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window

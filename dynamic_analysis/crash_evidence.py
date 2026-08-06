@@ -281,6 +281,125 @@ def collect_crashes(
 
 
 # ---------------------------------------------------------------------------
+# Abnormal termination (gap 4: a bail looks like a broken payload from outside)
+# ---------------------------------------------------------------------------
+
+#: WerFault's `-p <pid>` names the process that crashed. Both spawn forms carry
+#: it: `WerFault.exe -u -p 3564 -s 220` and `WerFault.exe -pss -s 408 -p 3564
+#: -ip 3564`.
+_WERFAULT_TARGET = re.compile(r"-p\s+(\d+)")
+
+
+def _werfault_target_pid(text: object) -> Optional[int]:
+    """The PID WerFault says crashed, from its command line, or ``None``."""
+    match = _WERFAULT_TARGET.search(str(text or ""))
+    return int(match.group(1)) if match else None
+
+
+def werfault_witnesses(
+    process_records: list[dict[str, Any]],
+    descendant_pids: set[int] | None,
+) -> list[dict[str, Any]]:
+    """WerFault instances naming a crashed process in the sample's tree.
+
+    Windows spawns ``WerFault.exe`` when a process faults, and its ``-p <pid>``
+    argument names the process that died. On the loader this appears as
+    ``RegSvcs.exe -> WerFault.exe``. It is a witness independent of the
+    Application Error 1000 event, which some Windows builds fail to write and
+    which a wevtutil query can miss -- so a crash can be real and leave only
+    this trace.
+
+    Attribution is by the crashed PID against the sample's tree. ``None`` for
+    ``descendant_pids`` means lineage could not be resolved, and every WerFault
+    is kept rather than dropped, the same degrade the findings already use.
+    """
+    witnesses: list[dict[str, Any]] = []
+    for record in process_records or []:
+        name = _image_name(
+            record.get("child_process_name")
+            or record.get("process_name")
+            or record.get("name")
+        )
+        if name != "werfault.exe":
+            continue
+
+        detail = " ".join(
+            str(record.get(key, "") or "")
+            for key in ("detail", "command_line", "command", "path")
+        )
+        target = _werfault_target_pid(detail)
+        if target is None:
+            continue
+        if descendant_pids is not None and target not in descendant_pids:
+            continue
+
+        witnesses.append(
+            {
+                "crashed_pid": target,
+                "werfault_pid": record.get("pid"),
+                "timestamp": record.get("timestamp", ""),
+            }
+        )
+    return witnesses
+
+
+def summarize_abnormal_termination(
+    crash_summary: dict[str, Any] | None,
+    process_records: list[dict[str, Any]] | None = None,
+    descendant_pids: set[int] | None = None,
+) -> dict[str, Any]:
+    """Whether the sample's chain ended by crash rather than by clean exit.
+
+    This is gap 4's honest core. From outside the guest a sample that detects
+    analysis and bails looks exactly like one whose payload is broken: both
+    leave a crashed process in the tree and an otherwise quiet run. The pipeline
+    cannot tell them apart, and pretending otherwise would be a guess.
+
+    What it *can* do is refuse to let a crashed chain read as a clean one. This
+    is not scored -- a crash is not evidence of malice, and benign software
+    crashes -- but it is a false-negative guard: where a run is otherwise empty
+    and a sample process crashed, the result is inconclusive, not benign.
+
+    Two witnesses, unioned. The Application Error 1000 events already attributed
+    to the sample, and any WerFault naming a sample-tree PID. Either alone is
+    enough; together they survive one of the two being missing.
+    """
+    crash = crash_summary if isinstance(crash_summary, dict) else {}
+    counts = crash.get("counts", {}) or {}
+    event_crashes = int(counts.get("crashes", 0) or 0)
+
+    witnesses = werfault_witnesses(process_records or [], descendant_pids)
+    witness_pids = {w["crashed_pid"] for w in witnesses}
+
+    crashed = event_crashes > 0 or bool(witnesses)
+
+    # The PIDs and names of the crashed sample processes, from the crash events.
+    crashed_processes = [
+        {"process": c.get("app_name", ""), "pid": c.get("pid")}
+        for c in (crash.get("crashes", []) or [])
+    ]
+
+    return {
+        "chain_crashed": crashed,
+        "event_crashes": event_crashes,
+        "werfault_witnesses": witnesses,
+        # A crash seen only via WerFault, with no Application Error event to go
+        # with it -- the case this second witness exists for.
+        "witnessed_only_by_werfault": bool(witness_pids) and event_crashes == 0,
+        "crashed_processes": crashed_processes,
+        "note": (
+            "A process in the sample's tree terminated by crash. From outside "
+            "the guest a deliberate anti-analysis bail is indistinguishable "
+            "from a broken payload: both leave a crashed process and a quiet "
+            "run. Where this run is otherwise empty, read it as inconclusive "
+            "rather than clean."
+            if crashed
+            else ""
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Crash dumps
 # ---------------------------------------------------------------------------
 

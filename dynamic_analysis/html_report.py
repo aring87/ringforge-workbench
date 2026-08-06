@@ -1306,6 +1306,57 @@ def _observation_window_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _abnormal_termination_section(summary: dict[str, Any]) -> str:
+    """Warn when the sample's chain ended by crash rather than by clean exit.
+
+    Gap 4. From outside the guest a sample that detects analysis and bails is
+    indistinguishable from one whose payload is broken -- both leave a crashed
+    process and an otherwise quiet run. The pipeline cannot tell them apart, so
+    this does not score; it exists so a crashed chain is never read as a clean
+    one.
+
+    Silent when nothing in the sample's tree crashed.
+    """
+    abn = summary.get("abnormal_termination", {}) or {}
+    if not abn.get("chain_crashed"):
+        return ""
+
+    crashed = abn.get("crashed_processes", []) or []
+    witnesses = abn.get("werfault_witnesses", []) or []
+
+    who = ", ".join(
+        f"{c.get('process') or '?'} (pid {c.get('pid')})" for c in crashed[:6]
+    )
+    if not who and witnesses:
+        who = ", ".join(f"pid {w.get('crashed_pid')}" for w in witnesses[:6])
+
+    werfault_note = ""
+    if abn.get("witnessed_only_by_werfault"):
+        werfault_note = (
+            "<p class='muted'>Seen only through WerFault, with no Application "
+            "Error event to accompany it -- the crash is real but the event log "
+            "did not record it, which some Windows builds do.</p>"
+        )
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Chain Terminated By Crash — Result May Be Inconclusive</h2>
+        {_section_badge("Crashed", _to_int(abn.get("event_crashes", 0)) or len(witnesses))}
+      </div>
+      <p class="muted">
+        A process in the sample's tree terminated by crash{f': {_esc(who)}' if who else ''}.
+        From outside the guest a deliberate anti-analysis bail is
+        indistinguishable from a broken payload -- both leave a crashed process
+        and an otherwise quiet run, and the pipeline cannot tell which happened.
+        Where this run is otherwise empty, read it as <b>inconclusive rather
+        than clean</b>: the sample may have detected the environment and left.
+      </p>
+      {werfault_note}
+    </section>
+    """
+
+
 def _fakenet_received_section(summary: dict[str, Any]) -> str:
     """Files the sample uploaded to the simulated internet.
 
@@ -1979,6 +2030,13 @@ def _analyst_notes(summary: dict[str, Any]) -> list[str]:
     if _to_int(autoruns.get("new_entries", 0)) > 0 or _to_int(autoruns.get("modified_entries", 0)) > 0:
         notes.append("Autoruns detected new or modified startup entries; review the Autoruns Persistence Diff section.")
 
+    if (summary.get("abnormal_termination", {}) or {}).get("chain_crashed"):
+        notes.append(
+            "A process in the sample's tree terminated by crash. A deliberate "
+            "anti-analysis bail is indistinguishable from a broken payload here, "
+            "so an otherwise quiet result is inconclusive rather than clean."
+        )
+
     return notes
 
 
@@ -2051,6 +2109,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_summary_tiles(summary)}
 {_containment_section(summary)}
 {_observation_window_section(summary)}
+{_abnormal_termination_section(summary)}
 {_evidence_section(summary)}
 
 <div class="grid">
