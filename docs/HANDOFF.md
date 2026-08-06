@@ -387,8 +387,10 @@ and the numbers involved. `git log` is the incident record.
 Order to check things in, learned the hard way:
 
 1. **`network_isolation.level`** from the run summary. `ok` now means contained;
-   `uncontained` blocks the run outright. The GUI's line is re-read immediately
-   before each launch, so it should agree — but the summary is the authority.
+   `uncontained` blocks the run outright. The GUI's line now re-reads every 4s
+   while the window is open, as well as immediately before each launch, so
+   arming or disarming the guest updates the strip and the armed banner without
+   reopening the window. The summary is still the authority.
 2. **Warnings first.** Degraded Collection, Cannot Be Reached, Name Resolution
    Was Not Served, Observation May Be Incomplete. Each one means part of the
    run is unobserved rather than quiet.

@@ -29,6 +29,34 @@ from gui import theme as T
 from gui.components import Checkbox, HeaderBar
 
 
+def isolation_signature(status: dict) -> tuple:
+    """The parts of a containment probe that change what the window shows.
+
+    The watch polls every few seconds and must only redraw when something an
+    analyst would act on has changed -- re-packing the armed banner on every
+    tick flickers and steals focus. Everything the strip and the banner read is
+    in here, so two statuses with the same signature render identically.
+
+    ``egress`` is included by adapter and gateway rather than wholesale, because
+    the banner names the paths and a second adapter appearing must not be
+    mistaken for the same state.
+    """
+    if not isinstance(status, dict):
+        return ("unknown",)
+
+    return (
+        status.get("level"),
+        bool(status.get("isolated")),
+        status.get("egress_count"),
+        status.get("note", ""),
+        tuple(
+            (e.get("adapter"), e.get("gateway"), e.get("reaches"))
+            for e in (status.get("egress", []) or [])
+            if isinstance(e, dict)
+        ),
+    )
+
+
 class DynamicAnalysisWindow(tk.Toplevel):
     r"""
     RingForge Dynamic Analysis window.
@@ -245,11 +273,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.worker_thread: Optional[threading.Thread] = None
         self.cancel_event = threading.Event()
 
+        self._isolation_poll_job = None
+        self._isolation_probe_active = False
+        self._isolation_signature = None
+
         self._build_ui()
         self._reset_progress()
         self._refresh_summary_from_inputs()
         self._enable_case_auto_follow()
         self.after(150, self._drain_output)
+        self._start_isolation_watch()
 
         self.grab_set()
 
@@ -1260,6 +1293,98 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         self._refresh_telemetry_availability()
 
+    #: How often the containment strip re-reads the network, in milliseconds.
+    #:
+    #: Arming and disarming happens on the host while this window sits open, and
+    #: the strip used to keep whatever it read at build time until the window was
+    #: closed and reopened. A stale "Single egress path" is the most dangerous
+    #: thing this GUI can display, because it is reassuring and wrong.
+    #:
+    #: 4s is chosen to be faster than a person can arm the guest and click Run.
+    ISOLATION_POLL_MS = 4000
+
+    def _start_isolation_watch(self):
+        """Begin re-reading containment for as long as the window is open."""
+        self._schedule_isolation_poll()
+
+    def _schedule_isolation_poll(self):
+        try:
+            self._isolation_poll_job = self.after(
+                self.ISOLATION_POLL_MS, self._poll_isolation
+            )
+        except Exception:
+            # The window is going away; nothing left to schedule against.
+            self._isolation_poll_job = None
+
+    def _poll_isolation(self):
+        """One tick of the containment watch.
+
+        The probe shells out, so it runs on a worker thread rather than blocking
+        the UI, and only one is ever in flight.
+
+        Paused while a detonation is running, deliberately. Procmon is capturing
+        everything the machine does, and a subprocess every four seconds would
+        put the analyzer's own network queries into the sample's evidence. The
+        run re-reads containment at launch and the summary is the authority
+        during it, so nothing is lost by going quiet.
+        """
+        self._isolation_poll_job = None
+
+        if self._isolation_probe_active or self._run_in_progress():
+            self._schedule_isolation_poll()
+            return
+
+        self._isolation_probe_active = True
+
+        def probe():
+            try:
+                from dynamic_analysis.network_capture import network_isolation_status
+
+                status = network_isolation_status()
+            except Exception as error:
+                status = {"level": "unknown", "note": str(error), "egress_count": 0}
+            try:
+                self.after(0, lambda s=status: self._apply_isolation(s))
+            except Exception:
+                pass
+
+        threading.Thread(target=probe, name="ringforge-isolation-watch", daemon=True).start()
+
+    def _run_in_progress(self) -> bool:
+        thread = getattr(self, "worker_thread", None)
+        return bool(thread is not None and thread.is_alive())
+
+    def _apply_isolation(self, status: dict) -> None:
+        """Adopt a probe result on the UI thread, redrawing only on a change.
+
+        Comparing a signature rather than redrawing every tick keeps the banner
+        from being re-packed four times a minute forever, which flickers and
+        steals focus from whatever the analyst is typing into.
+        """
+        self._isolation_probe_active = False
+
+        signature = isolation_signature(status)
+        if signature != self._isolation_signature:
+            self._isolation_signature = signature
+            self._isolation = status
+            try:
+                self._render_isolation_label()
+            except Exception:
+                pass
+
+        self._schedule_isolation_poll()
+
+    def destroy(self):
+        """Stop the containment watch before the widgets go away."""
+        job = getattr(self, "_isolation_poll_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._isolation_poll_job = None
+        super().destroy()
+
     def _refresh_isolation(self):
         """Re-read containment only. Cheap enough to run before every launch.
 
@@ -1275,6 +1400,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self._isolation = network_isolation_status()
         except Exception as error:
             self._isolation = {"level": "unknown", "note": str(error), "egress_count": 0}
+        # Kept in step with the watch so the next poll does not redraw an
+        # identical state just because this path set it.
+        self._isolation_signature = isolation_signature(self._isolation)
         self._refresh_telemetry_availability(isolation_only=True)
 
     def _refresh_telemetry_availability(self, isolation_only: bool = False):
