@@ -37,23 +37,46 @@ class CarveFilenameTests(unittest.TestCase):
 
     def test_a_hash_named_sample_does_not_produce_an_unwritable_name(self) -> None:
         name = _carve_name(
-            {"name": f"{SAMPLE_SHA}.exe", "pid": 7076},
+            {"name": f"{SAMPLE_SHA}.exe", "pid": 7076,
+             "offset_seconds": 1, "trigger": "scheduled"},
             {"virtual_address": "0x5260000"},
         )
 
-        self.assertLess(len(name), 60, name)
+        self.assertLess(len(name), 80, name)
         self.assertTrue(name.endswith("0x5260000.bin_"))
 
     def test_an_ordinary_process_name_survives_intact(self) -> None:
         name = _carve_name(
-            {"name": "RegSvcs.exe", "pid": 10784}, {"virtual_address": "0x1240000"}
+            {"name": "RegSvcs.exe", "pid": 10784,
+             "offset_seconds": 20, "trigger": "process-spawn"},
+            {"virtual_address": "0x1240000"},
         )
 
-        self.assertEqual(name, "RegSvcs.exe_10784_0x1240000.bin_")
+        self.assertEqual(
+            name, "RegSvcs.exe_10784_t20_process-spawn_0x1240000.bin_"
+        )
+
+    def test_two_dumps_of_one_process_do_not_overwrite_each_other(self) -> None:
+        # A run carved seven images into five files: the same PID at the same
+        # address, taken from the spawn dump and from the exit dump, produced
+        # one name and the second silently replaced the first. Two dumps of a
+        # process are two moments, which is why both were taken.
+        common = {"name": "RegSvcs.exe", "pid": 5932, "offset_seconds": 20}
+        image = {"virtual_address": "0x1750000"}
+
+        names = {
+            _carve_name({**common, "trigger": trigger}, image)
+            for trigger in ("process-spawn", "process-exit", "spawn-redump", "crash")
+        }
+
+        self.assertEqual(len(names), 4, names)
 
     def test_the_address_always_survives(self) -> None:
         # It is what identifies the image; the name is only for the reader.
-        name = _carve_name({"name": "x" * 200, "pid": 1}, {"virtual_address": "0xdead"})
+        name = _carve_name(
+            {"name": "x" * 200, "pid": 1, "offset_seconds": 0, "trigger": "scheduled"},
+            {"virtual_address": "0xdead"},
+        )
 
         self.assertIn("0xdead", name)
 

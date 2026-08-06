@@ -584,14 +584,35 @@ _MAX_NAME_FRAGMENT = 24
 
 
 def _carve_name(record: dict[str, Any], image: dict[str, Any]) -> str:
+    """Filename for one carved image, unique across the dumps of a run.
+
+    The offset and trigger are in here for the same reason they are in the dump
+    filenames one layer down, and the reason was proved by leaving them out: a
+    run carved seven images into five files, because the same PID at the same
+    address taken from the spawn dump and from the exit dump produced the same
+    name and the second silently replaced the first.
+
+    Two dumps of one process are two moments, which is the entire point of
+    taking both. Their contents happened to be identical on the run that
+    exposed this, so nothing was lost -- but `carved: 7` against five files on
+    disk is the report disagreeing with the case directory, and a record whose
+    `carved_sha256` describes bytes that have since been overwritten.
+    """
     process = str(record.get("name", "") or record.get("process_name", "") or "dump")
     process = "".join(c if c.isalnum() or c in "._-" else "_" for c in process)
     process = process[:_MAX_NAME_FRAGMENT] or "dump"
+
     pid = record.get("pid")
+    offset = record.get("offset_seconds")
+    trigger = "".join(
+        c if c.isalnum() else "-" for c in str(record.get("trigger", "") or "")
+    )
     va = image.get("virtual_address", "0x0")
+
+    stamp = f"t{offset}" if offset is not None else "t"
     # Deliberately not .exe or .dll. This is live malware written to a directory
     # an analyst browses; the extension should not be one a double-click runs.
-    return f"{process}_{pid}_{va}.bin_"
+    return f"{process}_{pid}_{stamp}_{trigger}_{va}.bin_"
 
 
 def _long_path(path: Path) -> str:
