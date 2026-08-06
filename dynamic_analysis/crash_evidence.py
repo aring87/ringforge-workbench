@@ -421,8 +421,15 @@ class CrashDumpCollector:
 
             record: dict[str, Any] = {
                 "pid": pid,
-                "name": source.name.split(".")[0],
-                "process_name": source.name.split(".")[0],
+                # The reconstructed name, with its extension, not the bare stem.
+                # WER writes `RegSvcs.10784.dmp`, and the stem alone is
+                # "RegSvcs" -- which is not in HOLLOWING_TARGETS, so a carved
+                # image from a crash dump reported hollowing_target: false and
+                # scored `present` where the same image from a live dump scored
+                # `strong`. The extension was already being computed here for
+                # the attribution test and then discarded.
+                "name": process_name,
+                "process_name": process_name,
                 "image": "",
                 "offset_seconds": 0,
                 "trigger": "crash",

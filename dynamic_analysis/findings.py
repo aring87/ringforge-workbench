@@ -1314,6 +1314,13 @@ def summarize_dynamic_findings(
     # Distinguishes "nothing ran that the sample did not cause" from "we could
     # not tell", which are the same empty list otherwise.
     findings["lineage_resolved"] = lineage_resolved
+    # Published so other passes can attribute by the same lineage rather than
+    # resolving it again from a different source. `None` when it could not be
+    # resolved, which callers must treat as "count everything" rather than as an
+    # empty tree -- the same contract the PowerShell blocks follow.
+    findings["descendant_pids"] = (
+        sorted(descendant_pids) if lineage_resolved else None
+    )
     findings["suspicious_path_hits"] = suspicious_path_hits[:50]
     findings["persistence_hits"] = persistence_hits[:25]
 

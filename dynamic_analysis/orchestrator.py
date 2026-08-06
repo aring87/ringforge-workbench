@@ -2427,14 +2427,10 @@ def run_dynamic_analysis(
                 write_json(procmon_interesting_json, interesting_events)
                 procmon_interesting_summary = summarize_interesting_events(interesting_events)
 
-                _emit(status_cb, "Triaging dropped-file candidates...")
-                dropped_candidates = collect_dropped_file_candidates(events)
-                dropped_files = enrich_dropped_files(dropped_candidates)
-                write_json(dropped_files_json, dropped_files)
-
-                dropped_files_summary = summarize_dropped_files(dropped_files)
-                write_json(dropped_files_summary_json, dropped_files_summary)
-
+                # Findings first, because the dropped-file triage needs the
+                # lineage this resolves. Attributing drops without it counted
+                # two libraries written by msedgewebview2 as the sample's, and
+                # took payload_dropped to strong on a loader that drops nothing.
                 _emit(status_cb, "Building dynamic findings summary...")
                 findings_summary = summarize_dynamic_findings(
                     events,
@@ -2443,6 +2439,18 @@ def run_dynamic_analysis(
                     sample_name=sample_path.name,
                 )
                 write_json(findings_json, findings_summary)
+
+                _emit(status_cb, "Triaging dropped-file candidates...")
+                resolved_pids = findings_summary.get("descendant_pids")
+                dropped_candidates = collect_dropped_file_candidates(
+                    events,
+                    descendant_pids=set(resolved_pids) if resolved_pids is not None else None,
+                )
+                dropped_files = enrich_dropped_files(dropped_candidates)
+                write_json(dropped_files_json, dropped_files)
+
+                dropped_files_summary = summarize_dropped_files(dropped_files)
+                write_json(dropped_files_summary_json, dropped_files_summary)
 
             # Network artifacts are parsed even when Procmon is off, since the
             # capture stands on its own.

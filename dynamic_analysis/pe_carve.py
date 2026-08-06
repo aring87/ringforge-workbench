@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import datetime as _datetime
 import mmap
+import os
 import struct
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -567,14 +568,47 @@ def analyze_dump(path: str | Path) -> dict[str, Any]:
     return result
 
 
+#: Longest process-name fragment allowed in a carved filename.
+#:
+#: Samples are stored under their SHA256, so `record["name"]` can be a 64-hex
+#: string plus ".exe". Added to a run directory that already carries the case id
+#: and a timestamped run id, that pushed the full path past Windows' 260
+#: character limit, and the carve failed with a bare "No such file or
+#: directory" -- on the one image of that run worth having, an 81,920-byte .NET
+#: PE unpacked inside the loader itself.
+#:
+#: 24 keeps `RegSvcs.exe` and friends intact and truncates a hash to something
+#: still recognisable. The address in the name is what identifies the image
+#: anyway, and the full path is recorded in carved_pe.json.
+_MAX_NAME_FRAGMENT = 24
+
+
 def _carve_name(record: dict[str, Any], image: dict[str, Any]) -> str:
     process = str(record.get("name", "") or record.get("process_name", "") or "dump")
     process = "".join(c if c.isalnum() or c in "._-" else "_" for c in process)
+    process = process[:_MAX_NAME_FRAGMENT] or "dump"
     pid = record.get("pid")
     va = image.get("virtual_address", "0x0")
     # Deliberately not .exe or .dll. This is live malware written to a directory
     # an analyst browses; the extension should not be one a double-click runs.
     return f"{process}_{pid}_{va}.bin_"
+
+
+def _long_path(path: Path) -> str:
+    """A form of ``path`` that Windows will accept past 260 characters.
+
+    Truncating the filename is the first defence and this is the second: a case
+    directory deep enough can exceed the limit on its own, whatever the image is
+    called. The prefix is a no-op on other platforms and on paths that are
+    already short enough.
+    """
+    text = str(path)
+    if os.name != "nt" or len(text) < 250 or text.startswith("\\\\?\\"):
+        return text
+    absolute = os.path.abspath(text)
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC" + absolute[1:]
+    return "\\\\?\\" + absolute
 
 
 def carve_image(
@@ -606,14 +640,17 @@ def carve_image(
         return record
 
     try:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # The directory hits the limit before the file does, so it needs the
+        # same treatment.
+        os.makedirs(_long_path(out_path.parent), exist_ok=True)
         with open(dump_path, "rb") as source:
             source.seek(offset)
             payload = source.read(want)
         if not payload:
             record["error"] = "read returned no data"
             return record
-        out_path.write_bytes(payload)
+        with open(_long_path(out_path), "wb") as out:
+            out.write(payload)
     except Exception as error:
         record["error"] = f"could not carve: {error}"
         return record
@@ -622,7 +659,7 @@ def carve_image(
     record["success"] = True
     record["truncated"] = len(payload) < int(image.get("size_of_image", 0) or 0)
     try:
-        record["sha256"] = sha256_file(out_path)
+        record["sha256"] = sha256_file(_long_path(out_path))
     except Exception:
         pass
     return record

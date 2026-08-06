@@ -306,7 +306,10 @@ run for a long time without showing.
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since. **Test it with `test_specs/memory_canary/`, not malware** — if the refusal fails, a benign canary detonates into a live network path and costs nothing. Five minutes, and it is the one unproven control with real teeth |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
-| PE carve | **Runs clean on real dumps** — 43 modules, 0 rejected, 0 false positives across five ProcDump images of live malware. Its finding path is still unproven: no run has yet produced an unmapped image |
+| PE carve | **Proven** on 06 Aug — `unmapped_in_hollowing_target: 2` in a hollowed `RegSvcs.exe`, `process_injection` strong by a route independent of the crash, and 14 resource-only images correctly set aside. What it carved is not the payload on record and wants eyeballing |
+| Dropped-file lineage | **Fixed, unproven.** Had none at all: a browser's writes counted as the sample's and took `payload_dropped` to strong on a loader that drops nothing |
+| Carve on long paths | **Fixed, unproven.** A hash-named sample produced a 264-character path and the carve failed silently on the best image of the run |
+| Crash-dump `hollowing_target` | **Fixed, unproven.** The bare WER stem lost the `.exe`, so crash-dump images scored `present` where live-dump images scored `strong` |
 | File writes / dropped files | **Proven** on 06 Aug — 12 write events and the `%APPDATA%` drop, after being 0 on every run ever performed |
 | `external_contact` on a bare IP | **Proven.** Fired strong on `62.60.226.68:24042` with no DNS lookup at all |
 | Lineage on writes / paths / persistence | **Proven** on 06 Aug — persistence 14 → 2, Windows Update out of `top_written_paths`, exclusions counted |
@@ -402,6 +405,13 @@ covers opening an existing file, and on one run 37 of 38 file events were
 the answer; the operation name does not. The same holds for the result — an
 event that failed with "not found" observed an absence, and an absence is not
 evidence of anything.
+
+**Give every new pass the lineage the old ones have.** Findings, PowerShell
+blocks and network records each got lineage attribution after a run proved they
+needed it. Dropped files never did, and nobody noticed until a browser's writes
+took `payload_dropped` to strong on a sample that drops nothing. When adding a
+pass over the same events, the question is not whether it needs attribution —
+it is which of the existing passes to copy.
 
 **A path keyword says what happened, never who did it.** Every list of
 suspicious paths is a statement about a *kind* of event, and the OS touches its
@@ -528,7 +538,65 @@ flaky hollowing, and not Defender, which has real-time protection off. What
 remains is anti-analysis or a broken crypter, and the pipeline cannot currently
 tell those apart (gap 4).
 
-### Re-run this sample next — predicted, not yet observed
+### The 06 Aug re-run — the carver's finding path fired
+
+**Gap 5's `strong` branch has now been exercised.** The carver reported
+`unmapped_in_hollowing_target: 2` inside a hollowed `RegSvcs.exe`, so
+`process_injection` reached strong by a route independent of the crash. On real
+dumps it also set aside **14** resource-only images without a single false
+positive, and rejected nothing.
+
+**But the premise gap 3 was built on turns out to be wrong for this sample.**
+The *spawn* dump — `RegSvcs.exe_10784_t20.dmp`, 15 MB — already contained both
+unmapped images. Hollowing was complete before the watcher ever saw the child.
+The re-dump never fired at all: all three children exited before +3s, and the
+skip records say so. "Every `RegSvcs` image is a 15 MB empty shell" came from
+runs where nothing was reading the images structurally — nobody could tell the
+shell was not empty. The re-dump remains sound for a slower loader; it was never
+needed here.
+
+**Dormancy is now +20, +24, +42, +60s** across four runs. The spread keeps
+widening, which is the argument for the re-dump rather than against it.
+
+**What it found is not the payload on record.** The two `RegSvcs` images are
+1,830,912 bytes, x86, *not* .NET, timestamp `0xd277d290` — year 2081, not a
+plausible compile date. They sit at `0x1240000` and `0x13ff000`, exactly
+`0x1BF000` apart, which is precisely their claimed size: two adjacent images,
+identical headers, different SHA256s. The recorded payload — 57,344 bytes, .NET,
+compiled 2025-06-18 — did not appear. **Open the carved `.bin_` files before
+believing them.**
+
+The most interesting image of the run was the one that got away: an 81,920-byte
+**.NET** PE at `0x5260000` inside the loader's own process, `truncated`, and its
+carve failed — see below.
+
+### Three defects the run exposed, all fixed
+
+1. **The carve failed on Windows' 260-character path limit.** Samples are stored
+   under their SHA256, so `_carve_name` produced a 68-character process fragment;
+   with the case id and a timestamped run id in the path that came to 264
+   characters and failed with a bare `[Errno 2] No such file or directory`. The
+   name fragment is now capped at 24 (264 → 220), and both the write and the
+   `mkdir` go through a `\\?\` long-path form, because a deep enough case
+   directory exceeds the limit whatever the image is called.
+2. **`payload_dropped` reached strong on a sample that drops nothing.** Two
+   libraries written by `msedgewebview2.exe` — not sample lineage at all —
+   plus two `__PSScriptPolicyTest_*.ps1` files, which PowerShell writes on every
+   invocation. `collect_dropped_file_candidates` had no lineage filter; the
+   findings and the PowerShell blocks had been given one and dropped files were
+   missed. It now takes `descendant_pids`, with `None` meaning "could not
+   resolve, count everything" rather than an empty tree, and the policy-probe
+   name is in the noise list.
+3. **The crash-dump route silently downgraded itself.** WER writes
+   `RegSvcs.10784.dmp`, and the collector recorded the bare stem `RegSvcs` —
+   which is not in `HOLLOWING_TARGETS`, so the same carved image classified
+   `hollowing_target: false` from a crash dump and `true` from a live one. The
+   extension was already being computed there for the attribution test and then
+   discarded. **This is the loader's historical case**: on the three earlier
+   runs the crash dump was the *only* image of `RegSvcs`, so the finding would
+   have been `present` where it should have been `strong`.
+
+### The prediction that was recorded before it ran
 
 **That advice is superseded.** This section used to end "if you return to this
 sample, the `.rsrc` blob is a static-analysis job, not another detonation." That

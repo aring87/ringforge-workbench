@@ -69,6 +69,11 @@ ANALYZER_NOISE_MARKERS = [
     "\\_mei",
     "\\pydivert\\",
     "windivert",
+    # PowerShell writes one of these into %TEMP% on every invocation to test the
+    # execution policy, then deletes it. They are the sample's own lineage --
+    # its powershell.exe wrote them -- and they are still not drops. Two of them
+    # helped push payload_dropped to strong on a loader that drops nothing.
+    "__psscriptpolicytest_",
 ]
 
 #: Procmon results meaning the file was not there. A `CreateFile` that returns
@@ -133,7 +138,23 @@ def classify_path(path_value: str) -> str:
     return DROPPED_FILE_EXTENSIONS.get(ext, "unknown")
 
 
-def collect_dropped_file_candidates(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def collect_dropped_file_candidates(
+    events: list[dict[str, Any]],
+    descendant_pids: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Files the sample put on disk.
+
+    ``descendant_pids`` is the sample's process tree. Without it every write on
+    the machine counts as the sample's, which is how a loader that drops nothing
+    reported `payload_dropped` **strong**: two libraries written by
+    `msedgewebview2.exe` into an Office package directory, from a browser that
+    had nothing to do with the run.
+
+    Passing ``None`` is not the same as passing an empty set. ``None`` means
+    lineage could not be resolved and everything is counted, the way the
+    findings and the PowerShell blocks already degrade; an empty set would mean
+    the sample provably wrote nothing.
+    """
     seen: set[str] = set()
     candidates: list[dict[str, Any]] = []
 
@@ -143,6 +164,14 @@ def collect_dropped_file_candidates(events: list[dict[str, Any]]) -> list[dict[s
 
         if category not in ALLOWED_EVENT_CATEGORIES:
             continue
+
+        if descendant_pids is not None:
+            try:
+                pid = int(event.get("pid"))
+            except (TypeError, ValueError):
+                pid = None
+            if pid not in descendant_pids:
+                continue
 
         if result_is_not_found(event.get("result")):
             continue
