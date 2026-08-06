@@ -46,7 +46,9 @@ class SpawnDumpSelectionTests(unittest.TestCase):
                                {"pid": t["pid"], "name": "", "path": "x", "size": 1, "success": True}):
             session._dump_spawned_children(elapsed=77.0)
 
-        self.assertEqual(dumped, [(9416, "process-spawn")])
+        # The parent first: it is holding the payload it is about to write, and
+        # it is the one with a deadline -- see `_dump_parent_at_spawn`.
+        self.assertEqual(dumped, [(100, "parent-at-spawn"), (9416, "process-spawn")])
 
     def test_the_root_is_left_to_the_scheduled_offsets(self) -> None:
         # Dumping the root here would add a near-duplicate image at +0s.
@@ -79,7 +81,9 @@ class SpawnDumpSelectionTests(unittest.TestCase):
             session._dump_spawned_children(elapsed=77.5)
             session._dump_spawned_children(elapsed=78.0)
 
-        self.assertEqual(calls, [9416])
+        # The parent is imaged once too, not on every tick -- and not once per
+        # child either, which is what `_parent_dumped` is for.
+        self.assertEqual(calls, [100, 9416])
 
     def test_a_child_that_dies_first_is_recorded_not_ignored(self) -> None:
         # "We saw a process we could not capture" is a finding. Silence here is
@@ -90,9 +94,38 @@ class SpawnDumpSelectionTests(unittest.TestCase):
         with mock.patch.object(session, "_pid_alive", return_value=False):
             session._dump_spawned_children(elapsed=77.0)
 
-        self.assertEqual(len(session._skipped), 1)
-        self.assertEqual(session._skipped[0]["pid"], 9416)
-        self.assertIn("exited before", session._skipped[0]["reason"])
+        # Two records, both true: nothing in this tree was reachable. The parent's
+        # says the payload was in a process nobody could get to, which is a
+        # different statement from the child's.
+        reasons = {s["pid"]: s["reason"] for s in session._skipped}
+        self.assertIn("exited before", reasons[9416])
+        self.assertIn("parent exited before", reasons[100])
+
+    def test_the_launcher_is_never_dumped_as_a_parent(self) -> None:
+        """The root's parent is the analyzer's own python.exe.
+
+        The parent-at-spawn trigger reads `parent_pid` off the child, and for the
+        root that is whatever started the run -- a 200 MB image of ourselves, and
+        a process that is not the sample's. Membership in `_known` is what keeps
+        it out, since the watcher only ever tracks the sample's tree.
+        """
+        session = self._session()
+        session._known = {
+            100: {"pid": 100, "name": "sample.exe", "image": "", "parent_pid": 4242},
+            9416: {"pid": 9416, "name": "p9416.exe", "image": "", "parent_pid": 100},
+        }
+        # The root has not been seen as a child, so its own parent is only
+        # reachable through the child that names it.
+        session._spawn_dumped.add(100)
+
+        dumped = []
+        with mock.patch.object(session, "_pid_alive", return_value=True),              mock.patch.object(session, "_working_set_mb", return_value=10),              mock.patch.object(session, "_dump_one",
+                               side_effect=lambda t, o, tr: dumped.append((t["pid"], tr)) or
+                               {"pid": t["pid"], "name": "", "path": "x", "size": 1, "success": True}):
+            session._dump_spawned_children(elapsed=23.0)
+
+        self.assertNotIn(4242, [pid for pid, _ in dumped])
+        self.assertEqual(dumped, [(100, "parent-at-spawn"), (9416, "process-spawn")])
 
     def test_caps_still_apply(self) -> None:
         session = self._session()

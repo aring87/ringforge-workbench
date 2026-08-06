@@ -365,6 +365,7 @@ def _capture_configuration_table(summary: dict[str, Any]) -> str:
     after_status = summary.get("autoruns_after_status", {}) or {}
 
     run_config = summary.get("run_config", {}) or {}
+    procmon_filter = summary.get("procmon_filter", {}) or {}
 
     data = {
         "run_profile": summary.get("run_profile", ""),
@@ -372,6 +373,11 @@ def _capture_configuration_table(summary: dict[str, Any]) -> str:
         "total_run_duration_seconds": summary.get("duration_seconds", ""),
         "sample_observation_timeout_seconds": summary.get("timeout_seconds", ""),
         "procmon_enabled": summary.get("procmon_enabled", False),
+        # Which filter ran. Without it, a pass reporting nothing collected and a
+        # pass whose config was wrong are the same report.
+        "procmon_config": procmon_filter.get("config_path", ""),
+        "procmon_operations_captured": len(procmon_filter.get("operations", []) or []) or "",
+        "procmon_captures_registry_reads": procmon_filter.get("captures_registry_reads", False),
         "procmon_capture_quality": capture_quality.get("status", ""),
         "procmon_capture_score": capture_quality.get("score", ""),
         "procmon_total_events": capture_quality.get("procmon_total_events", ""),
@@ -1445,6 +1451,18 @@ def _vm_artifact_reads_section(summary: dict[str, Any]) -> str:
     available = bool(reads.get("collection_available"))
 
     if not available:
+        # Naming the config that ran is what makes this self-diagnosing. The
+        # 06 Aug 21:15 run reported exactly this card, and "the field was on the
+        # default" and "the generated config was ignored by Procmon" were
+        # indistinguishable from the report -- two very different problems.
+        procmon_filter = summary.get("procmon_filter", {}) or {}
+        config_note = ""
+        if procmon_filter.get("config_path"):
+            config_note = (
+                f"<p class='muted'>Filter in force: "
+                f"<code>{_esc(procmon_filter.get('config_path', ''))}</code> — "
+                f"{_esc(procmon_filter.get('note', ''))}</p>"
+            )
         return f"""
     <section class="card">
       <div class="section-head">
@@ -1452,6 +1470,7 @@ def _vm_artifact_reads_section(summary: dict[str, Any]) -> str:
         {_section_badge("VM artifact reads", "n/a")}
       </div>
       <p class="muted">{_esc(reads.get("note", ""))}</p>
+      {config_note}
     </section>
     """
 

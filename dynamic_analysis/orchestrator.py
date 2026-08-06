@@ -78,6 +78,7 @@ from dynamic_analysis.procmon_parser import (
     summarize_interesting_events,
     summarize_procmon_events,
 )
+from dynamic_analysis.procmon_config import describe_procmon_filter
 from dynamic_analysis.vm_artifact_reads import (
     collect_vm_artifact_reads,
     empty_vm_artifact_reads,
@@ -1648,6 +1649,10 @@ def run_dynamic_analysis(
     procmon_path = config.get("procmon_path")
     procmon_config_path = config.get("procmon_config_path")
 
+    # Read here rather than at capture start so a run that never gets that far
+    # still records which filter it would have used.
+    procmon_filter = describe_procmon_filter(procmon_config_path)
+
     procmon_backing = paths["procmon"] / "raw.pml"
     procmon_csv = paths["procmon"] / "export.csv"
     procmon_json = paths["procmon"] / "parsed_events.json"
@@ -2066,6 +2071,11 @@ def run_dynamic_analysis(
 
         if procmon_enabled:
             _emit(status_cb, "Starting Procmon capture...")
+            # Said out loud at launch rather than only in the summary. A filter
+            # that cannot see the thing a run was set up to look for is worth
+            # knowing about now, not after the teardown.
+            if not procmon_filter.get("captures_registry_reads"):
+                _emit(status_cb, f"Procmon filter: {procmon_filter.get('note', '')}")
             start_procmon_capture(
                 procmon_path=procmon_path,
                 backing_file=procmon_backing,
@@ -2747,6 +2757,10 @@ def run_dynamic_analysis(
         "timed_out": timed_out,
         "cancellation_reason": cancellation_reason,
         "procmon_enabled": procmon_enabled,
+        # Which filter ran, and whether it could see a registry read. The one
+        # capture setting that was not in the record, on a run whose result
+        # turned entirely on it.
+        "procmon_filter": procmon_filter,
         "autoruns_enabled": autoruns_enabled,
         "autoruns_deep_scan": autoruns_deep_scan,
         "autoruns_before_status": autoruns_before_status,

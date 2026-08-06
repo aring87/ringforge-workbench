@@ -4,7 +4,14 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-06, after the loader's seventh run (`253c1d72`, 20:23).
+**Last updated:** 2026-08-06, after the loader's eighth run (`9e69fcbc`, 21:15) —
+the registry-read code was on the guest and the Procmon config was not, so the
+pass proved its *guard* (a zero refused to read as an answer) and not its finding
+path. That run also lost the packer image to an offset that never came due and
+said nothing about it, which produced two changes: any process exiting with
+offsets pending now names them, and the parent is imaged at the moment it spawns a
+child — the one instant a loader is certainly holding its payload. Before that,
+the seventh run (`253c1d72`, 20:23).
 It was set up for gap 4's registry-read collection path and tested none of it —
 the guest was a commit behind and the config field was on the default — but it
 proved the chain-crashed warning live, produced the packer's before/after pair
@@ -309,7 +316,13 @@ adversary technique off a detector whose false-positive rate has never been
 measured on a live run is the thing this project keeps learning not to do. Map it
 after a run shows what it fires on.
 
-**The run meant to exercise this did not carry it.** The 20:23 detonation of
+**The guard is proven and the finding path is not.** On 06 Aug 21:15 the pass ran
+with no reads in the stream and refused to let that read as an answer about the
+sample: `collection_available: false`, and the report saying **Registry Reads —
+Not Collected** rather than a silent zero. That is the half of this worth having
+first. What it has still never done is see a registry read.
+
+**An earlier run meant to exercise this did not carry it at all.** The 20:23 detonation of
 06 Aug was set up for it and tested none of it, because the guest was one commit
 behind and the config field was still on the default. Two independent witnesses
 in its own summary say so, and either alone would have been enough:
@@ -473,6 +486,9 @@ run for a long time without showing.
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Proven** on 06 Aug. Guest armed with `vm_net.ps1 -Arm`, canary launched through the Dynamic Analysis window, and the run refused: `Not contained — a default route reaches the internet through a NAT gateway (Ethernet → 10.0.2.2). The guest is ARMED. The run has not been started.` It named the adapter and gateway and blocked *before* launch. The one time this was previously at stake it failed and malware got through; this time it caught it. Tested with the benign canary, so a failure would have cost nothing |
 | Spawn re-dump | **Proven as a mechanism, and it has still revealed nothing.** Fired at t11 on a child first seen at t1, on live Remcos, which drops rather than hollows. On the loader at 3s it fired **not at all**: all three children were skipped `exited before its +3s re-dump`, `RegSvcs` having lived 2.14s. The pairing it was built for was finally produced by *scheduled offsets on the root* instead — see gap 3 |
+| Parent-at-spawn dump | **Built, unproven.** The trigger no fixed offset can replace: the parent imaged at the instant it starts a child, which is when a loader is holding the stage it is about to write. Argued from eight runs of dormancy between +20 and +60s and two runs where +25s found the payload once and missed it once. It has never fired on a live sample |
+| Offsets-pending-at-exit record | **Built, unproven.** The 21:15 run lost the packer image to an offset that never came due and recorded nothing; `_record_root_never_dumped` returns early once the root has any dump at all. Any process exiting with offsets ahead of it now names them |
+| `procmon_filter` in the summary | **Built, unproven.** Which filter ran, its operations, and whether reads were captured — the setting a whole pass turns on and the only capture setting that was not in the record. Read from the file, not the filename |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
 | Known-module index | **Proven twice.** 06 Aug 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70 — and again at 20:23 on a two-`RegSvcs` chain with 9 reclassified. The ntdll false positive has not recurred, and the payload was reported both times |
 | Multi-region carve | **Fixed, still unproven.** `regions_spanned: 1` again on 06 Aug 20:23. Two runs now with nothing spanning ranges, so it has never engaged; it correctly declined to bridge a gap |
@@ -689,7 +705,11 @@ Order to check things in, learned the hard way:
 3. **`Capture` column** on the dumps. `Live (smeared)` qualifies every YARA
    result from that image. A PID appearing twice, once `process-spawn` and once
    `spawn-redump`, is a before/after pair — a size jump between them is a
-   payload being written in.
+   payload being written in. **`parent-at-spawn` is the row to look at on a
+   loader**: that image was taken at the instant the process started a child,
+   which is when it is holding the stage it is about to write. And read the
+   skipped list for `offset(s) ... still pending` — an image nobody took is not
+   an image that held nothing.
 4. **Evidence Behind The Verdict.** Which categories fired and which were judged
    strong. The score is descriptive; this is the reasoning.
 5. **Crashes In The Sample's Tree.** A fault outside any mapped module is
@@ -801,6 +821,62 @@ the sample, not a gap in the pipeline.
 flaky hollowing, and not Defender, which has real-time protection off. What
 remains is anti-analysis or a broken crypter, and the pipeline cannot currently
 tell those apart (gap 4).
+
+### The 06 Aug 21:15 run — the guard held, the config did not, and the packer got away
+
+`run_id 9e69fcbc`, 252s, 98,540 Procmon events, clean baseline
+(`autoruns before_total: 1601`). The eighth run of this sample and the first with
+the registry-read code on the guest.
+
+**The code was there and the reads were not.** `vm_artifact_reads` is present and
+reports `collection_available: false`, `reads_in_stream: 0`, with the note naming
+`dynamic_registry_reads.pmc`; the report renders **Registry Reads — Not
+Collected**. So gap 4b's *guard* is proven on a live run — a zero that would
+otherwise have read as "the sample checked nothing" was refused — and its finding
+path still is not.
+
+**And the run could not say why, which is now fixed.** Two explanations fitted
+equally: the config field was still on the default, or the generated config was
+selected and Procmon ignored the rules added to it. The event mix is identical
+under both. The summary recorded the dump offsets, the process cap and the
+re-dump delay and said nothing about the filter, so `procmon_filter` now carries
+the config path, its included operations and `captures_registry_reads`, read out
+of the file rather than off the filename. It renders in Capture Configuration and
+in the not-collected card, and a filter that cannot see reads is announced at
+launch instead of after the teardown.
+
+**The packer image got away, and the record was silent about that too.** Dormancy
+was **+23s**. The root was dumped at +1s — 122 MB, 65 modules, `unmapped: 0` —
+spawned `RegSvcs` at +23s, and was gone by +24s with the +25s offset never coming
+due for it. `unmapped_images: 0`, `carved: 0`. The previous run's payload came
+from that exact offset. The summary showed 9 dumps, 1 skip, 2 failures and
+**nothing at all** about the missing image: `_record_root_never_dumped` returns
+early once the root has any dump, which is what made it invisible. Now any
+process that exits with scheduled offsets ahead of it records them by name.
+
+**Which produced the better instrument.** Across eight runs this sample's dormancy
+has been +20, +23, +24, +42, +48 and +60s, so the parent's useful window —
+`[unpack, spawn + ~1s]` — moves by forty seconds and a fixed offset lands in it by
+luck. **The parent is now imaged at the moment it spawns a child**, trigger
+`parent-at-spawn`, suffix `_atspawn`. That instant is a property of the technique:
+the loader has decrypted the next stage and is about to write it into the process
+it just created. Once per parent, caps honoured, refusals recorded — and ordered
+*before* the child's own dump, because the parent has about a second left while
+the child's spawn image has been an empty shell on every run so far, and losing it
+is recorded as a skip.
+
+**Both of the previous run's fixes verified live.** `crashed_pid: 8428`,
+`werfault_pid: 10096`, `spawned_by_pid: 8428` — three PIDs, correctly told apart.
+And *What Each Dump Held* settled the question it was built for on its first
+outing: the `RegSvcs` spawn dump shows `known_module: 0` alongside `unmapped: 0`,
+so nothing was suppressed there and the zero is the real answer; the crash dump
+shows `known_module: 2`, so its zero stays qualified. That was a deduction one run
+ago.
+
+Everything else held: 70 · Elevated Attention, `process_injection` **strong** on
+the crash alone (`0 unmapped PE image(s)` contributed nothing this time),
+`scripted_execution`, PowerShell 12/1, YARA 0 across 10 dumps,
+`missed_descendants: 1` naming WerFault 10096, `chain_crashed` on both witnesses.
 
 ### The 06 Aug 20:23 run — void for gap 4b, and it moved gap 5
 

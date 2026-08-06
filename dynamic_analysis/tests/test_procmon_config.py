@@ -22,6 +22,7 @@ from dynamic_analysis.procmon_config import (
     COLUMN_PROCESS_NAME,
     REGISTRY_READ_OPERATIONS,
     RELATION_IS,
+    describe_procmon_filter,
     included_operations,
     read_filter_rules,
     rewrite_unchanged,
@@ -126,6 +127,54 @@ class ShippedConfigTests(unittest.TestCase):
 
         self.assertNotIn("RegEnumKey", operations)
         self.assertNotIn("RegEnumValue", operations)
+
+
+class DescribeFilterTests(unittest.TestCase):
+    """What ran has to be in the record, or a result cannot be read.
+
+    The 06 Aug 21:15 run reported `collection_available: false` and two
+    explanations fitted it equally: the config field was still on the default, or
+    the generated config was selected and Procmon ignored the rules added to it.
+    The event mix is identical under both. The summary carried the dump offsets,
+    the process cap and the re-dump delay, and nothing about the filter.
+    """
+
+    def test_the_default_config_says_reads_are_not_captured(self) -> None:
+        described = describe_procmon_filter(DEFAULT)
+
+        self.assertTrue(described["readable"])
+        self.assertFalse(described["captures_registry_reads"])
+        self.assertEqual(len(described["operations"]), 16)
+        self.assertIn("dynamic_registry_reads.pmc", described["note"])
+
+    def test_the_reads_config_says_they_are(self) -> None:
+        described = describe_procmon_filter(WITH_READS)
+
+        self.assertTrue(described["captures_registry_reads"])
+        self.assertEqual(
+            sorted(described["registry_read_operations"]), ["RegOpenKey", "RegQueryValue"]
+        )
+
+    def test_it_reads_the_file_rather_than_the_filename(self) -> None:
+        # A config can be renamed or edited, and the filename is not evidence.
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            misleading = Path(tmp) / "dynamic_registry_reads.pmc"
+            shutil.copyfile(DEFAULT, misleading)
+
+            self.assertFalse(describe_procmon_filter(misleading)["captures_registry_reads"])
+
+    def test_a_missing_or_unreadable_config_degrades(self) -> None:
+        # None of these may raise: the description is computed before the run and
+        # a bad path must not cost the detonation.
+        for value in (None, "", "C:\\nope\\missing.pmc", __file__):
+            with self.subTest(value=value):
+                described = describe_procmon_filter(value)
+                self.assertFalse(described["readable"])
+                self.assertFalse(described["captures_registry_reads"])
+                self.assertTrue(described["note"])
 
 
 if __name__ == "__main__":

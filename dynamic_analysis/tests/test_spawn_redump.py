@@ -37,6 +37,11 @@ class SpawnRedumpSelectionTests(unittest.TestCase):
             pid: {"pid": pid, "name": f"p{pid}.exe", "image": "", "parent_pid": 100}
             for pid in pids
         }
+        # These tests are about the re-dump of a child, and the spawn tick also
+        # images the child's parent now. Marking the parent as already imaged
+        # keeps each assertion here to the one dump it is about; the parent-at-
+        # spawn trigger has its own tests in test_spawn_dumps.py.
+        session._parent_dumped.add(100)
 
     def _dump_recorder(self, session, sink):
         return mock.patch.object(

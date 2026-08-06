@@ -36,7 +36,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 #: Filter columns, as Procmon numbers them. Only the ones this module needs.
@@ -244,6 +244,70 @@ def rewrite_unchanged(config_path: str | Path) -> bytes:
     """The config re-encoded from its parsed form, for the round-trip test."""
     blob = Path(config_path).read_bytes()
     return b"".join(entry.encode() for entry in _parse_entries(blob))
+
+
+def describe_procmon_filter(config_path: str | Path | None) -> dict[str, Any]:
+    """What the config in force will and will not capture.
+
+    In the run summary because of a run that could not be diagnosed without it.
+    On 06 Aug 21:15 the registry-read pass reported `collection_available: false`
+    and two explanations fitted equally: the config field was still on the
+    default, or the generated config was selected and Procmon ignored the rules
+    added to it. The event mix is identical under both, and the summary recorded
+    the dump offsets, the process cap and the re-dump delay while saying nothing
+    about the one setting that decides whether a whole pass can see anything.
+
+    `captures_registry_reads` is the field that answers it. Read the *file* rather
+    than trusting the filename, since a config can be renamed or edited.
+    """
+    result: dict[str, Any] = {
+        "config_path": str(config_path or ""),
+        "readable": False,
+        "operations": [],
+        "captures_registry_reads": False,
+        "note": "",
+    }
+
+    if not config_path:
+        result["note"] = (
+            "No Procmon config was given, so Procmon used whatever filter it "
+            "had saved. What was captured cannot be read from this run."
+        )
+        return result
+
+    path = Path(config_path)
+    if not path.exists():
+        result["note"] = f"Procmon config not found: {path}"
+        return result
+
+    try:
+        operations = included_operations(read_filter_rules(path))
+    except Exception as error:
+        result["note"] = f"Procmon config could not be read: {error}"
+        return result
+
+    reads = sorted(
+        op for op in operations
+        if op.lower() in {o.lower() for o in REGISTRY_READ_OPERATIONS}
+        or op.lower().startswith("regquery")
+        or op.lower() in {"regopenkey", "regenumkey", "regenumvalue"}
+    )
+
+    result["readable"] = True
+    result["operations"] = operations
+    result["captures_registry_reads"] = bool(reads)
+    result["registry_read_operations"] = reads
+    result["note"] = (
+        f"{len(operations)} operation(s) included; registry reads captured "
+        f"({', '.join(reads)})."
+        if reads
+        else (
+            f"{len(operations)} operation(s) included and no registry read among "
+            "them, so a VM-artifact check could not have been seen. "
+            "tools/procmon-configs/dynamic_registry_reads.pmc captures them."
+        )
+    )
+    return result
 
 
 def _main(argv: list[str] | None = None) -> int:

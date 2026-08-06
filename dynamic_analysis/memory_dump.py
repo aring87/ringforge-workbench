@@ -272,6 +272,17 @@ class MemoryDumpSession:
         self._total_bytes = 0
         self._skipped: list[dict[str, Any]] = []
 
+        # Parents already imaged at the moment they spawned something. Once per
+        # parent rather than once per child: a loader that starts three copies of
+        # RegSvcs inside 15 ms would otherwise produce three near-identical
+        # images of itself.
+        self._parent_dumped: set[int] = set()
+
+        # Processes whose exit has already been recorded against the offsets that
+        # were still pending, so the record is written once rather than on every
+        # subsequent poll.
+        self._exit_offsets_recorded: set[int] = set()
+
     # -- lifecycle --------------------------------------------------------
 
     def start(self) -> dict[str, Any]:
@@ -437,6 +448,13 @@ class MemoryDumpSession:
             # the root, so they do not duplicate each other.
             self._dump_spawned_children(elapsed)
 
+            # A process that dies with scheduled offsets still ahead of it takes
+            # those images with it, and until this record existed nothing said
+            # so. Recorded here rather than where the offsets fire, because
+            # `_dump_tree` only ever sees live processes: a dead one is simply
+            # absent from its target list, which is the silence this closes.
+            self._record_offsets_pending_at_exit(elapsed, pending)
+
             # And again once the child has had time to be written into. The
             # spawn dump above necessarily catches it before that: a hollowing
             # loader creates its target suspended and only then unmaps and
@@ -524,6 +542,11 @@ class MemoryDumpSession:
             with self._lock:
                 self._spawn_dumped.add(pid)
 
+            # The parent first, and before the liveness check on the child --
+            # because the parent is the image worth having and it is the one with
+            # a deadline. See `_dump_parent_at_spawn`.
+            self._dump_parent_at_spawn(target, elapsed)
+
             if not self._pid_alive(pid):
                 # Seen and gone inside one poll interval. Recorded rather than
                 # ignored, because "we saw a child we could not capture" is a
@@ -583,6 +606,108 @@ class MemoryDumpSession:
                 )
 
         return dumped_any
+
+    def _dump_parent_at_spawn(self, child: dict[str, Any], elapsed: float) -> None:
+        """Image a process at the moment it starts a child.
+
+        The one instant a loader is guaranteed to be holding its payload. It has
+        decrypted the next stage and is about to write it into the process it just
+        created -- so unlike every scheduled offset, this trigger is a property of
+        the technique rather than a guess about timing.
+
+        Seven runs of the same loader are the argument. Its dormancy has been
+        +20, +23, +24, +42, +48 and +60s, so the window in which the parent is
+        both unpacked and still alive is `[unpack, spawn + ~1s]` and moves by
+        forty seconds between runs. A fixed offset lands inside it by luck: +25s
+        found the payload on the run where dormancy was 48s and found nothing on
+        the run where it was 23s, because the parent had already exited. No choice
+        of offsets fixes that, which is the same argument that produced the spawn
+        dump for children -- applied to the side of the pair that turned out to
+        hold the evidence.
+
+        **Ordered before the child's own dump, deliberately.** A dump takes
+        seconds and the parent often has about one second left: on 06 Aug 21:15
+        the root spawned `RegSvcs` at +23s and was gone by +24s. The child is the
+        cheaper thing to lose -- across seven runs its spawn dump has been an
+        empty shell every time, 11 to 15 MB with no unmapped image in it -- and
+        losing it is recorded as a skip, so the cost is visible. `_dump_one`
+        suspends its target, so the parent cannot exit part-way through its own
+        dump once the dump has started.
+
+        Once per parent. Caps are honoured and a refusal is recorded, the same as
+        anywhere else.
+        """
+        parent_pid = child.get("parent_pid")
+        try:
+            parent_pid = int(parent_pid)
+        except (TypeError, ValueError):
+            return
+
+        with self._lock:
+            if parent_pid in self._parent_dumped:
+                return
+            # Only processes the watcher already tracks. The root's own parent is
+            # the analyzer's python.exe, and dumping that would be both useless
+            # and a 200 MB image of ourselves.
+            parent = self._known.get(parent_pid)
+            if parent is None:
+                return
+            parent = dict(parent)
+            self._parent_dumped.add(parent_pid)
+
+            total_mb = self._total_bytes / (1024 * 1024)
+            already = len([d for d in self._dumps if d.get("success")])
+
+        if not self._pid_alive(parent_pid):
+            # It spawned the child and was gone within the poll interval. Worth a
+            # record: it says the payload was in a process nobody could reach.
+            self._record_skip(
+                parent,
+                int(elapsed),
+                f"parent exited before it could be imaged at the spawn of pid {child.get('pid')}",
+            )
+            return
+
+        if already >= self.max_processes:
+            self._record_skip(parent, int(elapsed), "process cap reached")
+            return
+        if total_mb >= self.max_total_mb:
+            self._record_skip(parent, int(elapsed), "total dump size cap reached")
+            return
+
+        working_set = self._working_set_mb(parent_pid)
+        if working_set > self.max_working_set_mb:
+            self._record_skip(
+                parent,
+                int(elapsed),
+                f"working set {working_set} MB exceeds the {self.max_working_set_mb} MB limit",
+            )
+            return
+
+        self._emit(
+            f"Memory dump at +{int(elapsed)}s (parent-at-spawn): "
+            f"pid {parent_pid} ({parent.get('name') or '?'}) as it started "
+            f"pid {child.get('pid')} ({child.get('name') or '?'})"
+        )
+
+        record = self._dump_one(parent, int(elapsed), "parent-at-spawn")
+        record["spawned_pid"] = child.get("pid")
+        record["spawned_name"] = child.get("name", "")
+        with self._lock:
+            self._dumps.append(record)
+            self._total_bytes += int(record.get("size", 0) or 0)
+
+        if record.get("success"):
+            self._emit(
+                f"  dumped pid {record['pid']} ({record['name'] or '?'}) "
+                f"-> {Path(record['path']).name} "
+                f"({int(record.get('size', 0)) // (1024 * 1024)} MB)"
+            )
+        else:
+            self._emit(
+                f"  dump failed for pid {record['pid']} "
+                f"({record['name'] or '?'}): {record.get('error', 'unknown error')}"
+            )
 
     def _dump_spawn_redumps(self, elapsed: float) -> bool:
         """Dump spawned children again once they have had time to be written.
@@ -676,6 +801,56 @@ class MemoryDumpSession:
                 )
 
         return dumped_any
+
+    def _record_offsets_pending_at_exit(self, elapsed: float, pending: list[int]) -> None:
+        """Say which scheduled images a process took with it when it exited.
+
+        The hole this closes cost the payload on a live run. On 06 Aug 21:15 the
+        loader's own process was dumped at +1s, spawned `RegSvcs` at +23s and
+        exited a second later, with the +25s offset never coming due for it. The
+        run recorded 9 successful dumps, 1 skip and 2 failures, and **nothing at
+        all** about the missing +25s image of the packer -- which is where the
+        same offset had found the payload on the previous run. Read side by side,
+        the two runs said `unmapped_images: 1` and `unmapped_images: 0`, and
+        nothing distinguished "the packer held no payload" from "the dump that
+        would have held it was never taken".
+
+        `_record_root_never_dumped` covers only the harder case, a root that was
+        never imaged at all, and returns silently when the root got even one
+        dump. That early return is what made this invisible.
+        """
+        if not pending:
+            return
+
+        with self._lock:
+            known = list(self._known.values())
+            dumped_pids = {
+                d.get("pid") for d in self._dumps if d.get("success")
+            }
+
+        root_pid = self._root_pid
+        for info in known:
+            pid = int(info.get("pid") or -1)
+            if pid < 0 or pid in self._exit_offsets_recorded:
+                continue
+            if self._pid_alive(pid):
+                continue
+
+            self._exit_offsets_recorded.add(pid)
+
+            # A root that was never dumped has its own, more specific record.
+            # Two entries saying nearly the same thing about one process is the
+            # kind of noise that makes a skip list stop being read.
+            if pid == root_pid and pid not in dumped_pids:
+                continue
+
+            missed = ", ".join(f"+{o}s" for o in sorted(pending))
+            self._record_skip(
+                {"pid": pid, "name": info.get("name", "")},
+                int(elapsed),
+                f"process exited with scheduled offset(s) {missed} still pending, "
+                "so those images were never taken",
+            )
 
     def _record_root_never_dumped(self, elapsed: float) -> None:
         """Say so when the sample's own process was never captured.
@@ -982,7 +1157,11 @@ class MemoryDumpSession:
         # different evidence. The re-dump needs it for a sharper reason: a
         # scheduled offset landing on the same second would otherwise overwrite
         # the one image taken after the payload was written.
-        suffix = {"process-exit": "_exit", "spawn-redump": "_redump"}.get(trigger, "")
+        suffix = {
+            "process-exit": "_exit",
+            "spawn-redump": "_redump",
+            "parent-at-spawn": "_atspawn",
+        }.get(trigger, "")
         out_path = self.output_dir / f"{safe_name}_{pid}_t{offset}{suffix}.dmp"
 
         record: dict[str, Any] = {
