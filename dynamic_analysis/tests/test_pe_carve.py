@@ -685,6 +685,77 @@ class CarveTests(unittest.TestCase):
         self.assertFalse(summarize_pe_carve({})["carved"])
         self.assertFalse(summarize_pe_carve(None)["carved"])
 
+    def test_the_per_dump_rows_say_which_dump_set_something_aside(self) -> None:
+        """The run total cannot answer the question it gets asked.
+
+        On 06 Aug 20:23 the carve reported `unmapped: 0` on all four `RegSvcs`
+        images and nine known-module images somewhere across eleven dumps.
+        Whether any of those nine were *in* `RegSvcs` -- a payload the index had
+        suppressed, rather than an absent payload -- decided whether gap 5's
+        premise was wrong, and could only be argued from the design because the
+        per-dump rows carried `unmapped` and `rejected` and nothing else.
+
+        Two dumps of the same build here: the second enumerates it as a loaded
+        module, so the first's copy classifies `known_module` -- and the row for
+        that dump has to say so, by name.
+        """
+        shared = make_pe(size_of_image=0x8000, timestamp=0x11223344)
+
+        # A suspended process: the DLL is mapped and its module list does not
+        # mention it yet.
+        suspended = self.tmp / "RegSvcs.exe_5000_t20.dmp"
+        suspended.write_bytes(
+            build_minidump(
+                modules=[
+                    {"base": 0x400000, "size": 0x10000, "timestamp": 0x5FF2B99B,
+                     "path": r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\RegSvcs.exe"},
+                ],
+                regions=[
+                    {"va": 0x400000, "data": make_pe(size_of_image=0x10000, timestamp=0x5FF2B99B)},
+                    {"va": 0x3000000, "data": shared},
+                ],
+            )
+        )
+
+        # Another process in the same run, which did enumerate it.
+        settled = self.tmp / "powershell.exe_6000_t20.dmp"
+        settled.write_bytes(
+            build_minidump(
+                modules=[
+                    {"base": 0x400000, "size": 0x10000, "timestamp": 0x22334455,
+                     "path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"},
+                    {"base": 0x3000000, "size": 0x8000, "timestamp": 0x11223344,
+                     "path": r"C:\Windows\System32\shared.dll"},
+                ],
+                regions=[
+                    {"va": 0x400000, "data": make_pe(size_of_image=0x10000, timestamp=0x22334455)},
+                    {"va": 0x3000000, "data": shared},
+                ],
+            )
+        )
+
+        summary = summarize_pe_carve(
+            carve_dumps(
+                [
+                    {"pid": 5000, "name": "RegSvcs.exe", "path": str(suspended),
+                     "trigger": "process-spawn"},
+                    {"pid": 6000, "name": "powershell.exe", "path": str(settled),
+                     "trigger": "process-spawn"},
+                ],
+                output_dir=self.tmp / "carved",
+            )
+        )
+
+        rows = {row["file"]: row for row in summary["per_dump"]}
+
+        self.assertEqual(rows[suspended.name]["known_module"], 1)
+        self.assertEqual(rows[suspended.name]["unmapped"], 0)
+        # And the run total agrees with the sum, so the two readings cannot drift.
+        self.assertEqual(
+            summary["counts"]["known_module_images"],
+            sum(row["known_module"] for row in summary["per_dump"]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

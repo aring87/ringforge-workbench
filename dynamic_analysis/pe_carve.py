@@ -1163,6 +1163,18 @@ def summarize_pe_carve(carve_result: dict[str, Any]) -> dict[str, Any]:
                 "modules": dump.get("module_count", 0),
                 "regions": dump.get("region_count", 0),
                 "unmapped": (dump.get("counts", {}) or {}).get("unmapped", 0),
+                # Per dump, not only per run, because the run total cannot answer
+                # the question they get asked. The 06 Aug 20:23 run reported
+                # `unmapped: 0` on all four RegSvcs images and 9 known-module
+                # images somewhere in eleven dumps, and whether any of those 9
+                # were in RegSvcs -- a payload the index had suppressed rather
+                # than an absent payload -- could only be argued from the design,
+                # not read. That argument decided whether gap 5's premise was
+                # wrong, so it is worth being able to check instead.
+                "known_module": (dump.get("counts", {}) or {}).get("known_module", 0),
+                "resource_only": (dump.get("counts", {}) or {}).get("resource_only", 0),
+                "inside_module": (dump.get("counts", {}) or {}).get("inside_module", 0),
+                "at_module_base": (dump.get("counts", {}) or {}).get("at_module_base", 0),
                 "rejected": (dump.get("counts", {}) or {}).get("rejected", 0),
                 "error": dump.get("error", ""),
             }

@@ -1259,8 +1259,69 @@ def _unmapped_pe_section(summary: dict[str, Any]) -> str:
       {known_note}
       {resource_note}
       {inside_note}
+      {_carve_per_dump_table(carve)}
       {failure_note}
     </section>
+    """
+
+
+def _carve_per_dump_table(carve: dict[str, Any]) -> str:
+    """Which dump each set-aside image was in, dump by dump.
+
+    The run totals cannot answer the question they get asked. A run reporting
+    `unmapped: 0` on every image of a hollowed process and nine known-module
+    images *somewhere* leaves "was a payload suppressed in that process, or was
+    there no payload" arguable from the design and unreadable from the report --
+    and on 06 Aug that argument decided whether a whole gap's premise was wrong.
+
+    Only dumps that had something set aside are listed. A dump with nothing in
+    any column says nothing worth a row, and eleven rows of zeroes would bury
+    the two that matter.
+    """
+    per_dump = carve.get("per_dump", []) or []
+    interesting_columns = ("unmapped", "known_module", "resource_only", "inside_module", "rejected")
+
+    listed = [
+        d for d in per_dump
+        if any(_to_int(d.get(column, 0)) for column in interesting_columns) or d.get("error")
+    ]
+    if not listed:
+        return ""
+
+    rows = [
+        {
+            "Dump": d.get("file", ""),
+            "Process": f"{d.get('process_name', '')} (pid {d.get('pid')})",
+            "Trigger": d.get("trigger", ""),
+            "Modules": d.get("modules", 0),
+            "Regions": d.get("regions", 0),
+            "Unmapped": d.get("unmapped", 0),
+            "Known module": d.get("known_module", 0),
+            "Resource only": d.get("resource_only", 0),
+            "Inside module": d.get("inside_module", 0),
+            "Rejected": d.get("rejected", 0),
+            "Error": d.get("error", ""),
+        }
+        for d in listed
+    ]
+
+    quiet = len(per_dump) - len(listed)
+    quiet_note = (
+        f"<p class='muted'>{quiet} further dump(s) had nothing set aside in any "
+        "category.</p>"
+        if quiet > 0
+        else ""
+    )
+
+    return f"""
+      {_dict_list_table("What Each Dump Held", rows)}
+      <p class="muted">
+        Read the <b>Known module</b> column against a process the loader hollows.
+        A system DLL a suspended process has not enumerated yet is set aside
+        there legitimately; a payload-sized image would not be, and the run total
+        alone cannot tell you which dump either was in.
+      </p>
+      {quiet_note}
     """
 
 

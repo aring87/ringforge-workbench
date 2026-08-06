@@ -413,14 +413,22 @@ better-supported reading, and that is the documented blind spot** — the module
 list is read from the memory the payload occupies, so there is nothing left to
 compare against.
 
-Two things keep this a revision rather than a conclusion. The known-module index
-could in principle have suppressed a payload, and the per-dump breakdown does not
-carry known-module counts, so ruling that out is a deduction: the index suppresses
-only builds that another dump enumerated as *loaded*, and no dump enumerates
-either payload build — `SmartOptimization.dll` was reported unmapped in the root's
-own dump on the same run, so an identical build inside `RegSvcs` would have been
-reported there too. **Adding per-dump classification counts would make that
-directly checkable instead of argued**, and is the cheapest next change here.
+What keeps this a revision rather than a conclusion is that the known-module index
+could in principle have suppressed a payload, and on that run ruling it out was a
+*deduction*: the index suppresses only builds that another dump enumerated as
+loaded, no dump enumerates either payload build, and `SmartOptimization.dll` was
+reported unmapped in the root's own dump on the same run — so an identical build
+inside `RegSvcs` would have been reported there too. Sound, and unreadable from the
+report.
+
+**That is now readable.** `per_dump` carries `known_module`, `resource_only`,
+`inside_module` and `at_module_base` per dump, not only `unmapped` and `rejected`,
+and the report lists any dump that set something aside under *What Each Dump Held*
+— so "was a payload suppressed inside the hollowing target" is a column to read
+rather than an argument to make. The run total is asserted equal to the sum of the
+rows, so the two readings cannot drift. **The next run of this sample settles the
+overwrite-in-place question directly**: `known_module: 0` on the `RegSvcs` rows
+means nothing was set aside there and `unmapped: 0` is the real answer.
 
 So the `strong` branch — `unmapped` inside a `HOLLOWING_TARGETS` process — still
 has not legitimately fired, and this sample may not be able to make it fire.
@@ -684,7 +692,9 @@ Order to check things in, learned the hard way:
 6. **Executables The Loader Never Mapped.** Structural, so it works where a
    signature does not: the 05 Aug payload matched no rule in the set and was
    conclusive from its headers. Read the two timestamps side by side — an image
-   years newer than the process hosting it did not ship with it.
+   years newer than the process hosting it did not ship with it. Then read *What
+   Each Dump Held* underneath it: a zero in `Unmapped` on a hollowed process only
+   means "no payload" if `Known module` is zero there too.
 7. **Memory-only rules.** The actual finding on a packed sample — but an
    obfuscated payload can be present and match nothing, which is exactly the
    case the row above covers.
