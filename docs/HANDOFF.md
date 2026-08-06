@@ -4,8 +4,8 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-06, after the Remcos run and the four bugs it
-exposed. The commit that
+**Last updated:** 2026-08-06, with the Remcos sample finished — gap 1 closed on
+both halves, and seven fixes it exposed proven on live runs. The commit that
 last touched this file is the anchor — `git log -1 docs/HANDOFF.md` — rather
 than a hash written inline, which has been stale here before.
 
@@ -13,7 +13,12 @@ than a hash written inline, which has been stale here before.
 
 ## Where things stand
 
-Two live samples have been through the pipeline end to end.
+Three live samples have been through the pipeline end to end.
+
+**Remcos** (`aa4d6427…`) is the current reference case and the first sample to
+produce a corroborated verdict: **125 · Likely Malicious**, four categories with
+two strong — persistence, dropped payload, C2 contact and a memory-only rule.
+It closed gap 1 and proved the spawn re-dump. See *Remcos reference data*.
 
 **AgentTesla** (`31a762fd…`) is the fully-worked case: dormancy, self-spawn,
 unpack, C2 resolution, FTP authentication and the upload of its stolen-data
@@ -80,41 +85,38 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 
 ## Known gaps, ranked
 
-### 1. Dropped files have never fired — and the reason turned out to be a bug
+### 1. CLOSED — persistence and dropped files, 06 Aug
 
-**Persistence is closed.** Remcos `aa4d6427…` fired `persistence_installed`
-**strong** on 06 Aug with two Run keys. That leaves dropped files.
+All four paths on this list have now fired on real malware. Kept because how it
+closed is the most instructive thing in this document.
 
-Its `0` was never a property of the samples. The Remcos run dropped a PE to
-`%APPDATA%\Roaming\Config\smng.exe` and the pipeline discarded every one of the
-11,636 file writes Procmon recorded, because the user-writable path markers
-could not match any real path. Fixed on 06 Aug; **unproven until a re-run** —
-the same sample is the cheapest way to prove it, and the case data is already
-recorded below.
-
-The historical text below stands as the reasoning that led here. They may work. So might the
-analyzer-attribution filter have, until a sample proved otherwise — that bug
-had been silently costing findings on **every run**, and was only found because
-a sample exercised it.
-
-Two of the original four came off this list on 05 Aug:
-
-- **PowerShell script blocks.** The loader spawned `powershell.exe` with
-  `Add-MpPreference -ExclusionPath <its own path>`: 12 blocks captured, 1
+- **PowerShell script blocks** (05 Aug). The loader spawned `powershell.exe`
+  with `Add-MpPreference -ExclusionPath <its own path>`: 12 blocks captured, 1
   suspicious, behaviour `Defender modification`, mapped to `T1562.001`.
-- **Process injection**, via a route that did not exist before — see gap 2.
+- **Process injection** (05 Aug), via a route that did not exist before — gap 2.
+- **Persistence** (06 Aug). Remcos `aa4d6427…` wrote `TRY150-6P1GV6` to the Run
+  key in both HKCU and HKLM\Wow6432Node. `persistence_installed` **strong**.
+- **Dropped files** (06 Aug). The same run dropped
+  `%APPDATA%\Roaming\Config\smng.exe`, a PE, flagged by 18/24 vendors.
 
-Neither of the remaining two is going to be exercised by the loader sample,
-because its chain dies before it reaches them. **What is needed is a family
-that completes.** The guest is contained, so a downloader stalls at its first
-fetch and its dropped-file path stays cold; pick something that carries
-everything it needs and writes to `%APPDATA%` plus a Run key before any C2
-contact.
+**The `0` was never a property of the samples.** Two of them were, and then a
+detonation that should have produced both still reported nothing, because the
+user-writable path markers could not match any real Windows path — see *The
+dead-marker bug*. The pipeline had been discarding every file write and every
+file create for the life of the project.
 
-**A sample has been selected and not yet run** — Remcos `aa4d6427…`, which
-drops a PE to `%APPDATA%\Config\` and writes two Run keys. See *Remcos,
-selected but not yet run*, which records what each gap should get out of it
-before the fact.
+That is the pattern to distrust: a count that has never moved is evidence about
+the detector at least as often as it is evidence about the samples. It was said
+in this section, about this gap, before it turned out to be true of this gap —
+the analyzer-attribution filter had already cost findings on every run for the
+same reason.
+
+Choosing the sample deliberately is what made it findable. The guest is
+contained, so a downloader stalls at its first fetch and its dropped-file path
+stays cold; Remcos was picked because it carries everything it needs and
+installs before its first beacon, and its expected results were written down
+*before* the run. Four of those expectations held and three failed, and all
+three failures were pipeline bugs.
 
 ### 2. Injection detection had a hole the shape of the commonest technique
 
@@ -142,7 +144,7 @@ only when the process is one loaders hollow — `RegSvcs`, `RegAsm`,
 `InstallUtil`, `MSBuild` and friends. Nothing legitimate starts `RegSvcs.exe`
 and has it fault in anonymous memory.
 
-### 3. The spawn-triggered dump fires too early — re-dump added, unproven
+### 3. CLOSED — the spawn dump fired too early; the re-dump is proven
 
 The watcher dumps a new descendant the moment it appears, which is before
 hollowing completes. Across three runs, every `RegSvcs` image is ~15 MB of
@@ -163,7 +165,13 @@ The pairing is the point: the spawn dump is the child before the loader touched
 it and the re-dump is the same PID after, so a payload is visible as a
 difference between two images rather than having to be recognised in one.
 
-Three things to check on the first run that uses it:
+**Proven on four Remcos runs**, firing every time — child first seen at t1–t2,
+re-dumped at t11–t12. It has not yet *revealed* anything, because Remcos drops
+and executes rather than hollowing: `smng.exe` is already the payload at t1, so
+the before/after pair is identical. The mechanism works; the case it was built
+for still wants a sample that hollows a legitimate binary — see gap 5.
+
+Three things still worth knowing:
 
 - **10s is an estimate, not a measurement.** Hollowing completes in well under
   a second, so anything past ~1s has the payload; the pressure the other way is
@@ -177,6 +185,10 @@ Three things to check on the first run that uses it:
   `observation ended before` means the window was too short and the process may
   still have been holding the payload at teardown.
 
+**The sample's own process has never been dumped**, on any Remcos run. It exits
+at ~t1 and the earliest offset tried was +2s; the skip record says so every
+time. `1, 25` is the only remaining option if an image of the packer is wanted.
+
 ### 4. No anti-analysis detection
 
 Nothing reports "the sample checked for a VM and left". The loader sample is
@@ -187,7 +199,7 @@ runs, and a deliberate bail looks identical to a broken payload from outside.
 and unused; "a descendant of the sample crashed" is a cheap note with real
 value, now that the crash itself is being parsed anyway.
 
-### 5. Dumps are raw images — carver added, unproven on a sample
+### 5. Carver built and parsing proven; its finding path still has not fired
 
 Carving the .NET assembly out of the crash dump on 05 Aug was done by hand:
 find `MZ` headers, check `e_lfanew`, compare the timestamp against the host
@@ -241,6 +253,19 @@ the payload now occupies, so there is nothing left to compare against. The
 05 Aug sample mapped its payload *alongside* the real image, which is what made
 it visible. This widens injection detection; it does not close it.
 
+**Parsing is proven; the finding path is not.** Across nine ProcDump images of
+live malware it read 43 modules per dump with `rejected: 0` and
+`resource_only: 0` — no false positives, clean parse. It has reported
+`unmapped_images: 0` every time, correctly: Remcos's `smng.exe` is a normal
+loader-mapped PE, so there is nothing foreign to find, and the loader sample's
+payload was recovered before the carver existed.
+
+**This is the open item, and it needs a different sample** — one that hollows a
+*legitimate* binary, so the carver can fire `strong` via `HOLLOWING_TARGETS`.
+`d712b6f9…` is the recorded candidate: vxCube reports *"unauthorized injection
+to a recently created process"*, which is also the case gap 3's re-dump was
+built for and has likewise not yet had. One sample would close both.
+
 ### Smaller
 
 - `WerFault.exe` counts as sample lineage for network attribution, correctly
@@ -267,7 +292,7 @@ run for a long time without showing.
 
 | Feature | Status |
 |---|---|
-| Corroboration scoring | **Proven** on two real samples — 35 / Needs Review, then 70 / Elevated Attention after the injection signal landed |
+| Corroboration scoring | **Proven** across three samples and four bands — 35 / Needs Review, 70 / Elevated Attention, and 125 / Likely Malicious on Remcos with four categories and two strong. The band has moved for the right reason each time |
 | Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes, on a run where Windows was busy |
 | PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's own block survived, so the filter is not too tight |
 | `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
@@ -282,7 +307,7 @@ run for a long time without showing.
 | `external_contact` on a bare IP | **Proven.** Fired strong on `62.60.226.68:24042` with no DNS lookup at all |
 | Lineage on writes / paths / persistence | **Proven** on 06 Aug — persistence 14 → 2, Windows Update out of `top_written_paths`, exclusions counted |
 | Dropped-file probe filtering | **Proven.** 13 candidates → 1, and that one exists on disk |
-| Open-versus-production on file events | **Fixed, unproven.** 37 of 38 file events on the proving run were `Disposition: Open`; needs a re-run |
+| Open-versus-production on file events | **Proven** on 06 Aug, 13:47. Every predicted number landed: hits 42 → 26, DLL probes 9 → 0, `svchost` opens 7 → 0, `file_write_events` 0 → 2 naming the drop |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -707,6 +732,27 @@ to events that are not file operations at all.** The first version tested for
 production and used it to gate the exemption, which suppressed a process create
 of a relocated executable — a finding whoever started it, with its own existing
 test saying so. The two are now inverse tests rather than the same one.
+
+### The 13:47 run closed it
+
+Every predicted number landed exactly: hits 42 → **26**, DLL probes → **0**,
+`svchost` opens → **0**, `file_write_events` 0 → **2** with `top_written_paths`
+naming `smng.exe`, and the score unchanged at **125 · Likely Malicious** — the
+fix cleans the evidence lists without touching the verdict, which is what it was
+supposed to do.
+
+The kept hit list now reads end to end: 17 sample and 4 `smng.exe` opens of the
+payload, one write, one process create, two Run keys, one image load. Nothing
+else.
+
+`background_persistence_hits` was **0** on this run against 10 on the last one,
+because Windows Update did not touch its scheduled task during the window. That
+is the filter having nothing to do rather than not working — and the count is
+what says which, which is the entire reason those counters exist.
+
+**This is the Remcos sample finished.** Gap 1 is closed on both halves, the spawn
+re-dump is proven, and the carver's parsing is proven on real dumps. What is left
+is listed below and needs different samples, not another run of this one.
 
 ### The 03:22 re-run was void — revert the VM first
 
