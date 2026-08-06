@@ -6,12 +6,15 @@ from typing import Any
 from dynamic_analysis.snapshot_services import service_identity
 
 
+# Matched with a plain `in` test, so a doubled separator matches nothing. See
+# the note in procmon_parser: every one of these ended in two backslashes and
+# had never matched a real path.
 SUSPICIOUS_PATH_HINTS = [
-    r"\appdata\\",
-    r"\temp\\",
-    r"\programdata\\",
-    r"\users\public\\",
-    r"\startup\\",
+    "\\appdata\\",
+    "\\temp\\",
+    "\\programdata\\",
+    "\\users\\public\\",
+    "\\startup\\",
 ]
 
 SUSPICIOUS_SERVICE_NAME_HINTS = [

@@ -21,12 +21,14 @@ SUSPICIOUS_EXECUTABLE_HINTS = {
     "bitsadmin.exe",
 }
 
+# Matched with a plain `in` test; a doubled separator matches nothing. See the
+# note in procmon_parser.
 SUSPICIOUS_PATH_HINTS = [
-    r"\appdata\\",
-    r"\temp\\",
-    r"\programdata\\",
-    r"\users\public\\",
-    r"\startup\\",
+    "\\appdata\\",
+    "\\temp\\",
+    "\\programdata\\",
+    "\\users\\public\\",
+    "\\startup\\",
 ]
 
 

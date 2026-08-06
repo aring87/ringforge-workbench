@@ -137,16 +137,40 @@ SUSPICIOUS_PATH_KEYWORDS = (
     r"\software\microsoft\windows\currentversion\run",
     r"\software\microsoft\windows\currentversion\runonce",
     r"\software\microsoft\windows nt\currentversion\winlogon",
-    r"\currentcontrolset\services\\",
-    r"\drivers\\",
+    # Both of these ended in a doubled separator and had never matched, so
+    # service and driver persistence was invisible to the findings.
+    "\\currentcontrolset\\services\\",
+    "\\drivers\\",
 )
+
+#: Subdirectories of a case folder that only RingForge writes. A path under
+#: `\cases\` *and* one of these is the analyzer's own output, not the sample's.
+#:
+#: Both halves used to carry a doubled separator, so this test never fired and
+#: the two copies of it -- one against the path, one against the detail -- were
+#: dead code that read as working suppression.
+ANALYZER_CASE_SUBDIRS = (
+    "\\reports\\",
+    "\\metadata\\",
+    "\\procmon\\",
+    "\\autoruns\\",
+    "\\files\\",
+    "\\persistence\\",
+    "\\unified_report\\",
+)
+
+
+def _is_analyzer_case_path(text: str) -> bool:
+    """True for a path inside one of RingForge's own case subdirectories."""
+    return "\\cases\\" in text and any(part in text for part in ANALYZER_CASE_SUBDIRS)
+
 
 PERSISTENCE_KEYWORDS = (
     r"\software\microsoft\windows\currentversion\run",
     r"\software\microsoft\windows\currentversion\runonce",
     r"\windows\system32\tasks",
     r"\windows\tasks",
-    r"\currentcontrolset\services\\",
+    "\\currentcontrolset\\services\\",
     "schtasks",
     "service control manager",
 )
@@ -534,32 +558,7 @@ def _is_analyzer_activity(
     ):
         return True
 
-    if r"\cases\\" in path_l and any(
-        part in path_l
-        for part in (
-            r"\reports\\",
-            r"\metadata\\",
-            r"\procmon\\",
-            r"\autoruns\\",
-            r"\files\\",
-            r"\persistence\\",
-            r"\unified_report\\",
-        )
-    ):
-        return True
-
-    if r"\cases\\" in detail_l and any(
-        part in detail_l
-        for part in (
-            r"\reports\\",
-            r"\metadata\\",
-            r"\procmon\\",
-            r"\autoruns\\",
-            r"\files\\",
-            r"\persistence\\",
-            r"\unified_report\\",
-        )
-    ):
+    if _is_analyzer_case_path(path_l) or _is_analyzer_case_path(detail_l):
         return True
 
     if "get-scheduledtask" in detail_l:

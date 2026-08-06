@@ -278,7 +278,7 @@ run for a long time without showing.
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
 | PE carve | **Runs clean on real dumps** — 43 modules, 0 rejected, 0 false positives across five ProcDump images of live malware. Its finding path is still unproven: no run has yet produced an unmapped image |
-| File writes / dropped files | **Fixed, unproven.** Discarded on every run ever performed until 06 Aug; needs a re-run to demonstrate |
+| File writes / dropped files | **Fixed twice, unproven.** The first fix was incomplete — `dropped_file_triage`'s own markers were dead too, so candidates would still have been 0. Needs a clean-baseline re-run |
 | `external_contact` on a bare IP | **Fixed, unproven.** Never fired for an IP-only C2; replaying the Remcos inputs now scores it strong |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
@@ -354,13 +354,20 @@ test, and the same shape of mistake appeared three times on 05 Aug.
 **A control's contract is directional.** The UPX control says "anything less
 means the dump or the delta logic is at fault." More is fine.
 
-**A substring list is not a regex, and nothing will tell you.** Four path-marker
-lists were written with regex-style doubled separators and matched with a plain
-`in` test, so every marker ending in `\\` matched nothing for the life of the
-project. It cost every file write and every file create on every run, and 332
-tests passed over it, because no test ever asserted a real path against them.
-When a detector is a list of literals, test it with a string that must match —
-not with the constants, which are the thing that is wrong.
+**A substring list is not a regex, and nothing will tell you.** 46 markers
+across four modules were written with regex-style doubled separators and matched
+with a plain `in` test, so they matched nothing for the life of the project. It
+cost every file write and every file create on every run, and 332 tests passed
+over it, because no test ever asserted a real path against them. When a detector
+is a list of literals, test it with a string that must match — not with the
+constants, which are the thing that is wrong. And when one instance turns up,
+**sweep for the rest**: the first fix here was incomplete and would have looked
+like a failed re-run rather than a partial fix.
+
+**Repair a suppression list in the same change as the detector it guards.**
+Every module with dead detection markers had dead exclusion markers too. A live
+detector against a dead exclusion list is worse than both being dead, because
+the analyzer writes thousands of files into the directory it is watching.
 
 **A signal that fires on everything says nothing about anything.** The PE carver
 reported eleven unmapped images in an idle Python process, all of them real and
@@ -528,17 +535,10 @@ malware.
 
 ### Four bugs this run exposed, all fixed
 
-1. **Every file write and file create was silently discarded.** The path markers
-   in `procmon_parser` are matched with a plain `in` test but were written
-   regex-style — `r"\users\\"` is a literal *double* backslash and appears in no
-   Windows path. `_path_is_user_writable` therefore returned False universally:
-   the only condition on `file_create`, and half the condition on `file_write`
-   and `image_load`. The run recorded 8,130 creates and 11,636 writes and
-   surfaced zero of each, so the drop never became a finding or a dropped-file
-   candidate. The noise list had the identical defect and had to be fixed in the
-   same change — repairing only the writable markers would have flooded findings
-   with the analyzer's own case-directory writes. `\currentcontrolset\services\`
-   was broken too, so service persistence had never been detectable.
+1. **46 path markers across four modules had never matched anything.** They are
+   compared with a plain `in` test but were written regex-style — `r"\users\\"`
+   is a literal *double* backslash, which appears in no Windows path. See
+   *The dead-marker bug* below; it is the largest single defect found so far.
 2. **`external_contact` could not fire for an IP-only C2.** `present` gated on
    `notable_domains > 0 or external_destinations > 0`. Remcos dialled a
    hard-coded IP, so there was no DNS lookup; FakeNet diverted the connection, so
@@ -560,6 +560,61 @@ malware.
 
 Also: the report's autoruns table had no **Location** column, which is why the
 two genuine entries rendered as an apparent duplicate.
+
+### The dead-marker bug
+
+Found by fixing the first instance and then sweeping for the rest. **46 markers
+in four modules**, every one matched with a plain `in` or `startswith` test and
+every one written with a doubled separator that no real path contains:
+
+| Module | What was dead |
+|---|---|
+| `procmon_parser` | user-writable roots, the noise list, `\currentcontrolset\services\` |
+| `dropped_file_triage` | **all five** suspicious locations, **all seven** exclusions, all six analyzer-noise markers |
+| `diff_tasks`, `diff_services` | all five suspicious-path hints in each |
+| `findings` | services and drivers markers, and both copies of the analyzer case-path suppression |
+
+**`dropped_file_triage` is the one that mattered most.**
+`collect_dropped_file_candidates` discards any candidate whose path is not in a
+suspicious location, so with that list dead `total_candidates` was pinned at 0
+*structurally*. Fixing the Procmon side alone would not have moved it — the
+Remcos drop would have reached that function and been thrown away there instead.
+The first fix was incomplete and would have looked like a failed re-run.
+
+Each module needed its suppression list repaired in the same change as its
+detection list. A live detector against a dead exclusion list is worse than
+both being dead: `\cases\` suppression exists precisely because the analyzer
+writes thousands of files into the directory it is watching.
+
+**A guard test now scans every module in the package** for short path-shaped
+literals containing a doubled backslash and fails on any of them. That is the
+part worth keeping — the instances are fixed, but the class of bug is invisible
+to review and survived 332 tests.
+
+One consequence to watch: repairing `\currentcontrolset\services\` on the
+general list took `registry_create` from 5 interesting events to **140** in a
+run where the sample did nothing, purely from Windows service-key churn. It is
+now on a separate value-writes-only list, so setting `ImagePath` fires and
+creating a service key does not.
+
+### The 03:22 re-run was void — revert the VM first
+
+The second run of this sample tested nothing, because the guest was not reverted.
+Remcos was **already installed and still running**: `smng.exe` appears in
+FakeNet's table at PID 10756, the identical PID from the 02:54 run, still
+beaconing to `62.60.226.68:24042`, and `autoruns before_total: 1605` is exactly
+the previous run's `after_total`. The sample found its own installation and
+exited with code 2 — one process create, no spawn, no new autorun entries.
+
+Two things that run did establish. The root-never-dumped skip fired verbatim,
+naming `+2s, +25s`, and it is the only reason the run was diagnosable at all.
+And lineage attribution handled the contamination correctly: `smng.exe` was
+counted as a *background* process rather than the sample's, so its very real C2
+traffic was not scored — which was right, because it was not this run's.
+
+**Revert to the clean snapshot before re-running.** A sample that installs
+persistence is not idempotent, and a dirty baseline turns a detonation into a
+no-op that reads like a clean result.
 
 ### Why this one, after two rejections
 

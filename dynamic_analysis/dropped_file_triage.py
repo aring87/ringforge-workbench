@@ -25,31 +25,43 @@ DROPPED_FILE_EXTENSIONS = {
     ".msi": "windows_installer",
 }
 
+# Every marker here is matched with a plain `in` or `startswith` test, and every
+# one of them used to carry a doubled separator that no real path contains. This
+# module is where that mattered most: `collect_dropped_file_candidates` discards
+# any candidate whose path is not in a suspicious location, so with the list dead
+# `total_candidates` was structurally pinned at 0. Fixing the Procmon-side
+# markers alone would not have moved it -- the Remcos drop of
+# %APPDATA%\Roaming\Config\smng.exe would have reached this function and been
+# thrown away here instead.
+#
+# The exclusions had the same defect, so nothing was ever excluded either. They
+# only start doing work now that the suspicious list does, which is why both are
+# in one change.
 SUSPICIOUS_PATH_KEYWORDS = [
-    r"\appdata\\",
-    r"\temp\\",
-    r"\programdata\\",
-    r"\startup\\",
-    r"\users\public\\",
+    "\\appdata\\",
+    "\\temp\\",
+    "\\programdata\\",
+    "\\startup\\",
+    "\\users\\public\\",
 ]
 
 EXCLUDED_PATH_PREFIXES = [
-    r"c:\windows\system32\\",
-    r"c:\windows\winsxs\\",
-    r"c:\windows\servicing\\",
-    r"c:\windows\installer\\",
-    r"c:\program files\\",
-    r"c:\program files (x86)\\",
-    r"c:\programdata\microsoft\windows defender\\",
+    "c:\\windows\\system32\\",
+    "c:\\windows\\winsxs\\",
+    "c:\\windows\\servicing\\",
+    "c:\\windows\\installer\\",
+    "c:\\program files\\",
+    "c:\\program files (x86)\\",
+    "c:\\programdata\\microsoft\\windows defender\\",
 ]
 
 ANALYZER_NOISE_MARKERS = [
-    r"\\cases\\",
-    r"\\procmon\\",
-    r"\\reports\\",
-    r"\\metadata\\",
-    r"\\persistence\\",
-    r"\\files\\",
+    "\\cases\\",
+    "\\procmon\\",
+    "\\reports\\",
+    "\\metadata\\",
+    "\\persistence\\",
+    "\\files\\",
 ]
 
 ALLOWED_EVENT_CATEGORIES = {

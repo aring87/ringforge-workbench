@@ -52,6 +52,17 @@ SUSPICIOUS_PATH_KEYWORDS = [
     r"\windows\tasks",
     r"currentversion\run",
     r"currentversion\runonce",
+]
+
+#: Only meaningful when a *value* is written. Windows creates and opens service
+#: keys constantly; what matters is something setting ImagePath or ServiceDll.
+#:
+#: Kept separate because the first repaired run showed the cost of not doing so:
+#: `registry_create` went from 5 interesting events to 140 in a run where the
+#: sample did nothing at all, purely from ordinary service-key churn. It never
+#: reached the score -- lineage attribution drops it and context is capped -- but
+#: it took `interesting_events` from 35 to 197 and buried the report.
+SUSPICIOUS_VALUE_PATH_KEYWORDS = SUSPICIOUS_PATH_KEYWORDS + [
     "\\currentcontrolset\\services\\",
 ]
 
@@ -191,6 +202,12 @@ def is_suspicious_path(path: str) -> bool:
     return any(keyword in p for keyword in SUSPICIOUS_PATH_KEYWORDS)
 
 
+def is_suspicious_value_path(path: str) -> bool:
+    """As above, plus the locations that only matter when a value is written."""
+    p = path.lower()
+    return any(keyword in p for keyword in SUSPICIOUS_VALUE_PATH_KEYWORDS)
+
+
 def _path_is_user_writable(path: str) -> bool:
     p = path.lower()
     return any(keyword in p for keyword in USER_WRITABLE_MARKERS)
@@ -216,7 +233,7 @@ def _is_high_signal_event(event: dict[str, Any]) -> bool:
         return operation == "tcp connect"
 
     if category in {"registry_set", "registry_delete"}:
-        return is_suspicious_path(path)
+        return is_suspicious_value_path(path)
 
     if category == "file_write":
         return is_suspicious_path(path) or (_path_is_user_writable(path) and _path_is_executable_or_script(path))

@@ -1390,6 +1390,20 @@ def _smeared_dumps(memory: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _memory_skipped_rows(memory: dict[str, Any]) -> list[dict[str, Any]]:
+    """Skipped-dump records, trimmed for display."""
+    return [
+        {
+            "PID": entry.get("pid", ""),
+            "Process": entry.get("name", "") or "?",
+            "At": f"+{_to_int(entry.get('offset_seconds', 0))}s",
+            "Reason": entry.get("reason", ""),
+        }
+        for entry in (memory.get("skipped", []) or [])
+        if isinstance(entry, dict)
+    ]
+
+
 def _memory_sections(summary: dict[str, Any]) -> str:
     """Which process images were captured, and what remains scannable.
 
@@ -1413,6 +1427,17 @@ def _memory_sections(summary: dict[str, Any]) -> str:
             "Short-lived samples exit before the configured offset; lower it, "
             "or use the deep profile, which dumps earlier."
         )
+        # The skipped list is the whole explanation for a run with no dumps, and
+        # this branch used to drop it and print the preflight note instead --
+        # "ProcDump is available; process memory will be dumped during the run",
+        # about a run in which nothing was. The record existed in the JSON and
+        # appeared nowhere a reader would look.
+        skipped = _dict_list_table(
+            "Why No Dump Was Taken",
+            _memory_skipped_rows(memory),
+            emphasize=True,
+            empty_text="No reason was recorded, which is itself unexpected.",
+        )
         return f"""
     <section class="card">
       <div class="section-head">
@@ -1420,6 +1445,7 @@ def _memory_sections(summary: dict[str, Any]) -> str:
         {_section_badge("Dumps", 0)}
       </div>
       <p class="muted">{_esc(note)}</p>
+      {skipped}
     </section>
     """
 
@@ -1509,7 +1535,7 @@ def _memory_sections(summary: dict[str, Any]) -> str:
 
     if memory.get("skipped"):
         sections.append(
-            _dict_list_table("Processes Not Dumped", memory.get("skipped", []) or [])
+            _dict_list_table("Processes Not Dumped", _memory_skipped_rows(memory))
         )
 
     if memory.get("failures"):
