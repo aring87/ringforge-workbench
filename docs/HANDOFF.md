@@ -4,7 +4,8 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-05, after the spawn re-dump and PE carver. The commit that
+**Last updated:** 2026-08-05, after the spawn re-dump, the PE carver, and
+selecting the Remcos sample. The commit that
 last touched this file is the anchor — `git log -1 docs/HANDOFF.md` — rather
 than a hash written inline, which has been stale here before.
 
@@ -99,6 +100,11 @@ that completes.** The guest is contained, so a downloader stalls at its first
 fetch and its dropped-file path stays cold; pick something that carries
 everything it needs and writes to `%APPDATA%` plus a Run key before any C2
 contact.
+
+**A sample has been selected and not yet run** — Remcos `aa4d6427…`, which
+drops a PE to `%APPDATA%\Config\` and writes two Run keys. See *Remcos,
+selected but not yet run*, which records what each gap should get out of it
+before the fact.
 
 ### 2. Injection detection had a hole the shape of the commonest technique
 
@@ -448,3 +454,87 @@ tell those apart (gap 4).
 
 If you return to this sample, the `.rsrc` blob is where the config lives and
 that is a static-analysis job on the carved image, not another detonation.
+
+---
+
+## Remcos, selected but not yet run (`aa4d6427…`)
+
+**Everything below is predicted, not observed.** It comes from a Hybrid
+Analysis report, not from this pipeline, and it is written down *before* the
+run on purpose: an expectation recorded in advance makes the detonation a
+pass/fail test of the pipeline instead of a description of the sample. Replace
+each row with what actually happened once it has run, and keep whatever
+disagreed.
+
+| | |
+|---|---|
+| SHA256 | `aa4d642727be33ecd94acb8a24e546aeed325f08367333bb8974f5e54d99e715` |
+| Family | Remcos RAT — HA reports `Gen:Variant.Rescoms`, which is Bitdefender's name for Remcos |
+| Source | `hybrid-analysis.com/sample/aa4d6427…/6a4d71d9e17d51fadd07ca1a` · 100/100 · AV 75% |
+| Type | Native PE32. **Not .NET** — deliberately a different shape from `422e30ed` |
+| Chain | sample → creates a process **suspended** → writes into it → `%APPDATA%\Config\smng.exe` |
+| Injection | `CreateProcess` suspended + write to remote process + `Set`/`GetThreadContext` |
+| Dropped | `%APPDATA%\Config\smng.exe`, 18/24 vendors |
+| Persistence | `HKCU\…\CurrentVersion\Run` **and** `HKLM\SOFTWARE\WOW6432Node\…\CurrentVersion\Run`, value `TRY150-6P1GV6` |
+| C2 | `62.60.226.68:24042` |
+| Other lookup | `pro.ip-api.com` (geolocation, `https://pro.ip-api.com/line/?key=…`) |
+| IDS | `ET MALWARE Remcos 3.x Unencrypted Checkin/Server Response` |
+| Outcome | No `WerFault` child. It completes — which is why it was chosen |
+
+### What each gap should get out of it
+
+- **Gap 1, both halves.** Two autostart entries should put
+  `autoruns_suspicious` at 2 and `persistence_installed` at **strong** — a
+  category that has never fired on any run. The dropped file is a **PE**, not
+  the SQLite browser copies another Remcos candidate produced, so
+  `dropped_file_triage` should have no trouble calling it suspicious.
+- **Gap 3.** Suspended-create followed by a remote write is the exact window the
+  spawn re-dump was built for: the spawn dump catches `smng.exe` empty, the
+  +10s re-dump should catch it populated. **This is the first sample that can
+  prove or disprove that feature.**
+- **Gap 5.** The carver should find the written image inside `smng.exe`. Expect
+  `present`, **not** `strong` — `smng.exe` is Remcos's own dropped copy, not a
+  signed Microsoft binary, so it is correctly not in `HOLLOWING_TARGETS`. A
+  weaker classification here is the design working, not the carver missing.
+- **Gap 2.** `Set`/`GetThreadContext` raise no Sysmon Event 8, so
+  `sysmon_injection_events: 0` is the expected result and not a failure.
+- **Score.** `persistence_installed` (strong), `external_contact` (strong, port
+  24042 is not in `COMMON_PORTS`), `payload_dropped`, `process_injection`, and
+  plausibly `packed_payload` — Remcos has real public YARA coverage, unlike the
+  obfuscated stage-2. Four or five agreeing categories would be the first run to
+  reach High on corroboration rather than on one emphatic signal.
+
+### The one thing that could still leave gap 1 at zero
+
+The guest is contained, so if this variant installs persistence only *after* a
+successful C2 check-in, the Run key never gets written and the whole point of
+the run is lost. Remcos's normal install routine precedes its first beacon and
+the HA timeline is consistent with that, so this is unlikely — but it is the
+failure mode to check first if `persistence_installed` comes back silent.
+
+### Why this one, after two rejections
+
+Recorded so the next session does not re-tread it. Two MalwareBazaar samples
+labelled Formbook were rejected on their sandbox reports before any run:
+
+- `d712b6f9…` — 1 MB .NET crypter, an unnamed 931,963-byte `.rsrc` resource at
+  entropy 7.99, so the payload is embedded rather than fetched. FileScan's
+  report is **static with emulation only** (`success_partial`), so it has no
+  process tree, no registry and no network to judge; it never names a family
+  either. Its similarity search claims 1.0 to a non-.NET Sality sample, which is
+  not credible. Still a live candidate for gap 3 — vxCube reports
+  *"unauthorized injection to a recently created process"* — but unproven.
+- `1cf5d1800…` — Triage `260608-lr276sbx8p`. Scored 10/10 on both Win10-2004
+  and Win11-21H2 and **crashed on both**: the only children are `WerFault.exe`,
+  both targeting the sample's own PID, with a `Program crash` signature and no
+  injection, persistence or network. A shorter chain than `422e30ed`, which at
+  least reached three `RegSvcs`.
+
+**The lesson is a selection rule.** A 10/10 score with a two-node process tree
+ending in `WerFault` is a crash, not a compromise — the score came from family
+identification and a payload memory hit, not from a completed chain. Read the
+process tree before the score: reject when the only child is `WerFault.exe`,
+take when a real child appears alongside an autostart or `SetThreadContext`
+signature. Note also that Triage, with a mature Formbook config extractor, still
+produced an empty **Malware Config** panel for that sample — roughly where this
+pipeline's memory YARA landed on `422e30ed`.
