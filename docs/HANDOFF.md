@@ -25,11 +25,13 @@ unpack, C2 resolution, FTP authentication and the upload of its stolen-data
 report, all captured in one run.
 
 **A .NET loader** (`422e30ed…`, labelled Formbook by MalwareBazaar and not
-otherwise attributed) has been run three times. It hollows `RegSvcs.exe` and
-its stage-2 payload faults before it can decrypt stage 3, identically every
-time. The payload was recovered on 05 Aug from a crash dump and is an
-obfuscated 56 KB .NET assembly with no plaintext indicators — see *Loader
-reference data*.
+otherwise attributed) has been run six times. It hollows `RegSvcs.exe` and its
+stage-2 payload faults before it can decrypt stage 3, identically every time.
+The pipeline recovered that payload on 06 Aug and static analysis identified it
+end to end: a SmartAssembly-protected reflective loader disguised as a
+sliding-puzzle game, `SmartOptimization.dll`, with no config anywhere in it —
+the config is in the stage it would invoke, which the crash prevents. See
+*Loader reference data*.
 
 Both controls pass:
 
@@ -429,6 +431,13 @@ Every module with dead detection markers had dead exclusion markers too. A live
 detector against a dead exclusion list is worse than both being dead, because
 the analyzer writes thousands of files into the directory it is watching.
 
+**Carve the image, then read it off the box.** The point of recovering a payload
+is what static analysis then says about it, and that lives on the host, not in
+another detonation. `SmartOptimization.dll` was identified — packer, decoy,
+loading mechanism, absence of any config — from its own metadata with `pefile`,
+and it retired a hypothesis the handoff had asserted for weeks. A recovered
+artifact is a question answered on the bench, not a reason to run the VM again.
+
 **A size is a size in some layout.** `SizeOfImage` describes a mapped image;
 the section table describes a file; a payload in memory can be in either shape,
 and a complete artifact measured against the wrong one reports itself as
@@ -540,10 +549,33 @@ detector.**
 
 **It has no plaintext indicators at all.** 428 strings in the payload region:
 no URLs, no domains, no IPs, no credential or wallet paths, no persistence
-strings, no family markers. An obfuscated stage-2 with its config in a
-2,380-byte `.rsrc` blob. That is why YARA matched nothing across nine images
+strings, no family markers. That is why YARA matched nothing across nine images
 while the UPX control passes — there is nothing for a signature to key on, and
 the ruleset is not at fault.
+
+**What that payload actually is — settled by static analysis, 06 Aug.** The
+carved image (`SmartOptimization.dll`, 57,344 bytes, x86 .NET) was parsed with
+`pefile` on the host. Its metadata `#Strings` heap decides it:
+
+- **Packed with SmartAssembly**, a commercial .NET protector — the namespaces
+  `SmartAssembly.Attributes`, `.Delegates` and `.HouseOfCards` are its
+  signature. This is the "obfuscation" every prior run described.
+- **The visible program is a sliding-puzzle game.** Its managed resource holds
+  a full Windows Forms UI — `tileButton`, "Puzzle solved!", "Moves:", a
+  File/Edit menu. A complete benign application used as the decoy carrier.
+- **The loader primitives are all present**: `System.Reflection.Emit`,
+  `GetManifestResourceStream`, `FromBase64String`, `Invoke`/`BeginInvoke`. It
+  pulls a resource, base64-decodes it and invokes it reflectively.
+
+**The config is not in this image, and the old hypothesis was wrong.** The
+handoff said for weeks that "the config lives in a 2,380-byte `.rsrc` blob, a
+static-analysis job on the carved image." Checked directly: the win32 `.rsrc` is
+1,122 bytes of forged version info, the one managed resource is 4,267 bytes of
+puzzle-game UI strings, `.text` entropy is 5.90 and there is no high-entropy blob
+anywhere — no embedded encrypted stage 3. The Remcos config lives in the stage
+this loader would reflectively invoke, which the crash prevents. That is the
+single explanation for every prior observation: no C2, no Run key, no dropped
+file, and no YARA match on any image.
 
 **This explains three runs of empty findings.** The chain dies at stage 2: the
 loader hollows `RegSvcs`, stage-2 starts, and it faults before decrypting stage
@@ -743,9 +775,12 @@ written. That would mean the payload is written over the host image at its
 original base after all, and the 05 Aug hand-carve found it alongside only
 because the crash dump caught a different moment.
 
-**Still true:** the `.rsrc` blob is where the config lives, and that remains a
-static-analysis job on the carved image rather than something a detonation
-answers.
+**The static-analysis question is now answered** — see *What that payload
+actually is* above. The carved image is a SmartAssembly-protected reflective
+loader disguised as a puzzle game, with no config anywhere in it; the config is
+in the stage it would invoke, and the crash prevents that. There is nothing more
+this sample yields without defeating SmartAssembly, which is a reverse-
+engineering job on stage 2, not a pipeline task and not another detonation.
 
 ---
 
