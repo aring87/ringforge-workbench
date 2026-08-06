@@ -306,7 +306,7 @@ run for a long time without showing.
 | Crash-dump collection | **Proven**, and produced the payload |
 | Adaptive window | **Fired, on the wrong case** — see below |
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
-| Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since. **Test it with `test_specs/memory_canary/`, not malware** — if the refusal fails, a benign canary detonates into a live network path and costs nothing. Five minutes, and it is the one unproven control with real teeth |
+| Containment refusal | **Proven** on 06 Aug. Guest armed with `vm_net.ps1 -Arm`, canary launched through the Dynamic Analysis window, and the run refused: `Not contained — a default route reaches the internet through a NAT gateway (Ethernet → 10.0.2.2). The guest is ARMED. The run has not been started.` It named the adapter and gateway and blocked *before* launch. The one time this was previously at stake it failed and malware got through; this time it caught it. Tested with the benign canary, so a failure would have cost nothing |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
 | Known-module index | **Proven** on 06 Aug, 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70. The ntdll false positive is gone |
@@ -382,9 +382,12 @@ PowerShell blocks, and the process-name set feeding network attribution — and
 each break looked correct until a run made it visible.
 
 **A control that only writes to a log is documentation.** The containment check
-emitted `CONTAINMENT WARNING` and launched the sample anyway. Test your controls
-deliberately; the armed detonation that exposed this was a test, and it is the
-only reason it was found.
+once emitted `CONTAINMENT WARNING` and launched the sample anyway. It now refuses
+the run — proven 06 Aug by arming the guest and watching it block a launch
+before it started (see the proven table). Test your controls deliberately, and
+test them with something that costs nothing when they fail: the armed detonation
+that first exposed this was live malware, the run that proved the fix was the
+benign canary.
 
 **Check the behaviour, not the text.** A config file containing
 `ProcessTampering` in a comment satisfied a text search while the live config
