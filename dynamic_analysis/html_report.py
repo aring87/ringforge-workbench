@@ -1208,6 +1208,18 @@ def _unmapped_pe_section(summary: dict[str, Any]) -> str:
         else ""
     )
 
+    known_modules = _to_int(counts.get("known_module_images", 0))
+    known_note = (
+        f"<p class='muted'>{known_modules} further unmapped PE image(s) were "
+        "system DLLs that another dump in this run enumerated as loaded modules. "
+        "A process created suspended -- which is what hollowing does -- has "
+        "ntdll mapped before its module list is populated, so the DLL is really "
+        "there and really absent from that dump's list. Matched on build rather "
+        "than on name.</p>"
+        if known_modules
+        else ""
+    )
+
     resource_only = _to_int(counts.get("resource_only_images", 0))
     resource_note = (
         f"<p class='muted'>{resource_only} further unmapped PE image(s) carried "
@@ -1244,6 +1256,7 @@ def _unmapped_pe_section(summary: dict[str, Any]) -> str:
       </p>
       {_dict_list_table("Unmapped PE Images", rows, emphasize=True,
                         empty_text="No PE image was found outside the mapped modules.")}
+      {known_note}
       {resource_note}
       {inside_note}
       {failure_note}

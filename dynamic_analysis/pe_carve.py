@@ -286,6 +286,18 @@ def read_regions(data: Any, size: int, streams: dict[int, tuple[int, int]]) -> l
 # PE headers
 # ---------------------------------------------------------------------------
 
+#: A TimeDateStamp past this is not a date at all.
+#:
+#: Microsoft's reproducible builds put a *hash* in the field rather than a build
+#: time, so system binaries carry values that decode to absurd futures --
+#: ntdll.dll on the reference guest reads `0xd277d290`, which renders as
+#: 2081-11-22. The old bound was the year 2100, so that came out as a plausible
+#: looking date and six copies of ntdll were reported as a payload "compiled"
+#: after the analyst's lifetime. A date in the future is a signal that the field
+#: is not a date, and saying nothing is better than saying something false.
+_MAX_PLAUSIBLE_YEAR = _datetime.datetime.now(_datetime.timezone.utc).year + 1
+
+
 def _iso_timestamp(value: int) -> str:
     """A PE TimeDateStamp as a date, or "" when it is not one.
 
@@ -299,7 +311,7 @@ def _iso_timestamp(value: int) -> str:
         stamp = _datetime.datetime.fromtimestamp(value, _datetime.timezone.utc)
     except (OverflowError, OSError, ValueError):
         return ""
-    if not (1990 <= stamp.year <= 2100):
+    if not (1990 <= stamp.year <= _MAX_PLAUSIBLE_YEAR):
         return ""
     return stamp.strftime("%Y-%m-%d")
 
@@ -444,8 +456,26 @@ def _candidates(data: Any, region: _Region) -> Iterator[int]:
 # Analysis
 # ---------------------------------------------------------------------------
 
+def module_fingerprint(timestamp: object, size_of_image: object) -> tuple[int, int]:
+    """Identity of a PE image that is stable across processes.
+
+    ``TimeDateStamp`` and ``SizeOfImage`` together identify a build of a binary,
+    and both are in a minidump's module list as well as in the header of a
+    carved image, so the two can be compared without reading either file off
+    disk.
+    """
+    try:
+        return (int(timestamp or 0), int(size_of_image or 0))
+    except (TypeError, ValueError):
+        return (0, 0)
+
+
 def _classify(
-    va: int, modules: list[dict[str, Any]], carries_code: bool
+    va: int,
+    modules: list[dict[str, Any]],
+    carries_code: bool,
+    header: dict[str, Any] | None = None,
+    known_modules: set[tuple[int, int]] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     for module in modules:
         base = int(module.get("base", 0) or 0)
@@ -454,13 +484,61 @@ def _classify(
             return "at_module_base", module
         if base and size and base < va < base + size:
             return "inside_module", module
+
     # Module coverage is decided first: a resource file mapped over a module's
     # range is a different question from one sitting on its own, and neither is
     # a finding.
-    return ("unmapped" if carries_code else "resource_only"), None
+    if not carries_code:
+        return "resource_only", None
+
+    # Not covered by *this* dump's module list, but enumerated as a legitimate
+    # module somewhere else in the run.
+    #
+    # This is the false positive that made the carver's first strong finding
+    # wrong. A process created suspended -- which is exactly what hollowing does
+    # -- has ntdll mapped before the loader has populated its module list, so
+    # ntdll is physically present and legitimately absent from the list being
+    # checked against. Those dumps enumerated 6 and 11 modules; the loader's own
+    # dump enumerated 65, ntdll among them. Six carved copies of ntdll.dll were
+    # reported as unmapped images inside a hollowing target.
+    #
+    # Matching on the build rather than on a name means no list to maintain and
+    # nothing to keep in step with a Windows version.
+    if known_modules and header is not None:
+        if module_fingerprint(header.get("timestamp"), header.get("size_of_image")) in known_modules:
+            return "known_module", None
+
+    return "unmapped", None
 
 
-def analyze_dump(path: str | Path) -> dict[str, Any]:
+def read_module_index(path: str | Path) -> set[tuple[int, int]]:
+    """Every module a dump enumerates, as build fingerprints.
+
+    Read in a first pass over all of a run's dumps so that a later pass can tell
+    a system DLL that one dump failed to enumerate from an image nothing on the
+    machine knows about.
+    """
+    dump_path = Path(path)
+    try:
+        size = dump_path.stat().st_size
+        if size < 32:
+            return set()
+        with open(dump_path, "rb") as handle:
+            with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                modules = read_modules(data, size, _streams(data, size))
+    except Exception:
+        return set()
+
+    return {
+        module_fingerprint(m.get("timestamp"), m.get("size"))
+        for m in modules
+        if m.get("timestamp") and m.get("size")
+    }
+
+
+def analyze_dump(
+    path: str | Path, known_modules: set[tuple[int, int]] | None = None
+) -> dict[str, Any]:
     """Every PE image in one dump, classified against the dump's module list."""
     dump_path = Path(path)
     result: dict[str, Any] = {
@@ -472,7 +550,13 @@ def analyze_dump(path: str | Path) -> dict[str, Any]:
         "host_image": "",
         "host_image_timestamp_hex": "",
         "images": [],
-        "counts": {"at_module_base": 0, "inside_module": 0, "unmapped": 0, "rejected": 0},
+        "counts": {
+            "at_module_base": 0,
+            "inside_module": 0,
+            "unmapped": 0,
+            "known_module": 0,
+            "rejected": 0,
+        },
         "error": "",
     }
 
@@ -522,7 +606,11 @@ def analyze_dump(path: str | Path) -> dict[str, Any]:
 
                         va = region.va + (offset - region.file_offset)
                         classification, module = _classify(
-                            va, modules, header["carries_code"]
+                            va,
+                            modules,
+                            header["carries_code"],
+                            header=header,
+                            known_modules=known_modules,
                         )
 
                         # Bounded by the region as well as by the header: a
@@ -555,6 +643,12 @@ def analyze_dump(path: str | Path) -> dict[str, Any]:
                     # run reporting none of these is a run whose dumps were not
                     # searched properly. See _RESOURCE_ONLY_NOTE.
                     "resource_only": sum(1 for i in images if i["classification"] == "resource_only"),
+                    # A system DLL this dump failed to enumerate but another
+                    # dump in the run did. Counted for the same reason: six
+                    # copies of ntdll once read as a hollowing finding, and a
+                    # run reporting none of these in a suspended process is a
+                    # run whose module index was not built.
+                    "known_module": sum(1 for i in images if i["classification"] == "known_module"),
                     # Recorded because "we found no foreign image" and "we
                     # rejected 4,000 things that started with MZ" are different
                     # statements about the same dump.
@@ -724,14 +818,28 @@ def carve_dumps(
     analyzed = 0
     failed = 0
     resource_only = 0
+    known_module_images = 0
     carried: list[dict[str, Any]] = []
+
+    # First pass: everything any dump in the run enumerates as a loaded module.
+    #
+    # A process created suspended -- which is what hollowing does -- has ntdll
+    # mapped before its module list is populated, so a dump taken then shows the
+    # DLL with nothing to identify it. The loader's own dump enumerates it
+    # properly. Reading all the module lists first is what lets the second pass
+    # tell those apart, without a name list to maintain.
+    known_modules: set[tuple[int, int]] = set()
+    for record in dump_records or []:
+        path = str(record.get("path", "") or "")
+        if path:
+            known_modules |= read_module_index(path)
 
     for record in dump_records or []:
         path = str(record.get("path", "") or "")
         if not path:
             continue
 
-        analysis = analyze_dump(path)
+        analysis = analyze_dump(path, known_modules=known_modules)
         analysis["pid"] = record.get("pid")
         analysis["process_name"] = record.get("name", "") or record.get("process_name", "")
         analysis["trigger"] = record.get("trigger", "")
@@ -754,6 +862,7 @@ def carve_dumps(
             if image["classification"] in ("unmapped", "inside_module")
         ]
         resource_only += int((analysis.get("counts", {}) or {}).get("resource_only", 0) or 0)
+        known_module_images += int((analysis.get("counts", {}) or {}).get("known_module", 0) or 0)
         notable.sort(key=lambda i: (i["classification"] != "unmapped", i["_offset"]))
 
         carved_here = 0
@@ -822,6 +931,10 @@ def carve_dumps(
         # Real, unmapped, and not evidence. Windows maps localised resource
         # files as data into every process; see _RESOURCE_ONLY_NOTE.
         "resource_only_images": resource_only,
+        # System DLLs a dump failed to enumerate. Six of these -- all ntdll --
+        # were once reported as unmapped images inside a hollowing target, and
+        # took process_injection to strong on a route that had not earned it.
+        "known_module_images": known_module_images,
         "carved": sum(1 for i in carried if i["carved_path"]),
         "carve_failures": sum(1 for i in carried if i["carve_error"]),
     }

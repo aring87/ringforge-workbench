@@ -306,7 +306,7 @@ run for a long time without showing.
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since. **Test it with `test_specs/memory_canary/`, not malware** — if the refusal fails, a benign canary detonates into a live network path and costs nothing. Five minutes, and it is the one unproven control with real teeth |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
-| PE carve | **Proven** on 06 Aug — `unmapped_in_hollowing_target: 2` in a hollowed `RegSvcs.exe`, `process_injection` strong by a route independent of the crash, and 14 resource-only images correctly set aside. What it carved is not the payload on record and wants eyeballing |
+| PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
 | Dropped-file lineage | **Fixed, unproven.** Had none at all: a browser's writes counted as the sample's and took `payload_dropped` to strong on a loader that drops nothing |
 | Carve on long paths | **Fixed, unproven.** A hash-named sample produced a 264-character path and the carve failed silently on the best image of the run |
 | Crash-dump `hollowing_target` | **Fixed, unproven.** The bare WER stem lost the `.exe`, so crash-dump images scored `present` where live-dump images scored `strong` |
@@ -425,6 +425,13 @@ the payloads.
 Every module with dead detection markers had dead exclusion markers too. A live
 detector against a dead exclusion list is worse than both being dead, because
 the analyzer writes thousands of files into the directory it is watching.
+
+**Absence from one list is not absence from the machine.** The carver's first
+strong finding was six copies of ntdll, missing from a suspended process's
+module list because the loader had not populated it yet. The check was sound and
+the conclusion was wrong: "not in this list" meant "this list is incomplete", not
+"foreign". Where a second source can confirm — another dump, another process,
+another moment — ask it before calling something unaccounted for.
 
 **A signal that fires on everything says nothing about anything.** The PE carver
 reported eleven unmapped images in an idle Python process, all of them real and
@@ -558,17 +565,72 @@ needed here.
 **Dormancy is now +20, +24, +42, +60s** across four runs. The spread keeps
 widening, which is the argument for the re-dump rather than against it.
 
-**What it found is not the payload on record.** The two `RegSvcs` images are
-1,830,912 bytes, x86, *not* .NET, timestamp `0xd277d290` — year 2081, not a
-plausible compile date. They sit at `0x1240000` and `0x13ff000`, exactly
-`0x1BF000` apart, which is precisely their claimed size: two adjacent images,
-identical headers, different SHA256s. The recorded payload — 57,344 bytes, .NET,
-compiled 2025-06-18 — did not appear. **Open the carved `.bin_` files before
-believing them.**
+**The 1.8 MB images were `ntdll.dll`, and the finding was a false positive.**
+Static analysis of the carved files settled it: sections `.text`, `RT`, `PAGE`,
+`.mrdata`, `.00cfg`, no import table, and strings reading
+`.text$lp00ntdll.dll!20_pri7` and `CLIENT(ntdll): Found CheckAppHelp`. So
+`unmapped_in_hollowing_target: 6` was six copies of ntdll, and
+`process_injection` reaching strong by the carver route on that run was not
+earned. The crash route fired legitimately, so the verdict stood — for one
+reason rather than two.
 
-The most interesting image of the run was the one that got away: an 81,920-byte
-**.NET** PE at `0x5260000` inside the loader's own process, `truncated`, and its
-carve failed — see below.
+The cause is in the data: those dumps enumerate **6 and 11 modules** while the
+loader's own dump enumerates **65**. A process created suspended — which is
+exactly what hollowing does — has ntdll mapped before the loader has populated
+its module list, so the DLL is physically present and legitimately absent from
+the list the carver checks against. See *The known-module fix*.
+
+The year-2081 timestamp was the tell, built in and then not read. Microsoft's
+reproducible builds put a **hash** in `TimeDateStamp` rather than a build time,
+so `0xd277d290` was never a date. The plausibility bound was the year 2100, so
+it rendered as "2081-11-22" instead of as nothing.
+
+### The payload, recovered and self-describing
+
+The image that mattered was in the loader's *own* process, not in `RegSvcs`: an
+81,920-byte x86 **.NET** PE, importing only `mscoree.dll`, written in VB.NET
+(`Microsoft.VisualBasic.CompilerServices`). Its version resource:
+
+| | |
+|---|---|
+| CompanyName | `Microsoft Corporation` |
+| FileDescription | `Microsoft Smart Optimization` |
+| OriginalFilename | `SmartOptimization.dll` |
+| ProductName | `Smart Optimization` |
+| FileVersion | `2025.2.0.14826` |
+| LegalCopyright | `Copyright © Microsoft Corporation 2026` |
+| TimeDateStamp | `0x6a71514c` — 2026-08-04, two days before the run |
+
+**There is no Microsoft product called "Smart Optimization".** This is the
+unpacked stage wearing forged Microsoft branding, and it is the first payload
+this pipeline has recovered *and named* without anyone carving by hand.
+
+Only **57,344 of its 81,920 bytes** were captured — the memory region ended
+before `SizeOfImage`, which the record flags as `truncated`. Its `.rsrc` is
+1,206 bytes in what was carved, against the 2,380-byte blob the 05 Aug hand-carve
+recorded, so the config may be in the missing 24 KB. Raising the scheduled
+offset so the parent is dumped later, while it still holds the fully written
+image, is the way to get the rest.
+
+### The known-module fix
+
+An image not covered by *this* dump's module list, but enumerated as a loaded
+module by *any other* dump in the same run, is now classified `known_module` —
+counted like `resource_only`, never scored, never carved.
+
+Matched on `(TimeDateStamp, SizeOfImage)` rather than on a name. That pair
+identifies a build, it is present both in a minidump's module list and in a
+carved image's own header, and it needs no list of system DLLs to keep in step
+with a Windows version. On the run that exposed this it would have reclassified
+all six ntdll copies and left `SmartOptimization.dll` untouched — nothing
+enumerates that anywhere.
+
+It costs a first pass over the run's dumps to build the index, which is cheap:
+the module list is a stream, not a scan.
+
+`_iso_timestamp` now renders nothing for a date in the future rather than a
+plausible-looking one, so a hash in `TimeDateStamp` reads as absent instead of as
+2081.
 
 ### Three defects the run exposed, all fixed
 

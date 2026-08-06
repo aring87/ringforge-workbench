@@ -22,6 +22,7 @@ from dynamic_analysis.pe_carve import (
     analyze_dump,
     carve_dumps,
     parse_pe_header,
+    read_module_index,
     summarize_pe_carve,
 )
 
@@ -315,6 +316,81 @@ class AnalyzeDumpTests(unittest.TestCase):
         self.assertEqual(result["counts"]["resource_only"], 1)
         unmapped = [i for i in result["images"] if i["classification"] == "unmapped"]
         self.assertEqual(unmapped[0]["virtual_address"], "0x2000000")
+
+    def test_a_system_dll_another_dump_enumerated_is_not_a_finding(self) -> None:
+        # The false positive that made the carver's first strong finding wrong.
+        # A process created suspended -- which is what hollowing does -- has
+        # ntdll mapped before its module list is populated, so it is physically
+        # present and legitimately absent from the list being checked against.
+        # Six carved copies of ntdll.dll were reported as unmapped images inside
+        # a hollowing target, on dumps enumerating 6 and 11 modules while the
+        # loader's own dump enumerated 65 including ntdll.
+        ntdll = make_pe(size_of_image=0x8000, timestamp=0xD277D290)
+        suspended = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1,
+                      "path": r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\RegSvcs.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                {"va": 0x1750000, "data": ntdll},
+            ],
+        )
+        path = self._write("suspended.dmp", suspended)
+
+        # Without the index it reads as a foreign image.
+        self.assertEqual(analyze_dump(path)["counts"]["unmapped"], 1)
+
+        # The loader's own dump enumerates the same build properly.
+        known = {(0xD277D290, 0x8000)}
+        result = analyze_dump(path, known_modules=known)
+
+        self.assertEqual(result["counts"]["unmapped"], 0)
+        self.assertEqual(result["counts"]["known_module"], 1)
+
+    def test_a_payload_nothing_enumerates_is_still_a_finding(self) -> None:
+        # The narrowing must not cost the image it was built to find:
+        # SmartOptimization.dll appears in no module list anywhere.
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1,
+                      "path": r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\RegSvcs.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                {"va": 0x1750000, "data": make_pe(size_of_image=0x8000, timestamp=0xD277D290)},
+                {"va": 0x2000000, "data": make_pe(size_of_image=0xE000, dotnet=True,
+                                                  timestamp=0x6A71514C)},
+            ],
+        )
+        result = analyze_dump(
+            self._write("both.dmp", blob), known_modules={(0xD277D290, 0x8000)}
+        )
+
+        self.assertEqual(result["counts"]["known_module"], 1)
+        self.assertEqual(result["counts"]["unmapped"], 1)
+        unmapped = [i for i in result["images"] if i["classification"] == "unmapped"]
+        self.assertTrue(unmapped[0]["dotnet"])
+
+    def test_the_index_is_read_from_a_dumps_module_list(self) -> None:
+        blob = build_minidump(
+            modules=[
+                {"base": 0x400000, "size": 0x10000, "timestamp": 0x5FF2B99B, "path": "app.exe"},
+                {"base": 0x1750000, "size": 0x8000, "timestamp": 0xD277D290, "path": "ntdll.dll"},
+            ],
+            regions=[{"va": 0x400000, "data": make_pe(size_of_image=0x10000)}],
+        )
+
+        index = read_module_index(self._write("index.dmp", blob))
+
+        self.assertIn((0xD277D290, 0x8000), index)
+        self.assertIn((0x5FF2B99B, 0x10000), index)
+
+    def test_an_impossible_timestamp_is_not_rendered_as_a_date(self) -> None:
+        # Microsoft's reproducible builds put a hash in TimeDateStamp, not a
+        # build time, so ntdll reads 0xd277d290 -- which the old bound rendered
+        # as "2081-11-22". A date in the future is a signal the field is not a
+        # date; saying nothing beats saying something false.
+        header = parse_pe_header(make_pe(timestamp=0xD277D290), 0, 0x4000)
+
+        self.assertEqual(header["timestamp_hex"], "0xd277d290")
+        self.assertEqual(header["compiled"], "")
 
     def test_rejected_candidates_are_counted(self) -> None:
         # "We found no foreign image" and "we rejected everything that started
