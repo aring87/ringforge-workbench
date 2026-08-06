@@ -1890,6 +1890,7 @@ def run_dynamic_analysis(
     procmon_summary: dict[str, int] = {}
     procmon_interesting_summary: dict[str, int] = {}
     dropped_files_summary: dict[str, int] = {}
+    dropped_files: list[dict[str, Any]] = []
     findings_summary: dict[str, Any] = {}
     task_diff_summary: dict[str, Any] = {}
     service_diff_summary: dict[str, Any] = {}
@@ -2692,6 +2693,10 @@ def run_dynamic_analysis(
         "autoruns_diff_summary": autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {},
         "autoruns_diff": autoruns_diff_summary,
         "dropped_files_summary": dropped_files_summary,
+        # The list, not just the counts. `payload_dropped` can reach strong off
+        # this, and a reader could not previously see what the count was made of
+        # -- a Remcos run reported 13 suspicious drops of which 11 did not exist.
+        "dropped_files": dropped_files[:50],
         "findings": findings_summary,
         # --- Tier 1 telemetry ------------------------------------------------
         "tasks_snapshot_status": tasks_status,

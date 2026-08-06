@@ -311,6 +311,15 @@ ANALYZER_WORKSPACE_MARKERS = (
     "static-software-malware-analysis",
     "ringforge_analyzer",
     "ringforge-workbench",
+    # FakeNet ships as a PyInstaller one-file build, which unpacks itself into
+    # %TEMP%\_MEInnnnn and loads its WinDivert driver from there. That path
+    # contains none of the names above, so the diverter's own driver was landing
+    # in the sample's suspicious-path hits -- three times on the Remcos run. The
+    # autoruns diff already excluded WinDivert as analyzer activity; this is the
+    # same exclusion for the findings.
+    "\\_mei",
+    "\\pydivert\\",
+    "windivert",
 )
 
 #: Where samples are kept, and therefore where the workspace markers above
@@ -802,6 +811,28 @@ def _path_is_executable_or_script(value: object) -> bool:
     return _path_suffix(value) in EXECUTION_RELATED_EXTENSIONS
 
 
+def _is_independently_notable_path(path: object) -> bool:
+    """True when the path is a finding whoever produced it.
+
+    The same split the process-create filter already makes. Both of the
+    conditions that put an event into the suspicious-path list are not equal:
+
+    - an OS persistence surface (`\\Windows\\System32\\Tasks`, a Run key) is
+      touched constantly by Windows itself, and only means something when the
+      sample is the one touching it;
+    - an executable or script written into a user-writable directory is notable
+      regardless, because a sample can cause a write it does not perform --
+      through injection, COM, a service or WMI -- and lineage cannot see that.
+
+    So the first is attributed by lineage and the second is not. Collapsing them
+    was what put Windows Update rewriting its own scheduled task into 12 of 14
+    persistence hits; gating both would have thrown away a payload dropped into
+    %TEMP% by an injected `svchost.exe`.
+    """
+    text = _normalize_text_lower(path)
+    return _path_is_executable_or_script(text) and _path_is_user_writable(text)
+
+
 def _is_high_signal_write(path: object, operation: object) -> bool:
     op_l = _normalize_text_lower(operation)
     if "writefile" not in op_l and "setrenameinformationfile" not in op_l and "setdispositioninformationfile" not in op_l:
@@ -928,6 +959,8 @@ def summarize_dynamic_findings(
     }
 
     write_counter: Counter[str] = Counter()
+    background_write_counter: Counter[str] = Counter()
+    write_records: list[dict[str, Any]] = []
     network_counter: Counter[str] = Counter()
     background_network_counter: Counter[str] = Counter()
     network_records: list[dict[str, Any]] = []
@@ -999,8 +1032,13 @@ def summarize_dynamic_findings(
 
         if _is_high_signal_write(path, operation):
             if path and not is_noise_path and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
-                write_counter[path] += 1
-                file_write_event_count += 1
+                # Staged with its PID and judged after the loop, like the
+                # network records below. Attributing a write on the spot counted
+                # Windows Update rewriting its own scheduled task as the
+                # sample's: svchost.exe accounted for every entry in
+                # top_written_paths on the first run where file events reached
+                # the findings at all.
+                write_records.append({"path": path, "pid": _event_pid(event)})
 
         joined = f"{path} {detail}"
         if path and (_looks_suspicious_path(path) or (_path_is_executable_or_script(path) and _path_is_user_writable(path))):
@@ -1020,6 +1058,7 @@ def summarize_dynamic_findings(
                         "path": path,
                         "operation": operation,
                         "detail": detail,
+                        "_pid": _event_pid(event),
                     }
                 )
 
@@ -1040,6 +1079,7 @@ def summarize_dynamic_findings(
                         "path": path,
                         "operation": operation,
                         "detail": detail,
+                        "_pid": _event_pid(event),
                     }
                 )
 
@@ -1065,6 +1105,53 @@ def summarize_dynamic_findings(
             continue
         network_counter[record["process_name"]] += 1
         network_event_count += 1
+
+    # Writes, suspicious paths and persistence hits get the same treatment, and
+    # for the same reason. Until file events reached the findings at all, none of
+    # these three had ever been attributed: the first run that surfaced them put
+    # Windows Update's own `svchost.exe` rewriting
+    # `\Tasks\Microsoft\Windows\UpdateOrchestrator\Schedule Work` into 12 of 14
+    # persistence hits and into every row of top_written_paths.
+    #
+    # A path keyword says what kind of thing happened. It cannot say who did it,
+    # and the OS touches its own autostart surfaces constantly.
+    def _belongs_to_sample(pid: object) -> bool:
+        return not lineage_resolved or pid in descendant_pids
+
+    def _keep(pid: object, path: object = None) -> bool:
+        # See _is_independently_notable_path: an executable dropped into a
+        # user-writable directory stands on its own, an OS persistence surface
+        # does not.
+        return _belongs_to_sample(pid) or _is_independently_notable_path(path)
+
+    for record in write_records:
+        if _keep(record.get("pid"), record["path"]):
+            write_counter[record["path"]] += 1
+            file_write_event_count += 1
+        else:
+            background_write_counter[record["path"]] += 1
+
+    background_suspicious_paths = 0
+    kept_suspicious: list[dict[str, Any]] = []
+    for hit in suspicious_path_hits:
+        if _keep(hit.pop("_pid", None), hit.get("path")):
+            kept_suspicious.append(hit)
+        else:
+            background_suspicious_paths += 1
+    suspicious_path_hits = kept_suspicious
+
+    # Persistence is attributed by lineage alone. Every entry here is a pure
+    # keyword match against an autostart surface, with no independently notable
+    # arm to preserve -- and those surfaces belong to the OS, which writes to
+    # them on its own schedule.
+    background_persistence = 0
+    kept_persistence: list[dict[str, Any]] = []
+    for hit in persistence_hits:
+        if _belongs_to_sample(hit.pop("_pid", None)):
+            kept_persistence.append(hit)
+        else:
+            background_persistence += 1
+    persistence_hits = kept_persistence
 
     # Exclude RingForge helper tools and their descendants, known OS noise, and
     # normal Windows packaged-app helper behavior from the sample's findings.
@@ -1110,6 +1197,12 @@ def summarize_dynamic_findings(
         {"process_name": process_name, "count": count}
         for process_name, count in background_network_counter.most_common(10)
     ]
+    # Same contract as the background processes and connections: reported so a
+    # reader can see the machine was busy, never counted and never scored.
+    findings["background_written_paths"] = [
+        {"path": path, "count": count}
+        for path, count in background_write_counter.most_common(10)
+    ]
     findings["spawned_processes"] = process_creates[:25]
     findings["background_processes"] = background_processes[:25]
     # Distinguishes "nothing ran that the sample did not cause" from "we could
@@ -1128,6 +1221,11 @@ def summarize_dynamic_findings(
         "suspicious_path_hits": len(suspicious_path_hits),
         "persistence_hits": len(persistence_hits),
         "lolbin_processes": lolbin_count,
+        # Every filter that removes something records that it did, so a run with
+        # nothing to show stays distinguishable from one that could not tell.
+        "background_write_events": sum(background_write_counter.values()),
+        "background_suspicious_path_hits": background_suspicious_paths,
+        "background_persistence_hits": background_persistence,
     }
     findings["counts"] = counts
 

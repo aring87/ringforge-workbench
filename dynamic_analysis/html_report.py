@@ -1118,6 +1118,43 @@ def _crash_evidence_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _dropped_files_section(summary: dict[str, Any]) -> str:
+    """What the dropped-file count is actually made of.
+
+    The report carried the counts and not the list, and `payload_dropped` can
+    reach strong off that count. A Remcos run reported 13 suspicious drops of
+    which 11 did not exist -- a process walking the DLL search order in its own
+    directory -- and nothing on the page said so.
+
+    ``On disk`` is the column that would have shown it, which is why it is here
+    rather than in the JSON only.
+    """
+    files = summary.get("dropped_files", []) or []
+    if not files:
+        return ""
+
+    rows = [
+        {
+            "Path": entry.get("path", ""),
+            "Kind": entry.get("classification", ""),
+            "On disk": "yes" if entry.get("exists_on_disk") else "no",
+            "Size": entry.get("size") if entry.get("size") is not None else "",
+            "Written by": entry.get("source_process_name", ""),
+            "SHA256": (entry.get("sha256") or "")[:16],
+        }
+        for entry in files
+        if isinstance(entry, dict) and entry.get("suspicious")
+    ]
+
+    return _dict_list_table(
+        "Suspicious Dropped Files",
+        rows,
+        emphasize=True,
+        limit=50,
+        empty_text="No dropped file triaged as suspicious.",
+    )
+
+
 def _unmapped_pe_section(summary: dict[str, Any]) -> str:
     """Executables found in memory that the process's loader never mapped.
 
@@ -2017,6 +2054,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
   {_kv_table("Dropped Files Summary", dropped, badge("Suspicious", dropped.get("suspicious", 0)))}
 </div>
 
+{_dropped_files_section(summary)}
 {_list_section("Analyst Notes", _analyst_notes(summary), emphasize=False, context=True)}
 {_list_section("Installer Context / Expected Behavior", _installer_context_notes(summary), emphasize=False, empty_text="No installer-specific context was identified.", context=True)}
 {_list_section("Clean Baseline Checks", _clean_baseline_notes(summary), emphasize=False, empty_text="No clean-baseline checks were available.", context=True)}

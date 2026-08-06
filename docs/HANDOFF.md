@@ -278,8 +278,10 @@ run for a long time without showing.
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
 | PE carve | **Runs clean on real dumps** — 43 modules, 0 rejected, 0 false positives across five ProcDump images of live malware. Its finding path is still unproven: no run has yet produced an unmapped image |
-| File writes / dropped files | **Fixed twice, unproven.** The first fix was incomplete — `dropped_file_triage`'s own markers were dead too, so candidates would still have been 0. Needs a clean-baseline re-run |
-| `external_contact` on a bare IP | **Fixed, unproven.** Never fired for an IP-only C2; replaying the Remcos inputs now scores it strong |
+| File writes / dropped files | **Proven** on 06 Aug — 12 write events and the `%APPDATA%` drop, after being 0 on every run ever performed |
+| `external_contact` on a bare IP | **Proven.** Fired strong on `62.60.226.68:24042` with no DNS lookup at all |
+| Lineage on writes / paths / persistence | **Fixed, unproven.** Windows Update supplied 12 of 14 persistence hits on the run that first surfaced file events; needs a re-run |
+| Dropped-file probe filtering | **Fixed, unproven.** 11 of 13 candidates were failed DLL opens; needs a re-run |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -363,6 +365,14 @@ is a list of literals, test it with a string that must match — not with the
 constants, which are the thing that is wrong. And when one instance turns up,
 **sweep for the rest**: the first fix here was incomplete and would have looked
 like a failed re-run rather than a partial fix.
+
+**A path keyword says what happened, never who did it.** Every list of
+suspicious paths is a statement about a *kind* of event, and the OS touches its
+own autostart surfaces, task folders and service keys constantly. Attribution is
+a separate question and has to be asked separately — but not of everything: a
+payload written into a user-writable directory is a finding whoever produced it,
+because a sample can cause a write it does not perform. Gate the surfaces, keep
+the payloads.
 
 **Repair a suppression list in the same change as the detector it guards.**
 Every module with dead detection markers had dead exclusion markers too. A live
@@ -598,6 +608,61 @@ general list took `registry_create` from 5 interesting events to **140** in a
 run where the sample did nothing, purely from Windows service-key churn. It is
 now on a separate value-writes-only list, so setting `ImagePath` fires and
 creating a service key does not.
+
+### The 03:56 clean-baseline run — the fixes proved out, and exposed three more
+
+| | 02:54 | 03:56 |
+|---|---|---|
+| `file_write_events` | 0 | 12 |
+| Dropped candidates | 0 | 13 |
+| `external_contact` | absent | **strong** |
+| `autoruns_suspicious` | 3 | 2 |
+| Score | 70 · Elevated Attention | **140 · Likely Malicious** |
+
+`%APPDATA%\Roaming\Config\smng.exe` appeared 30 times in the suspicious-path
+hits, from both the sample and `smng.exe`. `external_contact` fired strong off
+`62.60.226.68:24042` with no DNS involved. The spawn re-dump fired at t12 for a
+child first seen at t2, and both root-skip records were present.
+
+**Then the same run showed what letting file events through had not been
+prepared for.** All three were invisible while the markers were dead:
+
+- **Eleven of the thirteen "dropped files" did not exist.** `WINMM.dll`,
+  `urlmon.dll`, `WININET.dll`, `iertutil.dll` in `%APPDATA%\Roaming\Config` —
+  `smng.exe` walking the DLL search order in its own directory. Failed opens.
+  `payload_dropped` reached **strong** on a true count of one. Now filtered on
+  the Procmon result, deliberately as a not-found list rather than "keep only
+  SUCCESS", because a file written and then deleted is still a drop.
+- **`persistence_hits`, `suspicious_path_hits` and `top_written_paths` were
+  never attributed by lineage.** `svchost.exe` rewriting
+  `\Tasks\Microsoft\Windows\UpdateOrchestrator\Schedule Work` supplied 12 of 14
+  persistence hits and *every* row of `top_written_paths`. They now follow the
+  same collect-then-filter pattern the network records already used — with one
+  exception, below.
+- **FakeNet's own WinDivert driver counted as a finding**, three times. It
+  unpacks into `%TEMP%\_MEInnnnn`, which contains none of the workbench's
+  directory names. The exclusion had to be added in **two** places: `findings`
+  and `dropped_file_triage` keep separate analyzer lists, and repairing only the
+  first still left `payload_dropped` strong on our own driver plus one real drop.
+
+**Not everything is lineage-gated, and the split is deliberate.** An OS
+persistence surface is touched by Windows constantly and only means something
+when the sample touches it. An executable or script written into a user-writable
+directory is notable whoever produced it, because a sample can cause a write it
+does not perform — through injection, COM, a service or WMI — and lineage cannot
+see that. Gating both would have thrown away a payload dropped into `%TEMP%` by
+an injected `svchost.exe`. Two existing tests failed when the first version of
+this fix collapsed the two, which is how the distinction got found.
+
+Replaying the run through the fixed code: persistence 14 → 2, suspicious paths
+39 → 19, dropped 13 → 1, `top_written_paths` now the drop instead of Windows
+Update, and **125 · Likely Malicious** with `payload_dropped` correctly
+`present` rather than strong. The verdict band does not move — two genuinely
+strong categories carry it either way — which is the point: the score was right
+for partly wrong reasons.
+
+The report now lists the dropped files with an **On disk** column, rather than
+only the counts. That column is what would have shown this at a glance.
 
 ### The 03:22 re-run was void — revert the VM first
 

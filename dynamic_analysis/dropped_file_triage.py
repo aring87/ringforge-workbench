@@ -62,7 +62,35 @@ ANALYZER_NOISE_MARKERS = [
     "\\metadata\\",
     "\\persistence\\",
     "\\files\\",
+    # This module keeps its own list, separate from findings.py's, so the
+    # FakeNet exclusion has to be added in both places -- repairing only the
+    # findings side still left the diverter's own driver counted as a dropped
+    # file, and `payload_dropped` reaching strong on it plus one real drop.
+    "\\_mei",
+    "\\pydivert\\",
+    "windivert",
 ]
+
+#: Procmon results meaning the file was not there. A `CreateFile` that returns
+#: one of these did not create anything -- it asked and was told no.
+#:
+#: This is the difference between a drop and a probe, and without it the two are
+#: indistinguishable. A Remcos run reported 13 suspicious dropped files of which
+#: 11 did not exist: `smng.exe`, running out of %APPDATA%\Roaming\Config, walking
+#: the DLL search order for WINMM.dll, urlmon.dll, WININET.dll and iertutil.dll
+#: in its own directory. Every one of those was a failed open, and together they
+#: took `payload_dropped` to strong on a true count of one.
+#:
+#: Deliberately a not-found list rather than "keep only SUCCESS". A write that
+#: succeeded and was then deleted by the sample is still a drop, and results
+#: like REPARSE or FAST IO DISALLOWED are ordinary intermediate steps.
+NOT_FOUND_RESULTS = {
+    "name not found",
+    "path not found",
+    "no such file",
+    "object name not found",
+    "object path not found",
+}
 
 ALLOWED_EVENT_CATEGORIES = {
     "file_create",
@@ -81,6 +109,11 @@ def looks_like_candidate_file(path_value: str) -> bool:
 
     ext = Path(p).suffix.lower()
     return ext in DROPPED_FILE_EXTENSIONS
+
+
+def result_is_not_found(result_value: object) -> bool:
+    """True when a Procmon result says the file was not there."""
+    return str(result_value or "").strip().lower() in NOT_FOUND_RESULTS
 
 
 def path_is_in_suspicious_location(path_value: str) -> bool:
@@ -109,6 +142,9 @@ def collect_dropped_file_candidates(events: list[dict[str, Any]]) -> list[dict[s
         path_value = str(event.get("path", "")).strip()
 
         if category not in ALLOWED_EVENT_CATEGORIES:
+            continue
+
+        if result_is_not_found(event.get("result")):
             continue
 
         if not looks_like_candidate_file(path_value):
