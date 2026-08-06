@@ -456,6 +456,50 @@ def _candidates(data: Any, region: _Region) -> Iterator[int]:
 # Analysis
 # ---------------------------------------------------------------------------
 
+def _image_chunks(
+    ordered: list["_Region"], index: int, offset: int, want: int
+) -> tuple[list[tuple[int, int]], int]:
+    """Where to read ``want`` bytes of an image that starts in ``ordered[index]``.
+
+    A minidump splits an address space by protection, so a mapped image
+    routinely spans several ranges: the header and code in one, writable data in
+    the next. Reading only the range the `MZ` was found in stops at the first
+    boundary.
+
+    That cost 24 KB of the one payload this pipeline has recovered by itself.
+    `SmartOptimization.dll` declares `SizeOfImage` 0x14000 and its first region
+    ended 0xE000 in, so 57,344 of 81,920 bytes were carved and the `.rsrc` came
+    out at 1,206 bytes against the 2,380 a hand-carve had recorded -- the
+    configuration blob was in the part that was never read.
+
+    Continues only into ranges that are *virtually* contiguous. A gap in the
+    address space means the rest of the image was not captured, and splicing the
+    next range onto it would fabricate an artifact rather than truncate one.
+    Each chunk carries its own file offset because MemoryList ranges are not
+    contiguous in the file even when they are in memory.
+    """
+    region = ordered[index]
+    chunks: list[tuple[int, int]] = []
+
+    first = min(want, (region.file_offset + region.size) - offset)
+    if first <= 0:
+        return [], 0
+    chunks.append((offset, first))
+
+    remaining = want - first
+    next_va = region.va + region.size
+    cursor = index + 1
+
+    while remaining > 0 and cursor < len(ordered) and ordered[cursor].va == next_va:
+        take = min(remaining, ordered[cursor].size)
+        chunks.append((ordered[cursor].file_offset, take))
+        remaining -= take
+        next_va += ordered[cursor].size
+        cursor += 1
+
+    return chunks, want - remaining
+
+
 def module_fingerprint(timestamp: object, size_of_image: object) -> tuple[int, int]:
     """Identity of a PE image that is stable across processes.
 
@@ -596,7 +640,10 @@ def analyze_dump(
 
                 images: list[dict[str, Any]] = []
                 rejected = 0
-                for region in regions:
+                # Sorted by address so a region's neighbour can be found: the
+                # stream order is capture order, not address order.
+                ordered = sorted(regions, key=lambda r: r.va)
+                for index, region in enumerate(ordered):
                     region_end = region.file_offset + region.size
                     for offset in _candidates(data, region):
                         header = parse_pe_header(data, offset, region_end)
@@ -613,11 +660,14 @@ def analyze_dump(
                             known_modules=known_modules,
                         )
 
-                        # Bounded by the region as well as by the header: a
-                        # payload can sit at the end of what was captured, and
-                        # reading past it would splice unrelated memory onto the
-                        # carved image.
-                        available = region_end - offset
+                        # Bounded by what was actually captured, following the
+                        # image across contiguous ranges. A payload can sit at
+                        # the end of one range and continue in the next, and
+                        # reading past a *gap* would splice unrelated memory
+                        # onto the carved image.
+                        chunks, available = _image_chunks(
+                            ordered, index, offset, header["size_of_image"]
+                        )
 
                         images.append(
                             {
@@ -627,6 +677,11 @@ def analyze_dump(
                                 "virtual_address": f"0x{va:x}",
                                 "dump_file_offset": f"0x{offset:x}",
                                 "_offset": offset,
+                                "_chunks": chunks,
+                                # How many ranges the image was reassembled
+                                # from. Anything above 1 is a case the old
+                                # single-range read would have truncated.
+                                "regions_spanned": len(chunks),
                                 "available_bytes": int(available),
                                 "truncated": available < header["size_of_image"],
                             }
@@ -744,7 +799,6 @@ def carve_image(
         "error": "",
     }
 
-    offset = int(image.get("_offset", 0) or 0)
     want = min(
         int(image.get("size_of_image", 0) or 0),
         int(image.get("available_bytes", 0) or 0),
@@ -754,13 +808,27 @@ def carve_image(
         record["error"] = "nothing to carve"
         return record
 
+    # Where to read from, one entry per memory range the image spans. Falls back
+    # to a single read for a caller that has not been through analyze_dump.
+    chunks = list(image.get("_chunks") or [(int(image.get("_offset", 0) or 0), want)])
+
     try:
         # The directory hits the limit before the file does, so it needs the
         # same treatment.
         os.makedirs(_long_path(out_path.parent), exist_ok=True)
+        pieces: list[bytes] = []
+        remaining = want
         with open(dump_path, "rb") as source:
-            source.seek(offset)
-            payload = source.read(want)
+            for chunk_offset, chunk_len in chunks:
+                if remaining <= 0:
+                    break
+                source.seek(int(chunk_offset))
+                piece = source.read(min(int(chunk_len), remaining))
+                if not piece:
+                    break
+                pieces.append(piece)
+                remaining -= len(piece)
+        payload = b"".join(pieces)
         if not payload:
             record["error"] = "read returned no data"
             return record
@@ -994,6 +1062,9 @@ def summarize_pe_carve(carve_result: dict[str, Any]) -> dict[str, Any]:
                 else "",
                 "carved_sha256": image.get("carved_sha256", ""),
                 "truncated": bool(image.get("truncated")),
+                # Above 1 means the image was reassembled across memory ranges,
+                # which the single-range read used to cut short.
+                "regions_spanned": image.get("regions_spanned", 1),
                 "error": image.get("carve_error", ""),
             }
             for image in carve_result.get("images", []) or []

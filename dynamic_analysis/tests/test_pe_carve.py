@@ -392,6 +392,68 @@ class AnalyzeDumpTests(unittest.TestCase):
         self.assertEqual(header["timestamp_hex"], "0xd277d290")
         self.assertEqual(header["compiled"], "")
 
+    def test_an_image_split_across_regions_is_reassembled(self) -> None:
+        # A minidump splits an address space by protection, so a mapped image
+        # routinely spans several ranges -- headers and code in one, writable
+        # data in the next. Reading only the range the MZ was found in cost
+        # 24 KB of SmartOptimization.dll: 57,344 of 81,920 bytes carved, and its
+        # .rsrc came out at half size with the config blob in the part never
+        # read.
+        payload = make_pe(size_of_image=0x4000, dotnet=True)
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1, "path": "app.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                # The payload, cut in half across two adjacent ranges.
+                {"va": 0x2000000, "data": payload[:0x2000]},
+                {"va": 0x2002000, "data": payload[0x2000:]},
+            ],
+        )
+        path = self._write("split.dmp", blob)
+
+        unmapped = [
+            i for i in analyze_dump(path)["images"]
+            if i["classification"] == "unmapped"
+        ]
+
+        self.assertEqual(len(unmapped), 1)
+        self.assertEqual(unmapped[0]["available_bytes"], 0x4000)
+        self.assertFalse(unmapped[0]["truncated"])
+        self.assertEqual(unmapped[0]["regions_spanned"], 2)
+
+        carved = carve_dumps(
+            [{"pid": 1, "name": "app.exe", "path": str(path),
+              "trigger": "scheduled", "offset_seconds": 5}],
+            output_dir=self.tmp / "out",
+        )
+        written = Path(carved["images"][0]["carved_path"]).read_bytes()
+
+        self.assertEqual(len(written), 0x4000)
+        self.assertEqual(written, payload)
+
+    def test_a_gap_in_the_address_space_is_not_bridged(self) -> None:
+        # Splicing across a gap would fabricate an artifact rather than truncate
+        # one: the rest of the image was simply never captured.
+        payload = make_pe(size_of_image=0x4000, dotnet=True)
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1, "path": "app.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                {"va": 0x2000000, "data": payload[:0x2000]},
+                # Not adjacent: a page of address space is missing.
+                {"va": 0x2003000, "data": payload[0x2000:]},
+            ],
+        )
+
+        unmapped = [
+            i for i in analyze_dump(self._write("gap.dmp", blob))["images"]
+            if i["classification"] == "unmapped"
+        ]
+
+        self.assertEqual(unmapped[0]["available_bytes"], 0x2000)
+        self.assertTrue(unmapped[0]["truncated"])
+        self.assertEqual(unmapped[0]["regions_spanned"], 1)
+
     def test_rejected_candidates_are_counted(self) -> None:
         # "We found no foreign image" and "we rejected everything that started
         # with MZ" are different statements about the same dump.

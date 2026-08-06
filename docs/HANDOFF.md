@@ -307,6 +307,7 @@ run for a long time without showing.
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since. **Test it with `test_specs/memory_canary/`, not malware** — if the refusal fails, a benign canary detonates into a live network path and costs nothing. Five minutes, and it is the one unproven control with real teeth |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
+| Multi-region carve | **Fixed, unproven.** An image split across memory ranges was cut at the first boundary — 57,344 of 81,920 bytes of the one payload recovered so far, with its config in the missing part |
 | Dropped-file lineage | **Fixed, unproven.** Had none at all: a browser's writes counted as the sample's and took `payload_dropped` to strong on a loader that drops nothing |
 | Carve on long paths | **Fixed, unproven.** A hash-named sample produced a 264-character path and the carve failed silently on the best image of the run |
 | Crash-dump `hollowing_target` | **Fixed, unproven.** The bare WER stem lost the `.exe`, so crash-dump images scored `present` where live-dump images scored `strong` |
@@ -605,12 +606,17 @@ The image that mattered was in the loader's *own* process, not in `RegSvcs`: an
 unpacked stage wearing forged Microsoft branding, and it is the first payload
 this pipeline has recovered *and named* without anyone carving by hand.
 
-Only **57,344 of its 81,920 bytes** were captured — the memory region ended
-before `SizeOfImage`, which the record flags as `truncated`. Its `.rsrc` is
-1,206 bytes in what was carved, against the 2,380-byte blob the 05 Aug hand-carve
-recorded, so the config may be in the missing 24 KB. Raising the scheduled
-offset so the parent is dumped later, while it still holds the fully written
-image, is the way to get the rest.
+Only **57,344 of its 81,920 bytes** were captured, and the reason was not
+timing. A minidump splits an address space by protection, so a mapped image
+routinely spans several ranges — headers and code in one, writable data in the
+next — and the carve read only the range the `MZ` was found in. Its `.rsrc` came
+out at 1,206 bytes against the 2,380 the 05 Aug hand-carve recorded, so **the
+config blob was in the 24 KB that was never read**.
+
+The carve now follows an image across *virtually contiguous* ranges and records
+`regions_spanned`. It deliberately stops at a gap: the rest of the image was not
+captured, and splicing the next range on would fabricate an artifact rather than
+truncate one.
 
 ### The known-module fix
 
