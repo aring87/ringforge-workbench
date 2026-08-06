@@ -78,6 +78,10 @@ from dynamic_analysis.procmon_parser import (
     summarize_interesting_events,
     summarize_procmon_events,
 )
+from dynamic_analysis.vm_artifact_reads import (
+    collect_vm_artifact_reads,
+    empty_vm_artifact_reads,
+)
 from dynamic_analysis.snapshot_services import (
     snapshot_services,
     snapshot_services_with_status,
@@ -1648,6 +1652,7 @@ def run_dynamic_analysis(
     procmon_csv = paths["procmon"] / "export.csv"
     procmon_json = paths["procmon"] / "parsed_events.json"
     procmon_interesting_json = paths["procmon"] / "interesting_events.json"
+    vm_artifact_reads_json = paths["procmon"] / "vm_artifact_reads.json"
 
     tasks_before_json = paths["persistence"] / "tasks_before.json"
     tasks_after_json = paths["persistence"] / "tasks_after.json"
@@ -1848,6 +1853,7 @@ def run_dynamic_analysis(
 
     crash_summary: dict[str, Any] = empty_crash_summary("not collected")
     abnormal_termination: dict[str, Any] = {"chain_crashed": False}
+    vm_artifact_reads: dict[str, Any] = empty_vm_artifact_reads("not collected")
     crash_dump_result: dict[str, Any] = {"collected": False, "note": "not collected"}
     crash_collector: CrashDumpCollector | None = None
     # Shared by the crash-event and crash-dump collectors below. Seeded with
@@ -2467,6 +2473,38 @@ def run_dynamic_analysis(
                         "inconclusive.",
                     )
 
+                # What the sample read, as opposed to what it did. Gap 4's other
+                # half: an anti-analysis bail and a broken payload look the same
+                # from outside, and the one thing that separates them is whether
+                # the sample enumerated the hypervisor first. Not scored --
+                # reading SystemBiosVersion is not malicious -- and taken over
+                # the full event stream rather than the interesting events,
+                # because a read is deliberately never high signal.
+                _emit(status_cb, "Collecting registry reads of VM artifacts...")
+                vm_artifact_reads = collect_vm_artifact_reads(
+                    events,
+                    descendant_pids=set(resolved) if resolved is not None else None,
+                )
+                write_json(vm_artifact_reads_json, vm_artifact_reads)
+
+                if not vm_artifact_reads.get("collection_available"):
+                    _emit(
+                        status_cb,
+                        "This Procmon config captured no registry reads, so a VM "
+                        "check could not have been seen. Use "
+                        "tools/procmon-configs/dynamic_registry_reads.pmc to "
+                        "collect them.",
+                    )
+                else:
+                    vm_counts = vm_artifact_reads.get("counts", {})
+                    _emit(
+                        status_cb,
+                        f"Registry reads: {vm_artifact_reads.get('sample_reads', 0)} by the "
+                        f"sample's tree, {vm_counts.get('artifacts_read', 0)} of them naming a "
+                        f"VM artifact ({vm_counts.get('vm_specific', 0)} VM-specific), "
+                        f"{vm_artifact_reads.get('background_reads', 0)} by other processes.",
+                    )
+
                 _emit(status_cb, "Triaging dropped-file candidates...")
                 resolved_pids = findings_summary.get("descendant_pids")
                 dropped_candidates = collect_dropped_file_candidates(
@@ -2775,6 +2813,7 @@ def run_dynamic_analysis(
         "crash_dump_preflight": crash_dump_preflight,
         "crash_summary": crash_summary,
         "abnormal_termination": abnormal_termination,
+        "vm_artifact_reads": vm_artifact_reads,
         "crash_dumps": crash_dump_result,
         "powershell_preflight": powershell_preflight,
         "powershell_summary": powershell_summary,

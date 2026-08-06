@@ -1357,6 +1357,105 @@ def _abnormal_termination_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _vm_artifact_reads_section(summary: dict[str, Any]) -> str:
+    """What the sample read about the machine it was running on.
+
+    Gap 4's second half, and collection only. A sample that enumerates the
+    hypervisor and then goes quiet is the case the chain-crashed warning cannot
+    reach, and until this pass existed nothing recorded the enumeration at all --
+    the Procmon filter dropped every registry read at capture time.
+
+    Not scored, and the wording is careful about why: ordinary software reads
+    hardware identity. `SystemBiosVersion` is where a VM check looks for "VBOX"
+    and also where an inventory agent looks for a BIOS version. What earns its
+    place in a report is the pairing with a quiet run.
+
+    Renders even when nothing was found, unlike most sections here, because the
+    two zeroes mean opposite things: no artifacts read on a run that collected
+    reads is a statement about the sample, and the same zero on a run that
+    collected none is a statement about the config.
+    """
+    reads = summary.get("vm_artifact_reads", {}) or {}
+    if not reads:
+        return ""
+
+    counts = reads.get("counts", {}) or {}
+    hits = reads.get("hits", []) or []
+    available = bool(reads.get("collection_available"))
+
+    if not available:
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Registry Reads — Not Collected</h2>
+        {_section_badge("VM artifact reads", "n/a")}
+      </div>
+      <p class="muted">{_esc(reads.get("note", ""))}</p>
+    </section>
+    """
+
+    rows = [
+        {
+            "Time": hit.get("timestamp", ""),
+            "Process": f"{hit.get('process_name', '')} (pid {hit.get('pid')})",
+            "Operation": hit.get("operation", ""),
+            "Artifact": hit.get("artifact", ""),
+            "Family": hit.get("family", ""),
+            "Only on a VM": "yes" if hit.get("specificity") == "vm_specific" else "no",
+            # The result is half the finding. SUCCESS on a guest-additions key
+            # means the sample was told it is in a VM; NAME NOT FOUND means the
+            # guest's hygiene held and the check came back clean.
+            "Artifact present": (
+                "yes"
+                if hit.get("artifact_found") is True
+                else "no" if hit.get("artifact_found") is False else "?"
+            ),
+            "Result": hit.get("result", ""),
+            "Path": hit.get("path", ""),
+        }
+        for hit in hits
+    ]
+
+    background = _to_int(counts.get("background_artifact_reads", 0))
+    background_note = (
+        f"<p class='muted'>{background} read(s) of the same artifacts came from "
+        "processes outside the sample's tree and are not listed. Windows reads "
+        "most of these keys itself -- the Service Control Manager enumerates "
+        "every service key, including the guest additions' -- which is why this "
+        "pass is attributed by lineage and why the count is shown rather than "
+        "dropped.</p>"
+        if background
+        else ""
+    )
+
+    lineage_note = (
+        "<p class='muted'>The sample's process tree could not be resolved, so "
+        "every process on the machine was counted. Read the rows above as "
+        "unattributed rather than as the sample's.</p>"
+        if not reads.get("lineage_resolved")
+        else ""
+    )
+
+    return f"""
+    <section class="{'card card-alert' if counts.get('vm_specific') else 'card'}">
+      <div class="section-head">
+        <h2>Virtual-Machine Artifacts The Sample Read</h2>
+        {_section_badge("Artifacts read", _to_int(counts.get("artifacts_read", 0)))}
+      </div>
+      <p class="muted">
+        {_esc(reads.get("note", ""))}
+        {_to_int(reads.get("sample_reads", 0))} registry read(s) by the sample's
+        own processes were examined, out of
+        {_to_int(reads.get("reads_in_stream", 0))} captured in the run.
+      </p>
+      {_dict_list_table("VM Artifact Reads", rows, emphasize=bool(counts.get("vm_specific")),
+                        empty_text="The sample's processes read none of the known VM artifacts.")}
+      {background_note}
+      {lineage_note}
+    </section>
+    """
+
+
 def _fakenet_received_section(summary: dict[str, Any]) -> str:
     """Files the sample uploaded to the simulated internet.
 
@@ -2037,6 +2136,22 @@ def _analyst_notes(summary: dict[str, Any]) -> list[str]:
             "so an otherwise quiet result is inconclusive rather than clean."
         )
 
+    reads = summary.get("vm_artifact_reads", {}) or {}
+    read_counts = reads.get("counts", {}) or {}
+    if reads and not reads.get("collection_available"):
+        notes.append(
+            "Registry reads were not captured by this run's Procmon filter, so "
+            "whether the sample checked for a virtual machine is unobserved "
+            "rather than answered."
+        )
+    elif _to_int(read_counts.get("vm_specific", 0)) > 0:
+        notes.append(
+            f"The sample read {_to_int(read_counts.get('vm_specific', 0))} "
+            "registry artifact(s) that exist only on a virtual machine. Not "
+            "scored, but a quiet run from a sample that enumerated the "
+            "hypervisor first is not the same as a quiet run."
+        )
+
     return notes
 
 
@@ -2137,6 +2252,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_network_sections(summary)}
 {_memory_sections(summary)}
 {_unmapped_pe_section(summary)}
+{_vm_artifact_reads_section(summary)}
 {_autoruns_suspicious_sections(summary)}
 {_autoruns_analyzer_section(summary)}
 {_dict_list_table("Top Written Paths", findings.get("top_written_paths", []))}

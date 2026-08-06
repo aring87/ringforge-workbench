@@ -15,6 +15,22 @@ INTERESTING_OPS = {
     "RegSetValue": "registry_set",
     "RegDeleteValue": "registry_delete",
     "RegDeleteKey": "registry_delete",
+    # Reads. Gap 4's second half needs them: a sample reading
+    # `...\Services\VBoxGuest` or `SystemBiosVersion` and then going quiet is an
+    # anti-analysis check, and nothing in the pipeline could see one.
+    #
+    # Two things to know about this category. It is never a high-signal event --
+    # see `_is_high_signal_event` -- so nothing scored moves, and it feeds
+    # `vm_artifact_reads` off the full event stream instead. And whether these
+    # rows exist at all is decided by the Procmon config: the default one carries
+    # sixteen Operation *include* rules with `DestructiveFilter` on, so a read is
+    # dropped at capture and never reaches the CSV. `dynamic_registry_reads.pmc`
+    # is the config that collects them.
+    "RegQueryValue": "registry_read",
+    "RegOpenKey": "registry_read",
+    "RegQueryKey": "registry_read",
+    "RegEnumKey": "registry_read",
+    "RegEnumValue": "registry_read",
     "Load Image": "image_load",
     "TCP Connect": "network",
     "TCP Receive": "network",
@@ -224,6 +240,24 @@ def _is_high_signal_event(event: dict[str, Any]) -> bool:
     process_name = str(event.get("process_name", "") or "")
 
     if _is_noise_process(process_name) or _is_noise_path(path):
+        return False
+
+    # A read is never high signal, and this is deliberate rather than an
+    # omission. Two reasons, and either would be enough.
+    #
+    # Volume: registry reads are the highest-count operation on a Windows box by
+    # a wide margin, and a run that captures them will carry several times as
+    # many events as one that does not. Letting them through would land in
+    # `suspicious_path_hits` -- the fall-through below matches any suspicious
+    # path -- and every process that so much as reads a Run key would be in the
+    # report. `registry_create` going from 5 to 140 when the service marker was
+    # repaired is the smaller version of that mistake.
+    #
+    # Claim: reading a key is not doing anything. The one thing a read is good
+    # for is the VM-artifact question, and that has its own pass over the full
+    # event stream in `vm_artifact_reads`, where it is attributed by lineage and
+    # explicitly not scored.
+    if category == "registry_read":
         return False
 
     if category == "process_create":

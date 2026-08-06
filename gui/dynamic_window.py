@@ -878,7 +878,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 "• Use a VM snapshot before execution.\n"
                 "• Run elevated when Procmon capture requires it.\n"
                 "• Prefer isolated networking for unknown samples.\n"
-                "• Output is stored under the case home folder in dynamic_analysis."
+                "• Output is stored under the case home folder in dynamic_analysis.\n"
+                "• dynamic_registry_reads.pmc also captures registry reads, so a "
+                "sample checking for a VM is visible. Costs event volume — use a "
+                "shorter window, since those checks happen at startup."
             )
         ttk.Label(notes, text=note_text, justify="left", wraplength=980).grid(row=0, column=0, sticky="w", padx=8, pady=(4 if compact else 6))
 
