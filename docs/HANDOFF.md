@@ -280,8 +280,9 @@ run for a long time without showing.
 | PE carve | **Runs clean on real dumps** — 43 modules, 0 rejected, 0 false positives across five ProcDump images of live malware. Its finding path is still unproven: no run has yet produced an unmapped image |
 | File writes / dropped files | **Proven** on 06 Aug — 12 write events and the `%APPDATA%` drop, after being 0 on every run ever performed |
 | `external_contact` on a bare IP | **Proven.** Fired strong on `62.60.226.68:24042` with no DNS lookup at all |
-| Lineage on writes / paths / persistence | **Fixed, unproven.** Windows Update supplied 12 of 14 persistence hits on the run that first surfaced file events; needs a re-run |
-| Dropped-file probe filtering | **Fixed, unproven.** 11 of 13 candidates were failed DLL opens; needs a re-run |
+| Lineage on writes / paths / persistence | **Proven** on 06 Aug — persistence 14 → 2, Windows Update out of `top_written_paths`, exclusions counted |
+| Dropped-file probe filtering | **Proven.** 13 candidates → 1, and that one exists on disk |
+| Open-versus-production on file events | **Fixed, unproven.** 37 of 38 file events on the proving run were `Disposition: Open`; needs a re-run |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -365,6 +366,13 @@ is a list of literals, test it with a string that must match — not with the
 constants, which are the thing that is wrong. And when one instance turns up,
 **sweep for the rest**: the first fix here was incomplete and would have looked
 like a failed re-run rather than a partial fix.
+
+**An operation name is not what the operation did.** Procmon's `CreateFile`
+covers opening an existing file, and on one run 37 of 38 file events were
+`Disposition: Open` while exactly one wrote anything. The detail field carries
+the answer; the operation name does not. The same holds for the result — an
+event that failed with "not found" observed an absence, and an absence is not
+evidence of anything.
 
 **A path keyword says what happened, never who did it.** Every list of
 suspicious paths is a statement about a *kind* of event, and the OS touches its
@@ -663,6 +671,42 @@ for partly wrong reasons.
 
 The report now lists the dropped files with an **On disk** column, rather than
 only the counts. That column is what would have shown this at a glance.
+
+### The 04:38 run — the attribution fixes proved out
+
+**125 · Likely Malicious**, exactly as the replay predicted. `payload_dropped`
+correctly `present` on one real drop that exists on disk; `persistence_hits` 2
+rather than 14; `top_written_paths` empty of Windows Update; dropped candidates
+1 rather than 13 with none missing.
+
+It also showed two more instances of the same fix applied in only one place, and
+one honest naming problem:
+
+- **The not-found filter was in `dropped_file_triage` and not in `findings`.**
+  Nine non-existent DLLs stayed in `suspicious_path_hits` while being correctly
+  absent from the dropped-file count. Third time a fix has needed applying to a
+  sibling module.
+- **The notable-whoever-produced-it exemption was applied to any event naming
+  the path**, so `svchost.exe` *opening* the payload six times — Defender and
+  the indexer noticing a new executable — was exempted from lineage along with
+  the drop itself.
+- **`file_write_events: 0` on a run that dropped a PE.** The tile grid read
+  "File Writes 0" beside "Dropped Files 1", because only `WriteFile` counted and
+  Procmon logged the drop as a `CreateFile`.
+
+**A CreateFile is not a creation**, and the disposition in the detail is the only
+thing that says which. The proportions make the case: of 42 suspicious-path hits
+on that run, exactly **one** carried `Disposition: OverwriteIf` — the write of
+`smng.exe`. The other 37 file events were all `Disposition: Open`.
+
+Replayed: suspicious paths 42 → 26, DLL probes 9 → 0, svchost opens 7 → 0,
+`file_write_events` 0 → 1 with `top_written_paths` naming the drop.
+
+One distinction that cost a test to find: **"is this a mere open" does not apply
+to events that are not file operations at all.** The first version tested for
+production and used it to gate the exemption, which suppressed a process create
+of a relocated executable — a finding whoever started it, with its own existing
+test saying so. The two are now inverse tests rather than the same one.
 
 ### The 03:22 re-run was void — revert the VM first
 

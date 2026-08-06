@@ -142,6 +142,88 @@ class LineageOfPathHitsTests(unittest.TestCase):
         self.assertIn(payload, [p["path"] for p in found["top_written_paths"]])
 
 
+class OpenVersusProductionTests(unittest.TestCase):
+    """A CreateFile is not a creation. Procmon uses it for opens too.
+
+    Of 42 suspicious-path hits on the clean Remcos run, exactly **one** carried
+    `Disposition: OverwriteIf` -- the write of smng.exe. The other 37 file events
+    were `Disposition: Open`: the payload reading itself, `svchost.exe` noticing
+    a new executable, and a DLL search walking its own directory for imports
+    that were not there.
+    """
+
+    def _findings(self, events):
+        return summarize_dynamic_findings(
+            events, events, sample_pid=9136, sample_name="sample.exe"
+        )
+
+    def test_the_drop_is_a_write_even_though_procmon_calls_it_createfile(self) -> None:
+        # The tile grid read "File Writes 0" beside "Dropped Files 1", because
+        # only WriteFile counted and the drop was logged as a create.
+        found = self._findings(
+            [_event("CreateFile", "file_create", "sample.exe", 9136, DROP,
+                    detail="Desired Access: Generic Write, Disposition: OverwriteIf, "
+                           "Options: , Attributes: N, ShareMode: None")]
+        )
+
+        self.assertEqual(found["counts"]["file_write_events"], 1)
+        self.assertEqual([p["path"] for p in found["top_written_paths"]], [DROP])
+
+    def test_opening_the_payload_is_not_a_write(self) -> None:
+        found = self._findings(
+            [_event("CreateFile", "file_create", "sample.exe", 9136, DROP,
+                    detail="Desired Access: Read Attributes, Disposition: Open, "
+                           "Options: Open Reparse Point")]
+        )
+
+        self.assertEqual(found["counts"]["file_write_events"], 0)
+
+    def test_a_stranger_merely_opening_the_payload_is_not_kept(self) -> None:
+        # Defender and the indexer notice a new executable. The
+        # notable-whoever-produced-it exemption was written for the drop, and
+        # was exempting these from lineage too -- svchost.exe accounted for six
+        # hits on the run that found this.
+        found = self._findings(
+            [_event("CreateFile", "file_create", "svchost.exe", 2120, DROP,
+                    detail="Desired Access: Read Attributes, Disposition: Open")]
+        )
+
+        self.assertEqual(found["suspicious_path_hits"], [])
+        self.assertEqual(found["counts"]["background_suspicious_path_hits"], 1)
+
+    def test_a_stranger_writing_the_payload_still_is(self) -> None:
+        # The half lineage cannot see survives: an injected process dropping a
+        # payload is a finding whoever it is.
+        found = self._findings(
+            [_event("CreateFile", "file_create", "svchost.exe", 2120, DROP,
+                    detail="Desired Access: Generic Write, Disposition: Create")]
+        )
+
+        self.assertEqual(len(found["suspicious_path_hits"]), 1)
+
+    def test_a_failed_open_never_reaches_the_findings(self) -> None:
+        # dropped_file_triage filtered these; findings did not, so eight
+        # non-existent DLLs stayed in the suspicious paths of the same run.
+        found = self._findings(
+            [_event("CreateFile", "file_create", "smng.exe", 9136, PROBE,
+                    result="NAME NOT FOUND",
+                    detail="Desired Access: Read Attributes, Disposition: Open")]
+        )
+
+        self.assertEqual(found["suspicious_path_hits"], [])
+
+    def test_a_process_create_is_not_judged_as_a_file_open(self) -> None:
+        # The question does not apply to it. Conflating the two suppressed a
+        # process create of a relocated executable, which has its own test.
+        payload = r"C:\Users\adam\AppData\Local\Temp\payload.exe"
+        found = self._findings(
+            [_event("Process Create", "process_create", "explorer.exe", 4321, payload,
+                    detail="PID: 5000, Command line: payload.exe")]
+        )
+
+        self.assertEqual(len(found["suspicious_path_hits"]), 1)
+
+
 class AnalyzerOwnDriverTests(unittest.TestCase):
     def test_fakenets_windivert_is_not_the_samples_activity(self) -> None:
         # FakeNet ships as a PyInstaller one-file build and unpacks into

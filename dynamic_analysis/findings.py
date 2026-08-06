@@ -811,6 +811,84 @@ def _path_is_executable_or_script(value: object) -> bool:
     return _path_suffix(value) in EXECUTION_RELATED_EXTENSIONS
 
 
+#: Procmon results meaning the file was not there. Same list as the one in
+#: dropped_file_triage, and needed separately here for the same reason the
+#: analyzer markers were: these two modules judge the same events and neither
+#: consults the other.
+NOT_FOUND_RESULTS = {
+    "name not found",
+    "path not found",
+    "no such file",
+    "object name not found",
+    "object path not found",
+}
+
+#: CreateFile dispositions that leave a file where there was none, or replace
+#: what was there. `Open` is the one that cannot: it opens an existing file and
+#: fails if there is nothing to open.
+#:
+#: This is what separates a drop from a touch, and the proportions are stark. Of
+#: 42 suspicious-path hits on a Remcos run, **one** carried `Disposition:
+#: OverwriteIf` -- the actual write of `%APPDATA%\Roaming\Config\smng.exe`. The
+#: other 37 file events were all `Disposition: Open`: the payload reading itself,
+#: `svchost.exe` noticing a new executable, and a DLL search walking a directory
+#: for imports that were not there.
+_PRODUCTIVE_DISPOSITIONS = ("create", "overwrite", "supersede", "openif")
+
+_WRITE_OPERATIONS = (
+    "writefile",
+    "setrenameinformationfile",
+    "setdispositioninformationfile",
+)
+
+
+def _event_result(event: dict[str, Any]) -> str:
+    return _normalize_text_lower(event.get("result"))
+
+
+def _result_is_not_found(event: dict[str, Any]) -> bool:
+    """True when Procmon said the file was not there."""
+    return _event_result(event) in NOT_FOUND_RESULTS
+
+
+def _is_productive_file_operation(operation: object, detail: object) -> bool:
+    """True when the event puts content on disk rather than reading it.
+
+    A bare `CreateFile` is not a creation -- Procmon uses it for opens too, and
+    the disposition in the detail is the only thing that says which. Treating
+    every CreateFile as a drop is what let a DLL search read as eight dropped
+    files.
+    """
+    op = _normalize_text_lower(operation)
+    if any(marker in op for marker in _WRITE_OPERATIONS):
+        return True
+    if "createfile" not in op:
+        return False
+    return not _is_mere_file_open(operation, detail)
+
+
+def _is_mere_file_open(operation: object, detail: object) -> bool:
+    """True only for a CreateFile that opens an existing file and nothing more.
+
+    Narrow on purpose, and the inverse of the test above rather than the same
+    one. Anything that is not a file operation at all -- a process create, a
+    registry write, an image load -- is not a "mere open", because the question
+    does not apply to it. Conflating the two suppressed a process create of a
+    relocated executable, which is a finding whoever started it and has its own
+    test saying so.
+    """
+    op = _normalize_text_lower(operation)
+    if "createfile" not in op:
+        return False
+
+    match = re.search(r"disposition:\s*([a-z]+)", _normalize_text_lower(detail))
+    if not match:
+        # Procmon always emits one; a missing disposition means the event is
+        # unreadable rather than harmless, so it is not treated as a bare open.
+        return False
+    return not any(kind in match.group(1) for kind in _PRODUCTIVE_DISPOSITIONS)
+
+
 def _is_independently_notable_path(path: object) -> bool:
     """True when the path is a finding whoever produced it.
 
@@ -833,9 +911,20 @@ def _is_independently_notable_path(path: object) -> bool:
     return _path_is_executable_or_script(text) and _path_is_user_writable(text)
 
 
-def _is_high_signal_write(path: object, operation: object) -> bool:
-    op_l = _normalize_text_lower(operation)
-    if "writefile" not in op_l and "setrenameinformationfile" not in op_l and "setdispositioninformationfile" not in op_l:
+def _is_high_signal_write(path: object, operation: object, detail: object = "") -> bool:
+    """A file appearing where none was is a write, whatever Procmon calls it.
+
+    This accepted only WriteFile and the rename/delete operations, so a run that
+    demonstrably dropped a PE reported `file_write_events: 0` while the tile grid
+    showed "Dropped Files 1" beside it. The drop had been logged as a CreateFile
+    with `Disposition: OverwriteIf`, which is a write in every sense an analyst
+    cares about.
+
+    An *open* is still not a write, which is why this goes through
+    ``_is_productive_file_operation`` rather than just adding CreateFile to the
+    list above.
+    """
+    if not _is_productive_file_operation(operation, detail):
         return False
 
     path_l = _normalize_text_lower(path)
@@ -1030,7 +1119,15 @@ def summarize_dynamic_findings(
                     {"process_name": process_name, "pid": _event_pid(event)}
                 )
 
-        if _is_high_signal_write(path, operation):
+        # A Procmon event that failed with "not found" observed an absence. It
+        # is never evidence of a drop, a write or a persistence change, and
+        # letting them through put eight non-existent DLLs into the suspicious
+        # paths of one run. dropped_file_triage filters these too; neither
+        # module consults the other.
+        if _result_is_not_found(event):
+            continue
+
+        if _is_high_signal_write(path, operation, detail):
             if path and not is_noise_path and not is_analyzer and not is_windows_baseline and not is_defender_or_wbem:
                 # Staged with its PID and judged after the loop, like the
                 # network records below. Attributing a write on the spot counted
@@ -1059,6 +1156,7 @@ def summarize_dynamic_findings(
                         "operation": operation,
                         "detail": detail,
                         "_pid": _event_pid(event),
+                        "_produced": not _is_mere_file_open(operation, detail),
                     }
                 )
 
@@ -1118,11 +1216,19 @@ def summarize_dynamic_findings(
     def _belongs_to_sample(pid: object) -> bool:
         return not lineage_resolved or pid in descendant_pids
 
-    def _keep(pid: object, path: object = None) -> bool:
+    def _keep(pid: object, path: object = None, produced: bool = True) -> bool:
         # See _is_independently_notable_path: an executable dropped into a
         # user-writable directory stands on its own, an OS persistence surface
         # does not.
-        return _belongs_to_sample(pid) or _is_independently_notable_path(path)
+        #
+        # ``produced`` narrows that exemption to events that actually put the
+        # file there. It was written as "notable whoever produced it" and then
+        # applied to any event naming the path, so `svchost.exe` opening the
+        # payload six times -- Defender and the indexer noticing a new
+        # executable -- was exempted from lineage along with the drop itself.
+        if produced and _is_independently_notable_path(path):
+            return True
+        return _belongs_to_sample(pid)
 
     for record in write_records:
         if _keep(record.get("pid"), record["path"]):
@@ -1134,7 +1240,7 @@ def summarize_dynamic_findings(
     background_suspicious_paths = 0
     kept_suspicious: list[dict[str, Any]] = []
     for hit in suspicious_path_hits:
-        if _keep(hit.pop("_pid", None), hit.get("path")):
+        if _keep(hit.pop("_pid", None), hit.get("path"), hit.pop("_produced", True)):
             kept_suspicious.append(hit)
         else:
             background_suspicious_paths += 1
