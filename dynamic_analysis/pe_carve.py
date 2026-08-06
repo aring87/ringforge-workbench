@@ -331,6 +331,37 @@ def _has_executable_section(data: Any, table: int, sections: int, limit: int) ->
     return False
 
 
+def _file_layout_size(data: Any, table: int, sections: int, limit: int) -> int:
+    """How many bytes the image occupies as a *file*, or 0 if unreadable.
+
+    `SizeOfImage` is the mapped footprint -- what the loader spreads the image
+    into once section boundaries are rounded up to pages. A payload that has not
+    been mapped yet is smaller than that, and comparing the two is what made a
+    complete carve report itself as truncated.
+
+    That is not an edge case. `Assembly.Load(byte[])`, and every decrypt-into-a-
+    buffer-then-map loader, holds the payload in file layout: exactly the state
+    a dump of the *unpacking* process catches it in. SmartOptimization.dll
+    declares SizeOfImage 0x14000 while its sections sum to about 54 KB, so a
+    carve holding every byte of it read as 24 KB short.
+
+    The end of the last section's raw data is the file's end.
+    """
+    end = 0
+    for index in range(sections):
+        entry = table + index * _SECTION_ENTRY_SIZE
+        if entry + _SECTION_ENTRY_SIZE > limit:
+            return 0
+        try:
+            raw_size = _u32(data, entry + 16)
+            raw_ptr = _u32(data, entry + 20)
+        except struct.error:
+            return 0
+        if raw_ptr and raw_size:
+            end = max(end, raw_ptr + raw_size)
+    return end
+
+
 def parse_pe_header(data: Any, offset: int, limit: int) -> Optional[dict[str, Any]]:
     """Read a PE header at ``offset``, or ``None`` if it is not one.
 
@@ -398,9 +429,11 @@ def parse_pe_header(data: Any, offset: int, limit: int) -> Optional[dict[str, An
     except struct.error:
         return None
 
+    section_table = pe + 24 + optional_size
     carries_code = bool(size_of_code or entry_point) or _has_executable_section(
-        data, pe + 24 + optional_size, sections, limit
+        data, section_table, sections, limit
     )
+    file_size = _file_layout_size(data, section_table, sections, limit)
 
     # The data directory sits after the 96-byte (PE32) or 112-byte (PE32+) fixed
     # part of the optional header.
@@ -420,12 +453,46 @@ def parse_pe_header(data: Any, offset: int, limit: int) -> Optional[dict[str, An
         "timestamp_hex": f"0x{timestamp:08x}",
         "compiled": _iso_timestamp(timestamp),
         "size_of_image": size_of_image,
+        # The image's size as a file, against SizeOfImage as a mapping. Which of
+        # the two applies is decided per image in _resolve_layout.
+        "file_size": file_size,
         "dotnet": dotnet,
         "is_dll": bool(characteristics & _FILE_DLL),
         # See _RESOURCE_ONLY_NOTE. An image with no code in it is not a payload,
         # and Windows maps a dozen of them into every process.
         "carries_code": carries_code,
     }
+
+
+def _resolve_layout(header: dict[str, Any], available: int) -> tuple[str, int, bool]:
+    """Decide how much of an image is really there. Returns (layout, want, truncated).
+
+    An image found in memory is in one of two shapes, and they are different
+    sizes:
+
+    - **mapped** -- the loader has spread it out, section boundaries rounded up
+      to pages, occupying `SizeOfImage`;
+    - **file** -- the raw bytes, as they would sit on disk, ending after the last
+      section's raw data.
+
+    Judging everything against `SizeOfImage` made a complete carve of a
+    file-layout payload report itself 24 KB short, and every such payload would
+    have done the same forever. `Assembly.Load(byte[])` and every
+    decrypt-then-map loader hold their payload this way, which is exactly the
+    state a dump of the unpacking process catches.
+
+    Mapped is tested first: an image big enough to be the mapping is the
+    mapping. Only when it is not, and the bytes reach the end of the file
+    layout, is it a complete file.
+    """
+    mapped = int(header.get("size_of_image", 0) or 0)
+    file_size = int(header.get("file_size", 0) or 0)
+
+    if mapped and available >= mapped:
+        return "mapped", mapped, False
+    if file_size and available >= file_size:
+        return "file", file_size, False
+    return ("file" if file_size and file_size < mapped else "mapped"), available, True
 
 
 def _candidates(data: Any, region: _Region) -> Iterator[int]:
@@ -668,6 +735,11 @@ def analyze_dump(
                         chunks, available = _image_chunks(
                             ordered, index, offset, header["size_of_image"]
                         )
+                        layout, want, truncated = _resolve_layout(header, available)
+                        # Trim to what the layout says the image is, so a carve
+                        # of a file-layout payload does not carry the trailing
+                        # page padding of the range it was found in.
+                        chunks, _ = _image_chunks(ordered, index, offset, want)
 
                         images.append(
                             {
@@ -682,8 +754,13 @@ def analyze_dump(
                                 # from. Anything above 1 is a case the old
                                 # single-range read would have truncated.
                                 "regions_spanned": len(chunks),
+                                # Which shape it was found in. A payload in file
+                                # layout has not been mapped yet, which says
+                                # where in the chain it was caught.
+                                "layout": layout,
+                                "carve_bytes": int(want),
                                 "available_bytes": int(available),
-                                "truncated": available < header["size_of_image"],
+                                "truncated": truncated,
                             }
                         )
 
@@ -799,9 +876,12 @@ def carve_image(
         "error": "",
     }
 
+    # carve_bytes is what the layout resolved to; the fallback keeps a caller
+    # that has not been through analyze_dump working.
     want = min(
-        int(image.get("size_of_image", 0) or 0),
-        int(image.get("available_bytes", 0) or 0),
+        int(image.get("carve_bytes")
+            or image.get("size_of_image", 0) or 0),
+        int(image.get("available_bytes", 0) or 0) or int(max_bytes),
         int(max_bytes),
     )
     if want <= 0:
@@ -840,7 +920,9 @@ def carve_image(
 
     record["size"] = len(payload)
     record["success"] = True
-    record["truncated"] = len(payload) < int(image.get("size_of_image", 0) or 0)
+    # Against what the layout says the image is, not against SizeOfImage: a
+    # complete file-layout payload is always smaller than its mapped footprint.
+    record["truncated"] = len(payload) < want
     try:
         record["sha256"] = sha256_file(_long_path(out_path))
     except Exception:
@@ -1065,6 +1147,9 @@ def summarize_pe_carve(carve_result: dict[str, Any]) -> dict[str, Any]:
                 # Above 1 means the image was reassembled across memory ranges,
                 # which the single-range read used to cut short.
                 "regions_spanned": image.get("regions_spanned", 1),
+                # "file" means it had not been mapped yet when the dump was
+                # taken -- the shape a decrypt-then-map loader holds it in.
+                "layout": image.get("layout", ""),
                 "error": image.get("carve_error", ""),
             }
             for image in carve_result.get("images", []) or []

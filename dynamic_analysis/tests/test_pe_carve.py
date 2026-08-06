@@ -45,6 +45,7 @@ def make_pe(
     characteristics: int = 0x0102,
     e_lfanew: int = 0x80,
     code: bool = True,
+    raw_layout: bool = False,
 ) -> bytes:
     """A memory image of a PE: valid headers, zeroed body.
 
@@ -72,12 +73,20 @@ def make_pe(
     struct.pack_into("<I", image, optional + 56, size_of_image)
 
     table = optional + 0xE0
+    raw_cursor = 0x400
     for index in range(sections):
         entry = table + index * 40
         if entry + 40 > size_of_image:
             break
         executable = code and index == 0
         image[entry:entry + 8] = (b".text" if executable else b".rdata").ljust(8, b"\x00")
+        if raw_layout:
+            # SizeOfRawData / PointerToRawData, so the image has a file size
+            # distinct from its mapped SizeOfImage -- the shape a payload sits
+            # in before a loader maps it.
+            struct.pack_into("<I", image, entry + 16, 0x1000)
+            struct.pack_into("<I", image, entry + 20, raw_cursor)
+            raw_cursor += 0x1000
         struct.pack_into("<I", image, entry + 36,
                          _CODE_SECTION if executable else _DATA_SECTION)
 
@@ -430,6 +439,99 @@ class AnalyzeDumpTests(unittest.TestCase):
 
         self.assertEqual(len(written), 0x4000)
         self.assertEqual(written, payload)
+
+    def test_a_payload_in_file_layout_is_complete_not_truncated(self) -> None:
+        # SizeOfImage is the *mapped* footprint. A payload that has not been
+        # mapped yet is smaller, and judging it against SizeOfImage reported a
+        # complete carve of SmartOptimization.dll as 24 KB short -- 57,344 of a
+        # declared 81,920, when 57,344 was every byte there was. Every payload
+        # held by Assembly.Load(byte[]) or a decrypt-then-map loader would have
+        # read as truncated forever.
+        payload = make_pe(size_of_image=0x4000, dotnet=True, raw_layout=True)
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1, "path": "app.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                # The region holds the whole file plus its page padding, and
+                # stops well short of SizeOfImage.
+                {"va": 0x2000000, "data": payload[:0x3800]},
+            ],
+        )
+        path = self._write("filelayout.dmp", blob)
+
+        unmapped = [
+            i for i in analyze_dump(path)["images"]
+            if i["classification"] == "unmapped"
+        ]
+
+        self.assertEqual(len(unmapped), 1)
+        self.assertEqual(unmapped[0]["layout"], "file")
+        self.assertFalse(unmapped[0]["truncated"])
+        # 0x400 headers + three sections of 0x1000.
+        self.assertEqual(unmapped[0]["file_size"], 0x3400)
+        self.assertEqual(unmapped[0]["carve_bytes"], 0x3400)
+
+    def test_a_file_layout_carve_drops_the_trailing_padding(self) -> None:
+        payload = make_pe(size_of_image=0x4000, dotnet=True, raw_layout=True)
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1, "path": "app.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                {"va": 0x2000000, "data": payload[:0x3800]},
+            ],
+        )
+        path = self._write("padding.dmp", blob)
+
+        carved = carve_dumps(
+            [{"pid": 1, "name": "app.exe", "path": str(path),
+              "trigger": "scheduled", "offset_seconds": 5}],
+            output_dir=self.tmp / "out",
+        )
+        written = Path(carved["images"][0]["carved_path"]).read_bytes()
+
+        self.assertEqual(len(written), 0x3400)
+        self.assertFalse(carved["images"][0]["truncated"])
+
+    def test_a_mapped_image_is_still_judged_against_size_of_image(self) -> None:
+        # Mapped is tested first: an image big enough to be the mapping is the
+        # mapping, whatever its file size would have been.
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1, "path": "app.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                {"va": 0x2000000, "data": make_pe(size_of_image=0x4000, dotnet=True,
+                                                  raw_layout=True)},
+            ],
+        )
+
+        unmapped = [
+            i for i in analyze_dump(self._write("mapped.dmp", blob))["images"]
+            if i["classification"] == "unmapped"
+        ]
+
+        self.assertEqual(unmapped[0]["layout"], "mapped")
+        self.assertEqual(unmapped[0]["carve_bytes"], 0x4000)
+        self.assertFalse(unmapped[0]["truncated"])
+
+    def test_a_genuinely_short_image_is_still_truncated(self) -> None:
+        # The narrowing must not turn every short read into a clean result.
+        payload = make_pe(size_of_image=0x4000, dotnet=True, raw_layout=True)
+        blob = build_minidump(
+            modules=[{"base": 0x400000, "size": 0x10000, "timestamp": 1, "path": "app.exe"}],
+            regions=[
+                {"va": 0x400000, "data": make_pe(size_of_image=0x10000)},
+                # Less than even the file layout needs.
+                {"va": 0x2000000, "data": payload[:0x2000]},
+            ],
+        )
+
+        unmapped = [
+            i for i in analyze_dump(self._write("short.dmp", blob))["images"]
+            if i["classification"] == "unmapped"
+        ]
+
+        self.assertTrue(unmapped[0]["truncated"])
+        self.assertEqual(unmapped[0]["carve_bytes"], 0x2000)
 
     def test_a_gap_in_the_address_space_is_not_bridged(self) -> None:
         # Splicing across a gap would fabricate an artifact rather than truncate

@@ -307,7 +307,9 @@ run for a long time without showing.
 | Containment refusal | **Unproven.** Written after a detonation got through while armed; nobody has tried to run armed since. **Test it with `test_specs/memory_canary/`, not malware** — if the refusal fails, a benign canary detonates into a live network path and costs nothing. Five minutes, and it is the one unproven control with real teeth |
 | Spawn re-dump | **Proven.** Fired at t11 on a child first seen at t1, on live Remcos. Revealed nothing new *for that sample*, which drops rather than hollows |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
-| Multi-region carve | **Fixed, unproven.** An image split across memory ranges was cut at the first boundary — 57,344 of 81,920 bytes of the one payload recovered so far, with its config in the missing part |
+| Known-module index | **Proven** on 06 Aug, 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70. The ntdll false positive is gone |
+| Multi-region carve | **Fixed, unproven.** No image in the run spanned ranges, so it has never engaged; it correctly declined to bridge a gap |
+| File-versus-mapped layout | **Fixed, unproven.** Every payload held in file layout reported itself truncated against `SizeOfImage`, which is the mapped footprint |
 | Dropped-file lineage | **Fixed, unproven.** Had none at all: a browser's writes counted as the sample's and took `payload_dropped` to strong on a loader that drops nothing |
 | Carve on long paths | **Fixed, unproven.** A hash-named sample produced a 264-character path and the carve failed silently on the best image of the run |
 | Crash-dump `hollowing_target` | **Fixed, unproven.** The bare WER stem lost the `.exe`, so crash-dump images scored `present` where live-dump images scored `strong` |
@@ -426,6 +428,14 @@ the payloads.
 Every module with dead detection markers had dead exclusion markers too. A live
 detector against a dead exclusion list is worse than both being dead, because
 the analyzer writes thousands of files into the directory it is watching.
+
+**A size is a size in some layout.** `SizeOfImage` describes a mapped image;
+the section table describes a file; a payload in memory can be in either shape,
+and a complete artifact measured against the wrong one reports itself as
+damaged. Three explanations were tried for a 24 KB shortfall — a late dump, a
+split memory range, a truncated read — before the answer turned out to be that
+nothing was missing. When a measurement says something is incomplete, check what
+it is being measured against before going looking for the rest.
 
 **Absence from one list is not absence from the machine.** The carver's first
 strong finding was six copies of ntdll, missing from a suspended process's
@@ -606,15 +616,29 @@ The image that mattered was in the loader's *own* process, not in `RegSvcs`: an
 unpacked stage wearing forged Microsoft branding, and it is the first payload
 this pipeline has recovered *and named* without anyone carving by hand.
 
-Only **57,344 of its 81,920 bytes** were captured, and the reason was not
-timing. A minidump splits an address space by protection, so a mapped image
-routinely spans several ranges — headers and code in one, writable data in the
-next — and the carve read only the range the `MZ` was found in. Its `.rsrc` came
-out at 1,206 bytes against the 2,380 the 05 Aug hand-carve recorded, so **the
-config blob was in the 24 KB that was never read**.
+**It reported 57,344 of 81,920 bytes and was complete all along.** Two theories
+came and went before the right one. It was never a timing problem — a later dump
+would not have helped — and it was not a split across memory ranges either,
+though the carve now handles that case too. `SizeOfImage` is the **mapped**
+footprint: what the loader spreads an image into once section boundaries are
+rounded up to pages. This payload sits in memory in **file layout**, as a raw
+blob, which is what `Assembly.Load(byte[])` and every decrypt-then-map loader
+produces — precisely the state a dump of the *unpacking* process catches.
 
-The carve now follows an image across *virtually contiguous* ranges and records
-`regions_spanned`. It deliberately stops at a gap: the rest of the image was not
+The evidence it was whole: 57,344 bytes matches the 05 Aug hand-carve exactly,
+two extractions months and methods apart; `pefile` read the complete version
+resource out of it, which a cut-off `.rsrc` would not have allowed; and the
+section table sums to about 54 KB, which fits inside 57,344 with page padding
+to spare.
+
+So the carver now computes the file-layout size — the end of the last section's
+raw data — and reports which shape it found: `layout: "file"` or `"mapped"`,
+with `truncated` measured against whichever applies. **A payload in file layout
+has not been mapped yet**, which is worth knowing on its own: it says where in
+the chain the dump caught it.
+
+The carve also follows an image across *virtually contiguous* ranges now, and
+records `regions_spanned`. It deliberately stops at a gap: the rest was not
 captured, and splicing the next range on would fabricate an artifact rather than
 truncate one.
 
