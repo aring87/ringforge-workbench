@@ -4,7 +4,12 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-07. Stage 2 has been read at the IL level: an AES-256 key and
+**Last updated:** 2026-08-07, after the loader's tenth run (`5457f804`, 14:53) — the
+first ever to capture a registry read. Gap 4b's collection path is proven end to end,
+Procmon accepts the generated `.pmc`, and the volume cost is 2.2x events for 281s. Its
+nine hits were all Windows rather than the malware, which is now fixed and counted, and
+the negative that remains is a real answer: **this sample does not check for a VM.**
+Before that, stage 2 was read at the IL level: an AES-256 key and
 IV recovered, the key-shaped string literals shown to be decoys, two
 architecture-specific trampoline stubs found in the field data, and the protector's
 **proxy-delegate map decrypted — 1,181 bindings, no key needed** — which exposed a
@@ -497,8 +502,8 @@ run for a long time without showing.
 | Corroboration scoring | **Proven** across three samples and four bands — 35 / Needs Review, 70 / Elevated Attention, and 125 / Likely Malicious on Remcos with four categories and two strong. The band has moved for the right reason each time |
 | Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes, on a run where Windows was busy |
 | PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's own block survived, so the filter is not too tight |
-| Split-API YARA rule | **Matches its subject, clean on 120 assemblies, unproven on a dump.** Every string fires on the carved stage 2; 0 of 120 genuine `Microsoft.NET` assemblies match. The scan target that matters is a process dump and it has not met one — `"Open "` and `"Close "` in UTF-16 are ordinary UI text, which is why the rare fragments are mandatory rather than counted |
-| Sysmon highlight lineage | **Fixed, unproven on a fresh run.** Proven by replay: the 07 Aug `dwm.exe` event drops out, `high_severity_count` 1 → 0, the category goes absent and the score returns to 70, while a `RegSvcs` injection in the same stream is still kept. The pass had no attribution at all before this |
+| Split-API YARA rule | **No false positives on real dumps; detection still untested.** 0 matches across 13 live dumps totalling 976 MB on 07 Aug 14:53, and 0 of 120 genuine `Microsoft.NET` assemblies. Its subject was not in memory that run — the parent died before its spawn image could be taken — so nothing has yet confirmed it fires on a dump that does contain stage 2 |
+| Sysmon highlight lineage | **Proven on a live run**, 07 Aug 14:53 — `other_process_events_excluded: 14`, `high_severity_count: 0`, no `credential_access_or_tampering`, score 70. The `dwm.exe` false positive that moved a band did not recur |
 | `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
 | Crash-as-injection | **Proven.** Fired on the hollowed `RegSvcs`, and moved the verdict a band |
 | Crash-dump collection | **Proven**, and produced the payload |
@@ -506,8 +511,8 @@ run for a long time without showing.
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Proven** on 06 Aug. Guest armed with `vm_net.ps1 -Arm`, canary launched through the Dynamic Analysis window, and the run refused: `Not contained — a default route reaches the internet through a NAT gateway (Ethernet → 10.0.2.2). The guest is ARMED. The run has not been started.` It named the adapter and gateway and blocked *before* launch. The one time this was previously at stake it failed and malware got through; this time it caught it. Tested with the benign canary, so a failure would have cost nothing |
 | Spawn re-dump | **Proven as a mechanism, and it has still revealed nothing.** Fired at t11 on a child first seen at t1, on live Remcos, which drops rather than hollows. On the loader at 3s it fired **not at all**: all three children were skipped `exited before its +3s re-dump`, `RegSvcs` having lived 2.14s. The pairing it was built for was finally produced by *scheduled offsets on the root* instead — see gap 3 |
-| Parent-at-spawn dump | **Proven, and it recovered something new on its first run.** 07 Aug 04:41: fired three times, and the root's `_atspawn` image held an 896 KB x86 .NET assembly at `0x5fa0000` that appears in no other dump of the run — built eight seconds before the dropper carrying it. The scheduled dumps of the same process at t1 and t25 do not contain it. This is the first artifact this pipeline has recovered that no choice of offsets would have caught |
-| Offsets-pending-at-exit record | **Correctly silent**, 07 Aug 04:41 — dormancy was +36s so the root outlived both offsets and nothing was pending when it exited. Which is the right behaviour and not the same as being proven: it has still never had to fire |
+| Parent-at-spawn dump | **Proven, and its limit is now measured.** 07 Aug 04:41 it recovered an 892 KB assembly present in no other dump — the first artifact here no choice of offsets could have caught. 07 Aug 14:53 it recorded `parent exited before it could be imaged at the spawn of pid 7688` instead, because the root died inside a poll interval of spawning. Roughly half the time on this sample, and no setting changes that: the parent is alive when the child appears or it is not |
+| Offsets-pending-at-exit record | **Still correctly silent**, and its sibling fired. The offsets-pending case has never had to report; the parent-exited-at-spawn record fired on 07 Aug 14:53 and is the only reason the missing stage-2 image was explicable rather than a mystery |
 | `procmon_filter` in the summary | **Built, unproven.** Which filter ran, its operations, and whether reads were captured — the setting a whole pass turns on and the only capture setting that was not in the record. Read from the file, not the filename |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
 | Known-module index | **Proven twice.** 06 Aug 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70 — and again at 20:23 on a two-`RegSvcs` chain with 9 reclassified. The ntdll false positive has not recurred, and the payload was reported both times |
@@ -523,7 +528,7 @@ run for a long time without showing.
 | Open-versus-production on file events | **Proven** on 06 Aug, 13:47. Every predicted number landed: hits 42 → 26, DLL probes 9 → 0, `svchost` opens 7 → 0, `file_write_events` 0 → 2 naming the drop |
 | Sysmon Event 25 | **Enabled and silent.** Does not catch this technique; may catch others |
 | Chain-crashed warning (gap 4) | **Proven on a live run**, 06 Aug 20:23 — both witnesses agreed, the card rendered above the verdict naming `RegSvcs.exe (pid 4264)`. The run also exposed `werfault_pid` reporting the crashed PID rather than WerFault's, now fixed; `chain_crashed` and `crashed_pid` were never wrong |
-| Registry-read collection (gap 4b) | **Built, entirely unproven, and one run has already failed to test it.** Proven only against a synthetic Procmon CSV, which is the fixture problem this document warns about twice. The 06 Aug 20:23 detonation was set up for it and carried neither the code nor the config — see gap 4b for the two witnesses that say so. No run has ever captured a registry read. The first real one answers three things at once: whether Procmon accepts the generated config, what the volume costs, and what the markers fire on |
+| Registry-read collection (gap 4b) | **Proven end to end**, 07 Aug 14:53. Procmon accepted the generated `.pmc` (`registry_read: 143,805`), lineage resolved, and the pass produced hits. Volume measured at 2.2x events for 281s total — no teardown blowup. Its first exposure to real data found the false-positive class it needed to: nine hits, all Windows, now suppressed and counted |
 | `.pmc` filter rewrite | **Round-trip byte-exact** on `dynamic_default.pmc`, and the generated config re-parses. That the *format model* is right is well evidenced; that **Procmon loads it** is not tested and cannot be on the host. Check the run's `Operation` values before trusting an empty result |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -647,6 +652,15 @@ the payloads.
 Every module with dead detection markers had dead exclusion markers too. A live
 detector against a dead exclusion list is worse than both being dead, because
 the analyzer writes thousands of files into the directory it is watching.
+
+**Lineage says a process is in the tree; it cannot say the behaviour is the
+malware's.** `WerFault` is in the sample's tree because the sample's crash put it there,
+and Error Reporting then reads machine identity for its report and tries to upload it.
+Attributed by lineage that is a VM check and a C2 contact; both are Windows reacting.
+The same is true of anything the OS starts *in response to* the sample — WER, the
+indexer noticing a dropped file, a troubleshooter firing after a crash. Lineage remains
+the right primitive, and a short list of Windows-response processes belongs in front of
+it, counted rather than dropped.
 
 **A reimplemented PRNG validated on its first output has not been validated.** The
 proxy map's keystream starts from a zero state, and `state * state % modulus` is zero
@@ -886,6 +900,76 @@ the sample, not a gap in the pipeline.
 flaky hollowing, and not Defender, which has real-time protection off. What
 remains is anti-analysis or a broken crypter, and the pipeline cannot currently
 tell those apart (gap 4).
+
+### The 07 Aug 14:53 run — gap 4b collected, and every hit was Windows
+
+`run_id 5457f804`, 281s, **224,529** Procmon events, 13 dumps. The tenth run of this
+sample, and the first ever to capture a registry read.
+
+**The generated `.pmc` works.** `procmon_filter` records
+`dynamic_registry_reads.pmc`, `captures_registry_reads: true`, 18 operations, and
+`procmon_summary` shows **`registry_read: 143,805`**. That was the one assumption behind
+the whole `.pmc` writer that could not be tested on the host — Procmon accepts a config
+this repo generated.
+
+**The volume cost is mild and now measured.** 224,529 events against about 100,000 on
+the previous runs, 2.2x — and **281 seconds total**, inside the 252-to-316 band of the
+runs before it. The teardown blowup the UPX control made everyone expect did not
+happen. A read-capturing run costs roughly double the events and almost nothing in
+wall-clock at this window length.
+
+**Gap 4b's finding path fired, and produced nine hits that were all benign.**
+74,174 reads by the sample's tree, 69,631 by everything else, and 9 artifacts read:
+
+| Reader | What it read | What it actually is |
+|---|---|---|
+| `WerFault.exe` (7180) | `SystemManufacturer`, `BIOSVersion`, `SystemProductName`, the BIOS key, `SystemSKU` | Error Reporting collecting machine identity **for its crash report** |
+| `powershell.exe` (7688) | `Services\VBoxSF\NetworkProvider` — `name`, `Class`, `ProviderPath` | Windows walking the **network-provider chain**, which any UNC lookup does |
+
+**The sample's own process (5412) and both `RegSvcs` (2932, 9260) read none of them.**
+So the answer to gap 4's active question, for this sample, is a **negative**: it does
+not check for a VM. That independently corroborates the static finding, where no VM,
+sandbox or debugger token appears anywhere in stage 2 in either encoding.
+
+**Two defects, both fixed, and both the same shape.** Lineage says a process belongs to
+the sample's tree; it cannot say the *behaviour* belongs to the malware.
+
+- **`WerFault` is Windows reacting to the sample**, not the sample acting. It is in the
+  tree because `RegSvcs` spawned it, entirely correctly. `WINDOWS_RESPONSE_PROCESSES`
+  now sets those reads aside and counts them. This is the second pass bitten by WER
+  lineage — the first is the network-attribution note under *Smaller*.
+- **`\services\vboxsf` was too broad.** The `NetworkProvider` subkey is a registration
+  Windows enumerates for itself. `ROUTINE_SUBPATH_MARKERS` sets that subkey aside while
+  the driver's service key stays a VM check, with a test asserting the narrowing did not
+  cost the signal.
+
+Replayed through the fix: **9 hits to 0**, five counted as Windows-response and four as
+routine, the note becoming "read none of the known virtual-machine artifacts", and a
+synthetic read of `Services\VBoxSF` by the sample itself still firing `vm_specific`.
+
+**Sysmon highlight lineage, proven on a live run.** `other_process_events_excluded: 14`,
+`lineage_resolved: true`, `high_severity_count: 0`, and no
+`credential_access_or_tampering` — the `dwm.exe` false positive that moved a band did
+not recur. Score **70 · Elevated Attention**, `process_injection` strong plus
+`scripted_execution`, exactly as the previous nine runs.
+
+**The parent-at-spawn skip record fired for the first time, and it is the only reason
+this run is explicable:**
+
+    pid 5412 ... "parent exited before it could be imaged at the spawn of pid 7688"
+
+Dormancy was **+34s**; the root spawned PowerShell and was gone inside one poll
+interval. So there is **no 892 KB stage 2 in this run at all** — and therefore the
+split-API YARA rule had nothing to match. It scanned 13 dumps totalling 976 MB for **0
+matches and 0 false positives**, which is a passed false-positive test rather than a
+detection test.
+
+That is the important operational note on `parent-at-spawn`: it worked on the run where
+the parent outlived its own spawn and recorded a miss on the run where it did not. The
+896 KB image is reachable roughly half the time on this sample, and there is no setting
+that changes it — the parent is either alive when the child appears or it is not.
+
+Dormancy across ten runs: **+20, +23, +24, +34, +42, +48, +60s.**
 
 ### The 07 Aug 04:41 run — the parent dump paid off, and a band was not earned
 

@@ -1516,6 +1516,30 @@ def _vm_artifact_reads_section(summary: dict[str, Any]) -> str:
         else ""
     )
 
+    # Inside the tree, and still not the sample's behaviour. Counted because the
+    # 07 Aug 14:53 run reported nine artifacts read and every one was Windows:
+    # five WerFault collecting crash-report identity, four PowerShell walking a
+    # network-provider registration that happens to live under a VBox key.
+    wer = _to_int(counts.get("windows_response_reads", 0))
+    routine = _to_int(counts.get("routine_subpath_reads", 0))
+    suppressed_note = ""
+    if wer or routine:
+        parts = []
+        if wer:
+            parts.append(
+                f"{wer} read(s) came from Windows Error Reporting, which the sample's "
+                "crash brought into the tree — WER collects machine identity for its "
+                "report, so those are Windows reacting to the sample rather than the "
+                "sample acting"
+            )
+        if routine:
+            parts.append(
+                f"{routine} read(s) were of a VM-specific key that Windows enumerates "
+                "itself, such as the VBoxSF network-provider registration that any UNC "
+                "path lookup walks"
+            )
+        suppressed_note = f"<p class='muted'>{'; and '.join(parts)}. Both are set aside and counted.</p>"
+
     return f"""
     <section class="{'card card-alert' if counts.get('vm_specific') else 'card'}">
       <div class="section-head">
@@ -1531,6 +1555,7 @@ def _vm_artifact_reads_section(summary: dict[str, Any]) -> str:
       {_dict_list_table("VM Artifact Reads", rows, emphasize=bool(counts.get("vm_specific")),
                         empty_text="The sample's processes read none of the known VM artifacts.")}
       {background_note}
+      {suppressed_note}
       {lineage_note}
     </section>
     """

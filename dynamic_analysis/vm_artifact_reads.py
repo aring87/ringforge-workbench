@@ -136,6 +136,40 @@ VM_ARTIFACT_MARKERS: tuple[tuple[str, str, str, str], ...] = (
     ("\\networkaddress", "device identity", "Adapter NetworkAddress override", "identity_surface"),
 )
 
+#: Windows' *response* to the sample, which is not the sample acting.
+#:
+#: Error Reporting collects machine identity to put in a crash report --
+#: SystemManufacturer, BIOSVersion, SystemProductName, the BIOS key. On the
+#: 07 Aug 14:53 run that produced five "VM artifact reads" attributed to the
+#: sample, because `RegSvcs` spawned `WerFault` and lineage counted it, entirely
+#: correctly. Lineage says the process belongs to the tree; it cannot say the
+#: behaviour belongs to the malware, and for WER it does not.
+#:
+#: The same crossed wire is already logged against network attribution, where
+#: WER's upload attempt counts as the sample's traffic. Second pass to be bitten.
+#: A suppression aid that runs *before* attribution, which is the only role a
+#: name list is allowed to have here.
+WINDOWS_RESPONSE_PROCESSES = {
+    "werfault.exe",
+    "werfaultsecure.exe",
+    "wermgr.exe",
+}
+
+#: Reads of a VM-specific key that Windows makes for its own reasons.
+#:
+#: `...\\Services\\VBoxSF\\NetworkProvider` is a network-provider registration, and
+#: Windows walks every registered provider when anything touches a UNC path --
+#: PowerShell startup does it. On the 07 Aug 14:53 run that produced four hits on
+#: the VirtualBox shared-folder driver from `powershell.exe`, none of which was a
+#: VM check.
+#:
+#: The marker on the driver's service key stays, because a sample reading it *is*
+#: a VM check. Only the subkey Windows enumerates is set aside, and the count is
+#: reported so the narrowing stays visible.
+ROUTINE_SUBPATH_MARKERS = (
+    "\\vboxsf\\networkprovider",
+)
+
 #: Procmon results meaning the key or value was not there. The same list the
 #: dropped-file triage keeps, for the same reason -- an operation name does not
 #: say what the operation did, and here the result carries the more interesting
@@ -163,6 +197,15 @@ FOUND_RESULTS = {
 
 def _lower(value: object) -> str:
     return str(value or "").strip().lower()
+
+
+def _is_windows_response(process_name: object) -> bool:
+    return _lower(process_name) in WINDOWS_RESPONSE_PROCESSES
+
+
+def _is_routine_subpath(path: object) -> bool:
+    lowered = _lower(path)
+    return any(marker in lowered for marker in ROUTINE_SUBPATH_MARKERS)
 
 
 def is_registry_read(event: dict[str, Any]) -> bool:
@@ -241,6 +284,8 @@ def collect_vm_artifact_reads(
 
     hits: list[dict[str, Any]] = []
     background_hits: list[dict[str, Any]] = []
+    windows_response_hits: list[dict[str, Any]] = []
+    routine_hits: list[dict[str, Any]] = []
     seen: set[tuple[int | None, str]] = set()
 
     for event in events:
@@ -261,6 +306,7 @@ def collect_vm_artifact_reads(
             continue
 
         path = str(event.get("path", "") or "").strip()
+        process_name = str(event.get("process_name", "") or "")
         record = {
             "timestamp": str(event.get("timestamp", "") or ""),
             "process_name": str(event.get("process_name", "") or ""),
@@ -274,6 +320,21 @@ def collect_vm_artifact_reads(
 
         if not belongs:
             background_hits.append(record)
+            continue
+
+        # Windows reacting to the sample is not the sample acting. WER collects
+        # machine identity for its crash report, and on the 07 Aug 14:53 run that
+        # was five of the nine "artifacts read" -- inside the tree, because
+        # `RegSvcs` spawned it, and nothing to do with the malware.
+        if _is_windows_response(process_name):
+            windows_response_hits.append(record)
+            continue
+
+        # And a VM-specific key that Windows itself enumerates. The VBoxSF
+        # network-provider registration was the other four on that run, read by
+        # PowerShell walking the provider chain.
+        if _is_routine_subpath(path):
+            routine_hits.append(record)
             continue
 
         # One row per process per path: a sample that polls a key in a loop
@@ -309,7 +370,13 @@ def collect_vm_artifact_reads(
             "artifacts_found": sum(1 for h in hits if h["artifact_found"] is True),
             "artifacts_absent": sum(1 for h in hits if h["artifact_found"] is False),
             "background_artifact_reads": len(background_hits),
+            # Both counted rather than dropped. A pass that removed five reads
+            # and a pass that saw none must not report the same thing.
+            "windows_response_reads": len(windows_response_hits),
+            "routine_subpath_reads": len(routine_hits),
         },
+        "windows_response_hits": windows_response_hits[:50],
+        "routine_subpath_hits": routine_hits[:50],
         "families": families,
         "note": _note(collection_available, hits, vm_specific),
     }
@@ -373,7 +440,11 @@ def empty_vm_artifact_reads(reason: str = "not collected") -> dict[str, Any]:
             "artifacts_found": 0,
             "artifacts_absent": 0,
             "background_artifact_reads": 0,
+            "windows_response_reads": 0,
+            "routine_subpath_reads": 0,
         },
+        "windows_response_hits": [],
+        "routine_subpath_hits": [],
         "families": {},
         "note": f"Registry reads were {reason}.",
     }

@@ -387,6 +387,88 @@ class FromProcmonCsvTests(unittest.TestCase):
         self.assertFalse(result["collection_available"])
 
 
+WER_INFO = r"HKLM\System\CurrentControlSet\Control\SystemInformation"
+VBOX_PROVIDER = r"HKLM\System\CurrentControlSet\Services\VBoxSF\NetworkProvider"
+
+
+class WindowsResponseTests(unittest.TestCase):
+    r"""The 07 Aug 14:53 run: nine artifacts read, all nine of them benign.
+
+    That run was the first to capture registry reads at all, and every hit came
+    from Windows rather than from the malware. Five were `WerFault.exe` collecting
+    machine identity for its crash report -- inside the sample's tree, because
+    `RegSvcs` spawned it, and correctly so. Lineage says a process belongs to the
+    tree; it cannot say the behaviour belongs to the malware, and for Error
+    Reporting it does not. Four were `powershell.exe` walking
+    `VBoxSF\NetworkProvider`, which Windows enumerates for any UNC path.
+
+    Both suppressions run *before* attribution, which is the only role a name list
+    is allowed here, and both are counted rather than dropped.
+    """
+
+    def test_werfault_collecting_machine_identity_is_not_the_sample(self) -> None:
+        events = [
+            _read(WER_INFO + r"\SystemManufacturer", pid=7180,
+                  process="WerFault.exe", result="BUFFER OVERFLOW"),
+            _read(WER_INFO + r"\BIOSVersion", pid=7180,
+                  process="WerFault.exe", result="BUFFER OVERFLOW"),
+        ]
+
+        result = collect_vm_artifact_reads(events, descendant_pids={7180, 2932})
+
+        self.assertEqual(result["counts"]["artifacts_read"], 0)
+        self.assertEqual(result["counts"]["windows_response_reads"], 2)
+        self.assertEqual(len(result["windows_response_hits"]), 2)
+
+    def test_the_vboxsf_network_provider_is_routine(self) -> None:
+        events = [
+            _read(VBOX_PROVIDER, pid=7688, process="powershell.exe", operation="RegOpenKey"),
+            _read(VBOX_PROVIDER + r"\ProviderPath", pid=7688,
+                  process="powershell.exe", result="BUFFER OVERFLOW"),
+        ]
+
+        result = collect_vm_artifact_reads(events, descendant_pids={7688})
+
+        self.assertEqual(result["counts"]["artifacts_read"], 0)
+        self.assertEqual(result["counts"]["routine_subpath_reads"], 2)
+
+    def test_the_driver_key_itself_is_still_a_check(self) -> None:
+        # The narrowing must not cost the signal it was protecting: a sample
+        # reading the shared-folder driver's service key is a VM check.
+        result = collect_vm_artifact_reads(
+            [_read(r"HKLM\System\CurrentControlSet\Services\VBoxSF",
+                   pid=5412, process="sample.exe", operation="RegOpenKey")],
+            descendant_pids={5412},
+        )
+
+        self.assertEqual(result["counts"]["artifacts_read"], 1)
+        self.assertEqual(result["counts"]["vm_specific"], 1)
+
+    def test_the_whole_run_replayed_reports_nothing_read(self) -> None:
+        events = [
+            _read(WER_INFO + r"\SystemManufacturer", pid=7180, process="WerFault.exe"),
+            _read(WER_INFO + r"\BIOSVersion", pid=7180, process="WerFault.exe"),
+            _read(WER_INFO + r"\SystemProductName", pid=7180, process="WerFault.exe"),
+            _read(r"HKLM\Hardware\Description\System\BIOS", pid=7180, process="WerFault.exe"),
+            _read(r"HKLM\HARDWARE\DESCRIPTION\System\BIOS\SystemSKU", pid=7180,
+                  process="WerFault.exe", result="NAME NOT FOUND"),
+            _read(VBOX_PROVIDER, pid=7688, process="powershell.exe", operation="RegOpenKey"),
+            _read(VBOX_PROVIDER + r"\name", pid=7688, process="powershell.exe"),
+            _read(VBOX_PROVIDER + r"\Class", pid=7688, process="powershell.exe",
+                  result="NAME NOT FOUND"),
+            _read(VBOX_PROVIDER + r"\ProviderPath", pid=7688, process="powershell.exe"),
+        ]
+
+        result = collect_vm_artifact_reads(
+            events, descendant_pids={5412, 7688, 2932, 9260, 7180, 7420}
+        )
+
+        self.assertEqual(result["counts"]["artifacts_read"], 0)
+        self.assertEqual(result["counts"]["windows_response_reads"], 5)
+        self.assertEqual(result["counts"]["routine_subpath_reads"], 4)
+        self.assertIn("read none of the known", result["note"])
+
+
 class LoaderRunTests(unittest.TestCase):
     """The shape the loader sample would produce, which is why this was built.
 
