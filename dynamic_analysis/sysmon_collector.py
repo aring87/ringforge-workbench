@@ -569,6 +569,33 @@ def _is_os_baseline_event(event: dict[str, Any]) -> bool:
     return _is_system32_image(source) and _is_system32_image(target)
 
 
+def _actor_pid(event: dict[str, Any]) -> Optional[int]:
+    """The PID of the process that *did* the thing this event describes.
+
+    Which field that is depends on the event. `CreateRemoteThread` and
+    `ProcessAccess` name the acting process in `SourceProcessId` and the victim
+    in `ProcessId`, so reading `ProcessId` for those would attribute an injection
+    to the process injected *into*. Everything else acts through `ProcessId`, and
+    `Execution ProcessID` from the System block is the fallback for providers
+    that carry no EventData PID at all.
+    """
+    data = event.get("data", {}) or {}
+
+    if event.get("event_id") in (8, 10):
+        candidates = (data.get("SourceProcessId"), data.get("ProcessId"))
+    else:
+        candidates = (data.get("ProcessId"), event.get("execution_process_id"))
+
+    for value in candidates:
+        try:
+            pid = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            return pid
+    return None
+
+
 def _is_analyzer_event(event: dict[str, Any]) -> bool:
     """True when the event describes the workbench's own tooling.
 
@@ -632,8 +659,35 @@ def _highlight(event: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
-def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate raw Sysmon events into counts, indicators and highlights."""
+def summarize_sysmon_events(
+    events: list[dict[str, Any]],
+    descendant_pids: set[int] | None = None,
+) -> dict[str, Any]:
+    """Aggregate raw Sysmon events into counts, indicators and highlights.
+
+    ``descendant_pids`` is the sample's process tree. Without it this pass had no
+    attribution at all: it tested for the analyzer's own tooling, for two exact
+    OS injection pairs and for noise DNS, and everything that fell through those
+    three lists became a finding *about the sample*.
+
+    That cost a verdict band on 07 Aug. `dwm.exe` raised a `CreateRemoteThread`
+    whose `TargetImage` Sysmon could not resolve, so the pair allowlist -- which
+    holds `dwm.exe -> csrss.exe` for exactly this case -- could not match
+    `("dwm.exe", "")`. The event became the run's only high-severity highlight,
+    `high_severity_count: 1` made `credential_access_or_tampering` present in its
+    own right, and the score went 70 to 90, Elevated Attention to Likely
+    Malicious, on the Desktop Window Manager.
+
+    A name list cannot be the attribution -- it has to be extended forever and an
+    unresolved field defeats it. The lists stay, as suppression aids that run
+    *before* attribution; lineage is what decides whose behaviour this was. Fourth
+    time this pipeline has needed that fix in the same shape, after the network
+    records, the PowerShell blocks and the dropped files.
+
+    ``None`` means lineage could not be resolved and everything is counted, the
+    same degrade the other passes use. An empty set would claim the sample
+    provably did nothing.
+    """
     counts: dict[str, int] = {}
     dns_queries: list[str] = []
     network_targets: list[str] = []
@@ -642,11 +696,13 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     highlights: list[dict[str, Any]] = []
     analyzer_highlights: list[dict[str, Any]] = []
     os_baseline_highlights: list[dict[str, Any]] = []
+    other_process_highlights: list[dict[str, Any]] = []
     noise_dns_queries: list[str] = []
     seen_highlights: set[tuple] = set()
     analyzer_events = 0
     os_baseline_events = 0
     noise_dns_events = 0
+    other_process_events = 0
 
     for event in events:
         name = event.get("event_name", "unknown")
@@ -685,7 +741,21 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         if is_noise_dns:
             noise_dns_events += 1
 
-        attributable = not is_analyzer and not is_os_baseline and not is_noise_dns
+        # Whose behaviour this was, asked of the acting PID rather than of a
+        # list of everything the sample is not. Applied after the suppression
+        # lists above so their counts still describe what they removed.
+        belongs_to_sample = (
+            descendant_pids is None or _actor_pid(event) in descendant_pids
+        )
+        if not belongs_to_sample and not is_analyzer and not is_os_baseline and not is_noise_dns:
+            other_process_events += 1
+
+        attributable = (
+            not is_analyzer
+            and not is_os_baseline
+            and not is_noise_dns
+            and belongs_to_sample
+        )
 
         # Analyzer events stay in total_events and counts, because Sysmon really
         # did see them, but they are kept out of the indicator lists -- those are
@@ -739,6 +809,14 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                     # same reason the analyzer's own lookups are.
                     found["noise_process"] = True
                     os_baseline_highlights.append(found)
+                elif not belongs_to_sample:
+                    # Real, and not the sample's. Listed rather than dropped, so
+                    # "Sysmon saw nothing" and "Sysmon saw it and it was somebody
+                    # else's" stay distinguishable -- and because the dwm.exe
+                    # event that cost a band would have been visible here.
+                    found["other_process"] = True
+                    found["actor_pid"] = _actor_pid(event)
+                    other_process_highlights.append(found)
                 else:
                     highlights.append(found)
 
@@ -762,6 +840,12 @@ def summarize_sysmon_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         # quiet" and "Windows was filtered" stay distinguishable.
         "os_baseline_highlights": os_baseline_highlights[:50],
         "os_baseline_events_excluded": os_baseline_events,
+        # Events by processes outside the sample's tree. The count is the point:
+        # a run where this is 0 and a run where lineage could not be resolved are
+        # different runs, and `lineage_resolved` says which.
+        "other_process_highlights": other_process_highlights[:50],
+        "other_process_events_excluded": other_process_events,
+        "lineage_resolved": descendant_pids is not None,
         # Lookups made by software that was running anyway. Listed so that
         # "the sample resolved nothing" and "its resolution was filtered"
         # stay distinguishable.

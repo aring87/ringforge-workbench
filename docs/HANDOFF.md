@@ -4,7 +4,14 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-06, after the loader's eighth run (`9e69fcbc`, 21:15) —
+**Last updated:** 2026-08-07, after the loader's ninth run (`f3d26e46`, 04:41),
+where `parent-at-spawn` fired for the first time and recovered an **896 KB x86 .NET
+assembly that exists in no other dump** — the first artifact here that no choice of
+offsets could have caught. The same run read 90 · Likely Malicious on a `dwm.exe`
+injection event, which was not earned: the Sysmon highlight pass had no lineage
+attribution, the fourth instance of that bug in this pipeline, now fixed. Registry
+reads are still uncollected, on the third attempt. Before that, the eighth run
+(`9e69fcbc`, 21:15) —
 the registry-read code was on the guest and the Procmon config was not, so the
 pass proved its *guard* (a zero refused to read as an answer) and not its finding
 path. That run also lost the packer image to an offset that never came due and
@@ -479,6 +486,7 @@ run for a long time without showing.
 | Corroboration scoring | **Proven** across three samples and four bands — 35 / Needs Review, 70 / Elevated Attention, and 125 / Likely Malicious on Remcos with four categories and two strong. The band has moved for the right reason each time |
 | Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes, on a run where Windows was busy |
 | PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's own block survived, so the filter is not too tight |
+| Sysmon highlight lineage | **Fixed, unproven on a fresh run.** Proven by replay: the 07 Aug `dwm.exe` event drops out, `high_severity_count` 1 → 0, the category goes absent and the score returns to 70, while a `RegSvcs` injection in the same stream is still kept. The pass had no attribution at all before this |
 | `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
 | Crash-as-injection | **Proven.** Fired on the hollowed `RegSvcs`, and moved the verdict a band |
 | Crash-dump collection | **Proven**, and produced the payload |
@@ -486,8 +494,8 @@ run for a long time without showing.
 | Received-file collection | **Root resolution proven**; `received_files.roots` named the real `tools\fakenet\defaultFiles`. The *collection* path is still unproven — nothing has been uploaded since it was written |
 | Containment refusal | **Proven** on 06 Aug. Guest armed with `vm_net.ps1 -Arm`, canary launched through the Dynamic Analysis window, and the run refused: `Not contained — a default route reaches the internet through a NAT gateway (Ethernet → 10.0.2.2). The guest is ARMED. The run has not been started.` It named the adapter and gateway and blocked *before* launch. The one time this was previously at stake it failed and malware got through; this time it caught it. Tested with the benign canary, so a failure would have cost nothing |
 | Spawn re-dump | **Proven as a mechanism, and it has still revealed nothing.** Fired at t11 on a child first seen at t1, on live Remcos, which drops rather than hollows. On the loader at 3s it fired **not at all**: all three children were skipped `exited before its +3s re-dump`, `RegSvcs` having lived 2.14s. The pairing it was built for was finally produced by *scheduled offsets on the root* instead — see gap 3 |
-| Parent-at-spawn dump | **Built, unproven.** The trigger no fixed offset can replace: the parent imaged at the instant it starts a child, which is when a loader is holding the stage it is about to write. Argued from eight runs of dormancy between +20 and +60s and two runs where +25s found the payload once and missed it once. It has never fired on a live sample |
-| Offsets-pending-at-exit record | **Built, unproven.** The 21:15 run lost the packer image to an offset that never came due and recorded nothing; `_record_root_never_dumped` returns early once the root has any dump at all. Any process exiting with offsets ahead of it now names them |
+| Parent-at-spawn dump | **Proven, and it recovered something new on its first run.** 07 Aug 04:41: fired three times, and the root's `_atspawn` image held an 896 KB x86 .NET assembly at `0x5fa0000` that appears in no other dump of the run — built eight seconds before the dropper carrying it. The scheduled dumps of the same process at t1 and t25 do not contain it. This is the first artifact this pipeline has recovered that no choice of offsets would have caught |
+| Offsets-pending-at-exit record | **Correctly silent**, 07 Aug 04:41 — dormancy was +36s so the root outlived both offsets and nothing was pending when it exited. Which is the right behaviour and not the same as being proven: it has still never had to fire |
 | `procmon_filter` in the summary | **Built, unproven.** Which filter ran, its operations, and whether reads were captured — the setting a whole pass turns on and the only capture setting that was not in the record. Read from the file, not the filename |
 | PE carve | **Recovered a real payload** — `SmartOptimization.dll`, a VB.NET assembly with forged Microsoft branding, from the loader's own process. Its `strong` classification on that run was a **false positive**: six copies of ntdll a suspended process had not yet enumerated. Fixed with the known-module index; the fix is unproven |
 | Known-module index | **Proven twice.** 06 Aug 15:55 — `known_module_images: 6`, `unmapped_images: 1`, `unmapped_in_hollowing_target: 0`, verdict unchanged at 70 — and again at 20:23 on a two-`RegSvcs` chain with 9 reclassified. The ntdll false positive has not recurred, and the payload was reported both times |
@@ -564,6 +572,16 @@ everything else.** Name lists exist only as suppression aids that run *before*
 attribution. This rule was broken three times in one day — network evidence,
 PowerShell blocks, and the process-name set feeding network attribution — and
 each break looked correct until a run made it visible.
+
+**A fourth instance, and the one that shows why a list can never be the
+attribution.** The Sysmon highlight pass tested three suppression lists and
+treated everything falling through them as the sample's. One of those lists holds
+`dwm.exe -> csrss.exe` precisely because Windows compositing raises
+`CreateRemoteThread` — and on 07 Aug Sysmon could not resolve the target image, so
+the pair was `("dwm.exe", "")`, the allowlist could not match, and the Desktop
+Window Manager carried a category that moved the verdict a band. **An unresolved
+field defeats a name list, and no amount of extending it fixes that.** Lineage
+does not care what the fields say.
 
 **A control that only writes to a log is documentation.** The containment check
 once emitted `CONTAINMENT WARNING` and launched the sample anyway. It now refuses
@@ -711,7 +729,10 @@ Order to check things in, learned the hard way:
    skipped list for `offset(s) ... still pending` — an image nobody took is not
    an image that held nothing.
 4. **Evidence Behind The Verdict.** Which categories fired and which were judged
-   strong. The score is descriptive; this is the reasoning.
+   strong. The score is descriptive; this is the reasoning. If a Sysmon-driven
+   category is in there, check *Sysmon Events From Other Processes* and the
+   `Lineage resolved` row before believing it — an event from outside the tree
+   carried a whole band once.
 5. **Crashes In The Sample's Tree.** A fault outside any mapped module is
    injection evidence, and often the only record of hollowing. Read it together
    with **Virtual-Machine Artifacts The Sample Read** — a crash after a
@@ -821,6 +842,69 @@ the sample, not a gap in the pipeline.
 flaky hollowing, and not Defender, which has real-time protection off. What
 remains is anti-analysis or a broken crypter, and the pipeline cannot currently
 tell those apart (gap 4).
+
+### The 07 Aug 04:41 run — the parent dump paid off, and a band was not earned
+
+`run_id f3d26e46`, 316s, 108,872 Procmon events, 11 of 11 dumps succeeded. The
+ninth run of this sample, and the first with `parent-at-spawn` in it.
+
+**A payload no offset has ever caught.** The trigger fired three times — the root
+at t36 as it started `powershell.exe`, `RegSvcs` 11164 at t66 as it started
+`WerFault`, and `powershell.exe` at t66 as it started `conhost`. In the root's
+`_atspawn` image, at `0x5fa0000`:
+
+| | |
+|---|---|
+| Size | **917,504 bytes** — 11× `SmartOptimization.dll` |
+| Type | x86 .NET, `layout: file`, `truncated: false`, `regions_spanned: 1` |
+| `TimeDateStamp` | `0x6a7171fc` → 2026-08-04 |
+| SHA256 | `e139c422121c32d68424f57e55b410d6c4a40376f4316bd9f2d2b43b77b80a2b` |
+
+**It is in the spawn-moment image and in no other.** The same process's scheduled
+dumps report `unmapped: 0` at t1 and `unmapped: 1` at t25, the latter holding only
+`SmartOptimization.dll` — whose SHA256 (`7672ecef…`) is identical in the t25 and
+t36 images, which is a clean cross-check that the carve is not inventing
+anything.
+
+The timestamps place it. The sample carries `0x6a717204`; this image carries
+`0x6a7171fc`, **eight seconds earlier**, while `SmartOptimization.dll` is
+`0x6a71514c`, about 2.3 hours before that. Three builds in one pipeline, and the
+896 KB assembly built eight seconds before the dropper that carries it. **Static
+analysis on the host is the next step**, not another detonation.
+
+**And the verdict read 90 · Likely Malicious, which was not earned.** The single
+cause: `dwm.exe` raised a `CreateRemoteThread` whose `TargetImage` Sysmon could
+not resolve. `_OS_INJECTION_PAIRS` holds `("dwm.exe", "csrss.exe")` for exactly
+this case and cannot match `("dwm.exe", "")`, so the event became the run's only
+high-severity highlight, `high_severity_count: 1` made
+`credential_access_or_tampering` present in its own right, and the score went
+70 → 90, Elevated Attention → Likely Malicious, on the Desktop Window Manager
+compositing the screen. Replayed through the fix: `high_severity_count` 0, the
+category absent, **70 again** — which is what the previous eight runs said.
+
+**The cause was structural and is the fourth instance of one bug.** The highlight
+pass tested for the analyzer's tooling, for two exact OS injection pairs and for
+noise DNS, and everything falling through those three lists became a finding about
+the sample. It had no lineage at all. `summarize_sysmon_events` now takes
+`descendant_pids`, judged on the *acting* PID — `SourceProcessId` for events 8 and
+10, because reading `ProcessId` there would attribute an injection to the process
+injected into. Events from outside the tree go to `other_process_highlights` with
+`other_process_events_excluded` and `lineage_resolved` beside them, and the report
+lists them under *Sysmon Events From Other Processes*. The `msftconnecttest`
+lookups that were sitting in the sample's DNS list are the same hole at low
+severity, and go the same way.
+
+**What else this run showed.** Dormancy **+36s**. The two `RegSvcs` were **11
+seconds apart** (04:42:29.11 and 04:42:40.27) rather than the 15 ms of every
+previous run, and the first died before it could be dumped. Every `RegSvcs` image
+again reported `unmapped: 0` — spawn, `_atspawn`, the second `RegSvcs`, and the
+crash dump — each with `known_module: 2`, so the zeroes are qualified but
+consistent with gap 5's revised reading. The offsets-pending record correctly
+stayed **silent**: the root outlived both offsets, so nothing was pending when it
+exited. And `procmon_filter` settled the question the previous run could not —
+`config_path` named `dynamic_default.pmc` with `captures_registry_reads: false`,
+so the `.pmc` writer is not implicated and the field simply had not been switched.
+Registry reads uncollected for a third run.
 
 ### The 06 Aug 21:15 run — the guard held, the config did not, and the packer got away
 

@@ -94,6 +94,7 @@ from dynamic_analysis.snapshot_tasks import (
 from dynamic_analysis.sysmon_collector import (
     collect as collect_sysmon,
     mark_start as sysmon_mark_start,
+    summarize_sysmon_events,
     sysmon_status,
 )
 from dynamic_analysis.utils import (
@@ -2263,6 +2264,39 @@ def run_dynamic_analysis(
                     since_utc=sysmon_since,
                     evtx_path=sysmon_evtx,
                 )
+
+                # The summary `collect` returns carries no attribution: lineage
+                # comes from the ProcessCreate records inside the very stream it
+                # is summarising, so it cannot be known before the events are in
+                # hand. Re-summarised rather than filtered afterwards, so every
+                # count in it describes one decision.
+                #
+                # Without this a dwm.exe CreateRemoteThread whose target Sysmon
+                # could not resolve became the run's only high-severity finding
+                # and took the score from 70 to 90 -- a band, on the Desktop
+                # Window Manager.
+                sysmon_pids = sample_descendant_pids(
+                    sysmon_events,
+                    sample_pid=sample_pid_seen.get("pid"),
+                    sample_name=sample_path.name,
+                ) or None
+                sysmon_summary = summarize_sysmon_events(
+                    sysmon_events, descendant_pids=sysmon_pids
+                )
+                if sysmon_pids is None:
+                    _emit(
+                        status_cb,
+                        "Sysmon: lineage could not be resolved, so every event in "
+                        "the window is counted. Treat the attribution as unproven.",
+                    )
+                elif sysmon_summary.get("other_process_events_excluded"):
+                    _emit(
+                        status_cb,
+                        f"Sysmon: {sysmon_summary['other_process_events_excluded']} "
+                        "event(s) belonged to processes outside the sample's tree "
+                        "and are listed separately.",
+                    )
+
                 write_json(sysmon_events_json, sysmon_events)
                 write_json(sysmon_summary_json, sysmon_summary)
 

@@ -1965,6 +1965,13 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
         # Lookups by software that was running anyway -- Office and OneDrive
         # resolving their own endpoints. Counted for the same reason.
         "Noise-process lookups excluded": sysmon.get("noise_dns_excluded", 0),
+        # Events by processes outside the sample's tree. The row that would have
+        # shown the dwm.exe injection for what it was before it took a verdict
+        # from Elevated Attention to Likely Malicious.
+        "Other-process events excluded": sysmon.get("other_process_events_excluded", 0),
+        # And which kind of zero the row above is: with lineage unresolved every
+        # event in the window is counted and the attribution is unproven.
+        "Lineage resolved": sysmon.get("lineage_resolved", ""),
     }
 
     injections = [
@@ -1980,10 +1987,54 @@ def _sysmon_sections(summary: dict[str, Any]) -> str:
 
 {_dict_list_table("Sysmon Highlights", highlights)}
 {_dict_list_table("Process Injection (CreateRemoteThread)", injections)}
+{_sysmon_other_process_section(sysmon)}
 {_crash_evidence_section(summary)}
 {_list_section("Sysmon DNS Queries", sysmon.get("dns_queries", []) or [], empty_text="No DNS queries were recorded by Sysmon.")}
 {_list_section("Named Pipes", sysmon.get("named_pipes", []) or [], empty_text="No named pipes were recorded.")}
 """
+
+
+def _sysmon_other_process_section(sysmon: dict[str, Any]) -> str:
+    """High-signal Sysmon events that belonged to something other than the sample.
+
+    Listed rather than dropped, and listed *separately*, because the two readings
+    are different findings. Windows compositing the screen raised a
+    `CreateRemoteThread` on 07 Aug that Sysmon could not resolve a target for; it
+    became the run's only high-severity highlight and moved the verdict a band.
+    Attributed by lineage now, and shown here so the event is still findable --
+    "Sysmon saw nothing" and "Sysmon saw it and it was somebody else's" must not
+    look the same.
+    """
+    listed = sysmon.get("other_process_highlights", []) or []
+    if not listed:
+        return ""
+
+    rows = [
+        {
+            "Severity": entry.get("severity", ""),
+            "Event": entry.get("event_id", ""),
+            "Title": entry.get("title", ""),
+            "Acting PID": entry.get("actor_pid", ""),
+            "Detail": entry.get("detail", ""),
+        }
+        for entry in listed
+    ]
+
+    return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Sysmon Events From Other Processes</h2>
+        {_section_badge("Not the sample's", len(listed))}
+      </div>
+      <p class="muted">
+        Real events, raised by processes outside the sample's tree, and therefore
+        not evidence about this sample. Kept visible because a filtered event and
+        an event that never happened must not read alike — and because one of
+        these once carried a whole category on its own.
+      </p>
+      {_dict_list_table("Other-Process Events", rows)}
+    </section>
+    """
 
 
 def _network_sections(summary: dict[str, Any]) -> str:
