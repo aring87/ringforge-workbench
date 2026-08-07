@@ -4,7 +4,12 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-07, after the loader's ninth run (`f3d26e46`, 04:41),
+**Last updated:** 2026-08-07. Stage 2 has since been read at the IL level with a
+throwaway CLR metadata reader — an AES-256 key and IV recovered, the key-shaped string
+literals shown to be decoys, and two architecture-specific trampoline stubs found in
+the field data. The payload resource is still encrypted and `RecordAutomatedBuilder`
+(#1335) is the one method left to read; see *Read at the IL level*. Before that, the
+loader's ninth run (`f3d26e46`, 04:41),
 where `parent-at-spawn` fired for the first time and recovered an **892 KB x86 .NET
 assembly that exists in no other dump** — the first artifact here that no choice of
 offsets could have caught. It has since been identified on the bench: stage 2, forged
@@ -640,6 +645,16 @@ Every module with dead detection markers had dead exclusion markers too. A live
 detector against a dead exclusion list is worse than both being dead, because
 the analyzer writes thousands of files into the directory it is watching.
 
+**A literal that looks like a key may be there to be guessed at.** Ten
+random-looking 16-to-21 character strings sat beside an AES call in the 892 KB stage,
+and about 4,000 key derivations were tried against them before the IL showed what they
+are for: `ldstr` the literal, `String.get_Length`, `ret`. They are loaded so their
+lengths can be taken and discarded. The real key was a byte-array literal initialised
+through `RuntimeHelpers::InitializeArray` from `FieldRVA` data, which is where a .NET
+key normally lives and which no amount of string guessing reaches. **Read one method
+body before running one brute force** — the method body is cheaper and it is the only
+thing that answers the question.
+
 **Carve the image, then read it off the box.** The point of recovering a payload
 is what static analysis then says about it, and that lives on the host, not in
 another detonation. The 07 Aug stage 2 is the strongest instance: `pefile` on the
@@ -978,13 +993,84 @@ contents**, independently of the crash evidence and of the carver.
   certainly the encrypted string table, which is why the resource name itself does
   not appear as a literal.
 
-**The key is not recoverable from the strings.** The ten random `#US` literals were
-tried as keys — UTF-8 and UTF-16, raw and MD5 and SHA-256, 128/192/256-bit, ECB and
-CBC with zero and prefix IV, against both `payload[1:]` and the aligned whole:
-**792 combinations, no MZ and no printable block.** It is derived in IL. **Getting
-that resource decrypted is now the highest-value open item in the project** — it is
-where the config and the C2 live, and it is an ILSpy/dnSpy job on this file, on the
-bench, not another detonation.
+**The key is not recoverable from the strings, and the strings are a trap.** The ten
+random `#US` literals were tried as keys — UTF-8 and UTF-16, raw and MD5 and SHA-256,
+128/192/256-bit, ECB and CBC with zero and prefix IV, against both `payload[1:]` and
+the aligned whole: **792 combinations, no MZ and no printable block.** Then the IL said
+why. See *Read at the IL level* below.
+
+### Read at the IL level, 07 Aug
+
+No ILSpy or dnSpy on the host, and no .NET **SDK** — only runtimes — so
+`dotnet tool install -g ilspycmd` cannot run. This was done instead with a
+throwaway CLR metadata reader: `#~` table row sizes, `#Strings`/`#US`/`#Blob`
+heaps, `MethodDef` bodies, `MemberRef` name resolution and the `FieldRVA` table.
+6,165 methods, 3,697 with bodies, 499 member references resolved to readable names.
+**That tooling was written in a session scratch directory and is not in this repo.**
+The carved image itself is on the host, so everything below is re-derivable from it.
+
+**An AES-256 key and IV, recovered.** `HandleSender` (method #1357) reads both from
+IL byte-array literals through `RuntimeHelpers::InitializeArray`:
+
+| | |
+|---|---|
+| Key | `f08ba6d11f49945e4039cac609b19afb61491d589bc7983f5b46f66aecc772c7` (field#570 @ rva `0xdb036`) |
+| IV | `a8ab71a42a9541649351e3fb3f75365c` (field#577 @ rva `0xdb2d0`) |
+
+`FlushLogger` (#1329) is the cipher factory: `Activator.CreateInstance` of
+`AesCryptoServiceProvider` from System.Core 3.5, falling back to 4.0, falling back to
+`RijndaelManaged`. `#1435`, which post-processes the plaintext, is a bare `ret`, so
+there is no compression or second layer around it.
+
+**But that pair is the *string* decryptor, not the payload's.** Its counterpart
+`EnsureSequentialElement` (#1395) encrypts a string and returns
+`Convert.ToBase64String`, using a **different** key (field#578) with
+`IV = MD5(Unicode(passphrase))` via #1331. Neither configuration decrypts
+`na3PRqPuA2`: tried at all 64 start offsets, then every one of 24 candidate keys
+against 16 candidate IVs drawn from the field data. No MZ, no printable block.
+
+**The literals that look like keys are inert by design.** This is the part worth
+carrying forward. `CoordinateLiteralTracker` (#1336) is three instructions:
+
+    ldstr 'UuDWeaRQUdaGi6K6'
+    call  System.String::get_Length
+    ret
+
+It loads the string only to return its **length**. `HandleCentralProfile` does the
+same with `'FU2kkBL96mt77LxNg3bq'`, discards it, and returns `{1, 2}`. All ten
+random literals are loaded and thrown away like this. Roughly 4,000 key guesses were
+spent on strings that were placed there to be guessed at — **a 16-character literal
+next to an AES call is not evidence of a key, and the cheap check is one method body
+rather than one brute force.**
+
+**What the field data says this stage is.** The 16 `FieldRVA` blobs carry more than
+the key:
+
+| Field | Contents |
+|---|---|
+| #568 | **x64 machine code** — `mov rax, imm64` / `cmp [r8+8], rax` / `je` / `mov rax, imm64` / `jmp rax` |
+| #580 | **x86 machine code** — `push ebp` / `mov eax,[ebp+0x10]` / `cmp [eax+4], imm32` / `je` / `mov eax, imm32` / `jmp eax` |
+| #572 | The MD5 T-table (`d76aa478, e8c7b756, 242070db`…) — a hand-rolled MD5 |
+| #574 | The SHA-256 K-table (`428a2f98, 71374491`…) — a hand-rolled SHA-256 |
+| #579 | ASN.1 DigestInfo prefix for MD5, OID 1.2.840.113549.2.5 |
+| #567, 569, 571, 573, 576, 581 | `Equals`, `GetValueOrDefault`, `get_HasValue`, `ToString`, `get_Value`, `GetHashCode` as UTF-16 byte arrays — reflection lookups |
+
+Two architecture-specific trampoline stubs are the notable pair: a managed assembly
+has no ordinary reason to carry raw machine code shaped as compare-then-jump with
+placeholder immediates, and carrying both an x86 and an x64 version means it expects
+to run in either. That is consistent with inline hooking. **It is not called an AMSI
+bypass here, because the string `amsi` does not appear anywhere in the image in
+either encoding** — the hook target is unidentified and guessing it would be the same
+mistake as the key literals.
+
+**Where it stopped.** `RecordAutomatedBuilder` (#1335) is the only unread method that
+matters: 1,611 bytes of IL, `GetManifestResourceStream` plus `BinaryReader.ReadBytes`,
+and it holds the payload's framing and key selection. **Getting that resource
+decrypted is still the highest-value open item in the project** — it is where the
+config and the C2 live. The homegrown reader has no control-flow reconstruction, so
+1,611 bytes of obfuscated IL with exception handlers is where it stops being the right
+tool; ILSpy is, and installing it needs a download decision (its standalone release is
+the cheaper of the two, since the .NET 8 Desktop runtime is already present).
 
 **For gap 4, a weak negative.** No VM, sandbox, debugger, WMI or hardware-identity
 token appears anywhere in this image, in either encoding — searched for explicitly.
