@@ -5,8 +5,13 @@ run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
 **Last updated:** 2026-08-07. The bench gained a .NET toolchain (ILSpy 11, SDK
-10.0.302, de4dot built from source) and lost the 892 KB stage-2 assembly, which now
-has to be re-acquired by detonation — see *The 892 KB stage*. Before that, the
+10.0.302, de4dot built from source). Stage 2 was lost, re-acquired on the first
+re-run, and then partly eaten by Bitdefender — it survives XOR-wrapped on the
+external drive. Its resources are now named rather than guessed at, its flattening
+is defeated (both opaque predicates are constant), and an AES key was recovered by
+executing the builder statically — for the wrong target, which is the better half
+of that sentence. **The open task is an inverse index over the proxy map to rebuild
+the call graph**; see *The 892 KB stage*. Before that, the
 loader's tenth run (`5457f804`, 14:53) was the first ever to capture a registry
 read. Gap 4b's collection path is proven end to end,
 Procmon accepts the generated `.pmc`, and the volume cost is 2.2x events for 281s. Its
@@ -1077,29 +1082,66 @@ Registry reads uncollected for a third run.
 
 ### The 892 KB stage — identified on the bench, 07 Aug
 
-> **The assembly itself was lost on 07 Aug and has to be re-acquired.** It was
-> deleted from `Downloads` by hand before de4dot could be run against it, and the
-> guest was reverted, so no copy survives. Everything *derived* from it is in this
-> document, and the derived artifacts are on the external drive at
-> `G:\ringforge-artifacts\422e30ed_stage2\` with a README — including
-> `stage_payload.bin`, the 284,673-byte AES ciphertext that is the actual prize.
+> **The assembly was lost once and re-acquired.** Deleted by hand from `Downloads`
+> on 07 Aug, then recovered on the first re-run (`20a9aaf8`, 15:45): dormancy +33s,
+> the root outlived its own spawn, and `parent-at-spawn` at t33 held both
+> `SmartOptimization.dll` and the 892 KB stage 2. Same SHA256. Even odds per run
+> held.
 >
-> **Re-acquiring it needs a detonation, and only `parent-at-spawn` can reach it.**
-> The 892 KB image is *absent* from the t25 scheduled dump and *present* at t36, so
-> it is decrypted into the root's memory between the last offset and the moment it
-> spawns. No choice of offsets gets there. Odds are roughly even per run: the
-> 04:41 run caught it because the root outlived its own spawn, the 14:53 run
-> recorded `parent exited before it could be imaged` because it did not. Budget one
-> to three runs, keep `dynamic_registry_reads.pmc` selected so gap 4b keeps
-> accumulating evidence, and **copy the `.bin_` somewhere durable the moment it
-> exists**. A run that captures it also gives the split-API YARA rule its first
-> real detection test.
->
-> One lever if even odds are not good enough: `_POLL_INTERVAL_SECONDS` is 0.5 in
-> `memory_dump.py`, and "the parent died inside one poll interval" is the entire
-> failure mode. Dropping it to 0.2 would improve the odds at the cost of more
-> `psutil` tree walks per second during a detonation. Not done — it changes the
-> timing of every run, and that is a decision worth taking deliberately.
+> **Then Bitdefender ate three copies of it.** It resumed on its own mid-session
+> and deleted the external-drive backup, the working copy and de4dot's cleaned
+> output, matching on content rather than extension so `.bin_` gave no protection.
+> Only the original export survived. It now lives XOR-wrapped as
+> `stage2_assembly_e139c422.xor9` in `G:\ringforge-artifacts\422e30ed_stage2\`,
+> with the key and the unwrap snippet in that folder's README. That defeats content
+> scanning without an AV exclusion, which is the trade this bench should default to.
+
+### What the resources actually are, and what the recovered key is not
+
+Named from the `ManifestResource` table rather than inferred from size — the
+inference is what wasted an afternoon:
+
+| Resource | Size | What |
+|---|---|---|
+| `StrategyEnumerator.SegmentedInitializer` | 9,448 | the proxy token map |
+| `na3PRqPuA2.resources` | 284,891 | **the payload** |
+| `InterruptibleInitializer.InitializerCompiler` | 14 | the string table |
+| four `.resources` sets | — | WinForms decoys |
+
+**The string table is fourteen bytes.** So the protector's string encryption is
+essentially unused in this build, and the `#US` literals already recovered are the
+real strings — which is consistent with the injection API fragments sitting there
+in clear.
+
+**de4dot reports "Unknown Obfuscator"** but its generic pass still cut the key
+builder from 12,448 to 7,730 bytes of IL. Built from source; see the environment
+facts for the two workarounds.
+
+**Both opaque predicates are constant**, which defeats the flattening entirely:
+`ConfigureVisualEditor()` is `ldnull; ret` and `ResetCompressor()` is
+`null == null`. Every branch in the 345-state dispatcher is therefore decidable,
+and the builder can be *executed statically* rather than read. Doing that produced:
+
+    key  683c76f39b6f126273b4fec6a679aa5b12d381cc28b221e2d48540f2622118f7
+    iv   3ce634d0fa58d49ac80cedbdad63e611
+
+**Those are real and they are the wrong target.** They belong to the fourteen-byte
+string-table path and decrypt none of the resources. Worth stating plainly because
+the technique is sound — a wrong *target* is a much better position than a wrong
+key.
+
+**Where the payload actually hides.** `na3PRqPuA2` is a `.resources` **set**, so it
+is read through `ResourceManager.GetObject` and not `GetManifestResourceStream` —
+which is why searching for the latter kept finding only protector runtime. That
+call is proxy-bound, and nothing calls the proxy wrappers directly either; they sit
+behind further proxies.
+
+**The next step, and it is mechanical rather than speculative.** Build an inverse
+index over the decrypted proxy map — which methods load which proxy field — and
+walk it to reconstruct the real call graph. The map is already decrypted and
+verified (1,181 bindings, all keys Field tokens), so this is bookkeeping over data
+that exists. It would de-obfuscate the whole assembly's control flow, not only this
+question, and it is what reaches the payload's decryptor.
 
 
 The image the parent-at-spawn dump recovered, read with `pefile` on the host. The
