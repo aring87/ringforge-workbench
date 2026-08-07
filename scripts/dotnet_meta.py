@@ -209,6 +209,21 @@ class DotNetImage:
             27: B,
             28: 2 + coded((4, 6), 1) + S + simple(26),
             29: 4 + simple(4),
+            # 30..40, present only to reach ManifestResource (40). Without that
+            # table the resource region can be walked for sizes but not for
+            # *names*, and inferring which blob is which from its size is how an
+            # afternoon went into pointing a recovered key at the wrong one.
+            30: 8,
+            31: 4,
+            32: 16 + B + 2 * S,
+            33: 4,
+            34: 12,
+            35: 12 + 2 * B + 2 * S,
+            36: 4 + simple(35),
+            37: 12 + simple(35),
+            38: 4 + S + B,
+            39: 8 + 2 * S + coded((38, 35, 39), 2),
+            40: 8 + S + coded((38, 35, 39), 2),
         }
         self.offsets: dict[int, int] = {}
         for i in sorted(self.rows):
@@ -308,6 +323,28 @@ class DotNetImage:
             header = (struct.unpack_from("<H", self.data, off)[0] >> 12) * 4
             return off + header, off + header + size
         return None
+
+    def manifest_resources(self) -> list[dict[str, Any]]:
+        """Name and region offset of every embedded resource, from table 40.
+
+        The resource region is a run of length-prefixed blobs; walking it gives
+        sizes and no names. This is the table that says which blob is the
+        encrypted payload and which is the protector's string table, and that
+        distinction is worth having before pointing a recovered key at one.
+        """
+        if 40 not in self.offsets:
+            return []
+        base, w = self.offsets[40], self.sizes[40]
+        out = []
+        for i in range(self.rows.get(40, 0)):
+            p = base + i * w
+            offset, flags = struct.unpack_from("<II", self.data, p)
+            out.append({
+                "name": self.string(self._idx(p + 8, self.str_w)),
+                "offset": offset,
+                "flags": flags,
+            })
+        return sorted(out, key=lambda r: r["offset"])
 
     def managed_resources(self) -> list[dict[str, Any]]:
         """The resource region as length-prefixed blobs, with entropy."""
