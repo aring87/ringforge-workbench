@@ -5,9 +5,12 @@ run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
 **Last updated:** 2026-08-07, after the loader's ninth run (`f3d26e46`, 04:41),
-where `parent-at-spawn` fired for the first time and recovered an **896 KB x86 .NET
+where `parent-at-spawn` fired for the first time and recovered an **892 KB x86 .NET
 assembly that exists in no other dump** — the first artifact here that no choice of
-offsets could have caught. The same run read 90 · Likely Malicious on a `dwm.exe`
+offsets could have caught. It has since been identified on the bench: stage 2, forged
+as `MemCompress Pro`, carrying the injection API set as split UTF-16 fragments and a
+278 KB AES-encrypted resource that is now the highest-value open item. Two of this
+document's standing conclusions are retracted as a result — see *The 892 KB stage*. The same run read 90 · Likely Malicious on a `dwm.exe`
 injection event, which was not earned: the Sysmon highlight pass had no lineage
 attribution, the fourth instance of that bug in this pipeline, now fixed. Registry
 reads are still uncollected, on the third attempt. Before that, the eighth run
@@ -486,6 +489,7 @@ run for a long time without showing.
 | Corroboration scoring | **Proven** across three samples and four bands — 35 / Needs Review, 70 / Elevated Attention, and 125 / Likely Malicious on Remcos with four categories and two strong. The band has moved for the right reason each time |
 | Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes, on a run where Windows was busy |
 | PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's own block survived, so the filter is not too tight |
+| Split-API YARA rule | **Matches its subject, clean on 120 assemblies, unproven on a dump.** Every string fires on the carved stage 2; 0 of 120 genuine `Microsoft.NET` assemblies match. The scan target that matters is a process dump and it has not met one — `"Open "` and `"Close "` in UTF-16 are ordinary UI text, which is why the rare fragments are mandatory rather than counted |
 | Sysmon highlight lineage | **Fixed, unproven on a fresh run.** Proven by replay: the 07 Aug `dwm.exe` event drops out, `high_severity_count` 1 → 0, the category goes absent and the score returns to 70, while a `RegSvcs` injection in the same stream is still kept. The pass had no attribution at all before this |
 | `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
 | Crash-as-injection | **Proven.** Fired on the hollowed `RegSvcs`, and moved the verdict a band |
@@ -638,7 +642,12 @@ the analyzer writes thousands of files into the directory it is watching.
 
 **Carve the image, then read it off the box.** The point of recovering a payload
 is what static analysis then says about it, and that lives on the host, not in
-another detonation. `SmartOptimization.dll` was identified — packer, decoy,
+another detonation. The 07 Aug stage 2 is the strongest instance: `pefile` on the
+host produced the forged vendor, the decoy application, the split-fragment
+injection API set, the AES resource and its exact block structure — and retracted
+two conclusions this document had been asserting, one of which was "there is
+nothing more this sample yields". A carved artifact is a question answered on the
+bench. `SmartOptimization.dll` was identified — packer, decoy,
 loading mechanism, absence of any config — from its own metadata with `pefile`,
 and it retired a hypothesis the handoff had asserted for weeks. A recovered
 artifact is a question answered on the bench, not a reason to run the VM again.
@@ -808,6 +817,15 @@ strings, no family markers. That is why YARA matched nothing across nine images
 while the UPX control passes — there is nothing for a signature to key on, and
 the ruleset is not at fault.
 
+**That was true of this 57 KB image and false of the chain, and the difference
+matters.** The 892 KB stage recovered on 07 Aug carries the entire injection API
+set as UTF-16 literals — split into fragments so that a string search finds
+nothing. `'Virtual ' + 'Alloc'`, `'Write ' + 'Process ' + 'Memory'`,
+`'kernel ' + '32.dll'`. There *was* something for a signature to key on; it was
+in a stage nothing had recovered yet. `tools\yara\local
+ingforge_split_api_loader.yar`
+now keys on the fragments. See *The 892 KB stage*.
+
 **What that payload actually is — settled by static analysis, 06 Aug.** The
 carved image (`SmartOptimization.dll`, 57,344 bytes, x86 .NET) was parsed with
 `pefile` on the host. Its metadata `#Strings` heap decides it:
@@ -905,6 +923,89 @@ exited. And `procmon_filter` settled the question the previous run could not —
 `config_path` named `dynamic_default.pmc` with `captures_registry_reads: false`,
 so the `.pmc` writer is not implicated and the field simply had not been switched.
 Registry reads uncollected for a third run.
+
+### The 892 KB stage — identified on the bench, 07 Aug
+
+The image the parent-at-spawn dump recovered, read with `pefile` on the host. The
+most informative artifact this project has produced.
+
+| | |
+|---|---|
+| SHA256 | `e139c422121c32d68424f57e55b410d6c4a40376f4316bd9f2d2b43b77b80a2b` |
+| Size | 892,416 bytes in **file layout**; `SizeOfImage` is 917,504 |
+| Type | x86 .NET **DLL** — `_CorDllMain`, `mscoree.dll` its only import, ILONLY + 32BITREQUIRED, metadata `v2.0.50727`, unsigned |
+| Compiled | 2026-08-04 05:00:44 UTC — **eight seconds before the dropper** (`0x6a717204`) |
+| Forged as | `MemCompress Pro` by `RAMTech Solutions`, "Advanced Windows memory compression and optimization service", v5.3.9.3748 |
+
+Note the size pair: 892,416 is what the carve wrote and what the file on disk
+holds, against a `SizeOfImage` of 917,504. That is the file-versus-mapped
+distinction working — a payload in file layout, measured against file layout, and
+reported complete rather than truncated.
+
+**The decoy is a whole fake application.** 2,675 of 5,499 metadata strings are
+generated three-word CamelCase identifiers — 359 begin `Configure`, 359 begin
+`Set`, 575 end `Initializer` — under namespaces `MemCompress.Selections`,
+`MemCompress_Pro.Compression`, `MemCompress_Pro.UserManagement` and a dozen more.
+The WinForms designer resources are real: dialogs with Cancel buttons, a progress
+bar, an edit menu with cut/copy/paste/undo/redo bitmaps, a tray icon. The *real*
+code is renamed to unicode box-drawing characters and sits alongside the readable
+decoy. Same trick as the puzzle game, eleven times the size, and a different
+invented identity — `SmartOptimization.dll` forged **Microsoft**, this forges a
+plausible third-party utility vendor. The theme, system optimisation, does not
+vary.
+
+**The injection engine, in its own strings.** The API names are present as UTF-16
+literals, split so a search finds nothing:
+
+`'Virtual ' + 'Alloc'` · `'Write ' + 'Process ' + 'Memory'` ·
+`'Open ' + 'Process'` · `'Virtual ' + 'Protect'` · `'Close ' + 'Handle'` ·
+`'kernel ' + '32.dll'` · `'Find ' + 'ResourceA'`
+
+reassembled at runtime and resolved with `GetDelegateForFunctionPointer`, which is
+how a managed loader calls a native export with no P/Invoke declaration for a
+scanner to find. **That is process injection confirmed from the payload's own
+contents**, independently of the crash evidence and of the carver.
+
+**And the stage nobody has seen.** One encrypted resource, `na3PRqPuA2`, beside
+`System.Security.Cryptography.AesCryptoServiceProvider`:
+
+- **284,673 bytes = 1 flag byte + exactly 17,792 AES blocks.** Entropy 7.998, all
+  256 byte values present with a flat histogram, 8 repeated blocks in 17,792 — so
+  not ECB over structured plaintext.
+- Its resource reader is mscorlib **4.0.0.0** while every decoy UI resource is
+  **2.0.0.0**. Two toolchains in one assembly, which is a detectable artifact in
+  its own right and is in the rule below.
+- A second 9,448-byte blob at entropy 7.979 with no resource-set header is almost
+  certainly the encrypted string table, which is why the resource name itself does
+  not appear as a literal.
+
+**The key is not recoverable from the strings.** The ten random `#US` literals were
+tried as keys — UTF-8 and UTF-16, raw and MD5 and SHA-256, 128/192/256-bit, ECB and
+CBC with zero and prefix IV, against both `payload[1:]` and the aligned whole:
+**792 combinations, no MZ and no printable block.** It is derived in IL. **Getting
+that resource decrypted is now the highest-value open item in the project** — it is
+where the config and the C2 live, and it is an ILSpy/dnSpy job on this file, on the
+bench, not another detonation.
+
+**For gap 4, a weak negative.** No VM, sandbox, debugger, WMI or hardware-identity
+token appears anywhere in this image, in either encoding — searched for explicitly.
+That is evidence against anti-analysis as the explanation for the deterministic
+crash, and it is weak evidence, because both the string table and the payload are
+encrypted.
+
+**A rule that matches where the ruleset matched nothing.**
+`tools\yara\local
+ingforge_split_api_loader.yar` carries two rules: one on the
+split-fragment technique, one on this build. Written `wide`-only, because these are
+.NET user strings and `Alloc` and `Handle` also occur 42 and 63 times as *ascii*
+inside the generated decoy names — an ascii-or-wide rule would match the padding
+and say nothing. No `pe` module, so it works on a process dump.
+`"kernel "`, `"32.dll"` and `"Virtual "` are all mandatory rather than counted,
+because `"Open "` and `"Close "` in UTF-16 are ordinary UI text that any GUI
+process's dump holds. Verified: every string fires on the carved image, and **0 of
+120** genuine assemblies under `Microsoft.NET` and `Framework64` match. Not yet
+scanned against a real memory dump, which is where a false positive would surface
+— the next run puts it against ten to twelve.
 
 ### The 06 Aug 21:15 run — the guard held, the config did not, and the packer got away
 
@@ -1238,12 +1339,17 @@ written. That would mean the payload is written over the host image at its
 original base after all, and the 05 Aug hand-carve found it alongside only
 because the crash dump caught a different moment.
 
-**The static-analysis question is now answered** — see *What that payload
-actually is* above. The carved image is a SmartAssembly-protected reflective
-loader disguised as a puzzle game, with no config anywhere in it; the config is
-in the stage it would invoke, and the crash prevents that. There is nothing more
-this sample yields without defeating SmartAssembly, which is a reverse-
-engineering job on stage 2, not a pipeline task and not another detonation.
+**That answer was about the 57 KB image, and it is now superseded.** It said the
+carved image is a SmartAssembly-protected reflective loader disguised as a puzzle
+game with no config in it — all true — and then that "there is nothing more this
+sample yields without defeating SmartAssembly, which is a reverse-engineering job
+on stage 2."
+
+**Stage 2 has since been recovered, and it is not SmartAssembly-protected.** The
+07 Aug run's parent-at-spawn dump produced it, and it uses a different scheme
+entirely. So the sample has yielded a great deal more, from a pipeline change
+rather than from reverse engineering. See *The 892 KB stage* below for what it is
+and what is left in it.
 
 ---
 
