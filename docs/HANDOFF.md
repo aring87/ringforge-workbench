@@ -822,8 +822,7 @@ matters.** The 892 KB stage recovered on 07 Aug carries the entire injection API
 set as UTF-16 literals — split into fragments so that a string search finds
 nothing. `'Virtual ' + 'Alloc'`, `'Write ' + 'Process ' + 'Memory'`,
 `'kernel ' + '32.dll'`. There *was* something for a signature to key on; it was
-in a stage nothing had recovered yet. `tools\yara\local
-ingforge_split_api_loader.yar`
+in a stage nothing had recovered yet. `tools\yara\local\ringforge_split_api_loader.yar`
 now keys on the fragments. See *The 892 KB stage*.
 
 **What that payload actually is — settled by static analysis, 06 Aug.** The
@@ -994,8 +993,7 @@ crash, and it is weak evidence, because both the string table and the payload ar
 encrypted.
 
 **A rule that matches where the ruleset matched nothing.**
-`tools\yara\local
-ingforge_split_api_loader.yar` carries two rules: one on the
+`tools\yara\local\ringforge_split_api_loader.yar` carries two rules: one on the
 split-fragment technique, one on this build. Written `wide`-only, because these are
 .NET user strings and `Alloc` and `Handle` also occur 42 and 63 times as *ascii*
 inside the generated decoy names — an ascii-or-wide rule would match the padding
