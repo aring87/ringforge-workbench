@@ -4,8 +4,11 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-07, after the loader's tenth run (`5457f804`, 14:53) — the
-first ever to capture a registry read. Gap 4b's collection path is proven end to end,
+**Last updated:** 2026-08-07. The bench gained a .NET toolchain (ILSpy 11, SDK
+10.0.302, de4dot built from source) and lost the 892 KB stage-2 assembly, which now
+has to be re-acquired by detonation — see *The 892 KB stage*. Before that, the
+loader's tenth run (`5457f804`, 14:53) was the first ever to capture a registry
+read. Gap 4b's collection path is proven end to end,
 Procmon accepts the generated `.pmc`, and the volume cost is 2.2x events for 281s. Its
 nine hits were all Windows rather than the malware, which is now fixed and counted, and
 the negative that remains is a real answer: **this sample does not check for a VM.**
@@ -83,6 +86,32 @@ disqualifiers sit in one branch of an OR can still match. Treat its expected
 list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 
 ### Environment facts that are not in the code
+
+- **The host bench now has a .NET toolchain, and it was assembled piecemeal.**
+  ILSpy 11 (standalone zip, Avalonia — it wants the base **.NET 10 runtime**, not
+  the Desktop one, despite older ILSpy being WPF), and **.NET SDK 10.0.302**,
+  which arrived with the .NET 10 install and is what makes `dotnet build`
+  possible at all. Runtimes 6.0.16, 7.0.4, 8.0.8 and 10.0.10 are side by side;
+  installing a new one takes nothing away.
+- **de4dot is built at
+  `G:\tools\de4dot-master\de4dot-master\Release\netcoreapp3.1\`**
+  and needs two workarounds that are not obvious from its README. The source is
+  2018-era and `LangVersion` is `latest`, so C# 14 makes `field` a keyword inside
+  property accessors and `ProxyCallFixer.cs` fails to compile — build with
+  `-p:LangVersion=9.0`. And it targets `netcoreapp3.1`, which is not installed,
+  so run it with `DOTNET_ROLL_FORWARD=LatestMajor dotnet de4dot.dll`. Full
+  command:
+
+      dotnet build de4dot.netcore.sln -c Release -f netcoreapp3.1 -p:LangVersion=9.0
+
+- **The host's antivirus is Bitdefender, not Defender.** `WinDefend` is stopped
+  and Defender registers as passive; Bitdefender is the active engine. Worth
+  knowing for two reasons: it is the same engine whose `Gen:Variant.Rescoms`
+  label the Remcos section cites, so it is aggressive on exactly this class of
+  file; and `Get-MpComputerStatus` fails with `0x800106ba` on this host, which
+  reads like an error and only means Defender's service is off. Carved payloads
+  kept on disk want a password-protected zip rather than an AV exclusion — it
+  stops on-access scanning of the contents without opening a hole.
 
 - **Run everything on the host through `.venv`.** The global Python 3.12 is a
   partial install and silently disables YARA and psutil features. The guest's
@@ -1047,6 +1076,31 @@ so the `.pmc` writer is not implicated and the field simply had not been switche
 Registry reads uncollected for a third run.
 
 ### The 892 KB stage — identified on the bench, 07 Aug
+
+> **The assembly itself was lost on 07 Aug and has to be re-acquired.** It was
+> deleted from `Downloads` by hand before de4dot could be run against it, and the
+> guest was reverted, so no copy survives. Everything *derived* from it is in this
+> document, and the derived artifacts are on the external drive at
+> `G:\ringforge-artifacts\422e30ed_stage2\` with a README — including
+> `stage_payload.bin`, the 284,673-byte AES ciphertext that is the actual prize.
+>
+> **Re-acquiring it needs a detonation, and only `parent-at-spawn` can reach it.**
+> The 892 KB image is *absent* from the t25 scheduled dump and *present* at t36, so
+> it is decrypted into the root's memory between the last offset and the moment it
+> spawns. No choice of offsets gets there. Odds are roughly even per run: the
+> 04:41 run caught it because the root outlived its own spawn, the 14:53 run
+> recorded `parent exited before it could be imaged` because it did not. Budget one
+> to three runs, keep `dynamic_registry_reads.pmc` selected so gap 4b keeps
+> accumulating evidence, and **copy the `.bin_` somewhere durable the moment it
+> exists**. A run that captures it also gives the split-API YARA rule its first
+> real detection test.
+>
+> One lever if even odds are not good enough: `_POLL_INTERVAL_SECONDS` is 0.5 in
+> `memory_dump.py`, and "the parent died inside one poll interval" is the entire
+> failure mode. Dropping it to 0.2 would improve the odds at the cost of more
+> `psutil` tree walks per second during a detonation. Not done — it changes the
+> timing of every run, and that is a decision worth taking deliberately.
+
 
 The image the parent-at-spawn dump recovered, read with `pefile` on the host. The
 most informative artifact this project has produced.
