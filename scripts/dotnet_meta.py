@@ -345,6 +345,17 @@ _SIMPLE = {
     0x5A: "mul", 0x5F: "and", 0x60: "or", 0x61: "xor", 0x62: "shl", 0x63: "shr",
     0x69: "conv.i4", 0x6A: "conv.i8", 0x7A: "throw", 0x8E: "ldlen",
     0x9A: "ldelem.ref", 0xA2: "stelem.ref",
+    # The array-store family. `stelem.i1` is how a byte[] key is built one index
+    # at a time, so decoding it as `.byte 9c` loses precisely the instruction
+    # worth reading.
+    0x9C: "stelem.i1", 0x9D: "stelem.i2", 0x9E: "stelem.i4", 0x9F: "stelem.i8",
+    0xA0: "stelem.r4", 0xA1: "stelem.r8", 0x9B: "stelem.i",
+    0x90: "ldelem.i1", 0x91: "ldelem.u1", 0x92: "ldelem.i2", 0x93: "ldelem.u2",
+    0x94: "ldelem.i4", 0x95: "ldelem.u4", 0x96: "ldelem.i8", 0x97: "ldelem.i",
+    0x5B: "div", 0x5C: "div.un", 0x5D: "rem", 0x5E: "rem.un",
+    0x64: "shr.un", 0x65: "neg", 0x66: "not", 0x67: "conv.i1", 0x68: "conv.i2",
+    0x6B: "conv.r4", 0x6C: "conv.r8", 0xD1: "conv.u2", 0xD2: "conv.u1",
+    0x1E: "ldc.i4.8",
 }
 for _i in range(9):
     _SIMPLE[0x16 + _i] = f"ldc.i4.{_i}"
@@ -359,6 +370,28 @@ _INT8 = {0x0E: "ldarg.s", 0x11: "ldloc.s", 0x12: "ldloca.s", 0x13: "stloc.s",
          0x1F: "ldc.i4.s", 0x2B: "br.s", 0x2C: "brfalse.s", 0x2D: "brtrue.s",
          0xDE: "leave.s"}
 _INT32 = {0x20: "ldc.i4", 0x38: "br", 0x39: "brfalse", 0x3A: "brtrue", 0xDD: "leave"}
+
+#: Two-byte opcodes, `FE xx`, with their operand widths.
+#:
+#: Not optional, and getting it wrong is silent. Without these the decoder
+#: consumed the `FE xx` pair and then read the *operand* as the next opcode, so a
+#: single `ldloc` desynchronised everything after it. On a control-flow-flattened
+#: method that turned 3,865 instructions into 1,370 `.byte` lines and made the
+#: method look like garbage rather than like code the tool could not read --
+#: which is exactly the failure this project keeps naming: a decoder that is
+#: wrong and a payload that is unreadable must not look alike.
+_TWO_BYTE = {
+    0x00: ("arglist", 0), 0x01: ("ceq", 0), 0x02: ("cgt", 0), 0x03: ("cgt.un", 0),
+    0x04: ("clt", 0), 0x05: ("clt.un", 0),
+    0x06: ("ldftn", "tok"), 0x07: ("ldvirtftn", "tok"),
+    0x09: ("ldarg", 2), 0x0A: ("ldarga", 2), 0x0B: ("starg", 2),
+    0x0C: ("ldloc", 2), 0x0D: ("ldloca", 2), 0x0E: ("stloc", 2),
+    0x0F: ("localloc", 0), 0x11: ("endfilter", 0), 0x12: ("unaligned.", 1),
+    0x13: ("volatile.", 0), 0x14: ("tail.", 0), 0x15: ("initobj", "tok"),
+    0x16: ("constrained.", "tok"), 0x17: ("cpblk", 0), 0x18: ("initblk", 0),
+    0x1A: ("rethrow", 0), 0x1C: ("sizeof", "tok"), 0x1D: ("refanytype", 0),
+    0x1E: ("readonly.", 0),
+}
 
 
 def disassemble(image: DotNetImage, row: int) -> list[str]:
@@ -389,8 +422,19 @@ def disassemble(image: DotNetImage, row: int) -> list[str]:
         op, at = d[p], p - start
         p += 1
         if op == 0xFE:
-            lines.append(f"{at:04x}  fe{d[p]:02x}")
+            op2 = d[p]
             p += 1
+            name, width = _TWO_BYTE.get(op2, (f"fe{op2:02x}", 0))
+            if width == "tok":
+                value = struct.unpack_from("<I", d, p)[0]
+                p += 4
+                lines.append(f"{at:04x}  {name:10s} {token(value)}")
+            elif width:
+                value = int.from_bytes(d[p:p + width], "little")
+                p += width
+                lines.append(f"{at:04x}  {name:10s} {value}")
+            else:
+                lines.append(f"{at:04x}  {name}")
         elif op in _SIMPLE:
             lines.append(f"{at:04x}  {_SIMPLE[op]}")
         elif op in _TOKEN:
@@ -407,6 +451,20 @@ def disassemble(image: DotNetImage, row: int) -> list[str]:
         elif op in _INT32:
             lines.append(f"{at:04x}  {_INT32[op]:10s} {struct.unpack_from('<i', d, p)[0]}")
             p += 4
+        elif op == 0x45:
+            # switch: a 4-byte count then that many 4-byte targets. The only
+            # variable-length operand in IL, and skipping it is not survivable --
+            # a flattened dispatcher's jump table is hundreds of entries, and
+            # reading them as instructions produced 619 bytes of `ff` that looked
+            # like an unreadable method rather than a decoder walking off the
+            # rails.
+            count = struct.unpack_from("<I", d, p)[0]
+            p += 4
+            targets = [struct.unpack_from("<i", d, p + i * 4)[0] for i in range(count)]
+            p += count * 4
+            lines.append(f"{at:04x}  switch     {count} targets")
+            for i, target in enumerate(targets):
+                lines.append(f"          [{i}] -> {target}")
         else:
             lines.append(f"{at:04x}  .byte {op:02x}")
     return lines
