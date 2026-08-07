@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from dynamic_analysis.utils import is_windows_response_process
+
 
 #: The Procmon operations that are registry *reads*.
 #:
@@ -136,24 +138,10 @@ VM_ARTIFACT_MARKERS: tuple[tuple[str, str, str, str], ...] = (
     ("\\networkaddress", "device identity", "Adapter NetworkAddress override", "identity_surface"),
 )
 
-#: Windows' *response* to the sample, which is not the sample acting.
-#:
-#: Error Reporting collects machine identity to put in a crash report --
-#: SystemManufacturer, BIOSVersion, SystemProductName, the BIOS key. On the
-#: 07 Aug 14:53 run that produced five "VM artifact reads" attributed to the
-#: sample, because `RegSvcs` spawned `WerFault` and lineage counted it, entirely
-#: correctly. Lineage says the process belongs to the tree; it cannot say the
-#: behaviour belongs to the malware, and for WER it does not.
-#:
-#: The same crossed wire is already logged against network attribution, where
-#: WER's upload attempt counts as the sample's traffic. Second pass to be bitten.
-#: A suppression aid that runs *before* attribution, which is the only role a
-#: name list is allowed to have here.
-WINDOWS_RESPONSE_PROCESSES = {
-    "werfault.exe",
-    "werfaultsecure.exe",
-    "wermgr.exe",
-}
+#: The Windows-response list lives in `utils`, because the network attribution
+#: needs the same one and neither module can import the other. See
+#: `WINDOWS_RESPONSE_PROCESSES` there for why WER is in the sample's tree and
+#: still is not the sample's behaviour.
 
 #: Reads of a VM-specific key that Windows makes for its own reasons.
 #:
@@ -197,10 +185,6 @@ FOUND_RESULTS = {
 
 def _lower(value: object) -> str:
     return str(value or "").strip().lower()
-
-
-def _is_windows_response(process_name: object) -> bool:
-    return _lower(process_name) in WINDOWS_RESPONSE_PROCESSES
 
 
 def _is_routine_subpath(path: object) -> bool:
@@ -326,7 +310,7 @@ def collect_vm_artifact_reads(
         # machine identity for its crash report, and on the 07 Aug 14:53 run that
         # was five of the nine "artifacts read" -- inside the tree, because
         # `RegSvcs` spawned it, and nothing to do with the malware.
-        if _is_windows_response(process_name):
+        if is_windows_response_process(process_name):
             windows_response_hits.append(record)
             continue
 

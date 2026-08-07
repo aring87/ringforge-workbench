@@ -475,10 +475,19 @@ root process on this run, cleanly.
 
 ### Smaller
 
-- `WerFault.exe` counts as sample lineage for network attribution, correctly
-  (the sample caused the crash) but misleadingly: Windows Error Reporting's
-  `:443` is not C2. It has not mattered yet; it would if WER used a
-  non-standard port.
+- **CLOSED — `WerFault.exe` counted as sample lineage for network attribution.**
+  Correctly, in that the sample caused the crash, and misleadingly, in that
+  Windows Error Reporting's `:443` is not C2. It stopped being hypothetical on
+  06 Aug 21:15, when `192.0.2.123:443` landed in `sample_destinations` with
+  FakeNet naming `wermgr.exe` at the same address — costing nothing only because
+  443 is standard and no domain was notable. Then the same crossed wire produced
+  five of nine "VM artifact reads" on 07 Aug 14:53, which is what forced the fix.
+  `WINDOWS_RESPONSE_PROCESSES` in `utils` is now the single definition, and both
+  passes drop those names *after* lineage resolves them and report what they
+  dropped. Replayed against the 21:15 shape: WER's `:443` leaves
+  `sample_destinations`, a genuine C2 on a non-standard port survives and still
+  raises `unusual_ports`, and the WER requests land in `other_process_requests`
+  rather than disappearing.
 - `suspicious_path_hits` checks the *parent* process name against the noise
   list for non-process-create events, so a noise child under a non-noise parent
   can still surface there. Process creates were fixed; other event types were
@@ -503,6 +512,7 @@ run for a long time without showing.
 | Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes, on a run where Windows was busy |
 | PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's own block survived, so the filter is not too tight |
 | Split-API YARA rule | **No false positives on real dumps; detection still untested.** 0 matches across 13 live dumps totalling 976 MB on 07 Aug 14:53, and 0 of 120 genuine `Microsoft.NET` assemblies. Its subject was not in memory that run — the parent died before its spawn image could be taken — so nothing has yet confirmed it fires on a dump that does contain stage 2 |
+| Windows-response suppression | **Fixed, proven by replay on two real runs.** WER's `:443` leaves `sample_destinations` while a non-standard-port C2 in the same table survives; the 07 Aug 14:53 VM-artifact hits go 9 to 0 with 5 counted as Windows-response. One definition in `utils`, used by both passes, each reporting what it removed. Unproven on a *fresh* run |
 | Sysmon highlight lineage | **Proven on a live run**, 07 Aug 14:53 — `other_process_events_excluded: 14`, `high_severity_count: 0`, no `credential_access_or_tampering`, score 70. The `dwm.exe` false positive that moved a band did not recur |
 | `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
 | Crash-as-injection | **Proven.** Fired on the hollowed `RegSvcs`, and moved the verdict a band |
@@ -660,7 +670,9 @@ Attributed by lineage that is a VM check and a C2 contact; both are Windows reac
 The same is true of anything the OS starts *in response to* the sample — WER, the
 indexer noticing a dropped file, a troubleshooter firing after a crash. Lineage remains
 the right primitive, and a short list of Windows-response processes belongs in front of
-it, counted rather than dropped.
+it, counted rather than dropped. One definition, in `utils`, because the VM-artifact pass
+and the network attribution both need it and neither imports the other — the sibling-module
+rule applied *before* the second instance cost anything, for once.
 
 **A reimplemented PRNG validated on its first output has not been validated.** The
 proxy map's keystream starts from a zero state, and `state * state % modulus` is zero

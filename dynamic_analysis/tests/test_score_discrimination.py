@@ -286,7 +286,7 @@ class AttributionTests(unittest.TestCase):
         # reg.exe and rundll32.exe among the sample's processes -- all Windows
         # scheduled maintenance that fired because the window ran to 600s. The
         # sample had spawned nothing at all.
-        names = _sample_process_names(
+        names, _ = _sample_process_names(
             {
                 "lineage_resolved": True,
                 "spawned_processes": [
@@ -314,7 +314,7 @@ class AttributionTests(unittest.TestCase):
         # Without lineage nothing carries the flag, and filtering on it would
         # empty the set silently. The findings degrade by counting everything;
         # so does this.
-        names = _sample_process_names(
+        names, _ = _sample_process_names(
             {
                 "lineage_resolved": False,
                 "spawned_processes": [
@@ -326,11 +326,53 @@ class AttributionTests(unittest.TestCase):
 
         self.assertEqual(names, {"sample.exe", "rundll32.exe"})
 
+    def test_werfault_is_in_the_tree_and_still_not_the_sample(self) -> None:
+        """Windows reacting to the sample is not the sample acting.
+
+        The sample crashes, Windows starts WerFault as a child of the crashed
+        process, and lineage counts it -- correctly, that really is where it came
+        from. Then WER uploads its crash report over :443. On the 06 Aug 21:15 run
+        that put `192.0.2.123:443` in `sample_destinations`, with FakeNet naming
+        `wermgr.exe` at the same address. It cost nothing then because 443 is a
+        standard port and no domain was notable; it would have cost a category on
+        a non-standard one.
+        """
+        names, dropped = _sample_process_names(
+            {
+                "lineage_resolved": True,
+                "spawned_processes": [
+                    {"child_process_name": "regsvcs.exe", "descends_from_sample": True},
+                    {"child_process_name": "werfault.exe", "descends_from_sample": True},
+                    {"child_process_name": "wermgr.exe", "descends_from_sample": True},
+                ],
+            }
+        )
+
+        self.assertEqual(names, {"regsvcs.exe"})
+        # Named, not silently removed: a run that dropped it must not look like a
+        # run where WER never connected.
+        self.assertEqual(dropped, {"werfault.exe", "wermgr.exe"})
+
+    def test_a_crash_still_counts_as_the_samples_own_process(self) -> None:
+        # The narrowing is about WER, not about crashes. The process that crashed
+        # is the sample's and its traffic is the sample's.
+        names, dropped = _sample_process_names(
+            {
+                "lineage_resolved": True,
+                "spawned_processes": [
+                    {"child_process_name": "regsvcs.exe", "descends_from_sample": True},
+                ],
+            }
+        )
+
+        self.assertEqual(names, {"regsvcs.exe"})
+        self.assertEqual(dropped, set())
+
     def test_the_analyzers_own_launcher_is_never_the_sample(self) -> None:
         # The parent of the first spawn record is python.exe -- the workbench
         # launching the sample. Treating a spawn parent as sample lineage would
         # attribute the analyzer's own traffic to the sample.
-        names = _sample_process_names(
+        names, _ = _sample_process_names(
             {
                 "spawned_processes": [
                     {"process_name": "python.exe", "child_process_name": "sample.exe"}

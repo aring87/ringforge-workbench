@@ -49,6 +49,42 @@ def is_analyzer_image(value: object) -> bool:
     return any(marker in lowered for marker in ANALYZER_TOOL_IMAGE_MARKERS)
 
 
+#: Windows *reacting to* the sample, which is not the sample acting.
+#:
+#: Error Reporting is the case that keeps arising. The sample crashes, Windows
+#: starts `WerFault.exe` as a child of the crashed process, and lineage counts it
+#: as the sample's -- correctly, because the sample's tree really is where it came
+#: from. Then WER reads `SystemManufacturer`, `BIOSVersion` and `SystemProductName`
+#: for its crash report and tries to upload it over `:443`. Attributed by lineage
+#: alone that reads as a VM check and a C2 contact, and it is neither.
+#:
+#: **Lineage says a process belongs to the tree; it cannot say the behaviour
+#: belongs to the malware.** That distinction is what this list is for, and it is
+#: the only thing it is for -- a suppression aid that runs *before* attribution,
+#: never a substitute for it.
+#:
+#: Here rather than in either caller, because the VM-artifact pass and the network
+#: attribution both need it and neither imports the other. Both count what they
+#: removed rather than dropping it silently.
+#:
+#: Deliberately short. Every name is a process Windows starts *in response to*
+#: something the sample did, so the same reasoning would cover a troubleshooter
+#: fired by a crash or the indexer noticing a dropped file -- but those have not
+#: been observed polluting a finding yet, and a suppression list that grows on
+#: speculation is how attribution gets replaced by a name list.
+WINDOWS_RESPONSE_PROCESSES = frozenset({
+    "werfault.exe",
+    "werfaultsecure.exe",
+    "wermgr.exe",
+})
+
+
+def is_windows_response_process(value: object) -> bool:
+    """True when the process is Windows responding to the sample, not the sample."""
+    name = str(value or "").strip().lower().replace("/", "\\").rsplit("\\", 1)[-1]
+    return name in WINDOWS_RESPONSE_PROCESSES
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

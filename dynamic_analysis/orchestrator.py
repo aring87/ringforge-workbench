@@ -100,6 +100,7 @@ from dynamic_analysis.sysmon_collector import (
 from dynamic_analysis.utils import (
     ANALYZER_TOOL_IMAGE_MARKERS,
     ensure_dir,
+    is_windows_response_process,
     file_size,
     md5_file,
     sha1_file,
@@ -1046,8 +1047,16 @@ def _parse_redump_seconds(value: Any) -> int:
     return max(0, seconds)
 
 
-def _sample_process_names(findings_summary: dict[str, Any]) -> set[str]:
+def _sample_process_names(findings_summary: dict[str, Any]) -> tuple[set[str], set[str]]:
     """Process names the lineage filter already attributed to the sample.
+
+    Returns ``(names, windows_response_dropped)``. The second is what lineage
+    resolved into the tree correctly and this function then removed, because
+    Windows starting a process *in response to* the sample is not the sample
+    acting -- see `WINDOWS_RESPONSE_PROCESSES`. Returned rather than discarded so
+    the caller can report it: the 06 Aug 21:15 run put WER's `192.0.2.123:443` in
+    `sample_destinations`, and a run that quietly removed it would look identical
+    to a run where WER never connected.
 
     Only the *child* of a spawn record: the parent of the first spawn is the
     analyzer's own python.exe, and taking it would attribute the workbench's
@@ -1081,7 +1090,8 @@ def _sample_process_names(findings_summary: dict[str, Any]) -> set[str]:
         if name:
             names.add(name)
 
-    return names
+    dropped = {name for name in names if is_windows_response_process(name)}
+    return names - dropped, dropped
 
 
 def _attributed_connections(
@@ -1439,7 +1449,7 @@ def calculate_dynamic_score(
         }
     ) - notable_domains
 
-    sample_names = _sample_process_names(findings_summary)
+    sample_names, windows_response_names = _sample_process_names(findings_summary)
     attributed = _attributed_connections(fakenet_summary, sample_names)
 
     powershell = powershell_summary if isinstance(powershell_summary, dict) else {}
@@ -1564,6 +1574,11 @@ def calculate_dynamic_score(
             "sample_unusual_ports": attributed["unusual_ports"],
             "other_process_requests": attributed["unattributed_requests"],
             "other_non_baseline_domains": max(host_domains, 0),
+            # Removed from the sample's set after lineage put them there, and
+            # named rather than counted: WER connecting to report the sample's own
+            # crash is not the sample reaching a C2, and the two must not read
+            # alike. Their requests fall into other_process_requests above.
+            "windows_response_processes": sorted(windows_response_names),
         },
         "severity_floor_applied": floor_applied,
         "severity_floor_reason": floor_reason,
