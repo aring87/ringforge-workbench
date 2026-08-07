@@ -4,11 +4,14 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-07. Stage 2 has since been read at the IL level with a
-throwaway CLR metadata reader — an AES-256 key and IV recovered, the key-shaped string
-literals shown to be decoys, and two architecture-specific trampoline stubs found in
-the field data. The payload resource is still encrypted and `RecordAutomatedBuilder`
-(#1335) is the one method left to read; see *Read at the IL level*. Before that, the
+**Last updated:** 2026-08-07. Stage 2 has been read at the IL level: an AES-256 key and
+IV recovered, the key-shaped string literals shown to be decoys, two
+architecture-specific trampoline stubs found in the field data, and the protector's
+**proxy-delegate map decrypted — 1,181 bindings, no key needed** — which exposed a
+capability set nobody had seen, including `WebClient::DownloadFile` and `Process::Kill`.
+The payload resource `na3PRqPuA2` is still encrypted, and that is now a de4dot job
+rather than a decompiler one. The reader is `scripts/dotnet_meta.py`; see *Read at the
+IL level*. Before that, the
 loader's ninth run (`f3d26e46`, 04:41),
 where `parent-at-spawn` fired for the first time and recovered an **892 KB x86 .NET
 assembly that exists in no other dump** — the first artifact here that no choice of
@@ -645,6 +648,15 @@ Every module with dead detection markers had dead exclusion markers too. A live
 detector against a dead exclusion list is worse than both being dead, because
 the analyzer writes thousands of files into the directory it is watching.
 
+**A reimplemented PRNG validated on its first output has not been validated.** The
+proxy map's keystream starts from a zero state, and `state * state % modulus` is zero
+whatever the modulus is — so the first output word was correct while the modulus was
+wrong, and only word two diverged. The first token decrypted to a valid Field token and
+looked like success. Check a stream cipher against *several* outputs, or against a
+structural property of the whole plaintext: "all 1,181 keys are Field tokens" is the
+assertion that actually settled it, and it is in `scripts/dotnet_meta.py` as a
+pass/fail line rather than left to whoever runs it next.
+
 **A literal that looks like a key may be there to be guessed at.** Ten
 random-looking 16-to-21 character strings sat beside an AES call in the 892 KB stage,
 and about 4,000 key derivations were tried against them before the IL showed what they
@@ -1001,13 +1013,16 @@ why. See *Read at the IL level* below.
 
 ### Read at the IL level, 07 Aug
 
-No ILSpy or dnSpy on the host, and no .NET **SDK** — only runtimes — so
-`dotnet tool install -g ilspycmd` cannot run. This was done instead with a
-throwaway CLR metadata reader: `#~` table row sizes, `#Strings`/`#US`/`#Blob`
-heaps, `MethodDef` bodies, `MemberRef` name resolution and the `FieldRVA` table.
-6,165 methods, 3,697 with bodies, 499 member references resolved to readable names.
-**That tooling was written in a session scratch directory and is not in this repo.**
-The carved image itself is on the host, so everything below is re-derivable from it.
+This started before there was a decompiler on the host — no ILSpy, no dnSpy, and no
+.NET **SDK**, so `dotnet tool install -g ilspycmd` could not run — with a CLR metadata
+reader written for the purpose. **That tooling is now `scripts/dotnet_meta.py`**, which
+needs only `pefile` and reproduces everything below: heaps, tables, method bodies with
+`ldstr` and call targets resolved, `FieldRVA` byte-array literals, managed resources,
+and the proxy-map decryption with its own pass/fail self-check. 6,165 methods, 3,697
+with bodies, 499 member references resolved to names.
+
+ILSpy 11 was installed afterwards (standalone zip, .NET 10 runtime) and read the
+methods the homegrown disassembler could not — anything control-flow flattened.
 
 **An AES-256 key and IV, recovered.** `HandleSender` (method #1357) reads both from
 IL byte-array literals through `RuntimeHelpers::InitializeArray`:
@@ -1063,14 +1078,67 @@ bypass here, because the string `amsi` does not appear anywhere in the image in
 either encoding** — the hook target is unidentified and guessing it would be the same
 mistake as the key literals.
 
-**Where it stopped.** `RecordAutomatedBuilder` (#1335) is the only unread method that
-matters: 1,611 bytes of IL, `GetManifestResourceStream` plus `BinaryReader.ReadBytes`,
-and it holds the payload's framing and key selection. **Getting that resource
-decrypted is still the highest-value open item in the project** — it is where the
-config and the C2 live. The homegrown reader has no control-flow reconstruction, so
-1,611 bytes of obfuscated IL with exception handlers is where it stops being the right
-tool; ILSpy is, and installing it needs a download decision (its standalone release is
-the cheaper of the two, since the .NET 8 Desktop runtime is already present).
+**`RecordAutomatedBuilder` (#1335) is not the payload loader** — an earlier version of
+this section said it held the payload's framing and key selection, and that was wrong.
+ILSpy, once installed, showed it to be the protector's own runtime: it reads a resource
+`StrategyEnumerator.SegmentedInitializer`, decrypts it to a `Dictionary<int,int>` of
+field token to method token, and binds a delegate to every static field of the
+requested type — `Delegate.CreateDelegate` for statics, a `DynamicMethod` with
+`Tailcall` for instance methods, bit `0x40000000` selecting `callvirt` over `call`.
+That is **proxy-delegate call hiding**, and it is why the call graph looked so thin.
+
+### The proxy map, decrypted
+
+`scripts/dotnet_meta.py --proxy-map` does it. **1,181 bindings, and all 1,181 keys are
+valid Field tokens** — which is the self-check: a wrong keystream fails it on the first
+pass. Targets split **885 internal** `MethodDef` and **296 external** `MemberRef`, over
+266 distinct members. Two independent counts agree that this is the right resource: the
+blob is 9,448 bytes, exactly 1,181 × 8, and the assembly holds exactly 1,181 methods
+named `ConfigureSortedElement` — the proxy stubs.
+
+**There is no key.** Every constant in the keystream is hardcoded and the state starts
+at zero, so the map is computable from the carved image alone.
+
+**What the hidden calls are.** None of this was visible before, because call hiding
+strips the tokens from every caller — these are capabilities present in the binary, not
+observed behaviour:
+
+| | |
+|---|---|
+| Download | `WebClient::DownloadFile` |
+| Persistence | `RegistryKey::CreateSubKey`, `SetValue` ×2, `OpenSubKey`, `GetValue` |
+| File | `File::Copy`, `Exists`, `CreateText`, `WriteAllText`, `Path::GetRandomFileName`, `FileSystemInfo::set_Attributes`, `FileSystemSecurity::AddAccessRule` |
+| Process | `Process::Start` ×2 with `ProcessStartInfo` FileName/Arguments/WindowStyle, `GetProcesses`, `GetProcessById`, `get_Id`, `Kill` |
+| Native interop | `Marshal::GetDelegateForFunctionPointer`, `AllocHGlobal`, `SizeOf` |
+| Reflective load | `Assembly::Load`, `get_EntryPoint`, `ResourceManager::GetObject` |
+
+**Three things that revises.**
+
+- **It is a downloader as well as a carrier.** Gap 1's sample-selection reasoning turns
+  on Remcos carrying everything it needs while a downloader stalls in a contained
+  guest. This sample has `DownloadFile`, so containment is now a *candidate
+  explanation* for why its chain dies — which had not been on the list.
+- **Its persistence and drop code demonstrably exist.** "Persistence and dropped files
+  sitting at 0 for this sample is a property of the sample" still holds, and now for a
+  better reason: the code is present and never reached, rather than absent.
+- **`Process::Kill` with `GetProcesses`** is a defence-evasion capability nobody had
+  seen on this sample.
+
+**Where the chase stops, and why de4dot is the next tool.** The proxy fields are loaded
+by tiny 12-to-25-byte wrapper methods — `PeekExtractor` for `GetObject`,
+`ConfigureLiteralResolver` for `Assembly::Load`, `NewRecommender` for `DownloadFile` —
+and real code calls those, with 885 internal bindings meaning proxies on proxies. The
+string table adds another layer: `RecordInternalAllocator` is control-flow flattened
+across 345 dispatcher states, building a 32-byte key and a 16-byte IV one byte per
+state, XORing the key against the finished IV, and splicing bytes derived from the
+assembly's own identity into the IV. Hand-tracing that is not viable — several indices
+are written by multiple states with different values, so the result depends on a path
+decided by opaque predicates.
+
+**Decrypting `na3PRqPuA2` is still the highest-value open item**, and it is now clearly
+a deobfuscator's job rather than a decompiler's: control-flow flattening, proxy
+delegates, encrypted strings and a caller-identity guard are the full feature set
+de4dot exists for. `scripts/dotnet_meta.py` covers everything up to that point.
 
 **For gap 4, a weak negative.** No VM, sandbox, debugger, WMI or hardware-identity
 token appears anywhere in this image, in either encoding — searched for explicitly.
