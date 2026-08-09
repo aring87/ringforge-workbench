@@ -4,7 +4,15 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-09. **The stage-2 payload `na3PRqPuA2` is decrypted.** The
+**Last updated:** 2026-08-09. **The stage-2 payload `na3PRqPuA2` is decrypted; stage
+3's own inner blob is not.** Stage 3 turned out to be a native x86 loader carrying a
+272 KB packed blob, and that blob defeats static attack outright — no periodicity, no
+repeated blocks, nothing from XOR/additive/recurrence/RC4 across 55 candidate keys.
+Emulating the stub (`scripts/emulate_native_stub.py`) gets much further: no imports
+needed, `NtAllocateVirtualMemory` for `0x457e1` bytes, self-relocation, jump into the
+allocation, and real unpacking — then it **stalls**, static for 40M+ basic blocks
+after ~9M, with no PE ever appearing. Environment gap or anti-emulation bail, not yet
+distinguished; see *Stage 3's inner blob*. The
 inverse index over the proxy map was built, the call graph rebuilt behind it, and
 it reached the decryptor: `#470 ConcatAllocator`, a hand-rolled byte recurrence with
 the ASCII key `HREWPjFNAr` — **not AES**, which is why 792 AES combinations had
@@ -591,6 +599,7 @@ run for a long time without showing.
 | IL decoder completeness | **Proven structurally**, 09 Aug — 0 undecoded bytes across 61,113 instructions in all 3,697 bodies. This is the right shape of check: an incomplete opcode table cannot reach zero, because an unrecognised opcode's operand decodes to further unrecognised bytes. Before the fix it was silently wrong on every flattened method and nothing said so |
 | Proxy-aware call graph | **Proven on the artefact it was built for.** 1,181 of 1,181 bindings have a consumer, and it produced the payload decryptor from a standing start. Unproven on any *other* protected sample — the map locator is generic, but nothing else has been run through it |
 | Stage-2 payload decryption | **Proven by the plaintext.** `PE\0\0` at the `e_lfanew` the header itself declares, a coherent section table, and 3.5 KB of header padding decrypting to entropy 0.000. Key recovered algebraically, not searched |
+| Native stub emulation | **Drives a no-import stub; has never finished one.** Carries stage 3 through PEB walk, name resolution, `NtAllocateVirtualMemory` and self-relocation, and it demonstrably unpacks — then stalls after ~9M basic blocks with no PE produced. Read the `CHANGED / UNCHANGED` line *and* the stall block count; the first version of that check could not fail and reported a falsehood |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window
@@ -1521,6 +1530,70 @@ output when the check fails, rather than emitting a plausible-looking file.
   x86 and x64 trampoline stubs already found in the field data, is the plausible
   execution path. **Which of them actually runs is not established**, and guessing it
   would repeat the mistake this section exists to record.
+
+### Stage 3's inner blob — emulated, partly unpacked, not finished, 09 Aug
+
+Stage 3 is 7 KB of x86 stub plus a 272 KB blob at file offset `0x2c00` — length
+`0x42c00`, which is a literal in the entry function's own argument set rather than a
+guess, and `0x45800 - 0x42c00` lands exactly on it. **The blob is not recovered.**
+What follows is how far it got and precisely where it stopped.
+
+**Static attack: exhausted, and the negative is the useful part.** The blob has flat
+byte statistics, **17,088 sixteen-byte blocks with not one repeat**, and no
+periodicity at any period up to 192. Repeating-key XOR, additive, subtractive, both
+chained-recurrence forms and RC4 were run against a stock MZ/DOS stub over 55
+candidate keys drawn from the code constants and the 295-byte gap ahead of the blob.
+No MZ from any of them. **The stage-2 trick does not transfer** — there is no simple
+keyed transform here to invert, and no amount of further guessing changes that.
+
+**So the stub was emulated instead** — `scripts/emulate_native_stub.py` on Unicorn,
+with `scripts/win32_emu_env.py` supplying the process around it. A decryptor does not
+have to be understood to be run, which matters because this stub is flattened the same
+way stage 2 was, only in machine code: an if-else handler chain behind a dispatcher
+that locates its context by scanning the stack for the cookie `0x589dee90`, planted by
+the entry function at `0x2701`, and relocates itself via a `call`/`pop` get-EIP at
+`0x40117a`. Reversing all of that statically is a much larger job than running it.
+
+What emulation established that static reading had not:
+
+- the stub runs **~5.8M instructions needing no imports at all**, walking the PEB and
+  resolving by name from the loader module list
+- it calls **`NtAllocateVirtualMemory` directly, never `VirtualAlloc`** — worth
+  knowing, because a hook placed on the Win32 name would not see it
+- it asks for **`0x457e1` bytes**, copies itself into that allocation and **jumps into
+  it**, after which the allocation holds real code including a statically linked CRT
+  (`memset`, `strlen`, `wcslen`) and a CRC-32 table builder (`xor eax, 0x4c11db7`,
+  256 entries — so a CRC or checksum is part of whatever comes next)
+- **it does unpack**: the allocation moves from entropy 7.969 to 7.642 and from
+  278,455 to 269,003 non-zero bytes
+
+**Then it stalls.** The last change lands at roughly 9M basic blocks and the
+allocation is byte-identical for the 40M+ blocks after it; a separate 600M-block run
+agrees, static from 20M onward. No PE ever appears. Something the relocated code
+checks is not satisfied here and it retries forever. Untested candidates: a timing or
+tick-count check, a PEB or heap field this harness leaves zero, a thread it expects to
+have started, or a genuine anti-emulation guard. **That last one bears on gap 4** — a
+deliberate bail would present exactly like this, and this sample's chain has died
+deterministically for nine runs.
+
+**Two harness facts that each cost a cycle and will cost the next person the same.**
+`UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
+no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed
+export-name list is the wrong tool: a name that is not in it resolves to 0 and then
+gets *called*, surfacing as `eip 0x0` a long way from the cause. Read the real export
+names out of the host's own `SysWOW64\kernel32.dll` and `ntdll.dll` (1,665 and 2,517
+names) — free, authoritative, and it removes the whole class of failure.
+
+**A self-check that could not fail, caught by its own output.** The harness first
+compared the earliest allocation snapshot against the *last snapshot*; with one
+snapshot those are the same sample, so the verdict could only ever read `UNCHANGED`.
+It printed exactly that — and on the strength of it this document briefly asserted the
+stub "is not unpacking at all", which was false. It unpacks and then stops, which is a
+different finding with different next steps. The check now compares the first snapshot
+against the final state **and reports the block count at which change ceased**,
+because *"it changed at some point"* and *"it is still making progress"* are different
+claims and only the second means waiting longer is worth anything. Same lesson as the
+ten-byte key check earlier in this document, one layer up.
 
 
 **A rule that matches where the ruleset matched nothing.**
