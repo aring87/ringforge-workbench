@@ -10,9 +10,11 @@ doing next.
 repeated blocks, nothing from XOR/additive/recurrence/RC4 across 55 candidate keys.
 Emulating the stub (`scripts/emulate_native_stub.py`) gets much further: no imports
 needed, `NtAllocateVirtualMemory` for `0x457e1` bytes, self-relocation, jump into the
-allocation, and real unpacking — then it **stalls**, static for 40M+ basic blocks
-after ~9M, with no PE ever appearing. Environment gap or anti-emulation bail, not yet
-distinguished; see *Stage 3's inner blob*. The
+allocation, and real unpacking. It was twice reported here as **stalling**; it does
+not — single-stepping found RC4 PRGA at `0x40231f` running to completion, and the
+progress check had been watching an allocation while the output went to the stack.
+Whether the emulation *diverges* on a wrong API answer is the real open question; see
+*Stage 3's inner blob*. The
 inverse index over the proxy map was built, the call graph rebuilt behind it, and
 it reached the decryptor: `#470 ConcatAllocator`, a hand-rolled byte recurrence with
 the ASCII key `HREWPjFNAr` — **not AES**, which is why 792 AES combinations had
@@ -599,7 +601,7 @@ run for a long time without showing.
 | IL decoder completeness | **Proven structurally**, 09 Aug — 0 undecoded bytes across 61,113 instructions in all 3,697 bodies. This is the right shape of check: an incomplete opcode table cannot reach zero, because an unrecognised opcode's operand decodes to further unrecognised bytes. Before the fix it was silently wrong on every flattened method and nothing said so |
 | Proxy-aware call graph | **Proven on the artefact it was built for.** 1,181 of 1,181 bindings have a consumer, and it produced the payload decryptor from a standing start. Unproven on any *other* protected sample — the map locator is generic, but nothing else has been run through it |
 | Stage-2 payload decryption | **Proven by the plaintext.** `PE\0\0` at the `e_lfanew` the header itself declares, a coherent section table, and 3.5 KB of header padding decrypting to entropy 0.000. Key recovered algebraically, not searched |
-| Native stub emulation | **Drives a no-import stub; has never finished one.** Carries stage 3 through PEB walk, name resolution, `NtAllocateVirtualMemory` and self-relocation, and it demonstrably unpacks — then stalls after ~9M basic blocks with no PE produced. Read the `CHANGED / UNCHANGED` line *and* the stall block count; the first version of that check could not fail and reported a falsehood |
+| Native stub emulation | **Drives a no-import stub; has not yet produced a payload.** Carries stage 3 through PEB walk, name resolution, `NtAllocateVirtualMemory`, self-relocation and RC4 decryption that runs to completion. It was twice called a stall and is not one. Do not trust a buffer-watching progress check here — two versions of it gave false answers, the second while being capable of failing, because it watched the allocation while the output went to the stack |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window
@@ -1567,14 +1569,32 @@ What emulation established that static reading had not:
 - **it does unpack**: the allocation moves from entropy 7.969 to 7.642 and from
   278,455 to 269,003 non-zero bytes
 
-**Then it stalls.** The last change lands at roughly 9M basic blocks and the
-allocation is byte-identical for the 40M+ blocks after it; a separate 600M-block run
-agrees, static from 20M onward. No PE ever appears. Something the relocated code
-checks is not satisfied here and it retries forever. Untested candidates: a timing or
-tick-count check, a PEB or heap field this harness leaves zero, a thread it expects to
-have started, or a genuine anti-emulation guard. **That last one bears on gap 4** — a
-deliberate bail would present exactly like this, and this sample's chain has died
-deterministically for nine runs.
+**It does not stall. That claim was wrong, twice, and the correction is the most
+useful thing in this section.** Two successive versions of this document said the
+stub stalls — first "is not unpacking at all", then "unpacks and then stops, running
+longer will not help". Single-stepping settled it: the loop at `0x40231f` is **RC4
+PRGA**, `i = i + 1`, `j = j + S[i]`, swap, keystream byte, with `[ctx+0x60]` counting
+bytes against a length in `[ctx+0x90]`. It is 99 instructions per byte, so a 300k
+instruction sample covers 3,031 bytes and its single exit branch reads `taken=0` while
+being perfectly healthy. Reading the loop's own counter shows it running 3,852 →
+4,341 → **13,670 of 13,670, complete**, after which execution moves on.
+
+**Both wrong calls came from the same mistake: watching a buffer nobody had shown was
+the one being written.** The check sampled `allocs[0]`, the `NtAllocateVirtualMemory`
+region. This RC4 pass writes to a **stack** buffer at `0x2ff040`. So the allocation
+holding still was never evidence about progress, and "unchanged" read as a finding
+when it was a statement about where the check was pointed. That is the same shape as
+`collection_available` in gap 4b, and as the dead path markers: **an instrument aimed
+at the wrong place reports absence, and absence looks like an answer.** Measure the
+subject's own counter where it has one — the loop had a byte counter in its context
+struct the whole time.
+
+**What is actually unknown** is whether the emulation *diverges*. The harness answers
+`GetProcAddress` with a `Sleep` stub for every name, claims success from
+`VirtualProtect`, and invents a heap handle for `RtlGetProcessHeaps`. Any of those can
+steer the code down a path the real thing would not take, silently and without ever
+faulting. Logging each API call with arguments and return value, and looking for one
+whose answer the code visibly rejects, is the open question — not "why is it stuck".
 
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
@@ -1584,16 +1604,14 @@ gets *called*, surfacing as `eip 0x0` a long way from the cause. Read the real e
 names out of the host's own `SysWOW64\kernel32.dll` and `ntdll.dll` (1,665 and 2,517
 names) — free, authoritative, and it removes the whole class of failure.
 
-**A self-check that could not fail, caught by its own output.** The harness first
-compared the earliest allocation snapshot against the *last snapshot*; with one
-snapshot those are the same sample, so the verdict could only ever read `UNCHANGED`.
-It printed exactly that — and on the strength of it this document briefly asserted the
-stub "is not unpacking at all", which was false. It unpacks and then stops, which is a
-different finding with different next steps. The check now compares the first snapshot
-against the final state **and reports the block count at which change ceased**,
-because *"it changed at some point"* and *"it is still making progress"* are different
-claims and only the second means waiting longer is worth anything. Same lesson as the
-ten-byte key check earlier in this document, one layer up.
+**A self-check that could not fail, caught by its own output — and then a second one
+that could fail and was still pointed at the wrong thing.** The harness first compared
+the earliest allocation snapshot against the *last snapshot*; with one snapshot those
+are the same sample, so the verdict could only ever read `UNCHANGED`. Fixing that to
+compare against the final state made the check *capable* of failing, and it still gave
+a false answer, because the buffer it watched was not the one being written. **A check
+that can fail is necessary and not sufficient; it also has to be aimed at the
+subject.** Both revisions of this section were published before that was noticed.
 
 
 **A rule that matches where the ruleset matched nothing.**
@@ -1646,12 +1664,12 @@ as the carver's eleven unmapped images in an idle Python process.
 was. It is still **not** conclusive: the 272 KB inner blob is packed and the
 allocation only partly unpacked, so this is a stronger bounded negative, not a proof.
 
-**And it points the emulator work.** The stall in `emulate_native_stub.py` was left as
-*environment gap or anti-emulation bail, not distinguished*. There is no evidence for
-the second in anything readable, so **the environment gap is now the better-supported
-reading** — which makes single-stepping the stall loop a debugging job with a real
-chance of finishing, rather than an attempt to defeat a guard. That was the point of
-running this search first: it was cheap and it chose the next expensive thing.
+**What it does and does not settle for the emulator.** This search was run to choose
+between *environment gap* and *anti-emulation bail* as explanations for what looked
+like a stall in `emulate_native_stub.py`. The reasoning was sound and the premise was
+not: single-stepping then showed there is no stall to explain. The search stands on its
+own evidence — no anti-analysis primitive in anything readable — but nothing should be
+inferred from it about a stall that does not exist.
 
 ### The 06 Aug 21:15 run — the guard held, the config did not, and the packer got away
 

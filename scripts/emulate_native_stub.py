@@ -17,17 +17,30 @@ WHAT IT ESTABLISHES, and it got further than static analysis did:
 * the allocation then holds real code, including a statically linked CRT
   (`memset`, `strlen`, `wcslen`) and a CRC-32 table builder
 
-WHERE IT STOPS, stated plainly because a harness that hangs and a harness that
-is wrong must not look alike: after the self-relocation the unpacked code enters
-an **infinite outer loop** around the CRC-32 table builder. Run to 600M basic
-blocks, the allocation is byte-for-byte identical at every 20M-block snapshot --
-same entropy, same non-zero count. So it is not unpacking slowly, it is not
-unpacking at all. Something the relocated code checks is not satisfied by this
-environment and it retries forever. The candidates, none of them tested: a
-timing or tick-count check, a heap or PEB field this harness leaves zero, a
-thread it expects to have started, or a genuine anti-emulation guard.
+IT DOES NOT STALL, and two earlier versions of this docstring said it did. That
+mistake is worth more than the tool. The loop at 0x40231f is RC4 PRGA -- i = i+1,
+j = j + S[i], swap, keystream byte -- at 99 instructions per byte, with a byte
+counter in its own context struct at [ctx+0x60] and a length at [ctx+0x90]. Read
+that counter and it runs 3,852 -> 4,341 -> 13,670 of 13,670 and completes.
+Sampled instead through a 300k-instruction window, its single exit branch reads
+`taken=0 of 3,031` and looks stuck.
 
-Do not read a quiet run as a clean one. Check that the allocation *changed*.
+Both wrong calls came from watching `allocs[0]`, the NtAllocateVirtualMemory
+region, while this pass writes to a *stack* buffer at 0x2ff040. The allocation
+holding still was never evidence about progress. The first version of that check
+could not fail at all; the second could, and was still aimed at the wrong buffer.
+**A check that can fail is necessary and not sufficient -- it also has to be
+pointed at the subject.** Where the subject keeps its own counter, read that.
+
+WHAT IS ACTUALLY UNKNOWN is whether the emulation *diverges*. This harness
+answers GetProcAddress with a Sleep stub for every name, claims success from
+VirtualProtect, and invents a heap handle for RtlGetProcessHeaps. Any of those
+can steer execution down a path the real thing would not take, silently, without
+ever faulting. Log each call with arguments and return value and look for one the
+code visibly rejects.
+
+So: do not read a quiet run as a clean one, and do not read an unchanged buffer
+as a stalled one either.
 
 Usage:
 
@@ -263,16 +276,18 @@ def main(argv: list[str] | None = None) -> int:
               f"final state: entropy {e0:.3f} -> {e1:.3f}, "
               f"non-zero {nz0} -> {nz1}  "
               f"({'CHANGED -- it unpacked something' if moved else 'UNCHANGED'})")
-        # "Changed at some point" and "still making progress" are different
-        # claims, and only the second means waiting longer is worth anything.
-        # Stage 3 moves early and then stops dead, so report the stall point
-        # rather than letting one early change vouch for the whole run.
+        # This reports where the watched buffer last moved, and nothing more.
+        # It must not be phrased as a verdict on progress: on stage 3 it went
+        # quiet while an RC4 pass ran happily against a stack buffer, and two
+        # write-ups called that a stall on the strength of this line.
         tail = [s for s in emu.snapshots if s[2] == nz1]
         if tail and len(tail) > 1:
             since = tail[0][0]
-            print(f"  last change at ~{since:,} blocks; static for the "
-                  f"{emu.blocks - since:,} blocks since -- it has stalled, "
-                  f"and running longer will not help")
+            print(f"  watched buffer last moved at ~{since:,} blocks, static for "
+                  f"the {emu.blocks - since:,} since")
+            print("  NOT a progress verdict -- the stub may be writing somewhere "
+                  "this check never looks. Confirm against a counter the code "
+                  "keeps itself before concluding anything.")
 
     for p, n in emu.allocs:
         mem = bytes(emu.mu.mem_read(p, n))
