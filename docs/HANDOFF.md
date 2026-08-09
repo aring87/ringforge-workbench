@@ -4,14 +4,25 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-07. The bench gained a .NET toolchain (ILSpy 11, SDK
+**Last updated:** 2026-08-09. **The stage-2 payload `na3PRqPuA2` is decrypted.** The
+inverse index over the proxy map was built, the call graph rebuilt behind it, and
+it reached the decryptor: `#470 ConcatAllocator`, a hand-rolled byte recurrence with
+the ASCII key `HREWPjFNAr` — **not AES**, which is why 792 AES combinations had
+failed. The key was recovered algebraically from a known PE header rather than
+guessed, and what came out is a **native x86 PE32 carrying its own 272 KB encrypted
+stage**, so the config and C2 are one layer further down. Two things fell out of it
+that the pipeline should know: the IL decoder was missing every comparison branch
+and `endfinally`, silently corrupting exactly the flattened methods worth reading
+(now 0 undecoded bytes in 61,113 instructions), and **stage 3 carries `RegSvcs.exe`'s
+own `TimeDateStamp`**, which defeats the timestamp comparison *Reading a run* tells
+you to make. See *The call graph, rebuilt*. Before that, the bench gained a .NET
+toolchain (ILSpy 11, SDK
 10.0.302, de4dot built from source). Stage 2 was lost, re-acquired on the first
 re-run, and then partly eaten by Bitdefender — it survives XOR-wrapped on the
 external drive. Its resources are now named rather than guessed at, its flattening
 is defeated (both opaque predicates are constant), and an AES key was recovered by
 executing the builder statically — for the wrong target, which is the better half
-of that sentence. **The open task is an inverse index over the proxy map to rebuild
-the call graph**; see *The 892 KB stage*. Before that, the
+of that sentence. Before that, the
 loader's tenth run (`5457f804`, 14:53) was the first ever to capture a registry
 read. Gap 4b's collection path is proven end to end,
 Procmon accepts the generated `.pmc`, and the volume cost is 2.2x events for 281s. Its
@@ -74,7 +85,10 @@ before it can decrypt stage 3, identically every time.
 The pipeline recovered that payload on 06 Aug and static analysis identified it
 end to end: a SmartAssembly-protected reflective loader disguised as a
 sliding-puzzle game, `SmartOptimization.dll`, with no config anywhere in it —
-the config is in the stage it would invoke, which the crash prevents. See
+the config is in the stage it would invoke, which the crash prevents. Its stage-2
+payload was decrypted on 09 Aug and is **another loader**, native x86, wrapping a
+further 272 KB encrypted stage — so "the config is one stage down" has now been
+true twice, and there is no evidence yet about how deep it goes. See
 *Loader reference data*.
 
 Both controls pass:
@@ -574,6 +588,9 @@ run for a long time without showing.
 | Chain-crashed warning (gap 4) | **Proven on a live run**, 06 Aug 20:23 — both witnesses agreed, the card rendered above the verdict naming `RegSvcs.exe (pid 4264)`. The run also exposed `werfault_pid` reporting the crashed PID rather than WerFault's, now fixed; `chain_crashed` and `crashed_pid` were never wrong |
 | Registry-read collection (gap 4b) | **Proven end to end**, 07 Aug 14:53. Procmon accepted the generated `.pmc` (`registry_read: 143,805`), lineage resolved, and the pass produced hits. Volume measured at 2.2x events for 281s total — no teardown blowup. Its first exposure to real data found the false-positive class it needed to: nine hits, all Windows, now suppressed and counted |
 | `.pmc` filter rewrite | **Round-trip byte-exact** on `dynamic_default.pmc`, and the generated config re-parses. That the *format model* is right is well evidenced; that **Procmon loads it** is not tested and cannot be on the host. Check the run's `Operation` values before trusting an empty result |
+| IL decoder completeness | **Proven structurally**, 09 Aug — 0 undecoded bytes across 61,113 instructions in all 3,697 bodies. This is the right shape of check: an incomplete opcode table cannot reach zero, because an unrecognised opcode's operand decodes to further unrecognised bytes. Before the fix it was silently wrong on every flattened method and nothing said so |
+| Proxy-aware call graph | **Proven on the artefact it was built for.** 1,181 of 1,181 bindings have a consumer, and it produced the payload decryptor from a standing start. Unproven on any *other* protected sample — the map locator is generic, but nothing else has been run through it |
+| Stage-2 payload decryption | **Proven by the plaintext.** `PE\0\0` at the `e_lfanew` the header itself declares, a coherent section table, and 3.5 KB of header padding decrypting to entropy 0.000. Key recovered algebraically, not searched |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window
@@ -717,6 +734,35 @@ structural property of the whole plaintext: "all 1,181 keys are Field tokens" is
 assertion that actually settled it, and it is in `scripts/dotnet_meta.py` as a
 pass/fail line rather than left to whoever runs it next.
 
+**An API name in an image is not a statement about the artefact in front of you.**
+`na3PRqPuA2` was called AES for two days because an `AesCryptoServiceProvider`
+string sat near it and its length divided by 16. Neither is evidence: the string
+belongs to the protector's string layer in a different type, and any even buffer
+divides by a block size. The rebuilt call graph settled it in one query — the image
+holds exactly two decryptors and **neither is reachable from the payload path** — and
+the real cipher turned out to be hand-rolled IL with no crypto API at all. *Ask what
+reaches the artefact, not what the binary happens to contain.* The same query is the
+cheap version of the standing rule about reading one method body before running one
+brute force: 792 combinations were spent on the wrong algorithm, not merely the
+wrong key.
+
+**Invert the cipher before searching its key space.** The payload cipher subtracts
+the *next, still-encrypted* byte, which means it inverts against known plaintext:
+one line of algebra over a stock MZ stub returned the key directly, and returned it
+*checkable* — printable ASCII repeating with period 10, which a wrong answer is not.
+No brute force was run at all. When a routine is short enough to read, read it for a
+relation between plaintext and key before treating the key as something to look for.
+
+**A decoder's completeness is testable without knowing what it should say.** The IL
+decoder was missing every comparison branch and `endfinally`, so it desynchronised
+on precisely the control-flow-flattened methods that mattered, and produced
+confident-looking garbage. The check that fixed it needs no ground truth: *count the
+bytes the decoder could not name*. Zero across 61,113 instructions is only reachable
+if the table is complete, because an unknown opcode's operand decodes to more
+unknowns. The two-byte table already carried a comment naming this exact failure;
+the one-byte table beside it had the same hole. **When a comment warns about a
+failure mode, check the sibling structure for it in the same change.**
+
 **A literal that looks like a key may be there to be guessed at.** Ten
 random-looking 16-to-21 character strings sat beside an AES call in the 892 KB stage,
 and about 4,000 key derivations were tried against them before the IL showed what they
@@ -838,7 +884,10 @@ Order to check things in, learned the hard way:
 6. **Executables The Loader Never Mapped.** Structural, so it works where a
    signature does not: the 05 Aug payload matched no rule in the set and was
    conclusive from its headers. Read the two timestamps side by side — an image
-   years newer than the process hosting it did not ship with it. Then read *What
+   years newer than the process hosting it did not ship with it — **but a matching
+   timestamp proves nothing**, and quietly: stage 3 of `422e30ed…` carries
+   `RegSvcs.exe`'s own `0x5ff2b99b`, so on that sample the comparison is defeated by
+   construction. The structural findings here do not depend on it. Then read *What
    Each Dump Held* underneath it: a zero in `Unmapped` on a hollowed process only
    means "no payload" if `Known module` is zero there too.
 7. **Memory-only rules.** The actual finding on a packed sample — but an
@@ -1136,12 +1185,11 @@ which is why searching for the latter kept finding only protector runtime. That
 call is proxy-bound, and nothing calls the proxy wrappers directly either; they sit
 behind further proxies.
 
-**The next step, and it is mechanical rather than speculative.** Build an inverse
-index over the decrypted proxy map — which methods load which proxy field — and
-walk it to reconstruct the real call graph. The map is already decrypted and
-verified (1,181 bindings, all keys Field tokens), so this is bookkeeping over data
-that exists. It would de-obfuscate the whole assembly's control flow, not only this
-question, and it is what reaches the payload's decryptor.
+**DONE, 09 Aug, and it reached the payload.** The inverse index is built, the call
+graph is rebuilt, the decryptor is found and `na3PRqPuA2` is decrypted. See *The
+call graph, rebuilt* below. The prediction that it would de-obfuscate the whole
+assembly's control flow rather than only this question held: one root method,
+`#249 BuildModule`, turned out to reach the entire capability set.
 
 
 The image the parent-at-spawn dump recovered, read with `pefile` on the host. The
@@ -1187,9 +1235,11 @@ contents**, independently of the crash evidence and of the carver.
 **And the stage nobody has seen.** One encrypted resource, `na3PRqPuA2`, beside
 `System.Security.Cryptography.AesCryptoServiceProvider`:
 
-- **284,673 bytes = 1 flag byte + exactly 17,792 AES blocks.** Entropy 7.998, all
-  256 byte values present with a flat histogram, 8 repeated blocks in 17,792 — so
-  not ECB over structured plaintext.
+- **284,673 bytes.** Entropy 7.998, all 256 byte values present with a flat
+  histogram. This was read as "1 flag byte + exactly 17,792 AES blocks", and that
+  was **wrong** — it is not AES and there is no block structure. 284,672 divides
+  by 16 the way any even-sized buffer might, and dividing by the block size of a
+  cipher is not evidence that the cipher is in use. See *The call graph, rebuilt*.
 - Its resource reader is mscorlib **4.0.0.0** while every decoy UI resource is
   **2.0.0.0**. Two toolchains in one assembly, which is a detectable artifact in
   its own right and is in the rule below.
@@ -1202,6 +1252,14 @@ random `#US` literals were tried as keys — UTF-8 and UTF-16, raw and MD5 and S
 128/192/256-bit, ECB and CBC with zero and prefix IV, against both `payload[1:]` and
 the aligned whole: **792 combinations, no MZ and no printable block.** Then the IL said
 why. See *Read at the IL level* below.
+
+**And the deeper reason none of them could ever have worked**: the payload is not
+encrypted with AES at all, so every one of those 792 combinations was the wrong
+*algorithm*, not merely the wrong key. The `AesCryptoServiceProvider` string that
+put AES on the table belongs to the protector's string layer, which sits in a
+different type and is never reached from the payload path. **A cryptographic API
+name in an image says the image contains that API, not that the artefact in front
+of you went through it.** The call graph is what separates those two, and it did.
 
 ### Read at the IL level, 07 Aug
 
@@ -1327,16 +1385,143 @@ assembly's own identity into the IV. Hand-tracing that is not viable — several
 are written by multiple states with different values, so the result depends on a path
 decided by opaque predicates.
 
-**Decrypting `na3PRqPuA2` is still the highest-value open item**, and it is now clearly
-a deobfuscator's job rather than a decompiler's: control-flow flattening, proxy
-delegates, encrypted strings and a caller-identity guard are the full feature set
-de4dot exists for. `scripts/dotnet_meta.py` covers everything up to that point.
+**Decrypting `na3PRqPuA2` was the highest-value open item and it is now closed** —
+by the inverse index rather than by de4dot. This paragraph used to say it was
+"clearly a deobfuscator's job rather than a decompiler's", and that was the wrong
+call: the obstacle was never that the code could not be read, it was that nothing
+said *which* code to read. An index over data already in hand answered that. de4dot
+was never run against it.
 
 **For gap 4, a weak negative.** No VM, sandbox, debugger, WMI or hardware-identity
 token appears anywhere in this image, in either encoding — searched for explicitly.
 That is evidence against anti-analysis as the explanation for the deterministic
 crash, and it is weak evidence, because both the string table and the payload are
-encrypted.
+encrypted. *Since 09 Aug the payload is no longer encrypted, so the same search can
+now be run against stage 3 — it has not been.*
+
+### The call graph, rebuilt — and the payload decrypted, 09 Aug
+
+The open task from the section above, done. `scripts/dotnet_meta.py --callgraph`.
+
+**The inverse index is the whole trick.** The decrypted map says what each proxy
+field *is*; only a scan of every method body says who *uses* it. With both, a
+proxy-mediated call is an ordinary edge. The numbers: **1,181 of 1,181 bindings are
+loaded, by 785 methods**, giving 7,322 edges over 3,697 bodies. That every single
+binding has a consumer is worth as much as the original Field-token self-check —
+a map with dangling entries would mean the decode or the scan was incomplete.
+
+**It found the map by itself.** `find_proxy_map` decrypts each candidate resource
+and keeps the one whose plaintext is all Field-token keys, rather than keying on
+the resource *name*, which is generated per build. The existing self-check is
+strong enough to serve as the locator, so nothing here is specific to this sample's
+naming.
+
+**First, a decoder bug that had to be fixed before any of it could be trusted.**
+The IL decoder was missing the comparison-branch families (`0x2E`–`0x37` short,
+`0x3B`–`0x44` long), `endfinally`, `ldsflda`, `ldc.i8`/`ldc.r4`/`ldc.r8` and the
+`ldind`/`stind`/`conv.ovf` groups. Every one carries or implies an operand, so each
+desynchronised the stream after it — and the flattened methods, which are the ones
+worth reading, are exactly the ones full of `beq` and `endfinally`. The module's own
+comment on the two-byte table had named this failure mode; the one-byte table had
+the same hole. **The check that it is fixed is structural, not a spot check: across
+all 3,697 bodies the decoder now leaves 0 undecoded bytes in 61,113 instructions.**
+An incomplete table cannot produce that, because an unknown opcode's operand
+reliably decodes to more unknowns. Before the fix, three proxy bindings looked
+orphaned; they were decode casualties.
+
+**Every wrapper of interest has zero direct callers**, which is what call hiding
+buys and why the graph was needed:
+
+| Wrapper | Really calls | Reached from |
+|---|---|---|
+| `#473 PeekExtractor` | `ResourceManager::GetObject` | `#465 AssembleBuilder` ← `#249` |
+| `#407 ConfigureLiteralResolver` | `Assembly::Load` | `#250 AnalyzeSpec` ← `#249` |
+| `#408 RateResolver` | `Assembly::get_EntryPoint` | `#250 AnalyzeSpec` ← `#249` |
+| `#383 NewRecommender` | `WebClient::DownloadFile` | `#244` ← `#249` |
+
+**One root reaches everything.** `#249 BuildModule` reaches **554 internal methods
+and 91 distinct external members** — the entire capability set the proxy map had
+only listed. `#250 AnalyzeSpec` is textbook reflective loading, now readable
+end to end: `Assembly.Load(<static field 0x400006d>)`, then `EntryPoint`, then
+`MethodBase::Invoke(null, args)` with the argument array shaped by whether
+`GetParameters()` is empty.
+
+**`#1096` was the trap the graph disarmed.** Two methods reach
+`ResourceManager::GetObject`, and the other one lives in
+`MemCompress.Mapping.MapperRunner` — the WinForms decoy, fetching dialog bitmaps.
+Name-matching alone would have put an afternoon into it. Its declaring type is what
+tells them apart.
+
+**Finding the decryptor was a negative result first.** `--xref CreateDecryptor`
+returns **two** methods in the whole image, both in
+`MemCompress_Pro.Management.EditableManager`, which is the protector's own runtime,
+and neither is reachable from `#249`. **There is no cryptographic API on the payload
+path at all** — so the decryptor had to be hand-rolled IL. Searching the 554
+reachable methods for the *shape* of a byte cipher — arithmetic plus `ldelem.u1` /
+`stelem.i1`, no external calls — returned two candidates, and the first was it.
+
+**`#470 ConcatAllocator`**, 92 instructions, no external calls, sitting in the same
+type as the resource fetch:
+
+    d[i] = ((d[i] ^ key[i % len(key)]) - d[(i + 1) % len(d)] + 256) % 256
+
+over the array shortened by one, with `key = Encoding.ASCII.GetBytes(arg1)`.
+
+**The key was recovered, not guessed, and this is the part to reuse.** `d[i+1]` is
+still ciphertext when byte `i` is written, so the recurrence inverts against known
+plaintext: `key[i % klen] = c[i] ^ ((plain[i] + c[i+1]) % 256)`. Run against a stock
+MZ/DOS stub, the recovered stream came back **printable ASCII repeating with period
+10** — which is the self-check, because a wrong guess is not printable *and*
+periodic. The key is **`HREWPjFNAr`**. No brute force was run.
+
+That is the direct counterpart to the standing lesson about the ten decoy literals.
+There, roughly 4,000 key derivations were spent on strings placed to be guessed at.
+Here the key was never in a string at all, and **one algebraic relation read off the
+IL replaced the entire search**.
+
+**What came out.** 284,672 bytes, sha256 `e84f7824…`, kept XOR-wrapped as
+`stage3_native_e84f7824.xor9` beside the assembly. It is a **native x86 PE32, not a
+managed assembly**: no COM descriptor, no imports at all, a single executable
+`.text`, entry point `0x2680`, GUI subsystem. Roughly 7 KB of x86 stub at
+`0x1000`–`0x2c00` — ordinary prologues, `rep movsd`, an XOR-then-compare constant
+check — and then 272 KB at entropy 7.999, which is its own encrypted stage. **So
+this is another loader, and the config and C2 are one layer further down.**
+
+**Byte 0 is asserted, not recovered, and the tool says so.** The cipher's loop guard
+is `i <= d.Length`, so a final iteration wraps `i % d.Length` back to zero and
+overwrites the byte it had already decrypted. `--decrypt-payload` prints what it
+found there (`0xf0`) and sets `M`. Everything else validates on its own: `e_lfanew`
+`0xb8` with `PE\0\0` exactly there, the section table coherent with `SizeOfImage`,
+and the header padding at `0x200`–`0x1000` decrypting to **100.00% zero**, which is
+3.5 KB of plaintext that could not come out right under a wrong key.
+
+**And the first version of that self-check was worthless, which a negative control
+caught.** `e_lfanew` sits at bytes 60–63 and `PE\0\0` at 184–187; against a ten-byte
+key those exercise key offsets 0–3 and 4–7 and **never touch offsets 8 or 9**, so a
+key wrong in its last character passed both cleanly. Exactly the shape of the
+standing lesson about validating a reimplemented PRNG on its first output. The
+padding run is the check that decides, because it is kilobytes long and therefore
+covers every key offset many times over. Running it against deliberately wrong keys
+is what made the difference visible — and the numbers are themselves informative:
+one wrong key byte leaves the padding **90.01%** zero, which is 1 in 10 and
+independently confirms the key length. `--decrypt-payload` now refuses to write
+output when the check fails, rather than emitting a plausible-looking file.
+
+**Two things this hands the pipeline, one of them uncomfortable.**
+
+- **Stage 3's `TimeDateStamp` is `0x5ff2b99b` — the same timestamp `RegSvcs.exe`'s
+  own header carries.** *Reading a run* says to read the two timestamps side by side
+  and treat an image years newer than its host as foreign. On this sample that check
+  is defeated by construction, and it is defeated silently. The carver's structural
+  findings (`unmapped`, no module covering the range) do not depend on it; the
+  timestamp line in the report does.
+- **`Assembly::Load` cannot be this resource's consumer**, because a native PE is not
+  loadable that way. `#249` also passes the same static field to `#251`/`#248`, and a
+  separate root reaches `Marshal::GetDelegateForFunctionPointer` — which, with the
+  x86 and x64 trampoline stubs already found in the field data, is the plausible
+  execution path. **Which of them actually runs is not established**, and guessing it
+  would repeat the mistake this section exists to record.
+
 
 **A rule that matches where the ruleset matched nothing.**
 `tools\yara\local\ringforge_split_api_loader.yar` carries two rules: one on the
