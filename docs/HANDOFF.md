@@ -1405,8 +1405,8 @@ was never run against it.
 token appears anywhere in this image, in either encoding — searched for explicitly.
 That is evidence against anti-analysis as the explanation for the deterministic
 crash, and it is weak evidence, because both the string table and the payload are
-encrypted. *Since 09 Aug the payload is no longer encrypted, so the same search can
-now be run against stage 3 — it has not been.*
+encrypted. **That search has now been run against stage 3 as well, and it holds —
+see *Stage 3 carries no anti-analysis primitives* below.**
 
 ### The call graph, rebuilt — and the payload decrypted, 09 Aug
 
@@ -1608,6 +1608,50 @@ process's dump holds. Verified: every string fires on the carved image, and **0 
 120** genuine assemblies under `Microsoft.NET` and `Framework64` match. Not yet
 scanned against a real memory dump, which is where a false positive would surface
 — the next run puts it against ten to twelve.
+
+### Stage 3 carries no anti-analysis primitives, 09 Aug
+
+Run because gap 4's negative was explicitly weak *while the payload was encrypted*,
+and it no longer is. This is the first search of material that was unreadable when
+that caveat was written.
+
+**Two searches, because one of them was the wrong tool.** 48 pipeline
+`VM_ARTIFACT_MARKERS` plus 64 string tokens over hypervisors, sandboxes, debuggers,
+analysis tools and WMI/identity, ascii and UTF-16 — and then, separately, the
+*instructions*, because `rdtsc`, `cpuid`, `sidt`, `sgdt`, `sldt` and the VMware
+backdoor `in` have **no string form at all** and a token search cannot see them. The
+first pass listed `rdtsc` and `cpuid` as strings, which was meaningless.
+
+| Region | Size | Result |
+|---|---|---|
+| Stage 3 headers | 4 KB | nothing |
+| Stage 3 stub (plaintext code) | 6.8 KB | nothing but two `int3` |
+| Stage 3 packed blob | 273 KB | **a negative here proves nothing** |
+| Emulated allocation (partly unpacked) | 284 KB | nothing above chance |
+
+The stub's only hit is `int3` at `0x40267e`/`0x40267f`, which is the alignment
+padding immediately before the entry point at `0x402680`.
+
+**The allocation's apparent hits are decode noise, and there is a control rather
+than an assertion.** Linearly disassembling 284 KB of largely still-packed data
+produces `in`, `int1` and `int3` constantly — they are one-byte opcodes. Running the
+identical scan over the known-random packed blob and over `os.urandom` of the same
+length puts every count at or below the baselines: `in` 1,265 against 1,951 and
+1,823, `int1` 295 against 495 and 472, `cpuid` 3 against 4 and 2, `rdtsc` 2 against
+0 and 1. **A signal that a random buffer reproduces is not a signal** — the same rule
+as the carver's eleven unmapped images in an idle Python process.
+
+**What it changes.** Gap 4's negative now covers stage 3's plaintext as well as stage
+2's, so "anti-analysis explains the deterministic crash" is worse supported than it
+was. It is still **not** conclusive: the 272 KB inner blob is packed and the
+allocation only partly unpacked, so this is a stronger bounded negative, not a proof.
+
+**And it points the emulator work.** The stall in `emulate_native_stub.py` was left as
+*environment gap or anti-emulation bail, not distinguished*. There is no evidence for
+the second in anything readable, so **the environment gap is now the better-supported
+reading** — which makes single-stepping the stall loop a debugging job with a real
+chance of finishing, rather than an attempt to defeat a guard. That was the point of
+running this search first: it was cheap and it chose the next expensive thing.
 
 ### The 06 Aug 21:15 run — the guard held, the config did not, and the packer got away
 
