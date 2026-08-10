@@ -1837,6 +1837,41 @@ can be snapshotted: enumerate `mem_regions()`, dump each, save the register file
 restore on demand. That turns a six-minute question into a seconds-long one, and there
 are plainly more questions coming.
 
+**Where it actually stops: the WOW64 syscall boundary. This is the open task.**
+The jump to address 0 is not a bug and not a missing API. Disassembling the return
+address on the stack lands in the manually mapped `ntdll` at `0x23c5000`, on a run of
+sequential syscall stubs it is executing from its own copy:
+
+    mov eax, 0x36            ; system service number
+    mov edx, 0x247a5c0       ; the WOW64 transition thunk
+    call edx
+    ret 0x10
+
+and the thunk is `jmp dword ptr [0x2500014]`, whose slot **contains 0**. In a real
+process the kernel fills `Wow64Transition` in at load; a copy read off disk has it
+zeroed, and `fs:[0xC0]` is zero for the same reason. SSNs `0x35`, `0x36`, `0x37`,
+`0x38` walk consecutively, so it is stepping its own rebuilt table.
+
+**So the payload has routed around the layer this harness intercepts at.** Export
+addresses are the wrong place to stand: it never calls `ntdll!NtCreateFile` at its
+export, it calls its own unhooked copy of the stub. That is exactly why the API log
+went quiet at 87 calls while the sample kept working, and it is the same fact the
+decoded name set and the clean-`ntdll` read were both pointing at, now caught in the
+act.
+
+**The fix is architectural rather than another API.** Point `Wow64Transition` and
+`fs:[0xC0]` at a stub address, hook it, read `EAX` for the service number, and build
+the SSN-to-name map by parsing `mov eax, imm32` out of each `Nt*` export in the real
+`ntdll`. The existing handlers are then reused unchanged, keyed by number instead of
+address. **Intercepting at the syscall boundary is where this malware operates**, and
+it makes the harness immune to any later stage doing the same thing.
+
+**Restorable state is on the artifact drive** so none of this needs rebuilding:
+`warm400M.state` (in the marker scan), `after_scan.state` (at the syscall crash, which
+is the one to load for this work) and `warm60M.state`, beside the samples in
+`G:ingforge-artifactsĒe30ed_stage2\`. Restore is seconds;
+`scripts/test_emu_snapshot.py` is the equivalence check that says a restore is sound.
+
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
 no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed
