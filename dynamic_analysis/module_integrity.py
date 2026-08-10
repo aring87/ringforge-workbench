@@ -136,7 +136,41 @@ class _AddressSpace:
 #: same relocation is recomputed a dozen times and the pass adds minutes to a
 #: teardown this project already considers too slow.
 _REFERENCE_CACHE: dict[tuple, Optional[list]] = {}
+#: Modules whose on-disk file exists but whose identity does not match what
+#: the loader recorded. Keyed the same way, populated during lookup.
+_MISMATCHED: dict[tuple, dict] = {}
 _CACHE_LIMIT = 96
+
+
+def _mapped_header(space: "_AddressSpace", base: int) -> dict[str, Any]:
+    """What the image *in memory* claims about itself.
+
+    When the loader's record and the file disagree, this is the half nobody
+    reads: an imposter at a module base carries its own header, and its
+    `TimeDateStamp`, `SizeOfImage` and entry point are the first description of
+    the payload available without carving it out.
+    """
+    out: dict[str, Any] = {}
+    head = space.read(base, 0x400)
+    if not head or head[:2] != b"MZ":
+        return out
+    try:
+        e_lfanew = int.from_bytes(head[0x3C:0x40], "little")
+        if not 0x40 <= e_lfanew < 0x380 or head[e_lfanew:e_lfanew + 4] != b"PE\0\0":
+            return out
+        coff = e_lfanew + 4
+        opt = e_lfanew + 24
+        out = {
+            "machine": int.from_bytes(head[coff:coff + 2], "little"),
+            "timestamp": int.from_bytes(head[coff + 4:coff + 8], "little"),
+            "sections": int.from_bytes(head[coff + 2:coff + 4], "little"),
+            "entry_point": int.from_bytes(head[opt + 16:opt + 20], "little"),
+            "image_base": int.from_bytes(head[opt + 28:opt + 32], "little"),
+            "size_of_image": int.from_bytes(head[opt + 56:opt + 60], "little"),
+        }
+    except Exception:
+        return {}
+    return out
 
 
 def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int,
@@ -172,9 +206,24 @@ def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int
         except Exception:
             continue
         with pe:
-            if (pe.FILE_HEADER.TimeDateStamp != timestamp
-                    or pe.OPTIONAL_HEADER.SizeOfImage != size_of_image):
-                continue
+            matched = (pe.FILE_HEADER.TimeDateStamp == timestamp
+                       and pe.OPTIONAL_HEADER.SizeOfImage == size_of_image)
+            if not matched:
+                # **Do not skip.** An earlier version returned here, and that
+                # single `continue` is what walked past this sample's payload: a
+                # second image claiming to be `RegSvcs.exe`, mapped at the
+                # preferred base `0x400000` while the real one sat relocated and
+                # byte-identical elsewhere. Its header does not match the file
+                # *because it is not that file*, which is the finding, not a
+                # reason to stop looking. The comparison still runs; the verdict
+                # records that the identity check failed.
+                _MISMATCHED[(name, timestamp, size_of_image, base)] = {
+                    "file_timestamp": pe.FILE_HEADER.TimeDateStamp,
+                    "file_size_of_image": pe.OPTIONAL_HEADER.SizeOfImage,
+                    "module_timestamp": timestamp,
+                    "module_size_of_image": size_of_image,
+                    "reference": str(candidate),
+                }
             if base != pe.OPTIONAL_HEADER.ImageBase:
                 try:
                     pe.parse_data_directories([5])          # BASERELOC
@@ -198,6 +247,7 @@ def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int
 
     if len(_REFERENCE_CACHE) >= _CACHE_LIMIT:
         _REFERENCE_CACHE.clear()
+        _MISMATCHED.clear()
     _REFERENCE_CACHE[key] = sections
     return sections
 
@@ -222,8 +272,16 @@ def compare_module(space: _AddressSpace, module: dict[str, Any],
     # rather than approximate: without it every ASLR-relocated system DLL reads
     # as lightly modified and the threshold would have to be loosened to cover
     # fixups, which is exactly the slack a hollow would hide in.
+    key = (result["name"], module.get("timestamp", 0), module.get("size", 0), base)
     sections = _reference_sections(module.get("path", ""), module.get("timestamp", 0),
                                    module.get("size", 0), base, roots)
+    mismatch = _MISMATCHED.get(key)
+    if mismatch:
+        # Whatever is mapped here is not the file the loader named. Describe it
+        # from its own header, which is the cheapest description of a payload
+        # there is -- no carving required.
+        result["identity"] = mismatch
+        result["mapped_header"] = _mapped_header(space, base)
     if sections is None:
         return result
     result["relocated"] = True
@@ -244,11 +302,20 @@ def compare_module(space: _AddressSpace, module: dict[str, Any],
         })
 
     if not total:
+        if mismatch:
+            result["verdict"] = "header_mismatch"
         return result
 
     fraction = differing / total
     result.update(compared_bytes=total, differing_bytes=differing,
                   differing_fraction=round(fraction, 6))
+    if mismatch:
+        # Reported by *identity*, not by degree. A module whose header disagrees
+        # with its file is a different image whatever fraction of bytes happens
+        # to coincide, and letting a low fraction downgrade it to `identical`
+        # would hide precisely the case this exists for.
+        result["verdict"] = "header_mismatch"
+        return result
     if fraction > REPLACED_ABOVE:
         result["verdict"] = "replaced"
     elif fraction > PATCHED_ABOVE:
@@ -290,21 +357,34 @@ def summarize_module_integrity(results: Iterable[dict[str, Any]]) -> dict[str, A
     says nothing at all -- which has to read as "could not tell" rather than as
     "nothing was modified". Same shape as `collection_available` in gap 4b.
     """
-    counts = {"identical": 0, "patched": 0, "replaced": 0, "no_reference": 0}
+    blank = {"identical": 0, "patched": 0, "replaced": 0,
+             "header_mismatch": 0, "no_reference": 0}
+    counts = dict(blank)
     replaced: list[dict[str, Any]] = []
+    mismatched: list[dict[str, Any]] = []
+    unreferenced: list[dict[str, Any]] = []
     per_dump: list[dict[str, Any]] = []
 
     for result in results:
-        seen = {"identical": 0, "patched": 0, "replaced": 0, "no_reference": 0}
+        seen = dict(blank)
         for module in result.get("modules", []):
             verdict = module.get("verdict", "no_reference")
             counts[verdict] = counts.get(verdict, 0) + 1
             seen[verdict] = seen.get(verdict, 0) + 1
+            entry = dict(module)
+            entry["dump"] = result.get("dump", "")
+            entry["hollowing_target"] = module.get("name", "") in HOLLOWING_TARGETS
             if verdict == "replaced":
-                entry = dict(module)
-                entry["dump"] = result.get("dump", "")
-                entry["hollowing_target"] = module.get("name", "") in HOLLOWING_TARGETS
                 replaced.append(entry)
+            elif verdict == "header_mismatch":
+                mismatched.append(entry)
+            elif verdict == "no_reference":
+                # Named, not merely counted. Counting it made "could not tell"
+                # visible; only naming it says *what* could not be told, and on
+                # the first live run the unnamed one was the whole answer.
+                unreferenced.append({k: entry[k] for k in
+                                     ("dump", "name", "base", "path", "hollowing_target")
+                                     if k in entry})
         per_dump.append({"dump": result.get("dump", ""),
                          "error": result.get("error", ""), **seen})
 
@@ -315,5 +395,80 @@ def summarize_module_integrity(results: Iterable[dict[str, Any]]) -> dict[str, A
         "modules_compared": compared,
         "replaced": replaced,
         "replaced_in_hollowing_target": sum(1 for r in replaced if r["hollowing_target"]),
+        "header_mismatch": mismatched,
+        "header_mismatch_in_hollowing_target":
+            sum(1 for m in mismatched if m["hollowing_target"]),
+        "no_reference_modules": unreferenced,
         "per_dump": per_dump,
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Re-run this pass over dumps already on disk.
+
+    Exists because the first live run answered the wrong question -- the module
+    that mattered was skipped by an identity check -- and re-detonating to ask
+    again would have been absurd when the dumps were sitting in the case
+    directory. A detector that can only be exercised by a new detonation is a
+    detector that gets exercised rarely.
+
+        python -m dynamic_analysis.module_integrity <dump-or-directory> [...]
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description=main.__doc__.splitlines()[0])
+    parser.add_argument("paths", nargs="+", help="a .dmp, or a directory of them")
+    parser.add_argument("--json", metavar="FILE", help="write the full result here")
+    parser.add_argument("--root", action="append", default=[],
+                        help="extra directory to look for reference binaries in")
+    args = parser.parse_args(argv)
+
+    dumps: list[Path] = []
+    for raw in args.paths:
+        path = Path(raw)
+        dumps.extend(sorted(path.glob("*.dmp")) if path.is_dir() else [path])
+    if not dumps:
+        print("no dumps found")
+        return 1
+
+    results = [analyze_dump(d, args.root) for d in dumps]
+    summary = summarize_module_integrity(results)
+
+    print(f"{len(dumps)} dump(s), {summary['modules_compared']} module(s) compared")
+    print(f"counts: {summary['counts']}")
+    for entry in summary["header_mismatch"]:
+        head = entry.get("mapped_header") or {}
+        ident = entry.get("identity") or {}
+        print(f"\n  *** HEADER MISMATCH  {entry['name']} @ {entry['base']:#x}"
+              f"{'  (a process loaders hollow)' if entry['hollowing_target'] else ''}")
+        print(f"      in {entry['dump']}")
+        print(f"      loader says  timestamp {ident.get('module_timestamp', 0):#010x} "
+              f"size_of_image {ident.get('module_size_of_image', 0):#x}")
+        print(f"      the file has timestamp {ident.get('file_timestamp', 0):#010x} "
+              f"size_of_image {ident.get('file_size_of_image', 0):#x}")
+        if head:
+            print(f"      the image in memory claims: timestamp "
+                  f"{head.get('timestamp', 0):#010x}  size_of_image "
+                  f"{head.get('size_of_image', 0):#x}  entry {head.get('entry_point', 0):#x}"
+                  f"  image_base {head.get('image_base', 0):#x}"
+                  f"  sections {head.get('sections', 0)}")
+        if entry.get("compared_bytes"):
+            print(f"      compared anyway: {entry['differing_fraction']:.4f} of "
+                  f"{entry['compared_bytes']} bytes differ")
+    for entry in summary["replaced"]:
+        print(f"\n  *** REPLACED  {entry['name']} @ {entry['base']:#x}  "
+              f"{entry['differing_fraction']:.4f} differing  in {entry['dump']}")
+    if summary["no_reference_modules"]:
+        print("\n  no reference on this host (named, so a skip cannot pass for a pass):")
+        for entry in summary["no_reference_modules"]:
+            print(f"    {entry['name']} @ {entry['base']:#x}  {entry['dump']}")
+
+    if args.json:
+        Path(args.json).write_text(json.dumps(results, indent=1), encoding="utf-8")
+        print(f"\nwritten to {args.json}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

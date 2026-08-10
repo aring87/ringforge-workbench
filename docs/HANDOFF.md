@@ -583,6 +583,57 @@ and `memory\module_integrity.json` holds the detail; read the JSON. Nothing is
 scored off it until a live run shows what it fires on — the same discipline as
 not mapping gap 4b to ATT&CK before measuring its false-positive rate.
 
+### The run: `3f70058b`, 10 Aug — and the answer was none of the three
+
+The pass ran on the guest (568 modules across 11 dumps, `available: true`), the
+sample crashed as always, verdict 70 / Elevated Attention with
+`process_injection` **strong**. The prediction above offered three outcomes for
+`RegSvcs.exe`. **It produced a fourth: the module that mattered was skipped by
+my own identity check**, and the summary counted the skip without naming it, so
+the report could not say so.
+
+**What is actually in that process.** Two module entries, same claimed path,
+one `RegSvcs.exe`:
+
+| base | verdict | |
+|---|---|---|
+| `0x00ed0000` | `identical` | 25,420 bytes of `.text`, **one byte** differing after relocation — the real image, ASLR'd, untouched |
+| `0x00400000` | `no_reference` | the 32-bit preferred base. Its `TimeDateStamp`/`SizeOfImage` do not match the real `RegSvcs.exe`, so nothing was compared |
+
+In that dump 10 of 11 modules fingerprint-matched cleanly. The one that did not
+is an image at `0x400000` claiming to be RegSvcs and demonstrably not being it.
+
+**So overwrite-in-place is wrong, and this is the second revision of gap 5.**
+The real image is byte-identical to its file — nothing was written over it. What
+is present is a *second* image at the preferred base, carrying a module-list
+entry. That is why `unmapped_in_hollowing_target` has always read 0: the carver
+classifies it `at_module_base` and skips it by design, and the identity gate
+skipped it here. **Neither miss was a bug in the run. Both were design
+decisions**, made for good reasons, that happened to exclude the same object.
+
+**`header_mismatch` is the fix.** A module whose file exists but whose recorded
+identity disagrees with it is now compared anyway and reported by *identity*,
+never by degree — a low differing fraction must not downgrade it to `identical`,
+or a payload sharing most of its bytes with the file it impersonates files as
+clean. The mapped image's own header is read and reported alongside, which
+describes the payload without carving it. `no_reference` modules are now
+**named**, not merely counted: counting made "could not tell" visible, naming
+says *what* could not be told, and on the first live run the unnamed one was the
+entire answer.
+
+**A caveat the naming exposed.** In the WER crash dump, the 32-bit `ntdll`,
+`kernel32` and `kernelbase` also read `no_reference` at the same bases where the
+ProcDump image had them `identical`. The two writers record different module
+fingerprints for the same loaded module, so a WER dump is weaker ground for this
+pass. It does not touch the finding above, which rests on the ProcDump image
+where everything else matched.
+
+**This did not need another detonation, and that is the point of
+`python -m dynamic_analysis.module_integrity <case>\memory`.** The dumps were
+already on disk; re-detonating to re-ask a question of data you already hold is
+absurd, and a detector that can only be exercised by a new run gets exercised
+rarely.
+
 **Parsing is proven; the finding path is not.** Across nine ProcDump images of
 live malware it read 43 modules per dump with `rejected: 0` and
 `resource_only: 0` — no false positives, clean parse. It has reported
@@ -706,7 +757,7 @@ run for a long time without showing.
 | Syscall-boundary interception | **Proven end to end**, 10 Aug. The gate fires on a payload calling stubs out of its *own* mapped ntdll, where an export hook sees nothing: four syscalls dispatched by service number into the handlers that already existed. Proven on both paths — resumed from `after_scan.state`, and from a cold run whose call sequence matches it exactly, which is what says `setup()` installs the gate and not only `restore()` |
 | SSN table completeness | **Proven structurally.** 509 numbers, `0x0`–`0x1fc`, unique and contiguous. This is the right shape of check: a kernel service table has no gaps, so a gap means an unrecognised stub shape rather than a missing service — and it found one on its first run, the dual-path `NtQueryInformationProcess`. Same reasoning as counting the bytes the IL decoder could not name |
 | Emulator snapshot / restore | **Proven by equivalence**, and now across a format change. `test_emu_snapshot.py` reports `EQUIVALENT` on memory SHA-256, block count and all sixteen registers — reading a **v1 snapshot written by the older code** into the newer emulator, so backward compatibility is demonstrated rather than assumed. A v2 round trip matches on memory, blocks and EIP |
-| Module integrity (overwrite-in-place) | **Built and wired, negative control proven on a real dump, positive synthetic.** 30 identical / 1 patched / 0 replaced across the modules of a minidump this host wrote, thresholds set from that measured floor rather than picked. The `replaced` path is exercised only by overwriting a module inside a copy of that dump, so it tests the comparison and not any claim about malware. **Never seen a hollow.** Its first real test is the pre-registered prediction in gap 5 |
+| Module integrity | **Fired on real malware on its first live run, and the first version would not have.** Run 3f70058b compared 568 modules across 11 dumps: 560 identical, 8 patched, 0 replaced -- and the object that mattered, a second `RegSvcs.exe` at the preferred base `0x400000`, fell into an unnamed `no_reference`. The real image at `0x00ed0000` is byte-identical to its file, so **overwrite-in-place is refuted**. `header_mismatch` and named skips are the fix; re-runnable over existing dumps via the module's own CLI. Negative control proven on an OS-written dump; `replaced` still never seen in the wild |
 | Test suite runnable at all | **Fixed.** pytest was installed in neither interpreter, and collection died on two CLI tools in `scripts/` named `test_*.py`. 492 pass; `pytest -m "not slow"` is 483 in 1.6s. The handoff's "332 tests" was stale by 160 |
 | Served process list | **Built, and it moved the sample** -- past the enumeration into `NtOpenDirectoryObject`, `NtCreateMutant` and a 20-entry anti-analysis name check. It is the one **invented** input in the harness, declared in `winenv.PROCESS_LIST` and named in every run's output, so anything concluded after it is conditional on those twelve names |
 | Remote-write capture | **Built, never fired.** `NtWriteVirtualMemory`, `NtOpenProcess`, `NtCreateSection`/`NtMapViewOfSection` are instrumented and section views are real allocations so a payload copied in with ordinary instructions is still visible -- but the sample exits before injecting, so none of it has run. Do not read the empty section as evidence the sample does not inject; the decoded capability set says otherwise |

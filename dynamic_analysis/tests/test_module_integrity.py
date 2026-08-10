@@ -209,3 +209,70 @@ class SummaryShapeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeaderMismatchTests(unittest.TestCase):
+    """A module whose loader record disagrees with its file.
+
+    This is the case that walked past the loader's payload on the first live
+    run: a second image claiming to be `RegSvcs.exe`, mapped at the preferred
+    base while the real one sat relocated and byte-identical elsewhere. The
+    identity check that exists to stop version drift from reading as tampering
+    also skipped it. It must now be reported, not skipped, and it must be
+    reported by *identity* rather than by how many bytes happen to coincide.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from dynamic_analysis.pe_carve import _MODULE_ENTRY_SIZE, _MODULE_LIST_STREAM
+        cls.path = _scratch() / "reference_mismatch.dmp"
+        shutil.copy(_DUMP, cls.path)
+        with open(cls.path, "r+b") as handle:
+            data = mmap.mmap(handle.fileno(), 0)
+            try:
+                rva, _ = _streams(data, len(data))[_MODULE_LIST_STREAM]
+                # Falsify one module's recorded TimeDateStamp, which is what an
+                # image that is not the file it claims to be looks like.
+                entry = rva + 4 + 1 * _MODULE_ENTRY_SIZE
+                data[entry + 16:entry + 20] = (0xDEADBEEF).to_bytes(4, "little")
+                data.flush()
+            finally:
+                data.close()
+        _CACHE.pop(cls.path, None)
+
+    def test_reported_as_header_mismatch_not_skipped(self):
+        summary = summarize_module_integrity([analysis(self.path)])
+        self.assertEqual(summary["counts"]["header_mismatch"], 1,
+                         summary["counts"])
+
+    def test_it_names_what_it_found_and_what_memory_claims(self):
+        entry = summarize_module_integrity([analysis(self.path)])["header_mismatch"][0]
+        self.assertTrue(entry["name"])
+        self.assertEqual(entry["identity"]["module_timestamp"], 0xDEADBEEF)
+        self.assertNotEqual(entry["identity"]["file_timestamp"], 0xDEADBEEF)
+        # The image in memory is the honest one here, so its header still reads.
+        self.assertTrue(entry["mapped_header"].get("size_of_image"))
+
+    def test_identity_beats_degree(self):
+        """The bytes are untouched, so the fraction is ~0 -- and it must still
+        not read as `identical`. Degree cannot be allowed to overrule identity,
+        or a payload that shares most of its bytes with the file it impersonates
+        would be filed as clean."""
+        entry = summarize_module_integrity([analysis(self.path)])["header_mismatch"][0]
+        self.assertLess(entry["differing_fraction"], PATCHED_ABOVE)
+        self.assertEqual(entry["verdict"], "header_mismatch")
+
+
+class NamingTests(unittest.TestCase):
+
+    def test_no_reference_modules_are_named(self):
+        """Counting a skip made "could not tell" visible; naming it says what
+        could not be told. On the first live run the unnamed one was the answer."""
+        summary = summarize_module_integrity([
+            {"dump": "x.dmp", "modules": [
+                {"verdict": "no_reference", "name": "regsvcs.exe",
+                 "base": 0x400000, "path": r"C:\x\RegSvcs.exe"}]}])
+        named = summary["no_reference_modules"]
+        self.assertEqual(len(named), 1)
+        self.assertEqual(named[0]["name"], "regsvcs.exe")
+        self.assertEqual(named[0]["base"], 0x400000)
