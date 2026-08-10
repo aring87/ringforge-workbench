@@ -1638,6 +1638,50 @@ Note the surrounding code does the same thing with the hash as a literal — **6
 distinct `push imm32; call` sites** in the allocation, most into `0x20040a1` — so this
 is a whole resolve-by-hash scheme and the stuck lookup is one entry in it.
 
+**Where `0xe11da208` comes from — and the capability set that fell out of asking.**
+Walking the frame chain at the compare gives
+`0x202ec7e` <- `0x2017051` <- `0x20071be` <- `0x202f00d` <- `0x20309ac` <-
+`0x401d2e` <- `0x402a9f`. `0x202ec01` is `get_module_base_by_hash(hash)`: it walks
+`PEB->Ldr`, converts each `BaseDllName` to lowercase ascii, CRC-32s it, and returns
+`DllBase` on a match or 0 when the list runs out. The hash reaches it from
+`0x2017038`:
+
+    push 0xd3 ; push 0x246e8fe6 ; call 0x2004181 ; push eax ; call 0x202ec01
+
+**So the hashes are obfuscated too.** `0x2004181` builds a 20-byte buffer, XORs it
+with the per-site key byte and derives the real constant — `decode(0x246e8fe6, 0xd3)
+= 0xe11da208`, which is why the value appears nowhere in the image.
+
+**That decoder did not need reversing, only calling.** `scripts/decode_name_hashes.py`
+warms the image, finds every `push imm32 ; push imm32 ; call 0x2004181` site and runs
+the decoder on each. **45 sites, and 43 decode to names** once matched against a
+20,682-entry dictionary built from this host's own `SysWOW64`/`System32` filenames and
+export tables. **This is the payload's capability set recovered without unpacking it:**
+
+| | |
+|---|---|
+| Injection | `NtCreateSection`, `NtMapViewOfSection`, `NtUnmapViewOfSection`, `NtWriteVirtualMemory`, `NtReadVirtualMemory`, `NtProtectVirtualMemory`, `NtAllocateVirtualMemory`, `NtFreeVirtualMemory`, `NtGetContextThread`, `NtSetContextThread`, `NtSuspendThread`, `NtResumeThread`, `NtQueueApcThread`, `NtCreateProcessEx`, `NtOpenProcess`, `NtOpenThread` |
+| Credentials | **`crypt32!CryptUnprotectData`** (3 sites), `CryptStringToBinaryA` |
+| Registry | `NtCreateKey`, `NtSetValueKey`, `NtQueryValueKey`, `NtEnumerateKey`, `NtEnumerateValueKey` |
+| File | `NtCreateFile`, `NtWriteFile`, `NtReadFile`, `NtQueryInformationFile`, `NtSetInformationFile`, `NtClose` |
+| Token | `NtOpenProcessToken`, `NtQueryInformationToken`, `NtAdjustPrivilegesToken` |
+| Recon / control | `NtQuerySystemInformation`, `NtQueryInformationProcess`, `NtQuerySection`, `NtOpenDirectoryObject`, `NtCreateMutant`, `NtDelayExecution`, `NtWaitForSingleObject`, and `explorer.exe` as a hashed process name |
+
+**Two things that names deserve stating plainly.** It is a **direct-ntdll** loader —
+every primitive is the `Nt` form, not the kernel32 wrapper, so a hook or monitor on
+the Win32 names sees none of it. And `CryptUnprotectData` is **DPAPI credential
+theft**; together with `CryptStringToBinaryA` that is the first evidence of what this
+chain is actually *for*, after nine detonations that produced only a crash. It is a
+capability, not an observation — the same standing caveat as the proxy-map inventory
+in stage 2.
+
+**Three hashes match nothing** on this host: `0xe11da208` (the module lookup that
+hangs), `0x79dbe71d` and `0x5c4ee455`. A targeted sweep of 226 browser, CRT,
+credential-store and LOLBin names across both encodings found none of them, so the
+blocker is a name this bench cannot guess. Reading `0x2017038`'s own caller for the
+context it expects is the next move, not more guessing — the standing lesson about
+brute force and method bodies, one layer up again.
+
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
 no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed
