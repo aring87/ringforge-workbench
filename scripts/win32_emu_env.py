@@ -197,6 +197,80 @@ def map_real_dll(mu, path, base):
 #: is clear of the module bases above and of the heap.
 SYSCALL_GATE = 0x74A01000
 
+#: The machine the payload is told about when it enumerates processes.
+#:
+#: **This is invented, and it is the only invented thing left in this file.**
+#: Everything else here either comes off the host (export tables, syscall
+#: numbers, real mapped images) or is what the loader would have supplied
+#: (`Wow64Transition`, `fs:[0xC0]`). A process list is different in kind: the
+#: sample searches it, so its contents steer what happens next, and anything
+#: concluded downstream is conditional on these names. Which is why they live
+#: here in one tuple rather than being scattered through handlers, and why the
+#: run prints what it served.
+#:
+#: `explorer.exe` is in it deliberately -- `decode_name_hashes.py` recovered it
+#: as a hashed process name, alongside `NtOpenProcess`, `NtCreateSection`,
+#: `NtMapViewOfSection`, `NtWriteVirtualMemory` and `NtQueueApcThread`. If that
+#: reading is right the sample is looking for an injection target, and the thing
+#: it writes there is the stage nothing has yet recovered. Serving a list with
+#: no plausible target would answer the question by preventing it.
+#:
+#: `(image name, pid, parent pid)`. The `RegSvcs.exe` entry is the emulated
+#: process itself, under the pid a real run observed for the .NET loader.
+PROCESS_LIST = (
+    ("System", 4, 0),
+    ("smss.exe", 388, 4),
+    ("csrss.exe", 496, 488),
+    ("wininit.exe", 572, 488),
+    ("winlogon.exe", 620, 564),
+    ("services.exe", 700, 572),
+    ("lsass.exe", 716, 572),
+    ("svchost.exe", 892, 700),
+    ("svchost.exe", 964, 700),
+    ("dwm.exe", 1044, 620),
+    ("explorer.exe", 4180, 4092),
+    (IMAGE_NAME, 9592, 2448),
+)
+
+#: Byte offsets that matter in the 32-bit structures, named so the packing below
+#: reads as a layout rather than as arithmetic.
+_PROC_SIZE, _THREAD_SIZE = 0xB8, 0x40
+_PROC_IMAGE_NAME, _PROC_IDS = 0x38, 0x44
+
+
+def system_process_information(base, entries=PROCESS_LIST):
+    """A `SYSTEM_PROCESS_INFORMATION` chain, as `NtQuerySystemInformation`
+    class 5 returns it, laid out to be read at `base`.
+
+    Each entry is a `0xB8` process record, then its threads at `0x40` each, then
+    the image-name string -- and `ImageName.Buffer` has to be an address in the
+    *caller's* buffer, which is why `base` is a parameter rather than the blob
+    being position independent.
+
+    One thread per process, with a `CLIENT_ID` that agrees with the process's
+    own pid. That is not decoration: `NtQueueApcThread` is in the decoded
+    capability set, and queueing an APC needs a thread id to aim at.
+    """
+    sizes = [_PROC_SIZE + _THREAD_SIZE + ((len(n.encode("utf-16-le")) + 8) & ~7)
+             for n, _, _ in entries]
+    out, cursor = bytearray(), 0
+    for i, (name, pid, ppid) in enumerate(entries):
+        size = sizes[i]
+        e = bytearray(size)
+        last = i == len(entries) - 1
+        struct.pack_into("<II", e, 0x00, 0 if last else size, 1)   # NextEntryOffset, NumberOfThreads
+        wide = name.encode("utf-16-le")
+        name_at = _PROC_SIZE + _THREAD_SIZE
+        e[name_at:name_at + len(wide)] = wide
+        struct.pack_into("<HHI", e, _PROC_IMAGE_NAME,
+                         len(wide), len(wide) + 2, base + cursor + name_at)
+        struct.pack_into("<i", e, 0x40, 8)                          # BasePriority
+        struct.pack_into("<III", e, _PROC_IDS, pid, ppid, 0)        # pid, ppid, HandleCount
+        struct.pack_into("<II", e, _PROC_SIZE + 0x20, pid, pid + 4)  # thread CLIENT_ID
+        out += e
+        cursor += size
+    return bytes(out)
+
 
 def syscall_table(path=None):
     """`{service number: Nt name}` and the RVA of `Wow64Transition`.
@@ -275,6 +349,84 @@ def syscall_table(path=None):
     gaps = sorted(set(range(max(table) + 1)) - set(table))
     assert not gaps, f"service numbers are not contiguous, so a stub shape was missed: {gaps[:8]}"
     return table, transition, pe.OPTIONAL_HEADER.SizeOfImage
+
+
+KUSER_SHARED_DATA = 0x7FFE0000
+
+#: A fixed clock. The host's page is authoritative for *layout* and for the
+#: static facts on it -- build number, `NtSystemRoot`, processor features,
+#: `KdDebuggerEnabled` -- but its time fields move between reads, and that would
+#: make two runs of the same input produce different memory. `test_emu_snapshot`
+#: compares a fresh run against a resumed one byte for byte, so a live clock
+#: would turn the harness's own soundness check into a coin flip. Frozen.
+_FROZEN_FILETIME = 13_412_649_600 * 10_000_000       # 2026-08-10 00:00:00Z
+_FROZEN_UPTIME_MS = 3_600_000
+
+
+def _ksystem_time(value):
+    """A `KSYSTEM_TIME`: LowPart, then High1Time and High2Time, which readers
+    compare against each other to detect a torn read. Equal here by
+    construction, so nothing ever spins waiting for them to agree."""
+    return struct.pack("<III", value & 0xFFFFFFFF, value >> 32, value >> 32)
+
+
+_HOST_KUSER_PAGE = None
+
+
+def _kuser_page(base=KUSER_SHARED_DATA):
+    """The host's page, read **once** and cached for the life of the process.
+
+    Freezing the three obvious clocks was not enough. The page carries other
+    counters that move on their own -- QPC baselines, the last-input tick, the
+    time-update stamp -- and `test_emu_snapshot` reads the page twice, seconds
+    apart, once for the straight run and once for the resumed one. Registers and
+    block counts matched and the memory hash did not, which is the equivalence
+    check doing exactly its job: it caught the harness introducing
+    non-determinism, not the payload behaving differently. Read once, reuse.
+    """
+    global _HOST_KUSER_PAGE
+    if _HOST_KUSER_PAGE is not None:
+        return _HOST_KUSER_PAGE
+    import ctypes
+
+    try:
+        page = bytearray((ctypes.c_char * 0x1000).from_address(base))
+    except Exception as exc:                       # pragma: no cover
+        page = bytearray(0x1000)
+        print(f"WARNING: could not read the host's KUSER_SHARED_DATA ({exc}); "
+              f"mapping a page of zeros. Expect a payload reading the clock or "
+              f"the OS version to take a path a real machine would not.")
+    struct.pack_into("<I", page, 0x00, _FROZEN_UPTIME_MS)          # TickCountLowDeprecated
+    page[0x08:0x14] = _ksystem_time(_FROZEN_UPTIME_MS * 10_000)    # InterruptTime
+    page[0x14:0x20] = _ksystem_time(_FROZEN_FILETIME)              # SystemTime
+    page[0x320:0x32C] = _ksystem_time(_FROZEN_UPTIME_MS)           # TickCount
+    _HOST_KUSER_PAGE = bytes(page)
+    return _HOST_KUSER_PAGE
+
+
+def map_kuser_shared_data(mu, base=KUSER_SHARED_DATA):
+    """Map `KUSER_SHARED_DATA`, copied from this host's own.
+
+    Every Windows process has a read-only page at `0x7FFE0000` carrying the
+    tick count, the system time, the OS version and `KdDebuggerEnabled`. It is
+    not a module and no API is involved, so a harness that only maps images
+    does not have it -- stage 3 read `SystemTime` at `+0x18` and faulted, which
+    looks like a payload bug and is not one.
+
+    It is *read* from the host at `0x7FFE0000` rather than reconstructed, for
+    the same reason the export tables and ntdll itself are: the layout shifts
+    between builds and a hand-written version would be a guess that is wrong in
+    a way nothing would report. Mapped read-only, as the real one is, so an
+    attempt to write it surfaces instead of silently succeeding.
+
+    Always rewritten, not only mapped when absent: a snapshot taken in another
+    process carries that process's page, and a resumed run has to agree with a
+    fresh one byte for byte. The real page is read-only, so nothing can have
+    modified it in the meantime.
+    """
+    if not any(begin <= base <= end for begin, end, _ in mu.mem_regions()):
+        mu.mem_map(base, 0x1000, UC_PROT_READ)
+    mu.mem_write(base, _kuser_page(base))
 
 
 def install_syscall_gate(mu, ntdll_base, transition_rva, gate=SYSCALL_GATE):
@@ -434,5 +586,6 @@ def setup(mu, image_base, image_size):
 
     syscalls, transition_rva, ntdll_image_size = syscall_table()
     install_syscall_gate(mu, NTDLL_BASE, transition_rva)
+    map_kuser_shared_data(mu)
 
     return real_exports, syscalls, transition_rva, ntdll_image_size

@@ -133,6 +133,17 @@ class Emulator:
         (self.addr2name, self.ssn2name,
          self.transition_rva, self.ntdll_image_size) = winenv.setup(mu, image_base, size)
 
+        self._init_observations()
+        self._install_hooks()
+
+    def _init_observations(self) -> None:
+        """Every field that records what the payload did.
+
+        In one place because `restore()` needs the same set and adding a field
+        to only one of the two constructors is a bug that does not surface until
+        the new handler fires -- several hundred million blocks into a run, with
+        the traceback pointing at the handler rather than at the omission.
+        """
         self.next_free = winenv.HEAP_BASE + 0x1000
         self.allocs: list[list[int]] = []
         self.calls: collections.Counter = collections.Counter()
@@ -141,10 +152,26 @@ class Emulator:
         #: name for -- the second is how a wrong SSN mask would announce itself.
         self.syscalls: collections.Counter = collections.Counter()
         self.unknown_ssn: collections.Counter = collections.Counter()
-        #: `(blocks, base)` for each private ntdll copy the harness filled in.
+        #: `(blocks, base)` for each ntdll copy repaired in a resumed snapshot.
         self.patched_ntdll: list[tuple[int, int]] = []
         #: Environment variables the payload asked for, in order.
         self.env_queries: list[str] = []
+        #: How many times a process list was actually handed over. Anything
+        #: concluded after the first one is conditional on `winenv.PROCESS_LIST`.
+        self.served_process_list = 0
+        #: Named kernel objects it created or opened -- mutants especially.
+        self.named_objects: list[dict] = []
+        #: Processes it tried to open, whether or not the pid was one we served.
+        self.remote_targets: list[dict] = []
+        #: Buffers written into another process. The payoff of all of the above.
+        self.remote_writes: list[dict] = []
+        #: Sections, their local views, and calls that start or stop execution.
+        self.sections: dict[int, int] = {}
+        self.section_views: dict[int, int] = {}
+        self.section_maps: list[dict] = []
+        self.control_calls: list[dict] = []
+        self.process_handles: dict[int, int] = {}
+        self._next_handle = 0x400
         self.faults: list[tuple[int, int, int]] = []
         self.blocks = 0
         self._skip_block_at: Optional[int] = None
@@ -153,8 +180,6 @@ class Emulator:
         self.log: Optional[list[dict]] = None
         #: Files the payload opened, in order, with the path it asked for.
         self.files: list[dict] = []
-
-        self._install_hooks()
 
     def _install_hooks(self) -> None:
         """Attach the callbacks. Separate because a restored snapshot needs
@@ -246,6 +271,9 @@ class Emulator:
         self.raw = b""
         self.base = state["base"]
         self.mu = mu = Uc(UC_ARCH_X86, UC_MODE_32)
+        # Defaults first, pickled values over the top. A snapshot only carries
+        # the fields that existed when it was written.
+        self._init_observations()
         for begin, size, perms, blob in state["regions"]:
             mu.mem_map(begin, size, perms)
             mu.mem_write(begin, zlib.decompress(blob))
@@ -277,6 +305,7 @@ class Emulator:
         (self.ssn2name, self.transition_rva,
          self.ntdll_image_size) = winenv.syscall_table()
         winenv.install_syscall_gate(mu, winenv.NTDLL_BASE, self.transition_rva)
+        winenv.map_kuser_shared_data(mu)
         self._install_hooks()
         return self
 
@@ -459,6 +488,12 @@ class Emulator:
             if len(text) >= 3 and all(0x20 <= ord(c) < 0x7F for c in text):
                 return f"{hex(value)}->{text[:40]!r}w"
         return hex(value)
+
+    def new_handle(self) -> int:
+        """A fresh kernel handle. Multiples of 4 and clear of the file handles,
+        which allocate from 0x1000 upward."""
+        self._next_handle += 4
+        return self._next_handle
 
     def alloc(self, size: int) -> int:
         size = max(size, 0x1000)
@@ -658,12 +693,151 @@ class Emulator:
                     mu.mem_write(buf, b"\x00\x01")
                 wr(a(3), 2)
                 val = 0
+            elif info_class == 0x05:          # SystemProcessInformation
+                blob = winenv.system_process_information(buf)
+                if not buf or length < len(blob):
+                    # What a real kernel says, and the caller is built for it --
+                    # it is how every process enumeration sizes its buffer.
+                    wr(a(3), len(blob))
+                    val = 0xC0000004          # STATUS_INFO_LENGTH_MISMATCH
+                else:
+                    mu.mem_write(buf, blob)
+                    wr(a(3), len(blob))
+                    self.served_process_list += 1
+                    val = 0
             else:
                 # Named by class rather than by API, so the gap says which
                 # question went unanswered instead of implying the whole call is
                 # unimplemented.
                 self.unhandled[f"{name}(class {info_class:#x})"] += 1
                 val = 0xC0000002
+        elif name in ("NtOpenDirectoryObject", "NtCreateMutant", "NtOpenMutant",
+                      "NtCreateEvent", "NtOpenEvent"):
+            # All of these carry a name in their OBJECT_ATTRIBUTES, and the name
+            # is the point. A loader's mutant is its single-instance marker and
+            # is an IOC on sight -- this chain has produced none in nine
+            # detonations, because it crashes before it gets here.
+            nargs = {"NtOpenDirectoryObject": 3, "NtCreateMutant": 4,
+                     "NtOpenMutant": 3, "NtCreateEvent": 5, "NtOpenEvent": 3}[name]
+            handle = self.new_handle()
+            self.named_objects.append({"call": name, "name": self.object_name(a(2)),
+                                       "handle": handle, "blocks": self.blocks})
+            wr(a(0), handle)
+            val = 0
+        elif name in ("NtOpenProcess", "NtOpenThread"):
+            # (PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PCLIENT_ID)
+            nargs = 4
+            pid = 0
+            if a(3):
+                try:
+                    pid = struct.unpack("<I", mu.mem_read(a(3), 4))[0]
+                except UcError:
+                    pid = 0
+            known = {p for _, p, _ in winenv.PROCESS_LIST}
+            if pid and pid not in known:
+                # Refuse a pid this harness never claimed existed. The process
+                # list is a fiction and it has to be a *consistent* one -- a
+                # handle to a process that was not in the list it just served
+                # would be a second, contradictory invention.
+                self.remote_targets.append({"call": name, "pid": pid,
+                                            "opened": False, "blocks": self.blocks})
+                val = 0xC000000B                          # STATUS_INVALID_CID
+            else:
+                handle = self.new_handle()
+                self.process_handles[handle] = pid
+                self.remote_targets.append({"call": name, "pid": pid, "opened": True,
+                                            "handle": handle, "blocks": self.blocks})
+                wr(a(0), handle)
+                val = 0
+        elif name == "NtWriteVirtualMemory":
+            # (Handle, BaseAddress, Buffer, NumberOfBytes, *NumberOfBytesWritten)
+            #
+            # **This is the one that matters.** Everything above exists to reach
+            # it: what a loader writes into another process is the next stage,
+            # and no detonation has ever caught it. The bytes are copied out
+            # here and kept whether or not the write "succeeds".
+            nargs = 5
+            dest, src, count = a(1), a(2), a(3)
+            data = b""
+            if 0 < count <= 0x4000000:
+                try:
+                    data = bytes(mu.mem_read(src, count))
+                except UcError:
+                    data = b""
+            self.remote_writes.append({
+                "blocks": self.blocks,
+                "pid": self.process_handles.get(a(0)),
+                "handle": a(0), "dest": dest, "size": count, "data": data})
+            if dest and data:
+                # Also land it somewhere readable, so the end-of-run PE scan and
+                # --dump see it like any other allocation.
+                try:
+                    mu.mem_write(dest, data)
+                except UcError:
+                    pass
+            wr(a(4), len(data))
+            val = 0
+        elif name == "NtReadVirtualMemory":
+            nargs = 5
+            wr(a(4), 0)
+            val = 0xC0000005                              # STATUS_ACCESS_VIOLATION
+        elif name == "NtProtectVirtualMemory":
+            # (Handle, *BaseAddress, *Size, NewProtect, *OldProtect)
+            nargs = 5
+            wr(a(4), 0x40)
+            val = 0
+        elif name == "NtCreateSection":
+            # (PHANDLE, ACCESS, ObjAttr, PLARGE_INTEGER MaxSize, Protect,
+            #  Attributes, FileHandle)
+            nargs = 7
+            size = 0x1000
+            if a(3):
+                try:
+                    size = struct.unpack("<Q", mu.mem_read(a(3), 8))[0] or 0x1000
+                except UcError:
+                    pass
+            handle = self.new_handle()
+            self.sections[handle] = min(max(size, 0x1000), 0x4000000)
+            wr(a(0), handle)
+            val = 0
+        elif name == "NtMapViewOfSection":
+            # (Section, Process, *Base, ZeroBits, CommitSize, *Offset, *ViewSize,
+            #  InheritDisposition, AllocationType, Protect)
+            #
+            # Section-based injection maps the same section twice -- once here
+            # and once into the target -- and copies the payload into the local
+            # view with ordinary instructions. That copy raises no API call at
+            # all, so the view has to be a real allocation the end-of-run scan
+            # can find; nothing else would ever see the bytes.
+            nargs = 10
+            size = self.sections.get(a(0), 0x1000)
+            existing = self.section_views.get(a(0))
+            p = existing if existing else self.alloc(size)
+            self.section_views[a(0)] = p
+            wr(a(2), p)
+            if a(6):
+                mu.mem_write(a(6), struct.pack("<I", size))
+            self.section_maps.append({
+                "blocks": self.blocks, "section": a(0), "at": p, "size": size,
+                "pid": self.process_handles.get(a(1))})
+            val = 0
+        elif name == "NtUnmapViewOfSection":
+            val, nargs = 0, 2
+        elif name in ("NtQueueApcThread", "NtResumeThread", "NtSuspendThread",
+                      "NtTerminateProcess", "NtTerminateThread"):
+            # Recorded and answered success. Arity matters more than behaviour:
+            # these end a chain rather than feed one, and what has already been
+            # captured is the finding.
+            nargs = {"NtQueueApcThread": 5, "NtResumeThread": 2,
+                     "NtSuspendThread": 2, "NtTerminateProcess": 2,
+                     "NtTerminateThread": 2}[name]
+            self.control_calls.append({"call": name, "blocks": self.blocks,
+                                       "args": [a(i) for i in range(nargs)]})
+            val = 0
+        elif name == "NtDelayExecution":
+            val, nargs = 0, 2
+        elif name == "NtWaitForSingleObject":
+            val, nargs = 0, 3
         elif name == "NtQueryAttributesFile":
             val, nargs = 0xC0000034, 2                        # OBJECT_NAME_NOT_FOUND
         elif name == "NtClose":
@@ -832,6 +1006,51 @@ def main(argv: list[str] | None = None) -> int:
               + ", ".join(f"{b:#x}" for _, b in emu.patched_ntdll))
     if emu.env_queries:
         print(f"environment variables asked for: {emu.env_queries}")
+    if emu.served_process_list:
+        print(f"\nprocess list served {emu.served_process_list}x -- INVENTED, from "
+              f"winenv.PROCESS_LIST ({len(winenv.PROCESS_LIST)} entries incl. "
+              f"{', '.join(n for n, _, _ in winenv.PROCESS_LIST[-2:])}). Everything "
+              f"below is conditional on it.")
+    if emu.named_objects:
+        print("\nnamed kernel objects (a loader's mutant is an IOC):")
+        for o in emu.named_objects:
+            print(f"  {o['blocks']:>13,}blk  {o['call']}({o['name']!r})")
+    if emu.remote_targets:
+        print("\nprocesses it tried to open:")
+        for t in emu.remote_targets:
+            who = next((n for n, p, _ in winenv.PROCESS_LIST if p == t["pid"]), "?")
+            print(f"  {t['blocks']:>13,}blk  {t['call']} pid {t['pid']} ({who})"
+                  f"  {'opened' if t['opened'] else 'REFUSED - not in the served list'}")
+    if emu.section_maps:
+        print("\nsection views mapped:")
+        for m in emu.section_maps:
+            where = f"into pid {m['pid']}" if m["pid"] else "locally"
+            print(f"  {m['blocks']:>13,}blk  section {m['section']:#x} {where} "
+                  f"at {m['at']:#x}, {m['size']:#x} bytes")
+    if emu.control_calls:
+        print("\nexecution-control calls:")
+        for c in emu.control_calls:
+            print(f"  {c['blocks']:>13,}blk  {c['call']}"
+                  f"({', '.join(hex(x) for x in c['args'])})")
+    if emu.remote_writes:
+        import hashlib
+        print(f"\n*** {len(emu.remote_writes)} WRITE(S) INTO ANOTHER PROCESS ***")
+        for i, w in enumerate(emu.remote_writes):
+            data = w["data"]
+            tag = ""
+            if data[:2] == b"MZ":
+                e = int.from_bytes(data[0x3C:0x40], "little")
+                if 0x40 <= e < 0x1000 and data[e:e + 4] == b"PE\0\0":
+                    tag = "   <-- a PE. This is the next stage."
+            print(f"  [{i}] {w['blocks']:,}blk  pid {w['pid']} at {w['dest']:#x}  "
+                  f"{w['size']:#x} bytes  sha256 "
+                  f"{hashlib.sha256(data).hexdigest()[:32]}{tag}")
+            if args.dump and data:
+                out = Path(args.dump)
+                out.mkdir(parents=True, exist_ok=True)
+                f = out / f"remote_write_{i}_pid{w['pid']}_{w['dest']:x}.bin_"
+                f.write_bytes(data)
+                print(f"       written to {f}")
     if emu.unhandled:
         print(f"UNHANDLED apis (answered without doing anything): {dict(emu.unhandled)}")
     if emu.faults:

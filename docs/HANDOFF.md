@@ -24,12 +24,19 @@ primitives* found nothing and said a negative there would prove nothing. Two cla
 this document made are retracted: the consecutive SSNs were ntdll's own stub layout
 rather than the sample stepping a table, and the *second* jump to address 0 is a clean
 `ret` out of the entry function, not a crash — `run()` now tells those apart by ESP.
-**Where it stops now is the process list**, established by A/B on that one answer:
-refused, it returns cleanly; answered, it runs 24M blocks further into
-`NtOpenDirectoryObject` → `NtCreateMutant`. That answer is deliberately not
-implemented — filling `Wow64Transition` restores what the kernel supplies, but
-fabricating a process list invents a machine, and the sample is plausibly hunting
-`explorer.exe`. See *The syscall boundary, built*. Before that, **the stage-2 payload
+**The process list was then built and served** — twelve entries, invented, in
+`winenv.PROCESS_LIST` and echoed in every run — and it produced **the first hard
+IOC this chain has ever given up: the mutex `69971SRS6S-C1D59`**, under
+`\BaseNamedObjects`. Behind it is a *second* anti-analysis layer: the sample
+CRC-32s every enumerated process name against 20 constants, **13 of which are
+`procmon`, `regmon`, `filemon`, `wireshark`, `netmon`, `vmwareuser`,
+`vmwareservice`, `vmsrvc`, `vmusrvc`, `sandboxiedcomlaunch`, `sandboxierpcss`,
+`python` and `perl`** — the last two being Cuckoo's agent. It then polls seven
+times and calls `ExitProcess`. **Why it exits is not established** and must not be
+read as "it decided the machine was clean": the unanswered `USERNAME` lookup, the
+deliberately frozen clock, and seven uncracked hashes are all live candidates. No
+injection was reached and stage 4 is still unrecovered, though the capture for it
+is built and idle. See *The syscall boundary, built* and *Past the process list*. Before that, **the stage-2 payload
 `na3PRqPuA2` was decrypted and stage
 3's own inner blob was not.** Stage 3 turned out to be a native x86 loader carrying a
 272 KB packed blob, and that blob defeats static attack outright — no periodicity, no
@@ -631,6 +638,8 @@ run for a long time without showing.
 | Syscall-boundary interception | **Proven end to end**, 10 Aug. The gate fires on a payload calling stubs out of its *own* mapped ntdll, where an export hook sees nothing: four syscalls dispatched by service number into the handlers that already existed. Proven on both paths — resumed from `after_scan.state`, and from a cold run whose call sequence matches it exactly, which is what says `setup()` installs the gate and not only `restore()` |
 | SSN table completeness | **Proven structurally.** 509 numbers, `0x0`–`0x1fc`, unique and contiguous. This is the right shape of check: a kernel service table has no gaps, so a gap means an unrecognised stub shape rather than a missing service — and it found one on its first run, the dual-path `NtQueryInformationProcess`. Same reasoning as counting the bytes the IL decoder could not name |
 | Emulator snapshot / restore | **Proven by equivalence**, and now across a format change. `test_emu_snapshot.py` reports `EQUIVALENT` on memory SHA-256, block count and all sixteen registers — reading a **v1 snapshot written by the older code** into the newer emulator, so backward compatibility is demonstrated rather than assumed. A v2 round trip matches on memory, blocks and EIP |
+| Served process list | **Built, and it moved the sample** -- past the enumeration into `NtOpenDirectoryObject`, `NtCreateMutant` and a 20-entry anti-analysis name check. It is the one **invented** input in the harness, declared in `winenv.PROCESS_LIST` and named in every run's output, so anything concluded after it is conditional on those twelve names |
+| Remote-write capture | **Built, never fired.** `NtWriteVirtualMemory`, `NtOpenProcess`, `NtCreateSection`/`NtMapViewOfSection` are instrumented and section views are real allocations so a payload copied in with ordinary instructions is still visible -- but the sample exits before injecting, so none of it has run. Do not read the empty section as evidence the sample does not inject; the decoded capability set says otherwise |
 | Harness-supplied `Wow64Transition` | **Retracted as unnecessary, by measurement.** The harness fills the loaded image's slot and `fs:[0xC0]` — the loader's job — and nothing else. Filling private copies was an invention and is gone from the live path: the payload does that fixup itself at `0x202f457`, reading the loaded slot and writing its own, and a full run with the fill disabled reaches the identical endpoint. It survives only inside `repair_wow64_crash()`, to unstick a snapshot that recorded the harness's old zero |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
@@ -2074,6 +2083,84 @@ question is the finding whatever the answer is.
 the caller's own `ret` returned into them — surfacing as a fetch from address 0 **ten
 million blocks downstream**, indistinguishable from a fresh mystery. The dispatcher now
 says so at the moment it happens rather than only in the closing summary.
+
+### Past the process list: a mutex, a blocklist, and a deliberate exit — 10 Aug
+
+The list was built (`winenv.PROCESS_LIST`, twelve entries, `explorer.exe` among
+them) and `NtQuerySystemInformation` class 5 answered properly, with
+`STATUS_INFO_LENGTH_MISMATCH` and a required length when the buffer is short,
+because that is how every enumeration sizes its buffer. It moved.
+
+**The first hard IOC this chain has produced.** Nine detonations yielded a crash
+and nothing else; the emulator now reaches:
+
+    422,934,337blk  NtOpenDirectoryObject('\BaseNamedObjects')
+    424,698,950blk  NtCreateMutant('69971SRS6S-C1D59')
+
+A single-instance mutex, and a name worth hunting for.
+
+**`KUSER_SHARED_DATA` was the next wall, and it is not a module.** Reading the
+system time at `0x7ffe0018` faulted, because a harness that maps images does not
+have the page every Windows process gets at `0x7FFE0000`. It is now **copied off
+the host** rather than reconstructed — same reasoning as the export tables and
+ntdll itself — with one deliberate exception: the tick count and system time are
+**frozen**. A live clock would make two runs of one input produce different
+memory and turn `test_emu_snapshot` into a coin flip. Note the trade, because it
+is a behavioural change and not only a housekeeping one: *a sample that measures
+elapsed time sees none pass.*
+
+**Then it polls, and gives up.** Seven enumerations, `NtDelayExecution` between
+them, then `ExitProcess` — 121 API calls, no fault anywhere.
+
+**What it is looking for, measured.** It CRC-32s every enumerated image name,
+lowercased, against **20 constants**; each constant is compared against all
+twelve names and none matches. Cracking those constants needed the algorithm
+first, and the algorithm was validated *against names the emulator was observed
+hashing* rather than by whether it produced hits — a cracker checked only by
+finding something will always find something. CRC-32, poly `0x04C11DB7`, init
+`0xFFFFFFFF`, non-reflected, final NOT; it reproduces `explorer.exe`,
+`lsass.exe`, `svchost.exe`, `regsvcs.exe` and `dwm.exe` exactly.
+
+**Thirteen of the twenty:**
+
+| | |
+|---|---|
+| Sysinternals / capture | `procmon.exe`, `regmon.exe`, `filemon.exe`, `wireshark.exe`, `netmon.exe` |
+| Virtualisation | `vmwareuser.exe`, `vmwareservice.exe`, `vmsrvc.exe`, `vmusrvc.exe` |
+| Sandbox | `sandboxiedcomlaunch.exe`, `sandboxierpcss.exe` |
+| Analysis interpreters | `python.exe`, `perl.exe` — Cuckoo's agent is `python.exe` |
+
+Seven are unrecovered and are recorded so the next attempt starts from them
+rather than from scratch: `0x0263178b`, `0x0cc39fef`, `0x57585356`, `0x9cb95240`,
+`0xa8d123c8`, `0xc72ce2d5`, `0xd0c58467`. Note what is *absent* — `vboxservice`,
+`vboxtray`, `vmtoolsd`, `ollydbg`, `x64dbg`, `idaq`, `procexp`, `tcpview` were all
+tried and none matches, so this is not simply the most common published list.
+
+**This is a second, independent anti-analysis layer**, and it strengthens the
+retraction of *Stage 3 carries no anti-analysis primitives* rather than repeating
+it: the first layer asks the kernel about debuggers, this one enumerates
+processes looking for tools. Neither leaves a string. **And it is a detection
+opportunity the pipeline can use** — the guest runs Procmon, and `procmon.exe` is
+the first name on that list.
+
+**Why it exits is *not* established, and there are three candidates.** A
+blocklist that matches nothing should let the sample proceed, so the clean
+`ExitProcess` is unexplained:
+
+1. `RtlQueryEnvironmentVariable_U("USERNAME")` is answered
+   `STATUS_VARIABLE_NOT_FOUND`, twice. That was a deliberate choice — there is no
+   environment block to answer from — and it is now the leading suspect.
+2. The frozen clock. A poll loop bounded by elapsed time never advances.
+3. The seven uncracked hashes. If any names something the sample *requires*
+   present, absence is a legitimate reason to stop.
+
+Do not read the exit as "the sample decided the machine was clean" until one of
+these is ruled out. **No injection was reached** — `NtWriteVirtualMemory` was
+never called, no process was opened, and stage 4 remains unrecovered. The
+instrumentation for it is in place and idle: remote writes are copied out,
+PE-tested and dumped, section views are allocated so the end-of-run scan can see
+a payload copied into one by ordinary instructions, and `NtOpenProcess` refuses
+any pid the served list did not contain, so the fiction stays self-consistent.
 
 **And the *second* jump to address 0 is not a crash at all.** ESP was back above the
 initial stack top and the unwind ended in `xor eax, eax ; mov esp, ebp ; pop ebp ; ret`
