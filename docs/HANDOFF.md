@@ -1771,6 +1771,53 @@ tdll.dl\ufffd'`, which is
 the kind of wrongness that is luckily loud — the same bug on a path with an even-index
 match would have been silent.
 
+**Past the file read, a second lookup that never hits, 10 Aug.** With the system
+DLLs mapped for real the run is clean -- no faults, no unhandled APIs, 87 calls -- and
+it then computes for 197 million basic blocks calling nothing. Single-stepping at 400M
+instructions gives a **28-instruction cycle** over `0x2003c31`-`0x20043c0`:
+
+- `0x2003c31` is a **case-insensitive byte compare**; the `'A'`/`'Z'`/`'a'`/`'z'`
+  range tests with the +/-`0x20` fold are unmistakable.
+- `0x20043a1` calls it at each offset, `jne <found>` **taken 0 of 14,243** -- a
+  substring search whose target is not there.
+
+**What it wants is a 6-byte pattern rather than a string**: `37 65 e9 a1 5e 6b`, built
+on the stack at `0x2fe4f0`. The scan index had reached **33,624,529**, far larger than
+any buffer in this process, the biggest allocation being the 3.6 MB mapped `ntdll`.
+**The anomaly is the scan limit, not the miss**, and where that limit comes from is
+not established: linear disassembly around its origin desynchronises (`enter`, `aam`,
+`loopne` are decode artefacts), so it needs disassembly from a known function entry or
+a live read of `[ebp-0xc]`. Recorded as unknown rather than guessed at.
+
+**One of my own measurements is corrected here.** The "haystack base" figure from that
+run is meaningless: `ECX` was sampled at the *call site*, where it holds the needle
+pointer, while inside the compare `ecx` is the running offset. Only the needle and the
+index are valid. Sampling a register at the wrong instruction is the same family of
+error as watching the wrong buffer, and it is now the fifth instance in this document.
+
+**Two environment bugs fixed getting this far**, both invisible with synthetic DLLs:
+
+- The payload reads a clean `ntdll` off disk and then walks the **loaded** copy
+  against it, so a 1 MB stub of zeros faulted past its end at `0x77134000`. Both
+  system DLLs are now mapped as real images -- true RVAs, real `SizeOfImage`, real
+  export table -- with interception at each export's real address, which also leaves
+  the loaded image byte-correct for anything that checksums it.
+- **In user-mode `ntdll`, `NtXxx` and `ZwXxx` are the same address.** Only one name
+  can win an address-keyed index, and whichever came last in the export table did:
+  `ZwCreateFile` won, every handler keyed on `NtCreateFile` silently stopped firing,
+  and it surfaced only as "unhandled API". The index now prefers the `Nt` spelling.
+
+**Stage 4 has not come out.** Every PE in the allocations is still a copy of `ntdll`,
+raw or mapped.
+
+**The bottleneck is now iteration cost, and it is worth fixing before more of this.**
+Every diagnostic -- single-step, CRC arguments, frame chains, hash decoding, the
+needle -- restarts from the entry point and re-executes hundreds of millions of
+instructions to reach the interesting moment, at roughly 11 minutes per 900M. Unicorn
+can be snapshotted: enumerate `mem_regions()`, dump each, save the register file,
+restore on demand. That turns a six-minute question into a seconds-long one, and there
+are plainly more questions coming.
+
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
 no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed
