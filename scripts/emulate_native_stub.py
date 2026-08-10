@@ -242,6 +242,32 @@ class Emulator:
             val, nargs = 0, 0
         elif name == "GetTickCount":
             val, nargs = 0x00100000, 0
+        elif name == "RtlDosPathNameToNtPathName_U":
+            # (PCWSTR Dos, PUNICODE_STRING Nt, PCWSTR *Part, PRTL_RELATIVE_NAME)
+            # Prefix the DOS path with \??\ and hand back a UNICODE_STRING. The
+            # buffer has to outlive the call, so it comes from the bump heap.
+            dos = a(0)
+            text = ""
+            if dos:
+                raw = bytes(mu.mem_read(dos, 520))
+                end = raw.find(b"\0\0")
+                text = raw[:end if end > 0 else 0].decode("utf-16-le", "replace")
+            wide = ("\\??\\" + text).encode("utf-16-le") + b"\0\0"
+            buf = self.alloc(len(wide) + 16)
+            mu.mem_write(buf, wide)
+            if a(1):
+                mu.mem_write(a(1), struct.pack("<HHI", len(wide) - 2, len(wide), buf))
+            if a(2):
+                wr(a(2), buf)
+            val, nargs = 1, 4
+        elif name in ("RtlInitUnicodeString", "RtlInitAnsiString"):
+            val, nargs = 0, 2
+        elif name == "RtlFreeUnicodeString":
+            val, nargs = 0, 1
+        elif name == "RtlNtStatusToDosError":
+            val, nargs = 0, 1
+        elif name == "RtlGetLastWin32Error":
+            val, nargs = 0, 0
         elif name == "Sleep":
             val, nargs = 1, 1
         else:

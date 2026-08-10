@@ -185,12 +185,21 @@ def setup(mu, image_base, image_size):
     # to +0x1800; the name buffer has to start beyond that, not at +0x800.
     entry_size, first, names_at = 0x100, LDR_ADDR + 0x100, LDR_ADDR + 0x4000
     assert first + len(mods) * entry_size <= names_at, "module entries overlap names"
+    # The three lists are circular *through a head that lives in PEB_LDR_DATA*,
+    # and that detail is load-bearing rather than cosmetic. Module walkers do not
+    # count entries; they stop when the next entry's DllBase reads zero, which
+    # happens naturally because the head is not an LDR_DATA_TABLE_ENTRY and the
+    # bytes at head+0x18 are something else entirely (zero here). Linking the
+    # last entry back to the *first* instead makes a pure ring with no sentinel,
+    # and a walker looking for a module it will not find then loops forever --
+    # which is exactly what hung stage 3 for 2.3 billion instructions.
+    heads = {0x00: LDR_ADDR + 0x0C, 0x08: LDR_ADDR + 0x14, 0x10: LDR_ADDR + 0x1C}
     for i, (base, size, nm) in enumerate(mods):
         e = first + i * entry_size
-        nxt = first + ((i + 1) % len(mods)) * entry_size
-        prv = first + ((i - 1) % len(mods)) * entry_size
-        for off in (0x00, 0x08, 0x10):                # the three LIST_ENTRYs
-            mu.mem_write(e + off, struct.pack("<II", nxt + off, prv + off))
+        for off, head in heads.items():
+            flink = head if i == len(mods) - 1 else first + (i + 1) * entry_size + off
+            blink = head if i == 0 else first + (i - 1) * entry_size + off
+            mu.mem_write(e + off, struct.pack("<II", flink, blink))
         mu.mem_write(e + 0x18, struct.pack("<III", base, base, size))
         wide = nm.encode("utf-16-le") + b"\0\0"
         nptr = names_at + i * 0x80
@@ -198,9 +207,15 @@ def setup(mu, image_base, image_size):
         us = struct.pack("<HHI", len(nm) * 2, len(wide), nptr)
         mu.mem_write(e + 0x24, us)                    # FullDllName
         mu.mem_write(e + 0x2C, us)                    # BaseDllName
-    for off, head in ((0x0C, 0x00), (0x14, 0x08), (0x1C, 0x10)):
-        last = first + (len(mods) - 1) * entry_size
-        mu.mem_write(LDR_ADDR + off, struct.pack("<II", first + head, last + head))
+    last = first + (len(mods) - 1) * entry_size
+    for off, head in heads.items():
+        mu.mem_write(head, struct.pack("<II", first + off, last + off))
+    # head+0x18 must read as zero for the walk to terminate there. It does
+    # because nothing else is written into that range -- assert it rather than
+    # trust it, since the whole termination argument rests on this byte.
+    for head in heads.values():
+        assert struct.unpack("<I", mu.mem_read(head + 0x18, 4))[0] == 0, \
+            "list head +0x18 is non-zero; module walks will not terminate"
 
     install_gdt(mu, TEB_ADDR)
 

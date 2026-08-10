@@ -1682,6 +1682,48 @@ blocker is a name this bench cannot guess. Reading `0x2017038`'s own caller for 
 context it expects is the next move, not more guessing — the standing lesson about
 brute force and method bodies, one layer up again.
 
+**The hang is fixed, and it was a bug in the harness — a precise, instructive one.**
+Sampling the whole frame chain forty times gave **one** chain every time, so the loop
+was not above `get_module_base_by_hash`, it was *inside* it. Its termination is:
+
+    mov esi, [esi]            ; next = entry->Flink
+    cmp [esi+0x18], eax       ; DllBase == 0 ?
+    jne  <loop>               ; keep walking while non-zero
+
+A real `InLoadOrderModuleList` is circular **through a head that lives inside
+`PEB_LDR_DATA`**, and that head is not an `LDR_DATA_TABLE_ENTRY` — the bytes at
+`head+0x18` are some other field, which reads as zero, and that is how every module
+walk in Windows terminates. `win32_emu_env.py` had linked the last entry back to the
+*first*, making a pure ring with no sentinel. A walker looking for a module that is
+not present then circles forever. **The 2.3 billion instructions were my list, not
+their code.** The fix links the last entry's `Flink` to the head, the first entry's
+`Blink` likewise, and asserts `head+0x18` reads zero rather than trusting it, since
+the whole termination argument rests on that one dword.
+
+**With the list terminated it walks straight past and keeps going**, and the shape of
+the remaining work changed completely — from *one unexplained hang* to *implement the
+next API*:
+
+| Blocks | Call |
+|---|---|
+| 5.7M | `NtAllocateVirtualMemory(0xffffffff, …, 0x3000, 0x40)` → the `0x457e1` region |
+| 17.2M | `RtlGetProcessHeaps` |
+| 24.6M | `RtlDosPathNameToNtPathName_U` |
+| 27.1M | **`NtCreateFile(…, access 0x120089, …)`** |
+| 33.8M | `RtlFreeHeap` |
+
+**It is opening a file.** That is the first behaviour out of this chain that is not
+setup, and it is consistent with the decoded capability set — `CryptUnprotectData`
+alongside `NtCreateFile`/`NtReadFile` is a credential store being read. Each further
+API implemented moves it one step; the structural obstacle is gone.
+
+**Worth keeping from how this was found.** Three separate wrong calls preceded it —
+"not unpacking", "unpacks then stalls", "environment gap or bail" — and every one came
+from inferring a cause from an *indirect* signal. What settled it was reading the
+loop's own exit condition and then sampling the frame chain, which answered "where is
+the loop" in one measurement. The general form, now stated for the third time in this
+document: **measure the mechanism, not a proxy for it.**
+
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
 no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed
