@@ -1,0 +1,11 @@
+# `core.autocrlf` is true on this bench, but docs/HANDOFF.md was committed with
+# CRLF already in the blob. Left alone, every edit to it stages as a whole-file
+# rewrite -- 2,700 lines changed to show 60 -- which buries the actual change and
+# breaks `git log` as the incident record for the one file that most depends on
+# being readable that way.
+#
+# `-text` tells git to store the bytes as they are, so the existing CRLF blob
+# stays and diffs stay small. The alternative, normalising to LF, is a one-time
+# whole-file commit; worth doing deliberately some day, not as a side effect of
+# an edit.
+docs/HANDOFF.md -text
