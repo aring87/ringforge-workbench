@@ -1782,12 +1782,31 @@ instructions gives a **28-instruction cycle** over `0x2003c31`-`0x20043c0`:
   substring search whose target is not there.
 
 **What it wants is a 6-byte pattern rather than a string**: `37 65 e9 a1 5e 6b`, built
-on the stack at `0x2fe4f0`. The scan index had reached **33,624,529**, far larger than
-any buffer in this process, the biggest allocation being the 3.6 MB mapped `ntdll`.
-**The anomaly is the scan limit, not the miss**, and where that limit comes from is
-not established: linear disassembly around its origin desynchronises (`enter`, `aam`,
-`loopne` are decode artefacts), so it needs disassembly from a known function entry or
-a live read of `[ebp-0xc]`. Recorded as unknown rather than guessed at.
+on the stack at `0x2fe4f0`. **The haystack is its own first allocation** -- the
+relocated image at `0x2001000`, byte `0x20111d1` at `+0x101d1`.
+
+**The scan limit is not bogus, and an earlier revision of this section said it was.**
+Read live from the snapshot, `[ebp-0xc]` is **273,392** (`0x42bf0`) -- the 272 KB
+blob's own size less the needle -- with the counter at 58,867, a perfectly ordinary
+21%. The 33.6 million figure previously quoted here is `[ebp-4]`, a different running
+value; the loop is governed by the counter at `[ebp-0x10]`, which
+`cmp eax, [ebp-0xc]` actually tests. **Reading the adjacent variable instead of the
+governing one is the fifth instance of this exact error in this document** -- wrong
+buffer, wrong register, wrong instruction, wrong variable, each time producing a
+confident and wrong headline from a signal next to the real one.
+
+**What the scan actually does is stranger than a stall.** Sampled every 150M
+instructions the counter runs 58,867 -> 176,793 -> 11,927 -> 176,793 -> 3,726, so it
+is **not one pass**: the search is re-entered against different buffers. And at
+roughly 750M added instructions **the process jumps to address 0** and stops.
+
+**That crash was nearly missed because of a flaw in the measuring script**, which is
+worth recording alongside the finding. `Emulator.run` catches `UcError` and *returns*
+the message rather than raising, and the sampling loop discarded the return value --
+so eight further samples reported 64.7% progress against a machine that had been dead
+since the fifth. The block count staying at 348,473,107 was the only tell. **A
+harness that reports outcomes by return value needs its callers to read them**;
+swallowing them turns a crash into a plateau.
 
 **One of my own measurements is corrected here.** The "haystack base" figure from that
 run is meaningless: `ECX` was sampled at the *call site*, where it holds the needle
