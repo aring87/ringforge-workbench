@@ -32,6 +32,18 @@ could not fail at all; the second could, and was still aimed at the wrong buffer
 **A check that can fail is necessary and not sufficient -- it also has to be
 pointed at the subject.** Where the subject keeps its own counter, read that.
 
+IT IS INTERCEPTED AT THE SYSCALL BOUNDARY, not at export addresses, and that is
+the only placement that works on this sample. Stage 3 reads a pristine ntdll off
+disk and manually maps it, then calls `Nt*` stubs out of **its own copy** -- so a
+hook on `ntdll!NtCreateFile` at its export never fires. That is exactly why the
+API log went quiet at 87 calls while the sample kept running, and why it then
+appeared to jump to address 0: a 32-bit process reaches the kernel through
+`ntdll!Wow64Transition` and `fs:[0xC0]`, both of which the *kernel* fills in at
+load and neither of which is in the file on disk. `win32_emu_env` now fills them,
+points them at a gate, and the gate reads EAX for the service number against a
+table parsed out of the host's own ntdll. Handlers are keyed by name, so the same
+ones serve both entry points.
+
 WHAT IS ACTUALLY UNKNOWN is whether the emulation *diverges*. This harness
 answers GetProcAddress with a Sleep stub for every name, claims success from
 VirtualProtect, and invents a heap handle for RtlGetProcessHeaps. Any of those
@@ -39,8 +51,10 @@ can steer execution down a path the real thing would not take, silently, without
 ever faulting. Log each call with arguments and return value and look for one the
 code visibly rejects.
 
-So: do not read a quiet run as a clean one, and do not read an unchanged buffer
-as a stalled one either.
+So: do not read a quiet run as a clean one, do not read an unchanged buffer as a
+stalled one, and do not read a fetch from address 0 as a crash -- with no
+sentinel on the initial stack, that is also what returning from the entry
+function looks like. `run` tells those two apart by ESP.
 
 Usage:
 
@@ -116,12 +130,21 @@ class Emulator:
         mu.mem_map(STACK, STACK_SIZE)
         mu.reg_write(UC_X86_REG_ESP, STACK + STACK_SIZE // 2)
         mu.reg_write(UC_X86_REG_EBP, STACK + STACK_SIZE // 2)
-        self.addr2name = winenv.setup(mu, image_base, size)
+        (self.addr2name, self.ssn2name,
+         self.transition_rva, self.ntdll_image_size) = winenv.setup(mu, image_base, size)
 
         self.next_free = winenv.HEAP_BASE + 0x1000
         self.allocs: list[list[int]] = []
         self.calls: collections.Counter = collections.Counter()
         self.unhandled: collections.Counter = collections.Counter()
+        #: Syscalls dispatched by service number, and numbers this ntdll has no
+        #: name for -- the second is how a wrong SSN mask would announce itself.
+        self.syscalls: collections.Counter = collections.Counter()
+        self.unknown_ssn: collections.Counter = collections.Counter()
+        #: `(blocks, base)` for each private ntdll copy the harness filled in.
+        self.patched_ntdll: list[tuple[int, int]] = []
+        #: Environment variables the payload asked for, in order.
+        self.env_queries: list[str] = []
         self.faults: list[tuple[int, int, int]] = []
         self.blocks = 0
         self._skip_block_at: Optional[int] = None
@@ -147,6 +170,12 @@ class Emulator:
             hi = max((a for a in self.addr2name if dll <= a < dll + 0x1000000),
                      default=dll)
             mu.hook_add(UC_HOOK_CODE, self._on_stub, begin=dll, end=hi + 0x20)
+        # The syscall boundary. This is where this payload actually operates:
+        # it maps a clean ntdll and calls stubs out of its own copy, so an
+        # export-address hook never sees it -- which is why the API log went
+        # quiet at 87 calls while the sample kept working.
+        mu.hook_add(UC_HOOK_CODE, self._on_syscall,
+                    begin=winenv.SYSCALL_GATE, end=winenv.SYSCALL_GATE)
         mu.hook_add(UC_HOOK_BLOCK, self._on_block)
         mu.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_fault)
 
@@ -184,7 +213,10 @@ class Emulator:
         # come from the host and would double the snapshot for no benefit.
         files = [{k: v for k, v in f.items() if k != "data"} for f in self.files]
         state = {
-            "version": 1,
+            # v2 adds the syscall counters. The SSN table itself is *not*
+            # stored: it is derived from the host's own ntdll and rebuilt on
+            # restore, so a snapshot can never carry a stale numbering.
+            "version": 2,
             "base": self.base,
             "regions": regions,
             "regs": {r: self.mu.reg_read(self._reg_id(r)) for r in self._REGS},
@@ -194,6 +226,10 @@ class Emulator:
             "allocs": self.allocs,
             "calls": dict(self.calls),
             "unhandled": dict(self.unhandled),
+            "syscalls": dict(self.syscalls),
+            "unknown_ssn": dict(self.unknown_ssn),
+            "patched_ntdll": self.patched_ntdll,
+            "env_queries": self.env_queries,
             "blocks": self.blocks,
             "files": files,
             "log": self.log,
@@ -204,7 +240,7 @@ class Emulator:
     def restore(cls, path: str | Path) -> "Emulator":
         """Rebuild an emulator from a snapshot, hooks and all."""
         state = pickle.loads(Path(path).read_bytes())
-        if state.get("version") != 1:
+        if state.get("version") not in (1, 2):
             raise ValueError(f"unsupported snapshot version {state.get('version')}")
         self = cls.__new__(cls)
         self.raw = b""
@@ -222,6 +258,10 @@ class Emulator:
         self.allocs = state["allocs"]
         self.calls = collections.Counter(state["calls"])
         self.unhandled = collections.Counter(state["unhandled"])
+        self.syscalls = collections.Counter(state.get("syscalls", {}))
+        self.unknown_ssn = collections.Counter(state.get("unknown_ssn", {}))
+        self.patched_ntdll = list(state.get("patched_ntdll", []))
+        self.env_queries = list(state.get("env_queries", []))
         self.blocks = state["blocks"]
         self._skip_block_at = None
         self.faults = []
@@ -230,8 +270,44 @@ class Emulator:
         self.files = state["files"]
         for f in self.files:
             f["data"] = self.backing(f["path"])
+
+        # Rebuilt rather than restored, so a state saved before the syscall
+        # boundary existed comes back with it -- which is the whole point of
+        # having kept `after_scan.state`.
+        (self.ssn2name, self.transition_rva,
+         self.ntdll_image_size) = winenv.syscall_table()
+        winenv.install_syscall_gate(mu, winenv.NTDLL_BASE, self.transition_rva)
         self._install_hooks()
         return self
+
+    def repair_wow64_crash(self) -> bool:
+        """Resume a state captured at the jump through an empty transition slot.
+
+        `after_scan.state` is a dead machine: `jmp dword ptr [Wow64Transition]`
+        read zero and EIP is 0. Nothing else about it is damaged -- the fault
+        happened *at* the jump, so the stack, the registers and every mapped
+        page are exactly what the transition would have been entered with. With
+        the slot now filled, sending EIP to the gate replays that jump as it
+        should have gone, instead of re-running 348M blocks to reach it again.
+
+        The guard is deliberately tight, so this can never quietly rescue an
+        unrelated jump to zero: EIP must be 0, EAX's low word must be a service
+        number this ntdll knows, and the return address on top of the stack must
+        point at the `ret imm16` that ends a syscall stub.
+        """
+        mu = self.mu
+        if mu.reg_read(UC_X86_REG_EIP) != 0:
+            return False
+        if (mu.reg_read(UC_X86_REG_EAX) & 0xFFFF) not in self.ssn2name:
+            return False
+        try:
+            ret = struct.unpack("<I", mu.mem_read(mu.reg_read(UC_X86_REG_ESP), 4))[0]
+            if mu.mem_read(ret, 1)[0] != 0xC2:                 # ret imm16
+                return False
+        except UcError:
+            return False
+        mu.reg_write(UC_X86_REG_EIP, winenv.SYSCALL_GATE)
+        return True
 
     def resume(self, count: int = 0) -> str:
         """Continue from wherever the machine currently is.
@@ -253,6 +329,31 @@ class Emulator:
         name = self.addr2name.get(addr)
         if name:
             self.api(name)
+
+    def _on_syscall(self, uc, addr, size, user):
+        """A `Nt*` stub has reached the WOW64 transition. EAX names the service.
+
+        The stack here carries **two** return addresses, and getting that wrong
+        would misread every argument: the payload's `call` pushed one, then the
+        stub's own `call edx` pushed another. So the arguments start at
+        `esp + 8`, not `esp + 4`. The cleanup differs for the same reason --
+        the stub ends in `ret imm16` and pops its own arguments, so the gate
+        must pop only the address it returns to.
+        """
+        ssn = uc.reg_read(UC_X86_REG_EAX) & 0xFFFF
+        name = self.ssn2name.get(ssn)
+        if name is None:
+            self.unknown_ssn[ssn] += 1
+            uc.reg_write(UC_X86_REG_EAX, 0xC0000002)           # NOT_IMPLEMENTED
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            uc.reg_write(UC_X86_REG_EIP, struct.unpack("<I", uc.mem_read(esp, 4))[0])
+            uc.reg_write(UC_X86_REG_ESP, esp + 4)
+            return
+        self.syscalls[name] += 1
+        # An unhandled *syscall* answered with a bare 1 is STATUS_WAIT_1, which
+        # reads as success against an untouched output buffer. A status saying
+        # plainly that nothing happened keeps the gap visible.
+        self.api(name, arg_offset=8, cleanup=4, unhandled_value=0xC0000002, ssn=ssn)
 
     def _on_block(self, uc, addr, size, user):
         if self._skip_block_at is not None:
@@ -298,22 +399,27 @@ class Emulator:
                     return b""
         return b""
 
-    def object_name(self, obj_attrs: int) -> str:
-        """The path out of an OBJECT_ATTRIBUTES.
-
-        +0x08 is PUNICODE_STRING ObjectName; the UNICODE_STRING is
-        (Length, MaximumLength, Buffer) with Length in *bytes*.
-        """
-        if not obj_attrs:
+    def unicode_string(self, ptr: int) -> str:
+        """The text of a UNICODE_STRING -- (Length, MaximumLength, Buffer),
+        with Length in *bytes* rather than characters."""
+        if not ptr:
             return ""
         try:
-            name_ptr = struct.unpack("<I", self.mu.mem_read(obj_attrs + 8, 4))[0]
-            if not name_ptr:
-                return ""
-            length, _, buf = struct.unpack("<HHI", self.mu.mem_read(name_ptr, 8))
+            length, _, buf = struct.unpack("<HHI", self.mu.mem_read(ptr, 8))
             if not buf or not length or length > 0x1000:
                 return ""
             return bytes(self.mu.mem_read(buf, length)).decode("utf-16-le", "replace")
+        except UcError:
+            return ""
+
+    def object_name(self, obj_attrs: int) -> str:
+        """The path out of an OBJECT_ATTRIBUTES; +0x08 is PUNICODE_STRING
+        ObjectName."""
+        if not obj_attrs:
+            return ""
+        try:
+            return self.unicode_string(
+                struct.unpack("<I", self.mu.mem_read(obj_attrs + 8, 4))[0])
         except UcError:
             return ""
 
@@ -350,20 +456,38 @@ class Emulator:
         self.allocs.append([p, size])
         return p
 
-    def api(self, name: str) -> None:
+    def api(self, name: str, *, arg_offset: int = 4, cleanup: Optional[int] = None,
+            unhandled_value: int = 1, ssn: Optional[int] = None) -> None:
+        """Implement one call and return from it.
+
+        `arg_offset` and `cleanup` are what let the same handlers serve both
+        entry points. Reached at an export address it is an ordinary stdcall:
+        arguments at `esp + 4`, and this pops them. Reached at the syscall gate
+        the stub's own `ret imm16` pops them instead, and there is an extra
+        return address in the way -- see `_on_syscall`.
+        """
         mu = self.mu
         esp = mu.reg_read(UC_X86_REG_ESP)
         ret = struct.unpack("<I", mu.mem_read(esp, 4))[0]
 
         def a(i: int) -> int:
-            return struct.unpack("<I", mu.mem_read(esp + 4 + 4 * i, 4))[0]
+            return struct.unpack("<I", mu.mem_read(esp + arg_offset + 4 * i, 4))[0]
 
         def wr(ptr: int, v: int) -> None:
             if ptr:
                 mu.mem_write(ptr, struct.pack("<I", v))
 
+        # Any ntdll the payload has manually mapped since the last call needs
+        # the transition slot the kernel would have filled. An API call is the
+        # trigger because it is the only cheap one -- there is no event for
+        # "the payload finished a memcpy" -- and there are 87 of them, so the
+        # scan costs less than a second across a whole run.
+        for base in winenv.patch_ntdll_copies(
+                mu, self.allocs, self.transition_rva, self.ntdll_image_size):
+            self.patched_ntdll.append((self.blocks, base))
+
         self.calls[name] += 1
-        val, nargs = 1, 0
+        val, nargs = unhandled_value, 0
 
         if name == "VirtualAlloc":
             val, nargs = self.alloc(a(1)), 4
@@ -487,6 +611,57 @@ class Emulator:
             if a(1):
                 mu.mem_write(a(1), struct.pack("<II", 0, 0))
             val, nargs = 0, 5
+        elif name == "NtQueryInformationProcess":
+            # (Handle, InfoClass, Buffer, Length, *ReturnLength)
+            nargs = 5
+            info_class, buf = a(1), a(2)
+            # The three debugger-detection classes. All three have one correct
+            # answer for a machine with no debugger attached, so none of this is
+            # invented -- and answering them wrong is how a harness talks a
+            # sample into bailing and then gets read as the sample being dormant.
+            if info_class == 0x07:                # ProcessDebugPort
+                wr(buf, 0)
+                wr(a(4), 4)
+                val = 0
+            elif info_class == 0x1E:              # ProcessDebugObjectHandle
+                wr(buf, 0)
+                wr(a(4), 4)
+                val = 0xC0000353                  # STATUS_PORT_NOT_SET
+            elif info_class == 0x1F:              # ProcessDebugFlags
+                wr(buf, 1)                        # 1 == *not* being debugged
+                wr(a(4), 4)
+                val = 0
+            else:
+                self.unhandled[f"{name}(class {info_class:#x})"] += 1
+                val = 0xC0000002
+        elif name == "NtFreeVirtualMemory":
+            # (Handle, *BaseAddress, *RegionSize, FreeType). Nothing is actually
+            # released: the bump allocator never reuses an address. Worth stating
+            # rather than assuming benign, since a payload that frees a block and
+            # expects the next allocation to land back on it diverges here
+            # quietly instead of faulting.
+            val, nargs = 0, 4
+        elif name == "NtQuerySystemInformation":
+            # (SystemInformationClass, Buffer, Length, *ReturnLength)
+            nargs = 4
+            info_class, buf, length = a(0), a(1), a(2)
+            if info_class == 0x23:            # SystemKernelDebuggerInformation
+                # Two BOOLEANs -- KernelDebuggerEnabled, KernelDebuggerNotPresent
+                # -- which is why the caller asks for exactly 2 bytes. This is an
+                # anti-debug check, and the first one this chain has been seen to
+                # make: it is invisible to any Win32 hook and leaves no string,
+                # which is why the token and instruction sweeps over stage 3 found
+                # nothing. Answered as an ordinary machine with no kernel debugger.
+                if buf and length >= 2:
+                    mu.mem_write(buf, b"\x00\x01")
+                wr(a(3), 2)
+                val = 0
+            else:
+                # Named by class rather than by API, so the gap says which
+                # question went unanswered instead of implying the whole call is
+                # unimplemented.
+                self.unhandled[f"{name}(class {info_class:#x})"] += 1
+                val = 0xC0000002
         elif name == "NtQueryAttributesFile":
             val, nargs = 0xC0000034, 2                        # OBJECT_NAME_NOT_FOUND
         elif name == "NtClose":
@@ -495,6 +670,18 @@ class Emulator:
             val, nargs = 0, 2
         elif name == "RtlFreeUnicodeString":
             val, nargs = 0, 1
+        elif name == "RtlQueryEnvironmentVariable_U":
+            # (Environment, PUNICODE_STRING Name, PUNICODE_STRING Value)
+            nargs = 3
+            self.env_queries.append(self.unicode_string(a(1)))
+            # This process has no environment block, and answering as though it
+            # did would mean inventing the value. `STATUS_VARIABLE_NOT_FOUND` is
+            # what a real process returns for a variable that is genuinely
+            # absent, so it is at least a status the caller is built to handle.
+            # The name asked for is recorded either way -- with this sample
+            # asking for USERNAME in the middle of a debugger-detection run, the
+            # question is the finding whatever the answer is.
+            val = 0xC0000100                                  # VARIABLE_NOT_FOUND
         elif name == "RtlNtStatusToDosError":
             val, nargs = 0, 1
         elif name == "RtlGetLastWin32Error":
@@ -505,6 +692,18 @@ class Emulator:
             # Counted, never silently absorbed. An API answered with a bare 1 is
             # the likeliest reason a run goes quiet or spins, so an unhandled
             # name has to be visible in the output rather than inferred later.
+            #
+            # Said at the moment it happens, not only in the summary, because
+            # the damage does not surface here: with `nargs` at 0 the arguments
+            # are left on the stack, and the caller's own `ret` then returns
+            # into them. `RtlQueryEnvironmentVariable_U` going unhandled showed
+            # up as a fetch from address 0 ten million blocks downstream, which
+            # is indistinguishable from a fresh mystery unless this line is in
+            # the log above it.
+            if name not in self.unhandled:
+                print(f"  [{self.blocks:,}blk] UNHANDLED {name} -- answered "
+                      f"{unhandled_value:#x} and its arguments left on the stack; "
+                      f"expect the caller to return into them", flush=True)
             self.unhandled[name] += 1
 
         # Log after the dispatch, because `nargs` is what says how much of the
@@ -519,28 +718,57 @@ class Emulator:
                 args = [self.describe(a(i)) for i in range(count)]
             except UcError:
                 args = ["<unreadable>"]
+            # At the gate `ret` is the stub's own `ret imm16`, which says
+            # nothing about who wanted the call. The payload's return address
+            # is the next dword up, and that is the one worth recording.
+            caller = ret
+            if ssn is not None:
+                try:
+                    caller = struct.unpack("<I", mu.mem_read(esp + 4, 4))[0]
+                except UcError:
+                    pass
             self.log.append({
                 "seq": len(self.log),
                 "blocks": self.blocks,
                 "name": name,
-                "caller": ret,
+                "caller": caller,
                 "args": args,
                 "speculative_args": speculative,
                 "returned": val,
                 "popped": 4 * nargs,
+                "via": "syscall" if ssn is not None else "export",
+                "ssn": ssn,
             })
 
         mu.reg_write(UC_X86_REG_EAX, val)
         mu.reg_write(UC_X86_REG_EIP, ret)
-        mu.reg_write(UC_X86_REG_ESP, esp + 4 + 4 * nargs)      # stdcall
+        mu.reg_write(UC_X86_REG_ESP,
+                     esp + (cleanup if cleanup is not None else 4 + 4 * nargs))
 
     def run(self, entry: int, stop: int, count: int = 0) -> str:
+        """Run, and say what actually happened when it stops.
+
+        A fetch from address 0 is reported as a fault by Unicorn and is not
+        always one. Nothing pushes a sentinel return address onto the initial
+        stack, so when the entry function finally returns it pops a zero and
+        "faults" at 0 with ESP back above where it started. That is a payload
+        running to completion, and calling it a crash is a real misreading --
+        this sample's bail-out was recorded as a jump to address 0 for exactly
+        that reason. The two are told apart by ESP, not by EIP.
+        """
         try:
             self.mu.emu_start(self.base + entry, self.base + stop,
                               timeout=0, count=count)
             return "returned or budget reached"
         except UcError as e:
-            return f"{e} at eip {self.mu.reg_read(UC_X86_REG_EIP):#x}"
+            eip = self.mu.reg_read(UC_X86_REG_EIP)
+            esp = self.mu.reg_read(UC_X86_REG_ESP)
+            if eip == 0 and esp > STACK + STACK_SIZE // 2:
+                return (f"the entry function RETURNED "
+                        f"(eax {self.mu.reg_read(UC_X86_REG_EAX):#x}); the fetch "
+                        f"from 0 is the initial stack having no sentinel on it, "
+                        f"not a fault")
+            return f"{e} at eip {eip:#x}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -573,6 +801,11 @@ def main(argv: list[str] | None = None) -> int:
             emu.log = []
         print(f"restored from {args.load_state}: "
               f"eip {emu.mu.reg_read(UC_X86_REG_EIP):#x}, {emu.blocks:,} blocks already run")
+        if emu.repair_wow64_crash():
+            ssn = emu.mu.reg_read(UC_X86_REG_EAX) & 0xFFFF
+            print(f"  state was captured at the jump through an empty "
+                  f"Wow64Transition; resuming at the gate as "
+                  f"{emu.ssn2name[ssn]} (ssn {ssn:#x})")
         print(f"stopped: {emu.resume(count=args.blocks)}")
     else:
         emu = Emulator(raw)
@@ -586,8 +819,18 @@ def main(argv: list[str] | None = None) -> int:
               f"({Path(args.save_state).stat().st_size / 1e6:.1f} MB)")
     print(f"basic blocks: {emu.blocks}")
     print(f"api calls: {dict(emu.calls)}")
+    if emu.syscalls:
+        print(f"of those, reached at the SYSCALL boundary: {dict(emu.syscalls)}")
+    if emu.unknown_ssn:
+        print(f"service numbers this ntdll has no name for: "
+              f"{ {hex(k): v for k, v in emu.unknown_ssn.items()} }")
+    if emu.patched_ntdll:
+        print("private ntdll copies given a Wow64Transition by the harness: "
+              + ", ".join(f"{b:#x} at {blk:,}blk" for blk, b in emu.patched_ntdll))
+    if emu.env_queries:
+        print(f"environment variables asked for: {emu.env_queries}")
     if emu.unhandled:
-        print(f"UNHANDLED apis (answered with a bare 1): {dict(emu.unhandled)}")
+        print(f"UNHANDLED apis (answered without doing anything): {dict(emu.unhandled)}")
     if emu.faults:
         access, addr, eip = emu.faults[0]
         print(f"first fault: access {access} addr {addr:#x} eip {eip:#x}")
@@ -602,7 +845,8 @@ def main(argv: list[str] | None = None) -> int:
         for e in emu.log:
             flag = "  <-- args are a GUESS, and so is the stack fixup" \
                 if e["speculative_args"] else ""
-            print(f"  [{e['seq']:4d}] {e['blocks']:>10,}blk  from {e['caller']:#010x}  "
+            how = f" ssn {e['ssn']:#x}" if e.get("ssn") is not None else ""
+            print(f"  [{e['seq']:4d}] {e['blocks']:>10,}blk  from {e['caller']:#010x}{how}  "
                   f"{e['name']}({', '.join(e['args'])}) = {e['returned']:#x}{flag}")
         if args.log_json:
             Path(args.log_json).write_text(json.dumps(emu.log, indent=2), encoding="utf-8")

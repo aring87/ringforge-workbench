@@ -5,6 +5,7 @@ resolves its imports by walking the loader module list. Each fake DLL carries
 its own stub area at RVA 0x2000; every export points there, and a code hook on
 those addresses implements the API in Python.
 """
+import collections
 import struct
 from unicorn import *
 from unicorn.x86_const import *
@@ -192,6 +193,161 @@ def map_real_dll(mu, path, base):
     return exports, size
 
 
+#: Where the stand-in WOW64 transition lives. Any unused address works; this one
+#: is clear of the module bases above and of the heap.
+SYSCALL_GATE = 0x74A01000
+
+
+def syscall_table(path=None):
+    """`{service number: Nt name}` and the RVA of `Wow64Transition`.
+
+    Read out of the real ntdll's own stubs, because that is the only place the
+    numbering exists -- it is a property of the build, not of the API.
+
+    The service number is the **low word** of the immediate in the stub's
+    leading `mov eax, imm32`. 99 of this host's stubs carry a non-zero high
+    word (`NtDelayExecution` is `0x60034`), which selects a wow64cpu turbo
+    thunk and is not part of the number.
+
+    Two stub shapes have to be accepted, and missing the second cost a name:
+
+        mov eax, SSN ; mov edx, <thunk> ; call edx ; ret N
+        mov eax, SSN ; call $+5 ; pop edx ; cmp byte [edx+0x14], 0x4b ; jne
+                     ; call dword ptr fs:[0xC0] ; ret N ; mov edx, <thunk>
+                     ; call edx ; ret N
+
+    The second picks its transition at run time and is why `fs:[0xC0]` has to
+    be filled in as well as the `Wow64Transition` slot. On this host exactly
+    one export uses it -- `NtQueryInformationProcess` -- and a parse that only
+    knew the first shape returned a table with one hole in it, which surfaced
+    as the payload making a call to an unnamed service number.
+
+    Two assertions, neither of which needs to know what the answer should be:
+    the numbers must be unique, and they must be **contiguous from zero**. A
+    kernel service table has no gaps, so a gap means a stub shape went
+    unrecognised -- the same style of check as counting the bytes an
+    instruction decoder could not name.
+    """
+    import pefile
+
+    pe = pefile.PE(path or (SYSWOW64 + "ntdll.dll"), fast_load=True)
+    pe.parse_data_directories([0])
+    image = pe.get_memory_mapped_image()
+
+    stubs, transition = {}, None
+    for sym in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+        if not (sym.name and sym.address):
+            continue
+        name = sym.name.decode()
+        if name == "Wow64Transition":
+            transition = sym.address
+        if name.startswith("Nt"):
+            stubs[name] = image[sym.address:sym.address + 0x30]
+    assert transition is not None, "ntdll exports no Wow64Transition"
+
+    # The trampoline every stub calls. Taken as the value the overwhelming
+    # majority agree on rather than computed, so an odd build cannot quietly
+    # shift it.
+    thunks = collections.Counter(
+        struct.unpack_from("<I", body, 6)[0]
+        for body in stubs.values()
+        if len(body) >= 12 and body[0] == 0xB8 and body[5] == 0xBA and body[10:12] == b"\xff\xd2")
+    thunk_va, agreed = thunks.most_common(1)[0]
+    assert agreed > 0.9 * sum(thunks.values()), \
+        f"no single transition trampoline: {thunks.most_common(3)}"
+
+    via_edx = b"\xba" + struct.pack("<I", thunk_va) + b"\xff\xd2"
+    via_fs = b"\x64\xff\x15\xc0\x00\x00\x00"          # call dword ptr fs:[0xC0]
+
+    table, collisions = {}, []
+    for name, body in stubs.items():
+        if len(body) < 12 or body[0] != 0xB8:
+            continue
+        if via_edx not in body and via_fs not in body:
+            continue
+        ssn = struct.unpack_from("<I", body, 1)[0] & 0xFFFF
+        if table.get(ssn, name) != name:
+            collisions.append((ssn, table[ssn], name))
+        table[ssn] = name
+
+    assert not collisions, f"service numbers are not unique: {collisions[:4]}"
+    assert len(table) > 300, f"only {len(table)} syscall stubs parsed out of ntdll"
+    gaps = sorted(set(range(max(table) + 1)) - set(table))
+    assert not gaps, f"service numbers are not contiguous, so a stub shape was missed: {gaps[:8]}"
+    return table, transition, pe.OPTIONAL_HEADER.SizeOfImage
+
+
+def install_syscall_gate(mu, ntdll_base, transition_rva, gate=SYSCALL_GATE):
+    """Give the WOW64 transition somewhere real to go.
+
+    A 32-bit process on 64-bit Windows executes no `sysenter` of its own. Every
+    `Nt*` stub loads its service number into EAX and calls through
+    `ntdll!Wow64Transition`, and **the kernel fills that slot in at load** --
+    along with `fs:[0xC0]`. Neither is in the file on disk. So a harness that
+    maps ntdll from disk and stops there has a process whose entire syscall
+    path is a jump through zero, which is precisely how stage 3 died: it built
+    a clean copy of ntdll to escape user-mode hooks, called one of its own
+    stubs, and went to address 0.
+
+    Writing these two values is restoring what the loader contributes, not
+    inventing an answer. Intercepting *here* rather than at export addresses is
+    also the only placement that sees a payload using its own stubs -- which
+    this one does, by design.
+    """
+    if not any(begin <= gate <= end for begin, end, _ in mu.mem_regions()):
+        mu.mem_map(gate & ~0xFFF, 0x1000)
+    mu.mem_write(gate, b"\xc3")     # `ret`; the hook rewrites EIP before it runs
+    mu.mem_write(TEB_ADDR + 0xC0, struct.pack("<I", gate))
+    mu.mem_write(ntdll_base + transition_rva, struct.pack("<I", gate))
+
+
+def patch_ntdll_copies(mu, regions, transition_rva, image_size, gate=SYSCALL_GATE):
+    """Fill `Wow64Transition` in every *private* copy of ntdll that is mapped.
+
+    Filling the loaded image is unambiguous -- the loader does it. A copy the
+    payload mapped itself is a judgement call, and worth stating: on real
+    Windows that copy's slot is zero too, so either the sample repairs it from
+    somewhere this emulation has not reached, or it depends on a detail of a
+    live WOW64 process not reproduced here. What is *not* in doubt is that the
+    sample jumps through the slot expecting it to work, so leaving it zero
+    stops the emulation at the harness rather than at the malware.
+
+    Detection is by exact `SizeOfImage` plus an export directory naming
+    `ntdll`, not by "there is a PE here" -- the standing lesson being that a
+    test which fires on anything says nothing about what it fired on. Only a
+    slot that currently reads zero is written, so a copy the payload repaired
+    itself is left alone and stays visible as such.
+    """
+    patched = []
+    for begin, size in regions:
+        if size < image_size:
+            continue
+        try:
+            blob = bytes(mu.mem_read(begin, size))
+        except UcError:
+            continue
+        for off in range(0, size - image_size + 1, 0x1000):
+            if blob[off:off + 2] != b"MZ":
+                continue
+            e_lfanew = struct.unpack_from("<I", blob, off + 0x3C)[0]
+            if not 0x40 <= e_lfanew < 0x1000 or blob[off + e_lfanew:off + e_lfanew + 4] != b"PE\0\0":
+                continue
+            opt = off + e_lfanew + 24
+            if struct.unpack_from("<I", blob, opt + 56)[0] != image_size:
+                continue
+            export_rva = struct.unpack_from("<I", blob, opt + 96)[0]
+            if not 0 < export_rva < image_size:
+                continue
+            name_rva = struct.unpack_from("<I", blob, off + export_rva + 12)[0]
+            if not blob[off + name_rva:off + name_rva + 5].lower().startswith(b"ntdll"):
+                continue
+            if struct.unpack_from("<I", blob, off + transition_rva)[0] != 0:
+                continue
+            mu.mem_write(begin + off + transition_rva, struct.pack("<I", gate))
+            patched.append(begin + off)
+    return patched
+
+
 def setup(mu, image_base, image_size):
     mu.mem_map(HEAP_BASE, HEAP_SIZE)
     mu.mem_map(TEB_ADDR & ~0xFFF, 0x2000)
@@ -267,4 +423,7 @@ def setup(mu, image_base, image_size):
 
     install_gdt(mu, TEB_ADDR)
 
-    return real_exports
+    syscalls, transition_rva, ntdll_image_size = syscall_table()
+    install_syscall_gate(mu, NTDLL_BASE, transition_rva)
+
+    return real_exports, syscalls, transition_rva, ntdll_image_size

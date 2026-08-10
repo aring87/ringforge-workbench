@@ -4,8 +4,30 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-09. **The stage-2 payload `na3PRqPuA2` is decrypted; stage
-3's own inner blob is not.** Stage 3 turned out to be a native x86 loader carrying a
+**Last updated:** 2026-08-10. **The emulator now intercepts at the WOW64 syscall
+boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
+`ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
+addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
+0, because a disk copy's `Wow64Transition` slot is zero and `fs:[0xC0]` with it. Both
+are now filled and pointed at a hooked gate that reads the service number out of `EAX`
+against a table parsed from this host's own ntdll: **509 numbers, `0x0`–`0x1fc`,
+unique and contiguous**, an assertion that immediately caught a stub shape the first
+parse had missed. The existing handlers were reused unchanged. Behind the boundary:
+`SystemKernelDebuggerInformation`, `ProcessDebugPort`, `SystemProcessInformation` and
+a `USERNAME` lookup — **a fingerprinting block that leaves no string and no
+distinctive instruction**, which is exactly why *Stage 3 carries no anti-analysis
+primitives* found nothing and said a negative there would prove nothing. Two claims
+this document made are retracted: the consecutive SSNs were ntdll's own stub layout
+rather than the sample stepping a table, and the *second* jump to address 0 is a clean
+`ret` out of the entry function, not a crash — `run()` now tells those apart by ESP.
+**Where it stops now is the process list**, established by A/B on that one answer:
+refused, it returns cleanly; answered, it runs 24M blocks further into
+`NtOpenDirectoryObject` → `NtCreateMutant`. That answer is deliberately not
+implemented — filling `Wow64Transition` restores what the kernel supplies, but
+fabricating a process list invents a machine, and the sample is plausibly hunting
+`explorer.exe`. See *The syscall boundary, built*. Before that, **the stage-2 payload
+`na3PRqPuA2` was decrypted and stage
+3's own inner blob was not.** Stage 3 turned out to be a native x86 loader carrying a
 272 KB packed blob, and that blob defeats static attack outright — no periodicity, no
 repeated blocks, nothing from XOR/additive/recurrence/RC4 across 55 candidate keys.
 Emulating the stub (`scripts/emulate_native_stub.py`) gets much further: no imports
@@ -602,6 +624,10 @@ run for a long time without showing.
 | Proxy-aware call graph | **Proven on the artefact it was built for.** 1,181 of 1,181 bindings have a consumer, and it produced the payload decryptor from a standing start. Unproven on any *other* protected sample — the map locator is generic, but nothing else has been run through it |
 | Stage-2 payload decryption | **Proven by the plaintext.** `PE\0\0` at the `e_lfanew` the header itself declares, a coherent section table, and 3.5 KB of header padding decrypting to entropy 0.000. Key recovered algebraically, not searched |
 | Native stub emulation | **Drives a no-import stub; has not yet produced a payload.** Carries stage 3 through PEB walk, name resolution, `NtAllocateVirtualMemory`, self-relocation and RC4 decryption that runs to completion. It was twice called a stall and is not one. Do not trust a buffer-watching progress check here — two versions of it gave false answers, the second while being capable of failing, because it watched the allocation while the output went to the stack |
+| Syscall-boundary interception | **Proven end to end**, 10 Aug. The gate fires on a payload calling stubs out of its *own* mapped ntdll, where an export hook sees nothing: four syscalls dispatched by service number into the handlers that already existed. Proven on both paths — resumed from `after_scan.state`, and from a cold run whose call sequence matches it exactly, which is what says `setup()` installs the gate and not only `restore()` |
+| SSN table completeness | **Proven structurally.** 509 numbers, `0x0`–`0x1fc`, unique and contiguous. This is the right shape of check: a kernel service table has no gaps, so a gap means an unrecognised stub shape rather than a missing service — and it found one on its first run, the dual-path `NtQueryInformationProcess`. Same reasoning as counting the bytes the IL decoder could not name |
+| Emulator snapshot / restore | **Proven by equivalence**, and now across a format change. `test_emu_snapshot.py` reports `EQUIVALENT` on memory SHA-256, block count and all sixteen registers — reading a **v1 snapshot written by the older code** into the newer emulator, so backward compatibility is demonstrated rather than assumed. A v2 round trip matches on memory, blocks and EIP |
+| Harness-supplied `Wow64Transition` | **Fires once and is enough**, measured. One dword in the first private map at 52.9M blocks; the payload propagates it into all three of its later copies by copying. That the other two were never patched by the harness was read off the slots directly, not inferred from the absence of a second patch. Still a divergence — on real Windows a private copy's slot is zero too, and what the sample does about that is unknown |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window
@@ -818,6 +844,30 @@ was. Before trusting a new detector, run it against something known-clean — an
 if it is a parser, against a file the operating system wrote rather than one
 this repository built, because a synthetic fixture only contains what its author
 already thought of.
+
+**One error code, three different events — an emulator's fault is a statement
+about the emulator as well as about the code.** `UC_ERR_FETCH_UNMAPPED at eip 0x0`
+occurred three times in one afternoon and meant something different each time: a
+genuine fault at the WOW64 transition, whose slot the harness had never filled; a
+stack left corrupted by an *unhandled export ten million blocks earlier*, whose
+arguments the caller then returned into; and the entry function **returning
+normally**, popping a zero because nothing puts a sentinel on the initial stack.
+Only the first is the payload's doing, and the error string is identical for all
+three. They are separated by state — ESP against its starting value, EAX against
+the service-number table — not by the code the emulator hands back. So: when a
+harness reports a failure, ask what the harness contributes to it before reading it
+as a finding about the sample, and make each cause say its own name at the moment it
+happens. An unhandled API that leaves the stack wrong must announce itself where it
+occurs, because the crash it causes appears somewhere else entirely.
+
+**Intercept where the code operates, not where the API is named.** Every name in
+stage 3's decoded capability set was an `Nt*` form, it read a pristine `ntdll` off
+disk, and it resolved everything by hash — three separate signs, all pointing at the
+same thing, that a hook on export addresses would see none of it. It took the run
+going quiet at 87 calls to act on them. The boundary a payload cannot avoid is the
+one worth standing at: it has to reach the kernel eventually, whatever it does to
+user mode on the way. The corollary is cheap and general — *the layer everything must
+pass through is a better instrument than the layer with the convenient names.*
 
 **A change is not in the run until the guest has it, and the summary is what
 says.** The 06 Aug 20:23 detonation was set up specifically to exercise the
@@ -1837,9 +1887,9 @@ can be snapshotted: enumerate `mem_regions()`, dump each, save the register file
 restore on demand. That turns a six-minute question into a seconds-long one, and there
 are plainly more questions coming.
 
-**Where it actually stops: the WOW64 syscall boundary. This is the open task.**
+**Where it actually stops: the WOW64 syscall boundary.**
 The jump to address 0 is not a bug and not a missing API. Disassembling the return
-address on the stack lands in the manually mapped `ntdll` at `0x23c5000`, on a run of
+address on the stack lands in the manually mapped `ntdll` at `0x23c5000`, in a run of
 sequential syscall stubs it is executing from its own copy:
 
     mov eax, 0x36            ; system service number
@@ -1849,8 +1899,7 @@ sequential syscall stubs it is executing from its own copy:
 
 and the thunk is `jmp dword ptr [0x2500014]`, whose slot **contains 0**. In a real
 process the kernel fills `Wow64Transition` in at load; a copy read off disk has it
-zeroed, and `fs:[0xC0]` is zero for the same reason. SSNs `0x35`, `0x36`, `0x37`,
-`0x38` walk consecutively, so it is stepping its own rebuilt table.
+zeroed, and `fs:[0xC0]` is zero for the same reason.
 
 **So the payload has routed around the layer this harness intercepts at.** Export
 addresses are the wrong place to stand: it never calls `ntdll!NtCreateFile` at its
@@ -1859,18 +1908,153 @@ went quiet at 87 calls while the sample kept working, and it is the same fact th
 decoded name set and the clean-`ntdll` read were both pointing at, now caught in the
 act.
 
-**The fix is architectural rather than another API.** Point `Wow64Transition` and
-`fs:[0xC0]` at a stub address, hook it, read `EAX` for the service number, and build
-the SSN-to-name map by parsing `mov eax, imm32` out of each `Nt*` export in the real
-`ntdll`. The existing handlers are then reused unchanged, keyed by number instead of
-address. **Intercepting at the syscall boundary is where this malware operates**, and
-it makes the harness immune to any later stage doing the same thing.
+**One inference in the paragraph above was wrong and is worth keeping visible.** An
+earlier revision read "SSNs `0x35`, `0x36`, `0x37`, `0x38` walk consecutively, so it is
+stepping its own rebuilt table." They walk consecutively because **ntdll lays its stubs
+out in service-number order**, so any four adjacent stubs do that; it says nothing
+about what executed. The sample executed exactly one, SSN `0x36`, reached through a
+generated wrapper at `0x202c930` that decodes an obfuscated hash, resolves the stub,
+caches the pointer at `[esi+0xb64]` and tail-calls it with four arguments. *Adjacent in
+memory is not sequentially executed* — the same family as reading the variable next to
+the governing one.
+
+### The syscall boundary, built — 10 Aug
+
+`win32_emu_env.syscall_table()`, `install_syscall_gate()` and `Emulator._on_syscall`.
+Both transitions are filled and pointed at one hooked page; the gate reads `EAX`, maps
+it to a name, and dispatches into **the handlers that already existed**, keyed by name
+as before. `api()` grew `arg_offset` and `cleanup` to serve both entry points and is
+otherwise untouched. **Intercepting at the syscall boundary is where this malware
+operates**, and it makes the harness immune to any later stage doing the same thing.
+
+**The stack at the gate carries two return addresses, and that is the whole of the
+difficulty.** The payload's `call` pushed one, then the stub's own `call edx` pushed
+another, so arguments start at `esp + 8` rather than `esp + 4` — and the cleanup is
+*not* the harness's to do, because the stub ends in `ret imm16` and pops them itself.
+Getting either half wrong misreads every argument of every syscall while still looking
+like it works.
+
+**The service number is the low word of the immediate, and the check that proves it is
+structural.** 99 of this host's stubs carry a non-zero high word (`NtDelayExecution` is
+`0x60034`) selecting a wow64cpu turbo thunk. Two assertions, neither needing to know
+the right answer: the numbers must be unique, and they must be **contiguous from
+zero**. A kernel service table has no gaps, so a gap means a stub shape went
+unrecognised — the same reasoning as counting the bytes the IL decoder could not name.
+
+**It caught a hole immediately.** The first parse required
+`mov eax, imm32 ; mov edx, <thunk> ; call edx` and returned 508 numbers with exactly
+one gap, at `0x19`. That gap is `NtQueryInformationProcess`, whose stub is the
+**dual-path** form — `call $+5 ; pop edx ; cmp byte [edx+0x14], 0x4b ; jne` choosing
+between `call dword ptr fs:[0xC0]` and the thunk at run time. It is also why
+`fs:[0xC0]` has to be filled and not just `Wow64Transition`: one export on this host
+can reach the kernel either way. 509 entries, `0x0`–`0x1fc`, no gaps.
+
+**The harness supplies one dword; the sample distributes it.** `patch_ntdll_copies()`
+fills the slot in a private copy, identified by exact `SizeOfImage` plus an export
+directory naming ntdll rather than by "there is a PE here". On a cold run it fires
+**once**, on the first manual map at 52.9M blocks — and all three of the payload's
+later copies then read the gate address, because the payload propagated it by copying.
+That was measured, not deduced from the absence of a second patch.
+
+**What is invented, stated plainly.** Filling the *loaded* image's slot and `fs:[0xC0]`
+restores what the loader contributes and is not a judgement call. Filling a copy the
+payload mapped itself is: on real Windows that copy's slot is zero too, so either the
+sample repairs it from somewhere this emulation has not reached, or it leans on a
+detail of a live WOW64 process not reproduced here. What is not in doubt is that it
+jumps through the slot expecting it to work, so leaving it zero stops the run at the
+harness instead of at the malware. One dword, in one place, named in the output.
+
+**`repair_wow64_crash()` resumes the dead machine instead of rebuilding it.**
+`after_scan.state` faulted *at* the jump, so stack, registers and every page are
+exactly what the transition would have been entered with; sending EIP to the gate
+replays it. The guard is deliberately narrow — EIP `0`, `EAX`'s low word a known
+service number, and `[esp]` pointing at the `ret imm16` that ends a stub — so it cannot
+quietly rescue an unrelated jump to zero. It declined the *next* jump to zero on its
+first outing, which is the only evidence worth having that a guard is real.
+
+**Proven, on the checks this project already trusts.** `test_emu_snapshot.py` reports
+`EQUIVALENT` — memory SHA-256, block count and all sixteen registers — against a
+snapshot **written by the older code**, so restore stayed backward-compatible while
+gaining the gate. A v2 save/restore round trip matches on memory, blocks and EIP. And a
+fresh run from the entry point reproduces the restored run's call sequence exactly,
+which is what says the gate is installed by `setup()` and not only by `restore()`.
+
+### What was behind the boundary: a fingerprinting block, 10 Aug
+
+Four calls, none of which any export hook could have seen:
+
+| Blocks | Call | What it is |
+|---|---|---|
+| 348.5M | `NtQuerySystemInformation(0x23, buf, 2, 0)` | `SystemKernelDebuggerInformation` — two `BOOLEAN`s, which is why it asks for exactly 2 bytes |
+| 351.4M | `NtQueryInformationProcess(-1, 0x7, buf, 4)` | `ProcessDebugPort` |
+| 364.8M | `NtQuerySystemInformation(0x5, buf, 0x40000, 0)` | `SystemProcessInformation` — process enumeration |
+| 377.4M | `RtlQueryEnvironmentVariable_U(0, "USERNAME", …)` | |
+
+**This retires the caveat on *Stage 3 carries no anti-analysis primitives*, and does it
+the way that section predicted it might.** That search covered the packed blob and the
+partly unpacked allocation and said in terms that a negative there proves nothing.
+These checks leave **no string and no distinctive instruction** — `rdtsc`, `cpuid` and
+the VMware backdoor `in` were the right things to look for and are simply not what this
+sample uses. It asks the kernel directly, through a hash-resolved stub in its own clean
+ntdll. *A search can only clear the surface it can read.*
+
+The debugger classes are answered as an ordinary machine with none attached. Each has
+one correct answer, so nothing is invented — and answering them wrong is how a harness
+talks a sample into bailing and then gets read as the sample being dormant.
+
+**The clean-`ntdll` read now reads as one design rather than two.** Self-unhooking,
+direct syscalls, hash-resolved imports and no Win32 wrapper anywhere are a single
+decision: *be invisible to anything watching user mode*. For the pipeline that sharpens
+the standing detection note — `NtCreateFile` on `\??\ntdll.dll` from a hollowed
+`RegSvcs` remains the cheap signal, and a monitor on Win32 or even on loaded-ntdll
+entry points sees none of the anti-analysis either.
+
+### Where it stops now: the process list is the gate, 10 Aug
+
+Established by A/B on a single answer, everything else held identical:
+
+- `SystemProcessInformation` answered `STATUS_NOT_IMPLEMENTED` — the payload **returns
+  cleanly** at 377.4M blocks.
+- answered `STATUS_SUCCESS` over the freshly-allocated, therefore zeroed, buffer — a
+  structurally valid one-entry list — it runs **24M blocks further** and reaches
+  `NtOpenDirectoryObject` → `NtCreateMutant` → `NtClose`.
+
+So the next behaviour is a named-object single-instance check, and **the mutant's name
+is an IOC** the moment that call is answered.
+
+**It is left unimplemented on purpose, because it is a different kind of decision.**
+Filling `Wow64Transition` restores something the kernel would have supplied.
+Fabricating a process list invents a machine — and the payload is plausibly hunting
+`explorer.exe`, which the decoded hash set already names, so whatever goes into that
+list steers what happens next. A fabricated environment produces fabricated findings,
+which is the same reason `backing()` answers end-of-file for a file the host does not
+have rather than making bytes up. Decide it deliberately; the A/B above is the evidence
+for what it buys.
+
+**`RtlQueryEnvironmentVariable_U` is answered `STATUS_VARIABLE_NOT_FOUND` and the name
+recorded**, for the same reason: this process has no environment block, and the
+question is the finding whatever the answer is.
+
+**An unhandled export corrupts the stack, and not where you find out about it.**
+`RtlQueryEnvironmentVariable_U` going unhandled left three arguments on the stack and
+the caller's own `ret` returned into them — surfacing as a fetch from address 0 **ten
+million blocks downstream**, indistinguishable from a fresh mystery. The dispatcher now
+says so at the moment it happens rather than only in the closing summary.
+
+**And the *second* jump to address 0 is not a crash at all.** ESP was back above the
+initial stack top and the unwind ended in `xor eax, eax ; mov esp, ebp ; pop ebp ; ret`
+— the entry function returning and popping a zero, because nothing pushes a sentinel
+return address onto the initial stack. Unicorn reports that as `UC_ERR_FETCH_UNMAPPED`,
+identical to the real fault at the transition. `run()` now tells them apart **by ESP,
+not by EIP**. A payload deciding to leave and a payload dying had been producing the
+same line.
 
 **Restorable state is on the artifact drive** so none of this needs rebuilding:
-`warm400M.state` (in the marker scan), `after_scan.state` (at the syscall crash, which
-is the one to load for this work) and `warm60M.state`, beside the samples in
-`G:ingforge-artifactsĒe30ed_stage2\`. Restore is seconds;
-`scripts/test_emu_snapshot.py` is the equivalence check that says a restore is sound.
+`warm400M.state` (in the marker scan), `after_scan.state` (at the syscall crash, and
+still the one to load -- `repair_wow64_crash()` picks it up) and `warm60M.state`,
+beside the samples in `G:\ringforge-artifacts\422e30ed_stage2\`. Restore is seconds;
+`scripts/test_emu_snapshot.py` is the equivalence check that says a restore is sound,
+and it reads a v1 snapshot as happily as a v2 one.
 
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
