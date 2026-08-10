@@ -75,6 +75,24 @@ STACK, STACK_SIZE = 0x200000, 0x200000
 SNAPSHOT_EVERY = 1_000_000
 
 
+def read_wide(mu, addr: int, limit: int = 520) -> str:
+    """A NUL-terminated UTF-16LE string from emulated memory.
+
+    Scanning for `b"\\0\\0"` with `bytes.find` is wrong and quietly so: in
+    `...l\\0l\\0\\0\\0` the first match straddles a character boundary at an odd
+    index, and the string comes back a character short with a replacement
+    character on the end. Step two bytes at a time.
+    """
+    try:
+        raw = bytes(mu.mem_read(addr, limit))
+    except UcError:
+        return ""
+    for i in range(0, len(raw) - 1, 2):
+        if raw[i] == 0 and raw[i + 1] == 0:
+            return raw[:i].decode("utf-16-le", "replace")
+    return raw.decode("utf-16-le", "replace")
+
+
 def entropy(data: bytes) -> float:
     if not data:
         return 0.0
@@ -107,6 +125,8 @@ class Emulator:
         self.snapshots: list[tuple[int, float, int]] = []
         #: Set to a list to record every API call with its arguments and result.
         self.log: Optional[list[dict]] = None
+        #: Files the payload opened, in order, with the path it asked for.
+        self.files: list[dict] = []
 
         # Scoped to the stub pages. A per-instruction hook over the whole image
         # costs more than the emulation does -- it was the reason an earlier run
@@ -138,6 +158,46 @@ class Emulator:
         return False
 
     # -- the API surface --------------------------------------------------
+
+    def backing(self, nt_path: str) -> bytes:
+        """Real bytes for a file the payload opens, when the host has them.
+
+        Stage 3 opens `\\??\\ntdll.dll` -- reading a pristine copy from disk,
+        which is how a loader recovers unhooked syscall stubs. Answering that
+        with end-of-file does not merely stall it, it makes the run a study of
+        the harness. The host's own SysWOW64 copy is the honest answer, and it
+        is the same file the sample would get.
+        """
+        name = nt_path.rsplit("\\", 1)[-1].lower()
+        if not name:
+            return b""
+        for folder in (r"C:\Windows\SysWOW64", r"C:\Windows\System32"):
+            candidate = Path(folder) / name
+            if candidate.is_file():
+                try:
+                    return candidate.read_bytes()
+                except OSError:
+                    return b""
+        return b""
+
+    def object_name(self, obj_attrs: int) -> str:
+        """The path out of an OBJECT_ATTRIBUTES.
+
+        +0x08 is PUNICODE_STRING ObjectName; the UNICODE_STRING is
+        (Length, MaximumLength, Buffer) with Length in *bytes*.
+        """
+        if not obj_attrs:
+            return ""
+        try:
+            name_ptr = struct.unpack("<I", self.mu.mem_read(obj_attrs + 8, 4))[0]
+            if not name_ptr:
+                return ""
+            length, _, buf = struct.unpack("<HHI", self.mu.mem_read(name_ptr, 8))
+            if not buf or not length or length > 0x1000:
+                return ""
+            return bytes(self.mu.mem_read(buf, length)).decode("utf-16-le", "replace")
+        except UcError:
+            return ""
 
     def describe(self, value: int) -> str:
         """An argument rendered as a string when it plausibly points at one.
@@ -247,11 +307,7 @@ class Emulator:
             # Prefix the DOS path with \??\ and hand back a UNICODE_STRING. The
             # buffer has to outlive the call, so it comes from the bump heap.
             dos = a(0)
-            text = ""
-            if dos:
-                raw = bytes(mu.mem_read(dos, 520))
-                end = raw.find(b"\0\0")
-                text = raw[:end if end > 0 else 0].decode("utf-16-le", "replace")
+            text = read_wide(mu, a(0)) if dos else ""
             wide = ("\\??\\" + text).encode("utf-16-le") + b"\0\0"
             buf = self.alloc(len(wide) + 16)
             mu.mem_write(buf, wide)
@@ -260,6 +316,63 @@ class Emulator:
             if a(2):
                 wr(a(2), buf)
             val, nargs = 1, 4
+        elif name in ("NtCreateFile", "NtOpenFile"):
+            # NtCreateFile(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
+            #   PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG FileAttributes,
+            #   ULONG Share, ULONG Disposition, ULONG Options, PVOID Ea, ULONG EaLen)
+            # NtOpenFile is the same through the first four and stops at Options.
+            nargs = 11 if name == "NtCreateFile" else 6
+            path = self.object_name(a(2))
+            handle = 0x1000 + 4 * len(self.files)
+            self.files.append({"handle": handle, "path": path,
+                               "access": a(1), "offset": 0,
+                               "data": self.backing(path)})
+            wr(a(0), handle)
+            if a(3):
+                mu.mem_write(a(3), struct.pack("<II", 0, 1))   # STATUS_SUCCESS, FILE_OPENED
+            val = 0
+        elif name == "NtReadFile":
+            # (Handle, Event, Apc, ApcCtx, PIO_STATUS_BLOCK, Buffer, Length,
+            #  ByteOffset, Key) -- 9 args.
+            nargs = 9
+            f = next((x for x in self.files if x["handle"] == a(0)), None)
+            length, buf = a(6), a(5)
+            offset = f["offset"] if f else 0
+            if a(7):
+                try:
+                    offset = struct.unpack("<Q", mu.mem_read(a(7), 8))[0]
+                except UcError:
+                    pass
+            if f is None or not f["data"] or offset >= len(f["data"]):
+                if a(4):
+                    mu.mem_write(a(4), struct.pack("<II", 0xC0000011, 0))
+                val = 0xC0000011                              # STATUS_END_OF_FILE
+            else:
+                chunk = f["data"][offset:offset + length]
+                if chunk and buf:
+                    mu.mem_write(buf, chunk)
+                f["offset"] = offset + len(chunk)
+                if a(4):
+                    mu.mem_write(a(4), struct.pack("<II", 0, len(chunk)))
+                val = 0
+        elif name == "NtQueryInformationFile":
+            # (Handle, IoStatusBlock, FileInformation, Length, FileInfoClass)
+            nargs = 5
+            f = next((x for x in self.files if x["handle"] == a(0)), None)
+            size = len(f["data"]) if f else 0
+            if a(4) == 5 and a(2):                            # FileStandardInformation
+                mu.mem_write(a(2), struct.pack("<QQIBB6x", size, size, 1, 0, 0))
+            if a(1):
+                mu.mem_write(a(1), struct.pack("<II", 0, a(3)))
+            val = 0
+        elif name == "NtSetInformationFile":
+            if a(1):
+                mu.mem_write(a(1), struct.pack("<II", 0, 0))
+            val, nargs = 0, 5
+        elif name == "NtQueryAttributesFile":
+            val, nargs = 0xC0000034, 2                        # OBJECT_NAME_NOT_FOUND
+        elif name == "NtClose":
+            val, nargs = 0, 1
         elif name in ("RtlInitUnicodeString", "RtlInitAnsiString"):
             val, nargs = 0, 2
         elif name == "RtlFreeUnicodeString":
@@ -345,6 +458,10 @@ def main(argv: list[str] | None = None) -> int:
         access, addr, eip = emu.faults[0]
         print(f"first fault: access {access} addr {addr:#x} eip {eip:#x}")
     print(f"allocations: {[(hex(p), hex(n)) for p, n in emu.allocs]}")
+    if emu.files:
+        print(f"\nfiles opened ({len(emu.files)}):")
+        for f in emu.files:
+            print(f"  handle {f['handle']:#x}  access {f['access']:#010x}  {f['path']!r}")
 
     if emu.log is not None:
         print(f"\n{len(emu.log)} API calls, in order:")

@@ -1724,6 +1724,53 @@ loop's own exit condition and then sampling the frame chain, which answered "whe
 the loop" in one measurement. The general form, now stated for the third time in this
 document: **measure the mechanism, not a proxy for it.**
 
+**It opens the file, and the file is `ntdll.dll`.** Implementing APIs until it got
+there took four: `RtlDosPathNameToNtPathName_U`, `NtCreateFile`,
+`NtQueryInformationFile` and `NtReadFile`. The sequence, from the call log:
+
+    RtlDosPathNameToNtPathName_U(<ntdll's own BaseDllName.Buffer>)
+    NtCreateFile("\??\ntdll.dll", access 0x120089)
+    NtQueryInformationFile(class 5 = FileStandardInformation)   -> size
+    RtlAllocateHeap(0x1bcec0)                                   -> file-sized buffer
+    NtReadFile(..., 0x1bcac0) = STATUS_SUCCESS                  -> the whole file
+    NtClose
+    RtlAllocateHeap(0x1bf001)                                   -> image-sized buffer
+
+`0x1bcac0` is **exactly** the size of this host's `SysWOW64
+tdll.dll`, and the dumped
+buffer is **byte-identical to it**. The second allocation is the mapped footprint, and
+two further PE images appear in later allocations — so it reads a pristine `ntdll`
+from disk and **manually maps it**.
+
+**That is self-unhooking, and it explains the capability set rather than adding to
+it.** A loader that wants syscall stubs no user-mode hook has patched reads a clean
+`ntdll` off disk and uses those bytes instead of the loaded, possibly-hooked image.
+It is exactly consistent with every decoded name being an `Nt*` form rather than a
+kernel32 wrapper: this stage is building its own unhooked syscall path before doing
+anything with `CryptUnprotectData`. **For this pipeline that is a detection note, not
+just trivia** — a monitor hooking Win32 or even loaded-`ntdll` entry points sees none
+of what follows, while `NtCreateFile` on `\??
+tdll.dll` from a hollowed `RegSvcs`
+is itself a strong, cheap signal.
+
+**Backing the file with real bytes was a deliberate choice and worth stating.**
+Answering `NtReadFile` with end-of-file does not stall the sample so much as turn the
+run into a study of the harness. The host's own `SysWOW64` copy is both the honest
+answer and the same file the sample would have got. Nothing is invented: when the host
+does not have the file, the harness still returns end-of-file rather than fabricating
+content, because a parser fed made-up bytes produces made-up findings.
+
+**87 API calls in, no stage 4 yet.** Every PE in the allocations is a copy of `ntdll`,
+raw or mapped. The payload is still setting up.
+
+**One decoding bug found and fixed on the way**, because it showed as a corrupted
+path: scanning for a UTF-16 terminator with `bytes.find(b"\0\0")` matches on an odd
+boundary in `...l\0l\0\0\0`, truncating the last character and leaving a replacement
+char. Step two bytes at a time. It first appeared as `'\??
+tdll.dl\ufffd'`, which is
+the kind of wrongness that is luckily loud — the same bug on a path with an even-index
+match would have been silent.
+
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
 no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed
