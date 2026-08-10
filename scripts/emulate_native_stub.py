@@ -55,7 +55,9 @@ import argparse
 import collections
 import json
 import math
+import pickle
 import struct
+import zlib
 from typing import Optional
 from pathlib import Path
 
@@ -122,25 +124,128 @@ class Emulator:
         self.unhandled: collections.Counter = collections.Counter()
         self.faults: list[tuple[int, int, int]] = []
         self.blocks = 0
+        self._skip_block_at: Optional[int] = None
         self.snapshots: list[tuple[int, float, int]] = []
         #: Set to a list to record every API call with its arguments and result.
         self.log: Optional[list[dict]] = None
         #: Files the payload opened, in order, with the path it asked for.
         self.files: list[dict] = []
 
-        # Scoped to the stub pages. A per-instruction hook over the whole image
-        # costs more than the emulation does -- it was the reason an earlier run
-        # exhausted its budget inside a 2,048-iteration table build.
-        # Exports now live at their real addresses inside a real mapped image,
-        # so the intercept range is the module itself rather than a stub page.
+        self._install_hooks()
+
+    def _install_hooks(self) -> None:
+        """Attach the callbacks. Separate because a restored snapshot needs
+        them re-attached -- hooks are Python objects and do not serialise."""
+        mu = self.mu
+        # Exports live at their real addresses inside a real mapped image, so
+        # the intercept range is the module itself rather than a stub page.
         # Unicorn only invokes the hook for instructions actually executed in
-        # range, and every export returns before its real body runs.
+        # range, and every export returns before its real body runs. A
+        # per-instruction hook over everything costs more than the emulation
+        # does -- that is why these are scoped.
         for dll in (winenv.KERNEL32_BASE, winenv.NTDLL_BASE):
             hi = max((a for a in self.addr2name if dll <= a < dll + 0x1000000),
                      default=dll)
             mu.hook_add(UC_HOOK_CODE, self._on_stub, begin=dll, end=hi + 0x20)
         mu.hook_add(UC_HOOK_BLOCK, self._on_block)
         mu.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_fault)
+
+    # -- snapshot / restore -----------------------------------------------
+
+    #: Registers carried across a snapshot. The segment selectors and GDTR are
+    #: not optional: FS is what makes `fs:[0x18]` reach the TEB, and a restore
+    #: that forgets them faults in a way that looks like a payload bug.
+    _REGS = ("EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP", "ESP", "EIP",
+             "EFLAGS", "CS", "DS", "ES", "SS", "FS", "GS")
+
+    @staticmethod
+    def _reg_id(name: str) -> int:
+        import unicorn.x86_const as c
+        return getattr(c, f"UC_X86_REG_{name}")
+
+    def snapshot(self, path: str | Path) -> None:
+        """Freeze the whole emulated process to a file.
+
+        Every diagnostic in this investigation -- single-stepping, reading a
+        loop's counter, dumping API arguments -- needs the machine at a moment
+        several hundred million instructions in, and re-running to get there
+        costs about eleven minutes per 900M. That cost was paid five times
+        before this existed.
+
+        Regions are stored zlib-compressed, which matters because the heap is
+        mapped at 128 MB and is almost entirely zero.
+        """
+        regions = []
+        for begin, end, perms in self.mu.mem_regions():
+            size = end - begin + 1
+            blob = zlib.compress(bytes(self.mu.mem_read(begin, size)), 1)
+            regions.append((begin, size, perms, blob))
+        # File-backing bytes are re-read on restore rather than stored: they
+        # come from the host and would double the snapshot for no benefit.
+        files = [{k: v for k, v in f.items() if k != "data"} for f in self.files]
+        state = {
+            "version": 1,
+            "base": self.base,
+            "regions": regions,
+            "regs": {r: self.mu.reg_read(self._reg_id(r)) for r in self._REGS},
+            "gdtr": self.mu.reg_read(self._reg_id("GDTR")),
+            "addr2name": self.addr2name,
+            "next_free": self.next_free,
+            "allocs": self.allocs,
+            "calls": dict(self.calls),
+            "unhandled": dict(self.unhandled),
+            "blocks": self.blocks,
+            "files": files,
+            "log": self.log,
+        }
+        Path(path).write_bytes(pickle.dumps(state, protocol=4))
+
+    @classmethod
+    def restore(cls, path: str | Path) -> "Emulator":
+        """Rebuild an emulator from a snapshot, hooks and all."""
+        state = pickle.loads(Path(path).read_bytes())
+        if state.get("version") != 1:
+            raise ValueError(f"unsupported snapshot version {state.get('version')}")
+        self = cls.__new__(cls)
+        self.raw = b""
+        self.base = state["base"]
+        self.mu = mu = Uc(UC_ARCH_X86, UC_MODE_32)
+        for begin, size, perms, blob in state["regions"]:
+            mu.mem_map(begin, size, perms)
+            mu.mem_write(begin, zlib.decompress(blob))
+        mu.reg_write(self._reg_id("GDTR"), state["gdtr"])
+        for name, value in state["regs"].items():
+            mu.reg_write(self._reg_id(name), value)
+
+        self.addr2name = state["addr2name"]
+        self.next_free = state["next_free"]
+        self.allocs = state["allocs"]
+        self.calls = collections.Counter(state["calls"])
+        self.unhandled = collections.Counter(state["unhandled"])
+        self.blocks = state["blocks"]
+        self._skip_block_at = None
+        self.faults = []
+        self.snapshots = []
+        self.log = state["log"]
+        self.files = state["files"]
+        for f in self.files:
+            f["data"] = self.backing(f["path"])
+        self._install_hooks()
+        return self
+
+    def resume(self, count: int = 0) -> str:
+        """Continue from wherever the machine currently is.
+
+        `emu_start` re-fires the block hook for the block at the resume address,
+        and that block was already counted when the previous run stopped inside
+        it -- so a resumed run double-counts exactly one block per resume. The
+        equivalence check caught it as an off-by-one against an uninterrupted
+        run whose memory and registers were bit-identical, which is precisely
+        the kind of small drift that would otherwise accumulate silently across
+        a chain of snapshots.
+        """
+        self._skip_block_at = self.mu.reg_read(UC_X86_REG_EIP)
+        return self.run(self._skip_block_at - self.base, 0xFFFFFFF, count=count)
 
     # -- hooks ------------------------------------------------------------
 
@@ -150,6 +255,11 @@ class Emulator:
             self.api(name)
 
     def _on_block(self, uc, addr, size, user):
+        if self._skip_block_at is not None:
+            # The block we resumed into was already counted before the snapshot.
+            skip, self._skip_block_at = self._skip_block_at, None
+            if addr == skip:
+                return
         self.blocks += 1
         if self.blocks % SNAPSHOT_EVERY == 0 and self.allocs:
             p, n = self.allocs[0]
@@ -436,7 +546,7 @@ class Emulator:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("payload", help="a carved native PE; .xor9 is unwrapped in memory")
-    ap.add_argument("--entry", type=lambda s: int(s, 0), required=True,
+    ap.add_argument("--entry", type=lambda s: int(s, 0), default=0,
                     help="RVA to start at, normally the PE entry point")
     ap.add_argument("--stop", type=lambda s: int(s, 0), default=0,
                     help="RVA to stop at")
@@ -446,6 +556,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--log-api", action="store_true",
                     help="record every API call with arguments and return value")
     ap.add_argument("--log-json", metavar="FILE", help="write the API log as JSON")
+    ap.add_argument("--save-state", metavar="FILE",
+                    help="freeze the process to FILE when the budget is reached")
+    ap.add_argument("--load-state", metavar="FILE",
+                    help="resume from FILE instead of starting at --entry")
     args = ap.parse_args(argv)
 
     path = Path(args.payload)
@@ -453,11 +567,23 @@ def main(argv: list[str] | None = None) -> int:
     if path.suffix == XOR_SUFFIX:
         raw = xor_unwrap(raw)
 
-    emu = Emulator(raw)
-    if args.log_api or args.log_json:
-        emu.log = []
-    print(f"image {len(raw)} bytes at {emu.base:#x}, entry {args.entry:#x}")
-    print(f"stopped: {emu.run(args.entry, args.stop or 0xFFFFFFF, count=args.blocks)}")
+    if args.load_state:
+        emu = Emulator.restore(args.load_state)
+        if (args.log_api or args.log_json) and emu.log is None:
+            emu.log = []
+        print(f"restored from {args.load_state}: "
+              f"eip {emu.mu.reg_read(UC_X86_REG_EIP):#x}, {emu.blocks:,} blocks already run")
+        print(f"stopped: {emu.resume(count=args.blocks)}")
+    else:
+        emu = Emulator(raw)
+        if args.log_api or args.log_json:
+            emu.log = []
+        print(f"image {len(raw)} bytes at {emu.base:#x}, entry {args.entry:#x}")
+        print(f"stopped: {emu.run(args.entry, args.stop or 0xFFFFFFF, count=args.blocks)}")
+    if args.save_state:
+        emu.snapshot(args.save_state)
+        print(f"state saved to {args.save_state} "
+              f"({Path(args.save_state).stat().st_size / 1e6:.1f} MB)")
     print(f"basic blocks: {emu.blocks}")
     print(f"api calls: {dict(emu.calls)}")
     if emu.unhandled:
