@@ -232,6 +232,35 @@ PROCESS_LIST = (
     (IMAGE_NAME, 9592, 2448),
 )
 
+#: The environment the payload is told about. **Invented**, like PROCESS_LIST,
+#: and declared here for the same reason.
+#:
+#: The value of `USERNAME` is a decision, not a placeholder. Sandbox-detection
+#: lists that circulate with this class of malware blocklist exactly the names an
+#: emulator reaches for first -- `user`, `admin`, `test`, `sandbox`, `malware`,
+#: `currentuser`, `john`, `virus`. Picking one of those would make the *harness*
+#: the reason for a bail and the run would read as the sample detecting analysis.
+#: An ordinary-looking surname login appears on none of them.
+#:
+#: Only what has been asked for is here. There is no environment block in the
+#: PEB: this sample calls `RtlQueryEnvironmentVariable_U` with a NULL
+#: environment, so answering the API is enough, and building a block nothing
+#: reads would be invention with no evidence behind it.
+ENVIRONMENT = {
+    "USERNAME": "awhitfield",
+    "USERDOMAIN": "WORKGROUP",
+    "COMPUTERNAME": "DESKTOP-4KJ29LQ",
+    "USERPROFILE": r"C:\Users\awhitfield",
+    "APPDATA": r"C:\Users\awhitfield\AppData\Roaming",
+    "LOCALAPPDATA": r"C:\Users\awhitfield\AppData\Local",
+    "TEMP": r"C:\Users\awhitfield\AppData\Local\Temp",
+    "TMP": r"C:\Users\awhitfield\AppData\Local\Temp",
+    "ProgramData": r"C:\ProgramData",
+    "SystemRoot": r"C:\Windows",
+    "windir": r"C:\Windows",
+    "SystemDrive": "C:",
+}
+
 #: Byte offsets that matter in the 32-bit structures, named so the packing below
 #: reads as a layout rather than as arithmetic.
 _PROC_SIZE, _THREAD_SIZE = 0xB8, 0x40
@@ -361,6 +390,35 @@ KUSER_SHARED_DATA = 0x7FFE0000
 #: would turn the harness's own soundness check into a coin flip. Frozen.
 _FROZEN_FILETIME = 13_412_649_600 * 10_000_000       # 2026-08-10 00:00:00Z
 _FROZEN_UPTIME_MS = 3_600_000
+
+#: Emulated time per basic block, in 100ns units. The clock is **virtual, not
+#: frozen and not live**: it advances with work done and with every sleep the
+#: payload asks for, so elapsed-time checks behave, while two runs of one input
+#: still produce identical memory. A live clock would buy realism and cost the
+#: equivalence check, which has caught two real defects in a day; a frozen one
+#: means a sample that waits waits forever. This is the third option.
+#:
+#: 100ns per block puts a 630M-block run at about a minute of emulated time.
+#: Roughly 30x slower than the real thing, which is the safe direction: a
+#: timing check is more likely to be satisfied by too little elapsed time than
+#: fooled by too much.
+NS100_PER_BLOCK = 1
+
+
+def advance_clock(mu, elapsed_100ns, base=KUSER_SHARED_DATA):
+    """Move `KUSER_SHARED_DATA`'s clocks forward to `elapsed_100ns` since start.
+
+    Absolute rather than incremental on purpose: the value is a pure function of
+    the block count and the sleeps requested, so a resumed snapshot recomputes
+    exactly what an uninterrupted run would hold, instead of accumulating drift
+    from wherever it happened to restart.
+    """
+    ticks = _FROZEN_UPTIME_MS + elapsed_100ns // 10_000
+    mu.mem_write(base + 0x00, struct.pack("<I", ticks & 0xFFFFFFFF))
+    mu.mem_write(base + 0x08, _ksystem_time(_FROZEN_UPTIME_MS * 10_000 + elapsed_100ns))
+    mu.mem_write(base + 0x14, _ksystem_time(_FROZEN_FILETIME + elapsed_100ns))
+    mu.mem_write(base + 0x320, _ksystem_time(ticks))
+    return ticks
 
 
 def _ksystem_time(value):

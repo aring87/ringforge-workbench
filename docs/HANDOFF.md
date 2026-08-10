@@ -34,15 +34,20 @@ CRC-32s every enumerated process name against 20 constants, **13 of which are
 `python` and `perl`** — the last two being Cuckoo's agent. **That it is a
 blocklist is proven by serving a hit**: with `procmon.exe` in the list it takes
 one enumeration instead of seven, never creates the mutex, and diverts 233M
-blocks earlier. Which also kills the theory that its absence is why the baseline
-run stops — the `ExitProcess` is the **tail of the main routine, code 0**, read
-off the frame chain rather than guessed at, so the sample simply finished. The
-`USERNAME` answer and the frozen clock remain the open candidates for why there
-was nothing for it to do. **`procmon.exe` on that list and Procmon on the guest
-is a live problem for the next detonation**, though not an explanation of the
-nine crashes. No injection was reached and stage 4 is still unrecovered, though
-the capture for it is built and idle. See *The syscall boundary, built* and
-*Past the process list*. Before that, **the stage-2 payload
+blocks earlier. The `ExitProcess` is the **tail of the main routine, code 0**,
+read off the frame chain rather than guessed at, and answering `USERNAME` and
+giving the harness a **virtual clock** (deterministic, advancing with work and
+with every sleep) changed nothing at all — so all three candidate explanations
+are dead and **the sample simply runs out of things to do**. The seven uncracked
+hashes are the remaining lead, since whatever it polls for is likely named among
+them. **A mutex name published here as an IOC is retracted**: it is derived from
+the username, so `69971SRS6S-C1D59` described the harness answering `USERNAME`
+with "not found". The shape survives — a 16-character uppercase-alphanumeric,
+per-victim mutant under `\BaseNamedObjects`. **`procmon.exe` on the blocklist and
+Procmon on the guest is a live problem for the next detonation**, though not an
+explanation of the nine crashes. No injection was reached and stage 4 is still
+unrecovered, though the capture for it is built and idle. See *The syscall
+boundary, built* and *Past the process list*. Before that, **the stage-2 payload
 `na3PRqPuA2` was decrypted and stage
 3's own inner blob was not.** Stage 3 turned out to be a native x86 loader carrying a
 272 KB packed blob, and that blob defeats static attack outright — no periodicity, no
@@ -878,6 +883,20 @@ harness reports a failure, ask what the harness contributes to it before reading
 as a finding about the sample, and make each cause say its own name at the moment it
 happens. An unhandled API that leaves the stack wrong must announce itself where it
 occurs, because the crash it causes appears somewhere else entirely.
+
+**Anything computed downstream of an invented input is a statement about the
+harness.** The mutex name `69971SRS6S-C1D59` was written into this document as
+"the first hard IOC this chain has produced". It is derived from the username,
+and the harness was answering `USERNAME` with `STATUS_VARIABLE_NOT_FOUND` — so
+the published IOC was a description of a gap in the emulator. Answering the
+variable changed the name; changing the username changed it again. The warning
+had already been written *in this document*, one section earlier, about the
+process list, and it did not stop the mistake, because the process list was
+visibly invented and an unanswered API call did not feel like an input at all.
+**A refusal is an input.** Before publishing an observable, ask what it is a
+function of, and if any part of that chain is the harness's, publish the
+*shape* rather than the value — a 16-character per-victim mutant is a real
+finding; the particular sixteen characters were noise.
 
 **A check can be aimed at the right subject, be capable of failing, and still be
 run in a state where the behaviour it looks for cannot occur.** This is the third
@@ -2097,13 +2116,27 @@ them) and `NtQuerySystemInformation` class 5 answered properly, with
 `STATUS_INFO_LENGTH_MISMATCH` and a required length when the buffer is short,
 because that is how every enumeration sizes its buffer. It moved.
 
-**The first hard IOC this chain has produced.** Nine detonations yielded a crash
-and nothing else; the emulator now reaches:
+**It creates a single-instance mutex** — behaviour nine detonations never
+reached, since they die well before this:
 
     422,934,337blk  NtOpenDirectoryObject('\BaseNamedObjects')
     424,698,950blk  NtCreateMutant('69971SRS6S-C1D59')
 
-A single-instance mutex, and a name worth hunting for.
+**That name is not an IOC, and an earlier revision of this section said it was.**
+It is derived from the username, so what got published was a description of the
+harness at the time — which was answering `RtlQueryEnvironmentVariable_U` with
+`STATUS_VARIABLE_NOT_FOUND`. Two runs differing in nothing but `USERNAME`:
+
+| `USERNAME` | mutant |
+|---|---|
+| *(unanswered)* | `69971SRS6S-C1D59` |
+| `awhitfield` | `86L6NAB42YUD8CFZ` |
+| `mrogers` | `KQ01PRT89EA08GMA` |
+
+**What survives is the shape, and it is still worth having**: a 16-character
+uppercase-alphanumeric mutant under `\BaseNamedObjects`, **derived per victim**.
+Hunting the literal string is useless; hunting that shape, on a host where
+`RegSvcs.exe` created it, is not.
 
 **`KUSER_SHARED_DATA` was the next wall, and it is not a module.** Reading the
 system time at `0x7ffe0018` faulted, because a harness that maps images does not
@@ -2196,7 +2229,30 @@ report.
 
 **One new gap, found by the same test:** on the bail path the harness faults at
 `0x202621d` with an unmapped read. The blocklist-hit branch is therefore not
-fully emulated, which matters only when that branch is the one being studied. **No injection was reached** — `NtWriteVirtualMemory` was
+fully emulated, which matters only when that branch is the one being studied.
+
+### The last two theories, both dead — 10 Aug
+
+`USERNAME` is now answered from `winenv.ENVIRONMENT`, and the clock advances.
+
+**The clock is virtual: neither frozen nor live.** It moves with blocks executed
+(100ns each) plus every interval `NtDelayExecution` asks for, so elapsed-time
+checks behave while two runs of one input still produce identical memory. A live
+clock would have bought realism and cost `test_emu_snapshot`, which has caught
+two real defects in a day. The value is recomputed absolutely from the block
+count rather than accumulated, so a resumed snapshot lands on exactly what an
+uninterrupted run would hold. A full run now reports **93s emulated, 30s of it
+slept** — the three sleeps are 10s each.
+
+**Neither changed anything.** 629,559,625 blocks against 629,544,083, the same
+121 API calls, the same `ExitProcess`. So all three candidate explanations for
+the exit are now eliminated: not the blocklist, not the environment, not the
+clock. **The sample genuinely runs out of things to do** — which puts the seven
+uncracked hashes back at the front, because whatever it polls seven times for is
+most likely named among them.
+
+**And answering `USERNAME` is what exposed the false IOC**, which is the more
+useful half. The mutex name moved the moment the environment did. **No injection was reached** — `NtWriteVirtualMemory` was
 never called, no process was opened, and stage 4 remains unrecovered. The
 instrumentation for it is in place and idle: remote writes are copied out,
 PE-tested and dumped, section views are allocated so the end-of-run scan can see

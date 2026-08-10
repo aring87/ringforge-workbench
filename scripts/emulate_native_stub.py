@@ -154,8 +154,10 @@ class Emulator:
         self.unknown_ssn: collections.Counter = collections.Counter()
         #: `(blocks, base)` for each ntdll copy repaired in a resumed snapshot.
         self.patched_ntdll: list[tuple[int, int]] = []
-        #: Environment variables the payload asked for, in order.
+        #: Environment variables the payload asked for, in order, and the
+        #: ones actually answered -- asked-but-unknown is the interesting gap.
         self.env_queries: list[str] = []
+        self.env_answers: list[tuple[str, str]] = []
         #: How many times a process list was actually handed over. Anything
         #: concluded after the first one is conditional on `winenv.PROCESS_LIST`.
         self.served_process_list = 0
@@ -172,6 +174,10 @@ class Emulator:
         self.control_calls: list[dict] = []
         self.process_handles: dict[int, int] = {}
         self._next_handle = 0x400
+        #: Emulated time the payload has *asked* to sleep away, in 100ns units.
+        #: Added to the block-derived clock, so time is a function of the run
+        #: rather than of the wall.
+        self.clock_sleep_100ns = 0
         self.faults: list[tuple[int, int, int]] = []
         self.blocks = 0
         self._skip_block_at: Optional[int] = None
@@ -255,6 +261,8 @@ class Emulator:
             "unknown_ssn": dict(self.unknown_ssn),
             "patched_ntdll": self.patched_ntdll,
             "env_queries": self.env_queries,
+            "env_answers": self.env_answers,
+            "clock_sleep_100ns": self.clock_sleep_100ns,
             "blocks": self.blocks,
             "files": files,
             "log": self.log,
@@ -290,6 +298,8 @@ class Emulator:
         self.unknown_ssn = collections.Counter(state.get("unknown_ssn", {}))
         self.patched_ntdll = list(state.get("patched_ntdll", []))
         self.env_queries = list(state.get("env_queries", []))
+        self.env_answers = [tuple(x) for x in state.get("env_answers", [])]
+        self.clock_sleep_100ns = state.get("clock_sleep_100ns", 0)
         self.blocks = state["blocks"]
         self._skip_block_at = None
         self.faults = []
@@ -306,6 +316,7 @@ class Emulator:
          self.ntdll_image_size) = winenv.syscall_table()
         winenv.install_syscall_gate(mu, winenv.NTDLL_BASE, self.transition_rva)
         winenv.map_kuser_shared_data(mu)
+        self.advance_clock()
         self._install_hooks()
         return self
 
@@ -402,11 +413,16 @@ class Emulator:
             if addr == skip:
                 return
         self.blocks += 1
-        if self.blocks % SNAPSHOT_EVERY == 0 and self.allocs:
-            p, n = self.allocs[0]
-            snap = bytes(uc.mem_read(p, n))
-            self.snapshots.append(
-                (self.blocks, entropy(snap), sum(1 for b in snap if b)))
+        if self.blocks % SNAPSHOT_EVERY == 0:
+            # Piggy-backed on the existing boundary rather than run per block:
+            # the clock is read far less often than it ticks, and a modulo on
+            # 630M blocks is already the budget here.
+            self.advance_clock()
+            if self.allocs:
+                p, n = self.allocs[0]
+                snap = bytes(uc.mem_read(p, n))
+                self.snapshots.append(
+                    (self.blocks, entropy(snap), sum(1 for b in snap if b)))
 
     def _on_fault(self, uc, access, addr, size, value, user):
         self.faults.append((access, addr, uc.reg_read(UC_X86_REG_EIP)))
@@ -488,6 +504,13 @@ class Emulator:
             if len(text) >= 3 and all(0x20 <= ord(c) < 0x7F for c in text):
                 return f"{hex(value)}->{text[:40]!r}w"
         return hex(value)
+
+    def elapsed_100ns(self) -> int:
+        """Emulated time since start: work done, plus every sleep requested."""
+        return self.blocks * winenv.NS100_PER_BLOCK + self.clock_sleep_100ns
+
+    def advance_clock(self) -> None:
+        winenv.advance_clock(self.mu, self.elapsed_100ns())
 
     def new_handle(self) -> int:
         """A fresh kernel handle. Multiples of 4 and clear of the file handles,
@@ -835,7 +858,24 @@ class Emulator:
                                        "args": [a(i) for i in range(nargs)]})
             val = 0
         elif name == "NtDelayExecution":
-            val, nargs = 0, 2
+            # (Alertable, PLARGE_INTEGER Interval). Negative is a relative
+            # interval in 100ns units; positive is an absolute time. The sleep
+            # does not happen, but the clock moves as though it had -- otherwise
+            # a payload that waits before acting waits forever and the run reads
+            # as "it did nothing".
+            nargs = 2
+            if a(1):
+                try:
+                    interval = struct.unpack("<q", mu.mem_read(a(1), 8))[0]
+                except UcError:
+                    interval = 0
+                if interval < 0:
+                    self.clock_sleep_100ns += -interval
+                elif interval > 0:
+                    ahead = interval - (winenv._FROZEN_FILETIME + self.elapsed_100ns())
+                    self.clock_sleep_100ns += max(ahead, 0)
+            self.advance_clock()
+            val = 0
         elif name == "NtWaitForSingleObject":
             val, nargs = 0, 3
         elif name == "NtQueryAttributesFile":
@@ -849,15 +889,35 @@ class Emulator:
         elif name == "RtlQueryEnvironmentVariable_U":
             # (Environment, PUNICODE_STRING Name, PUNICODE_STRING Value)
             nargs = 3
-            self.env_queries.append(self.unicode_string(a(1)))
-            # This process has no environment block, and answering as though it
-            # did would mean inventing the value. `STATUS_VARIABLE_NOT_FOUND` is
-            # what a real process returns for a variable that is genuinely
-            # absent, so it is at least a status the caller is built to handle.
-            # The name asked for is recorded either way -- with this sample
-            # asking for USERNAME in the middle of a debugger-detection run, the
-            # question is the finding whatever the answer is.
-            val = 0xC0000100                                  # VARIABLE_NOT_FOUND
+            var = self.unicode_string(a(1))
+            self.env_queries.append(var)
+            # Answered from `winenv.ENVIRONMENT`, which is invented and says so.
+            # It used to return VARIABLE_NOT_FOUND on the grounds that there is
+            # no environment block to answer from -- honest, and it made the
+            # harness a candidate cause for the sample doing nothing. A name it
+            # does not know still gets the real "absent" status, so the two
+            # cases stay distinguishable.
+            value = winenv.ENVIRONMENT.get(var)
+            if value is None:
+                val = 0xC0000100                              # VARIABLE_NOT_FOUND
+            else:
+                wide = value.encode("utf-16-le")
+                out = a(2)
+                try:
+                    _, maximum, buf = struct.unpack("<HHI", mu.mem_read(out, 8))
+                except UcError:
+                    maximum, buf = 0, 0
+                if buf and maximum >= len(wide) + 2:
+                    mu.mem_write(buf, wide + b"\0\0")
+                    mu.mem_write(out, struct.pack("<H", len(wide)))
+                    self.env_answers.append((var, value))
+                    val = 0
+                else:
+                    # Length is the required size on this path, which is how the
+                    # caller learns how much to allocate.
+                    if out:
+                        mu.mem_write(out, struct.pack("<H", len(wide)))
+                    val = 0xC0000023                          # BUFFER_TOO_SMALL
         elif name == "RtlNtStatusToDosError":
             val, nargs = 0, 1
         elif name == "RtlGetLastWin32Error":
@@ -1006,6 +1066,9 @@ def main(argv: list[str] | None = None) -> int:
               + ", ".join(f"{b:#x}" for _, b in emu.patched_ntdll))
     if emu.env_queries:
         print(f"environment variables asked for: {emu.env_queries}")
+        print(f"  answered from winenv.ENVIRONMENT (INVENTED): {emu.env_answers}")
+    print(f"emulated time elapsed: {emu.elapsed_100ns() / 1e7:.2f}s "
+          f"({emu.clock_sleep_100ns / 1e7:.2f}s of it slept)")
     if emu.served_process_list:
         print(f"\nprocess list served {emu.served_process_list}x -- INVENTED, from "
               f"winenv.PROCESS_LIST ({len(winenv.PROCESS_LIST)} entries incl. "
