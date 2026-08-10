@@ -31,12 +31,18 @@ IOC this chain has ever given up: the mutex `69971SRS6S-C1D59`**, under
 CRC-32s every enumerated process name against 20 constants, **13 of which are
 `procmon`, `regmon`, `filemon`, `wireshark`, `netmon`, `vmwareuser`,
 `vmwareservice`, `vmsrvc`, `vmusrvc`, `sandboxiedcomlaunch`, `sandboxierpcss`,
-`python` and `perl`** — the last two being Cuckoo's agent. It then polls seven
-times and calls `ExitProcess`. **Why it exits is not established** and must not be
-read as "it decided the machine was clean": the unanswered `USERNAME` lookup, the
-deliberately frozen clock, and seven uncracked hashes are all live candidates. No
-injection was reached and stage 4 is still unrecovered, though the capture for it
-is built and idle. See *The syscall boundary, built* and *Past the process list*. Before that, **the stage-2 payload
+`python` and `perl`** — the last two being Cuckoo's agent. **That it is a
+blocklist is proven by serving a hit**: with `procmon.exe` in the list it takes
+one enumeration instead of seven, never creates the mutex, and diverts 233M
+blocks earlier. Which also kills the theory that its absence is why the baseline
+run stops — the `ExitProcess` is the **tail of the main routine, code 0**, read
+off the frame chain rather than guessed at, so the sample simply finished. The
+`USERNAME` answer and the frozen clock remain the open candidates for why there
+was nothing for it to do. **`procmon.exe` on that list and Procmon on the guest
+is a live problem for the next detonation**, though not an explanation of the
+nine crashes. No injection was reached and stage 4 is still unrecovered, though
+the capture for it is built and idle. See *The syscall boundary, built* and
+*Past the process list*. Before that, **the stage-2 payload
 `na3PRqPuA2` was decrypted and stage
 3's own inner blob was not.** Stage 3 turned out to be a native x86 loader carrying a
 272 KB packed blob, and that blob defeats static attack outright — no periodicity, no
@@ -2143,19 +2149,54 @@ processes looking for tools. Neither leaves a string. **And it is a detection
 opportunity the pipeline can use** — the guest runs Procmon, and `procmon.exe` is
 the first name on that list.
 
-**Why it exits is *not* established, and there are three candidates.** A
-blocklist that matches nothing should let the sample proceed, so the clean
-`ExitProcess` is unexplained:
+**Why it exits, read rather than guessed.** Three theories were on the table —
+the unanswered `USERNAME`, the frozen clock, the uncracked hashes — and testing
+them one run at a time is inferring a cause from an indirect signal, which this
+document has already paid for five times. `ExitProcess` is one call with one
+call site, so it was read instead.
 
-1. `RtlQueryEnvironmentVariable_U("USERNAME")` is answered
-   `STATUS_VARIABLE_NOT_FOUND`, twice. That was a deliberate choice — there is no
-   environment block to answer from — and it is now the leading suspect.
-2. The frozen clock. A poll loop bounded by elapsed time never advances.
-3. The seven uncracked hashes. If any names something the sample *requires*
-   present, absence is a legitimate reason to stop.
+It is called from `0x202f064`, at the **tail** of its function, with exit code
+**0**, immediately before `xor eax, eax ; mov esp, ebp ; pop ebp ; ret`, and the
+frame chain above it is the ordinary one — `0x20309ac <- 0x401d2e <- 0x402a9f`,
+the same outer frames as normal execution. **This is the main routine running to
+its end, not an error path.** The sample did its checks, found nothing to act
+on, and finished.
 
-Do not read the exit as "the sample decided the machine was clean" until one of
-these is ruled out. **No injection was reached** — `NtWriteVirtualMemory` was
+**And the blocklist is a blocklist — proven by serving a hit.** No preimage
+guessing was needed: `procmon.exe` is one of the thirteen recovered, so adding it
+to the served list puts a known match in front of the check. Everything else held
+identical:
+
+| | baseline | with `procmon.exe` present |
+|---|---|---|
+| Enumerations | 7 | **1** |
+| Mutex created | `69971SRS6S-C1D59` | **none** |
+| Stops at | 629,544,083 blocks | **396,459,486** |
+
+A hit diverts it **233 million blocks earlier**, before the mutex is ever
+created. So the table is an anti-analysis blocklist, and **its absence was never
+the reason the baseline run stops** — that theory is dead, and the remaining
+candidates for the clean exit are the `USERNAME` answer and the frozen clock.
+
+**That measurement nearly did not mean anything.**
+`system_process_information` binds `PROCESS_LIST` as a **default argument**, so
+rebinding `winenv.PROCESS_LIST` changes nothing and the run would have reported
+"a match makes no difference" — a confident negative produced by a patch that
+never applied. The probe replaces the function and asserts the served bytes
+contain the name before the result is allowed to count. *An A/B is only evidence
+if the B actually happened.*
+
+**Operationally, this one matters to the bench.** `procmon.exe` is on the list
+and the guest runs Procmon during every detonation. It does **not** explain the
+nine crashes — this check lives well past where those runs die — but it is now
+measured rather than suspected that if the chain is ever carried past the crash,
+Procmon's presence aborts the payload before it does anything worth observing.
+Decide about renaming the binary before the next run, not after reading a quiet
+report.
+
+**One new gap, found by the same test:** on the bail path the harness faults at
+`0x202621d` with an unmapped read. The blocklist-hit branch is therefore not
+fully emulated, which matters only when that branch is the one being studied. **No injection was reached** — `NtWriteVirtualMemory` was
 never called, no process was opened, and stage 4 remains unrecovered. The
 instrumentation for it is in place and idle: remote writes are copied out,
 PE-tested and dumped, section views are allocated so the end-of-run scan can see
