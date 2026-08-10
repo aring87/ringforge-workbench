@@ -147,14 +147,62 @@ EXTRA_STRIDE = 0x100000
 IMAGE_NAME = "RegSvcs.exe"
 
 
+def map_real_dll(mu, path, base):
+    """Map a real system DLL the way the loader would, and index its exports.
+
+    Synthetic DLLs were adequate while the payload only resolved names. They
+    stop being adequate the moment it *inspects* them: stage 3 reads a clean
+    `ntdll` off disk and walks the loaded copy against it looking for hooks, and
+    a 1 MB stub of mostly zeros faults as soon as it reads past the end. A real
+    mapped image is both simpler and more honest -- headers and sections at
+    their true RVAs, real SizeOfImage, real export table.
+
+    Interception then happens at each export's real address rather than at a
+    trampoline, so the image stays byte-correct for anything that checksums it.
+    Returns {virtual address: export name}.
+    """
+    import pefile
+
+    pe = pefile.PE(path, fast_load=True)
+    pe.parse_data_directories([0])
+    size = (pe.OPTIONAL_HEADER.SizeOfImage + 0xFFF) & ~0xFFF
+    mu.mem_map(base, size)
+    mu.mem_write(base, pe.header)
+    for section in pe.sections:
+        data = section.get_data()
+        if data:
+            mu.mem_write(base + section.VirtualAddress, data)
+    # ImageBase in the mapped copy has to agree with where it actually sits, or
+    # anything doing RVA arithmetic from the header lands in the wrong place.
+    mu.mem_write(base + pe.DOS_HEADER.e_lfanew + 24 + 28, struct.pack("<I", base))
+
+    exports = {}
+    for entry in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+        if not (entry.name and entry.address):
+            continue
+        name = entry.name.decode()
+        va = base + entry.address
+        # In user-mode ntdll, NtXxx and ZwXxx are the *same address*, so one
+        # index entry has to win. Prefer the Nt spelling: handlers key on it,
+        # and picking whichever came last in the export table silently left
+        # every syscall unhandled under its Zw alias.
+        previous = exports.get(va)
+        if previous is None or (name.startswith("Nt") and previous.startswith("Zw")):
+            exports[va] = name
+    return exports, size
+
+
 def setup(mu, image_base, image_size):
     mu.mem_map(HEAP_BASE, HEAP_SIZE)
     mu.mem_map(TEB_ADDR & ~0xFFF, 0x2000)
     mu.mem_map(PEB_ADDR & ~0xFFF, 0x1000)
     mu.mem_map(LDR_ADDR & ~0xFFF, 0x8000)
+    real_exports = {}
+    sizes = {}
     for base, nm in ((KERNEL32_BASE, "KERNEL32.DLL"), (NTDLL_BASE, "ntdll.dll")):
-        mu.mem_map(base, DLL_SIZE)
-        mu.mem_write(base, build_fake_dll(nm, base))
+        exports, size = map_real_dll(mu, SYSWOW64 + nm.lower(), base)
+        real_exports.update(exports)
+        sizes[base] = size
 
     mu.mem_write(TEB_ADDR + 0x18, struct.pack("<I", TEB_ADDR))
     mu.mem_write(TEB_ADDR + 0x30, struct.pack("<I", PEB_ADDR))
@@ -163,8 +211,8 @@ def setup(mu, image_base, image_size):
     mu.mem_write(PEB_ADDR + 0x0C, struct.pack("<I", LDR_ADDR))
 
     mods = [(image_base, image_size, IMAGE_NAME),
-            (NTDLL_BASE, DLL_SIZE, "ntdll.dll"),
-            (KERNEL32_BASE, DLL_SIZE, "KERNEL32.DLL")]
+            (NTDLL_BASE, sizes[NTDLL_BASE], "ntdll.dll"),
+            (KERNEL32_BASE, sizes[KERNEL32_BASE], "KERNEL32.DLL")]
     for i, nm in enumerate(EXTRA_MODULES):
         base = EXTRA_BASE + i * EXTRA_STRIDE
         mu.mem_map(base, 0x2000)
@@ -219,8 +267,4 @@ def setup(mu, image_base, image_size):
 
     install_gdt(mu, TEB_ADDR)
 
-    addr2name = {}
-    for base, nm in ((KERNEL32_BASE, "KERNEL32.DLL"), (NTDLL_BASE, "ntdll.dll")):
-        for fn in DLL_EXPORTS[nm]:
-            addr2name[stub_addr(base, fn)] = fn
-    return addr2name
+    return real_exports

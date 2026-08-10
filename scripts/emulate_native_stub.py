@@ -131,10 +131,14 @@ class Emulator:
         # Scoped to the stub pages. A per-instruction hook over the whole image
         # costs more than the emulation does -- it was the reason an earlier run
         # exhausted its budget inside a 2,048-iteration table build.
+        # Exports now live at their real addresses inside a real mapped image,
+        # so the intercept range is the module itself rather than a stub page.
+        # Unicorn only invokes the hook for instructions actually executed in
+        # range, and every export returns before its real body runs.
         for dll in (winenv.KERNEL32_BASE, winenv.NTDLL_BASE):
-            mu.hook_add(UC_HOOK_CODE, self._on_stub,
-                        begin=dll + winenv.STUB_RVA,
-                        end=dll + winenv.STUB_RVA + 0x10 * 4000)
+            hi = max((a for a in self.addr2name if dll <= a < dll + 0x1000000),
+                     default=dll)
+            mu.hook_add(UC_HOOK_CODE, self._on_stub, begin=dll, end=hi + 0x20)
         mu.hook_add(UC_HOOK_BLOCK, self._on_block)
         mu.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_fault)
 
@@ -158,6 +162,10 @@ class Emulator:
         return False
 
     # -- the API surface --------------------------------------------------
+
+    def export_addr(self, name: str) -> int:
+        """Address of a named export in the mapped system DLLs, or 0."""
+        return next((a for a, n in self.addr2name.items() if n == name), 0)
 
     def backing(self, nt_path: str) -> bytes:
         """Real bytes for a file the payload opens, when the host has them.
@@ -279,7 +287,7 @@ class Emulator:
         elif name in ("LoadLibraryA", "LoadLibraryW"):
             val, nargs = winenv.KERNEL32_BASE, 1
         elif name == "GetProcAddress":
-            val, nargs = winenv.stub_addr(winenv.KERNEL32_BASE, "Sleep"), 2
+            val, nargs = self.export_addr("Sleep"), 2
         elif name in ("RtlMoveMemory", "memcpy"):
             d, s, n = a(0), a(1), a(2)
             if 0 < n < 0x400000:
