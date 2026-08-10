@@ -1596,6 +1596,48 @@ steer the code down a path the real thing would not take, silently and without e
 faulting. Logging each API call with arguments and return value, and looking for one
 whose answer the code visibly rejects, is the open question — not "why is it stuck".
 
+**And then the hang turned out to be real after all — in a different loop.** The
+retraction above is right about `0x40231f`: that RC4 pass completes. It was too broad.
+Running 2.4 billion instructions with a scan of every mapped region after each 100M
+found no PE and pinned EIP, from the second phase onward, inside `0x2017271`–
+`0x2017283` — the CRC-32 loop **in the allocation**, not the RC4 loop in the image.
+Both are true at once: RC4 finishes, and the code after it hangs. Single-stepping at
+60M instructions caught the first, the original 600M-block run had caught the second.
+**Two honest samples of one run at different moments produced two contradictory
+headlines** — so say which moment a claim is about.
+
+**What the hang is, measured rather than guessed.** `0x2017291` is
+`crc32(buf, len, ctx)`, rebuilding a 256-entry table on the stack every call, which is
+why it dominates. Single call site `0x20261e5`; the compare two instructions later is
+`cmp eax, [ebp+8]`, so the wanted hash is a **parameter, not an immediate**. Watching
+its arguments across 32M instructions: 2,071 calls, **three distinct tuples**, buffer
+never moving — hashing `kernel32.dll`, `ntdll.dll` and `stage3.exe` on a cycle. The
+last is a name `win32_emu_env.py` invented, which is how the divergence announced
+itself.
+
+**Growing the loader list from 3 modules to 23 was a real fix and not the blocker.**
+With `RegSvcs.exe` as the image name — what this sample actually hollows — plus twenty
+real DLLs, it now hashes all 23, lowercased first, and still matches nothing.
+
+| | |
+|---|---|
+| Algorithm | CRC-32/MPEG-2: init `0xFFFFFFFF`, non-reflected, poly `0x04C11DB7`, final NOT |
+| Parameters | shifts 24 and 8, mask `0xFF`, carried in a ctx struct XORed with `0x4a`, `0xc6`, `0xf5` |
+| Verified | reproduces `ntdll.dll` `0x0b4e1ae2`, `kernel32.dll` `0xadedab08`, `user32.dll` `0xc810589c` |
+| Wanted | **`0xe11da208`**, identical across all 388 comparisons |
+
+**The wanted hash matches nothing on this machine.** Brute-forced against 4,419 real
+filenames from `SysWOW64`, `System32` and `Windows` — ascii and UTF-16LE, with and
+without extension, either case. No hit. The constant appears **nowhere** in stage 3's
+image or in the allocation, so it is computed at runtime rather than stored.
+
+**Where that leaves it, precisely.** The question is no longer *why does it hang* but
+*where does `0xe11da208` come from, and what name was ever going to satisfy it*. The
+compare function takes it as an argument, so its caller is the next thing to read.
+Note the surrounding code does the same thing with the hash as a literal — **64
+distinct `push imm32; call` sites** in the allocation, most into `0x20040a1` — so this
+is a whole resolve-by-hash scheme and the stuck lookup is one entry in it.
+
 **Two harness facts that each cost a cycle and will cost the next person the same.**
 `UC_X86_REG_FS_BASE` is a **no-op in 32-bit Unicorn** — it accepts the write, reports
 no error, and `fs:[0x18]` still faults; FS needs a real GDT descriptor. And a guessed

@@ -53,8 +53,10 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import math
 import struct
+from typing import Optional
 from pathlib import Path
 
 from unicorn import (UC_ARCH_X86, UC_HOOK_BLOCK, UC_HOOK_CODE,
@@ -103,6 +105,8 @@ class Emulator:
         self.faults: list[tuple[int, int, int]] = []
         self.blocks = 0
         self.snapshots: list[tuple[int, float, int]] = []
+        #: Set to a list to record every API call with its arguments and result.
+        self.log: Optional[list[dict]] = None
 
         # Scoped to the stub pages. A per-instruction hook over the whole image
         # costs more than the emulation does -- it was the reason an earlier run
@@ -134,6 +138,32 @@ class Emulator:
         return False
 
     # -- the API surface --------------------------------------------------
+
+    def describe(self, value: int) -> str:
+        """An argument rendered as a string when it plausibly points at one.
+
+        This is the part of the log that earns its keep. A divergence shows up
+        as the *name* the stub asked for -- a DLL, an export, a path -- and a
+        column of bare hex hides exactly that.
+        """
+        if value < 0x1000 or value > 0xFFFFFFF0:
+            return hex(value)
+        try:
+            raw = bytes(self.mu.mem_read(value, 64))
+        except UcError:
+            return hex(value)
+        ascii_run = raw.split(b"\0")[0]
+        if len(ascii_run) >= 4 and all(0x20 <= b < 0x7F for b in ascii_run):
+            return f"{hex(value)}->{ascii_run.decode()[:40]!r}"
+        if len(raw) >= 8 and raw[1] == 0 and raw[3] == 0:
+            wide = raw.split(b"\0\0")[0]
+            try:
+                text = wide.decode("utf-16-le", "strict")
+            except UnicodeDecodeError:
+                return hex(value)
+            if len(text) >= 3 and all(0x20 <= ord(c) < 0x7F for c in text):
+                return f"{hex(value)}->{text[:40]!r}w"
+        return hex(value)
 
     def alloc(self, size: int) -> int:
         size = max(size, 0x1000)
@@ -220,6 +250,29 @@ class Emulator:
             # name has to be visible in the output rather than inferred later.
             self.unhandled[name] += 1
 
+        # Log after the dispatch, because `nargs` is what says how much of the
+        # stack is actually this call's. For an unhandled name nargs is 0 and
+        # the arguments are unknown, so read a few speculatively and mark them:
+        # those are exactly the calls whose stack discipline is also wrong, and
+        # the log has to show that rather than imply four tidy arguments.
+        if self.log is not None:
+            speculative = name in self.unhandled
+            count = 4 if speculative else nargs
+            try:
+                args = [self.describe(a(i)) for i in range(count)]
+            except UcError:
+                args = ["<unreadable>"]
+            self.log.append({
+                "seq": len(self.log),
+                "blocks": self.blocks,
+                "name": name,
+                "caller": ret,
+                "args": args,
+                "speculative_args": speculative,
+                "returned": val,
+                "popped": 4 * nargs,
+            })
+
         mu.reg_write(UC_X86_REG_EAX, val)
         mu.reg_write(UC_X86_REG_EIP, ret)
         mu.reg_write(UC_X86_REG_ESP, esp + 4 + 4 * nargs)      # stdcall
@@ -243,6 +296,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--blocks", type=int, default=50_000_000,
                     help="instruction budget before giving up")
     ap.add_argument("--dump", metavar="DIR", help="write every allocation here")
+    ap.add_argument("--log-api", action="store_true",
+                    help="record every API call with arguments and return value")
+    ap.add_argument("--log-json", metavar="FILE", help="write the API log as JSON")
     args = ap.parse_args(argv)
 
     path = Path(args.payload)
@@ -251,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
         raw = xor_unwrap(raw)
 
     emu = Emulator(raw)
+    if args.log_api or args.log_json:
+        emu.log = []
     print(f"image {len(raw)} bytes at {emu.base:#x}, entry {args.entry:#x}")
     print(f"stopped: {emu.run(args.entry, args.stop or 0xFFFFFFF, count=args.blocks)}")
     print(f"basic blocks: {emu.blocks}")
@@ -261,6 +319,17 @@ def main(argv: list[str] | None = None) -> int:
         access, addr, eip = emu.faults[0]
         print(f"first fault: access {access} addr {addr:#x} eip {eip:#x}")
     print(f"allocations: {[(hex(p), hex(n)) for p, n in emu.allocs]}")
+
+    if emu.log is not None:
+        print(f"\n{len(emu.log)} API calls, in order:")
+        for e in emu.log:
+            flag = "  <-- args are a GUESS, and so is the stack fixup" \
+                if e["speculative_args"] else ""
+            print(f"  [{e['seq']:4d}] {e['blocks']:>10,}blk  from {e['caller']:#010x}  "
+                  f"{e['name']}({', '.join(e['args'])}) = {e['returned']:#x}{flag}")
+        if args.log_json:
+            Path(args.log_json).write_text(json.dumps(emu.log, indent=2), encoding="utf-8")
+            print(f"  written to {args.log_json}")
 
     # The check that matters: did the allocation actually move? Compare the first
     # snapshot against the state *now*, not against the last snapshot -- with a

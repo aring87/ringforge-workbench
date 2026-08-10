@@ -127,11 +127,31 @@ def build_fake_dll(name, base):
     return bytes(img)
 
 
+#: Modules beyond kernel32/ntdll, present so the loader list looks like a real
+#: process. This is not cosmetic. Stage 3's unpacked code CRC-32s every name in
+#: the list looking for one it knows, and with a three-entry list it found no
+#: match and retried forever -- 2.3 billion instructions hashing
+#: `kernel32.dll`, `ntdll.dll` and `stage3.exe`, the last of which was a name
+#: this file invented. A short module list is a divergence, not a simplification.
+EXTRA_MODULES = (
+    "user32.dll", "advapi32.dll", "msvcrt.dll", "ole32.dll", "oleaut32.dll",
+    "shell32.dll", "shlwapi.dll", "ws2_32.dll", "wininet.dll", "crypt32.dll",
+    "gdi32.dll", "rpcrt4.dll", "sechost.dll", "combase.dll", "kernelbase.dll",
+    "urlmon.dll", "psapi.dll", "version.dll", "userenv.dll", "netapi32.dll",
+)
+EXTRA_BASE = 0x70000000
+EXTRA_STRIDE = 0x100000
+
+#: The process image's own name. `RegSvcs.exe` is what this sample hollows, so
+#: it is what the payload would see on a real run.
+IMAGE_NAME = "RegSvcs.exe"
+
+
 def setup(mu, image_base, image_size):
     mu.mem_map(HEAP_BASE, HEAP_SIZE)
     mu.mem_map(TEB_ADDR & ~0xFFF, 0x2000)
     mu.mem_map(PEB_ADDR & ~0xFFF, 0x1000)
-    mu.mem_map(LDR_ADDR & ~0xFFF, 0x4000)
+    mu.mem_map(LDR_ADDR & ~0xFFF, 0x8000)
     for base, nm in ((KERNEL32_BASE, "KERNEL32.DLL"), (NTDLL_BASE, "ntdll.dll")):
         mu.mem_map(base, DLL_SIZE)
         mu.mem_write(base, build_fake_dll(nm, base))
@@ -142,10 +162,29 @@ def setup(mu, image_base, image_size):
     mu.mem_write(PEB_ADDR + 0x08, struct.pack("<I", image_base))  # ImageBaseAddress
     mu.mem_write(PEB_ADDR + 0x0C, struct.pack("<I", LDR_ADDR))
 
-    mods = [(image_base, image_size, "stage3.exe"),
+    mods = [(image_base, image_size, IMAGE_NAME),
             (NTDLL_BASE, DLL_SIZE, "ntdll.dll"),
             (KERNEL32_BASE, DLL_SIZE, "KERNEL32.DLL")]
-    entry_size, first, names_at = 0x100, LDR_ADDR + 0x100, LDR_ADDR + 0x800
+    for i, nm in enumerate(EXTRA_MODULES):
+        base = EXTRA_BASE + i * EXTRA_STRIDE
+        mu.mem_map(base, 0x2000)
+        # A DOS/PE header only: enough that a walker reading DllBase finds a
+        # plausible image, without pretending to export anything.
+        hdr = bytearray(0x2000)
+        hdr[0:2] = b"MZ"
+        struct.pack_into("<I", hdr, 0x3C, 0x80)
+        struct.pack_into("<4sHH", hdr, 0x80, b"PE\0\0", 0x014C, 0)
+        struct.pack_into("<H", hdr, 0x80 + 20, 0xE0)
+        struct.pack_into("<H", hdr, 0x80 + 24, 0x10B)
+        struct.pack_into("<I", hdr, 0x80 + 24 + 52, base)
+        struct.pack_into("<I", hdr, 0x80 + 24 + 56, 0x2000)
+        struct.pack_into("<I", hdr, 0x80 + 24 + 92, 16)
+        mu.mem_write(base, bytes(hdr))
+        mods.append((base, 0x2000, nm))
+    # Entries are 0x100 apart from +0x100, so with a full module list they run
+    # to +0x1800; the name buffer has to start beyond that, not at +0x800.
+    entry_size, first, names_at = 0x100, LDR_ADDR + 0x100, LDR_ADDR + 0x4000
+    assert first + len(mods) * entry_size <= names_at, "module entries overlap names"
     for i, (base, size, nm) in enumerate(mods):
         e = first + i * entry_size
         nxt = first + ((i + 1) % len(mods)) * entry_size
