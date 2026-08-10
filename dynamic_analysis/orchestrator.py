@@ -48,6 +48,10 @@ from dynamic_analysis.memory_dump import (
     sample_descendant_pids,
     summarize_memory_dumps,
 )
+from dynamic_analysis.module_integrity import (
+    analyze_dump as analyze_module_integrity,
+    summarize_module_integrity,
+)
 from dynamic_analysis.pe_carve import (
     carve_dumps,
     summarize_pe_carve,
@@ -1793,6 +1797,8 @@ def run_dynamic_analysis(
     pe_carve_enabled = bool(config.get("pe_carve_enabled", True))
     pe_carve_json = paths["memory"] / "carved_pe.json"
     pe_carve_dir = paths["memory"] / "carved"
+    module_integrity_enabled = bool(config.get("module_integrity_enabled", True))
+    module_integrity_json = paths["memory"] / "module_integrity.json"
 
     # Preflight so the report records exactly which telemetry was possible.
     sysmon_preflight = sysmon_status(sysmon_path) if sysmon_enabled else {
@@ -1889,6 +1895,8 @@ def run_dynamic_analysis(
     memory_yara_summary: dict[str, Any] = {}
     pe_carve_result: dict[str, Any] = {}
     pe_carve_summary: dict[str, Any] = {}
+    module_integrity_result: list[dict[str, Any]] = []
+    module_integrity_summary: dict[str, Any] = {}
 
     sysmon_since: str = ""
     packet_capture: PacketCapture | None = None
@@ -2667,6 +2675,41 @@ def run_dynamic_analysis(
                     pe_carve_summary = summarize_pe_carve(pe_carve_result)
                     _emit(status_cb, f"PE carve warning: {error}")
 
+            # Over the same dumps, and deliberately after the carve: the two
+            # answer opposite halves of one question. The carver finds a
+            # payload mapped *beside* a real image; this finds one written
+            # *over* it, which is the case gap 5 documents as its blind spot
+            # because the module list is read from the memory the payload
+            # now occupies.
+            if memory_dump_enabled and module_integrity_enabled and scannable:
+                _emit(status_cb, "Comparing loaded modules against their files...")
+                try:
+                    for record in scannable:
+                        path = record.get("path") if isinstance(record, dict) else None
+                        if path:
+                            module_integrity_result.append(
+                                analyze_module_integrity(path))
+                    module_integrity_summary = summarize_module_integrity(
+                        module_integrity_result)
+                    write_json(module_integrity_json, module_integrity_result)
+                    counts = module_integrity_summary.get("counts", {})
+                    if not module_integrity_summary.get("available"):
+                        # Every module unmatched is a statement about the
+                        # reference files, not about the sample. Say which.
+                        _emit(status_cb,
+                              "Module integrity: nothing could be compared -- no "
+                              f"matching build on this host for any of "
+                              f"{counts.get('no_reference', 0)} module(s)")
+                    else:
+                        _emit(status_cb,
+                              f"Module integrity: {counts.get('replaced', 0)} replaced, "
+                              f"{counts.get('patched', 0)} patched, "
+                              f"{counts.get('identical', 0)} identical, "
+                              f"{counts.get('no_reference', 0)} without a reference")
+                except Exception as error:
+                    module_integrity_summary = {"available": False, "error": str(error)}
+                    _emit(status_cb, f"Module integrity warning: {error}")
+
             if memory_dump_enabled and memory_yara_enabled and scannable:
                 if memory_yara_preflight.get("available"):
                     _emit(status_cb, "Scanning process memory with YARA...")
@@ -2872,6 +2915,8 @@ def run_dynamic_analysis(
         "memory_yara_summary": memory_yara_summary,
         "pe_carve_enabled": pe_carve_enabled,
         "pe_carve_summary": pe_carve_summary,
+        "module_integrity_enabled": module_integrity_enabled,
+        "module_integrity_summary": module_integrity_summary,
         "crash_evidence_enabled": crash_evidence_enabled,
         "crash_dump_preflight": crash_dump_preflight,
         "crash_summary": crash_summary,

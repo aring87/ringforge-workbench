@@ -526,6 +526,63 @@ the payload now occupies, so there is nothing left to compare against. The
 05 Aug sample mapped its payload *alongside* the real image, which is what made
 it visible. This widens injection detection; it does not close it.
 
+**`dynamic_analysis/module_integrity.py` closes it, 10 Aug.** Nothing is left to
+compare against *in the dump* — but the file the module was loaded from is still
+on disk, and a hollowed image differs from it wholesale. The pass compares every
+loaded module's executable sections against its own file and reports
+`identical` / `patched` / `replaced` / `no_reference`. It runs over the same
+dumps the carver sees, straight after it, because the two answer opposite halves
+of one question: beside the image, or over it.
+
+Four things make it more than a diff, each of which would otherwise have sunk it:
+
+- **Relocations are applied, not thresholded around.** A module loaded away from
+  its preferred base differs at every fixup. `pefile.relocate_image` first makes
+  the comparison exact, and "identical once relocated" is a far stronger claim
+  than "mostly the same" — the slack in the weaker version is precisely where a
+  hollow would hide.
+- **Only executable sections.** `.data` changes the moment a process runs.
+  Comparing it would flag every module and the signal would be worth nothing.
+- **The reference must be the same build**, by `TimeDateStamp` and
+  `SizeOfImage` — the carver's own fingerprint. A guest binary against the
+  bench's copy of a different build differs for reasons that have nothing to do
+  with the sample. **This is why the pass belongs on the guest**: there the
+  references match, and on the bench most modules land in `no_reference`.
+- **`no_reference` is counted, never skipped**, so a run where nothing could be
+  compared reads as *could not tell* rather than as *nothing was modified* —
+  `collection_available` in gap 4b, again.
+
+**The thresholds are measured, not chosen.** Across 30 real system DLLs in a
+minidump this host wrote — Bitdefender's user-mode hooks included — the
+differing fraction of an untampered module tops out at **0.086%**. `patched`
+starts at 0.1%, just above that floor; `replaced` at 25%, 250x above it. A test
+asserts the floor stays under the threshold, so if the assumption ever stops
+holding the suite says so rather than the detector quietly going blind.
+
+**Validated against a dump the operating system wrote**, which is the standing
+rule after the carver's eleven MUI resource files survived every synthetic
+fixture: `make_reference_dump.py` calls `MiniDumpWriteDump` on the test process.
+30 identical, 1 patched, 0 replaced, all relocated. The positive case is
+**synthetic** — a module's mapped `.text` overwritten inside a copy of that dump
+— so it tests the comparison, not any claim about real malware. Marked `slow`;
+`pytest -m "not slow"` keeps the fast loop at 1.6s.
+
+**Pre-registered prediction for the next run of `422e30ed…`,** written before it
+happens, because that is what made gap 1 findable. Gap 5 currently reads
+overwrite-in-place as the better-supported explanation, *deduced* from
+`unmapped: 0` on every `RegSvcs` image. This tests it directly:
+
+| `RegSvcs.exe` reads | Means |
+|---|---|
+| `replaced`, `replaced_in_hollowing_target: 1` | Overwrite-in-place confirmed; the gap 5 revision is right and the pass fired on real malware first time out |
+| `identical` | The payload is **not** overwriting the host image, and the revision needs revising again — the more interesting result |
+| `no_reference` | The guest has no matching build on hand; a wiring problem, not an answer |
+
+**Not in the HTML report yet.** The summary carries `module_integrity_summary`
+and `memory\module_integrity.json` holds the detail; read the JSON. Nothing is
+scored off it until a live run shows what it fires on — the same discipline as
+not mapping gap 4b to ATT&CK before measuring its false-positive rate.
+
 **Parsing is proven; the finding path is not.** Across nine ProcDump images of
 live malware it read 43 modules per dump with `rejected: 0` and
 `resource_only: 0` — no false positives, clean parse. It has reported
@@ -649,6 +706,8 @@ run for a long time without showing.
 | Syscall-boundary interception | **Proven end to end**, 10 Aug. The gate fires on a payload calling stubs out of its *own* mapped ntdll, where an export hook sees nothing: four syscalls dispatched by service number into the handlers that already existed. Proven on both paths — resumed from `after_scan.state`, and from a cold run whose call sequence matches it exactly, which is what says `setup()` installs the gate and not only `restore()` |
 | SSN table completeness | **Proven structurally.** 509 numbers, `0x0`–`0x1fc`, unique and contiguous. This is the right shape of check: a kernel service table has no gaps, so a gap means an unrecognised stub shape rather than a missing service — and it found one on its first run, the dual-path `NtQueryInformationProcess`. Same reasoning as counting the bytes the IL decoder could not name |
 | Emulator snapshot / restore | **Proven by equivalence**, and now across a format change. `test_emu_snapshot.py` reports `EQUIVALENT` on memory SHA-256, block count and all sixteen registers — reading a **v1 snapshot written by the older code** into the newer emulator, so backward compatibility is demonstrated rather than assumed. A v2 round trip matches on memory, blocks and EIP |
+| Module integrity (overwrite-in-place) | **Built and wired, negative control proven on a real dump, positive synthetic.** 30 identical / 1 patched / 0 replaced across the modules of a minidump this host wrote, thresholds set from that measured floor rather than picked. The `replaced` path is exercised only by overwriting a module inside a copy of that dump, so it tests the comparison and not any claim about malware. **Never seen a hollow.** Its first real test is the pre-registered prediction in gap 5 |
+| Test suite runnable at all | **Fixed.** pytest was installed in neither interpreter, and collection died on two CLI tools in `scripts/` named `test_*.py`. 492 pass; `pytest -m "not slow"` is 483 in 1.6s. The handoff's "332 tests" was stale by 160 |
 | Served process list | **Built, and it moved the sample** -- past the enumeration into `NtOpenDirectoryObject`, `NtCreateMutant` and a 20-entry anti-analysis name check. It is the one **invented** input in the harness, declared in `winenv.PROCESS_LIST` and named in every run's output, so anything concluded after it is conditional on those twelve names |
 | Remote-write capture | **Built, never fired.** `NtWriteVirtualMemory`, `NtOpenProcess`, `NtCreateSection`/`NtMapViewOfSection` are instrumented and section views are real allocations so a payload copied in with ordinary instructions is still visible -- but the sample exits before injecting, so none of it has run. Do not read the empty section as evidence the sample does not inject; the decoded capability set says otherwise |
 | Harness-supplied `Wow64Transition` | **Retracted as unnecessary, by measurement.** The harness fills the loaded image's slot and `fs:[0xC0]` — the loader's job — and nothing else. Filling private copies was an invention and is gone from the live path: the payload does that fixup itself at `0x202f457`, reading the loaded slot and writing its own, and a full run with the fill disabled reaches the identical endpoint. It survives only inside `repair_wow64_crash()`, to unstick a snapshot that recorded the harness's old zero |
