@@ -634,6 +634,51 @@ already on disk; re-detonating to re-ask a question of data you already hold is
 absurd, and a detector that can only be exercised by a new run gets exercised
 rarely.
 
+### The injected payload is stage 3, confirmed byte for byte — 10 Aug
+
+Re-running the fixed pass over `RegSvcs.exe_12080_t58.dmp` reports the image at
+`0x400000` and reads its own header:
+
+    regsvcs.exe @ 0x400000   (a process loaders hollow)
+      loader says   timestamp 0x5ff2b99b  size_of_image 0x46000
+      the file has  timestamp 0x68531ee1  size_of_image 0xe000
+      in memory     entry 0x2680  image_base 0x400000  sections 1
+      99.10% of the comparable bytes differ from the real RegSvcs
+
+`entry 0x2680` and `SizeOfImage 0x46000` are what `emulate_native_stub.py` has
+been driving all session — but those came from the *carved* file, so agreement
+was not yet evidence. The bytes were compared instead:
+
+**284,671 of 284,672 identical — 99.9996%.** The single differing byte is the
+last one in the carve, a boundary artifact of the file-layout size.
+
+**So the emulator has been running the real thing, at the real base, from the
+real entry point**, and that is now measured rather than assumed. The chain is
+closed end to end: stage 2 decrypts stage 3, and stage 3 is what ends up mapped
+into the hollowed `RegSvcs`. Nine detonations had only ever inferred that.
+
+**And the mechanism is finally named.** Not overwrite-in-place: the real
+`RegSvcs.exe` sits relocated at `0x00ed0000`, byte-identical to its file, while
+stage 3 occupies `RegSvcs.exe`'s *preferred* base `0x400000` and carries a
+module-list entry claiming to be it. Every previous reading of this — "mapped
+alongside", then "written over" — was wrong in a way no available evidence could
+settle, because both detectors skipped the object.
+
+**One caveat that matters for where this pass is run.** On the *bench* the same
+dump yields **8** header mismatches, not one: the guest's system DLLs are
+different builds from the host's, so `ntdll`, `wow64*` and friends fail the
+identity check and get compared against the wrong file — `wow64base` reads 59%
+differing and means nothing at all. On the guest those same modules read
+`identical` and `regsvcs.exe @ 0x400000` was the **only** mismatch. *Read this
+pass where the references match; off-guest it is a lead generator, not a
+verdict.*
+
+**A parsing bug the readout exposed:** `ImageBase` is the one header field that
+moves between PE32 and PE32+, and reading the 32-bit layout on a 64-bit image
+returns the top half of the address. It printed `0x7fff` for every 64-bit
+module — plausible enough to skim past. Fixed by checking the optional-header
+magic.
+
 **Parsing is proven; the finding path is not.** Across nine ProcDump images of
 live malware it read 43 modules per dump with `rejected: 0` and
 `resource_only: 0` — no false positives, clean parse. It has reported

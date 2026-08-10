@@ -160,12 +160,21 @@ def _mapped_header(space: "_AddressSpace", base: int) -> dict[str, Any]:
             return out
         coff = e_lfanew + 4
         opt = e_lfanew + 24
+        # `ImageBase` is the one field that moves between PE32 and PE32+: 4 bytes
+        # at +28 after `BaseOfData`, or 8 bytes at +24 with no `BaseOfData` at
+        # all. Reading the 32-bit layout on a 64-bit image yields the *top* half
+        # of the address and prints as a plausible-looking `0x7fff`, which is
+        # the kind of wrong that reads as right. `AddressOfEntryPoint` and
+        # `SizeOfImage` sit at the same offsets in both.
+        pe32_plus = int.from_bytes(head[opt:opt + 2], "little") == 0x20B
         out = {
             "machine": int.from_bytes(head[coff:coff + 2], "little"),
             "timestamp": int.from_bytes(head[coff + 4:coff + 8], "little"),
             "sections": int.from_bytes(head[coff + 2:coff + 4], "little"),
             "entry_point": int.from_bytes(head[opt + 16:opt + 20], "little"),
-            "image_base": int.from_bytes(head[opt + 28:opt + 32], "little"),
+            "image_base": int.from_bytes(
+                head[opt + 24:opt + 32] if pe32_plus else head[opt + 28:opt + 32],
+                "little"),
             "size_of_image": int.from_bytes(head[opt + 56:opt + 60], "little"),
         }
     except Exception:
