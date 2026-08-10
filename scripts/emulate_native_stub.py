@@ -294,6 +294,14 @@ class Emulator:
         unrelated jump to zero: EIP must be 0, EAX's low word must be a service
         number this ntdll knows, and the return address on top of the stack must
         point at the `ret imm16` that ends a syscall stub.
+
+        The copy's own slot is filled here too, and *only* here. A fresh run
+        never needs that: the payload inherits the value from the loaded image
+        itself, deliberately, at `0x202f457`. But a state captured before the
+        loaded image's slot was filled recorded the zero the payload copied out
+        of it, and it does that fixup once -- so the stale zero would send the
+        very next stub back to address 0. This is snapshot repair, not a model
+        of Windows, which is why it does not run on the ordinary path.
         """
         mu = self.mu
         if mu.reg_read(UC_X86_REG_EIP) != 0:
@@ -306,6 +314,9 @@ class Emulator:
                 return False
         except UcError:
             return False
+        for base in winenv.patch_ntdll_copies(
+                mu, self.allocs, self.transition_rva, self.ntdll_image_size):
+            self.patched_ntdll.append((self.blocks, base))
         mu.reg_write(UC_X86_REG_EIP, winenv.SYSCALL_GATE)
         return True
 
@@ -476,15 +487,6 @@ class Emulator:
         def wr(ptr: int, v: int) -> None:
             if ptr:
                 mu.mem_write(ptr, struct.pack("<I", v))
-
-        # Any ntdll the payload has manually mapped since the last call needs
-        # the transition slot the kernel would have filled. An API call is the
-        # trigger because it is the only cheap one -- there is no event for
-        # "the payload finished a memcpy" -- and there are 87 of them, so the
-        # scan costs less than a second across a whole run.
-        for base in winenv.patch_ntdll_copies(
-                mu, self.allocs, self.transition_rva, self.ntdll_image_size):
-            self.patched_ntdll.append((self.blocks, base))
 
         self.calls[name] += 1
         val, nargs = unhandled_value, 0
@@ -825,8 +827,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"service numbers this ntdll has no name for: "
               f"{ {hex(k): v for k, v in emu.unknown_ssn.items()} }")
     if emu.patched_ntdll:
-        print("private ntdll copies given a Wow64Transition by the harness: "
-              + ", ".join(f"{b:#x} at {blk:,}blk" for blk, b in emu.patched_ntdll))
+        print("stale Wow64Transition repaired in a resumed snapshot (never on a "
+              "live run -- the payload does this itself at 0x202f457): "
+              + ", ".join(f"{b:#x}" for _, b in emu.patched_ntdll))
     if emu.env_queries:
         print(f"environment variables asked for: {emu.env_queries}")
     if emu.unhandled:

@@ -8,8 +8,12 @@ doing next.
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
-0, because a disk copy's `Wow64Transition` slot is zero and `fs:[0xC0]` with it. Both
-are now filled and pointed at a hooked gate that reads the service number out of `EAX`
+0. The cause was the harness's own: `Wow64Transition` and `fs:[0xC0]` are filled by the
+kernel at load and are in no copy read off disk, so **the loaded image's slot sat at
+zero and the malware faithfully copied that zero into its working copy** — it does that
+fixup itself, at `0x202f457`, which is what makes self-unhooking work on a real
+machine. Both kernel values are now supplied and pointed at a hooked gate that reads
+the service number out of `EAX`
 against a table parsed from this host's own ntdll: **509 numbers, `0x0`–`0x1fc`,
 unique and contiguous**, an assertion that immediately caught a stub shape the first
 parse had missed. The existing handlers were reused unchanged. Behind the boundary:
@@ -627,7 +631,7 @@ run for a long time without showing.
 | Syscall-boundary interception | **Proven end to end**, 10 Aug. The gate fires on a payload calling stubs out of its *own* mapped ntdll, where an export hook sees nothing: four syscalls dispatched by service number into the handlers that already existed. Proven on both paths — resumed from `after_scan.state`, and from a cold run whose call sequence matches it exactly, which is what says `setup()` installs the gate and not only `restore()` |
 | SSN table completeness | **Proven structurally.** 509 numbers, `0x0`–`0x1fc`, unique and contiguous. This is the right shape of check: a kernel service table has no gaps, so a gap means an unrecognised stub shape rather than a missing service — and it found one on its first run, the dual-path `NtQueryInformationProcess`. Same reasoning as counting the bytes the IL decoder could not name |
 | Emulator snapshot / restore | **Proven by equivalence**, and now across a format change. `test_emu_snapshot.py` reports `EQUIVALENT` on memory SHA-256, block count and all sixteen registers — reading a **v1 snapshot written by the older code** into the newer emulator, so backward compatibility is demonstrated rather than assumed. A v2 round trip matches on memory, blocks and EIP |
-| Harness-supplied `Wow64Transition` | **Fires once and is enough**, measured. One dword in the first private map at 52.9M blocks; the payload propagates it into all three of its later copies by copying. That the other two were never patched by the harness was read off the slots directly, not inferred from the absence of a second patch. Still a divergence — on real Windows a private copy's slot is zero too, and what the sample does about that is unknown |
+| Harness-supplied `Wow64Transition` | **Retracted as unnecessary, by measurement.** The harness fills the loaded image's slot and `fs:[0xC0]` — the loader's job — and nothing else. Filling private copies was an invention and is gone from the live path: the payload does that fixup itself at `0x202f457`, reading the loaded slot and writing its own, and a full run with the fill disabled reaches the identical endpoint. It survives only inside `repair_wow64_crash()`, to unstick a snapshot that recorded the harness's old zero |
 
 Still worth disbelieving: the adaptive window needs the memory dump watcher for
 its activity probe. A run that is not elevated has no probe and the window
@@ -859,6 +863,19 @@ harness reports a failure, ask what the harness contributes to it before reading
 as a finding about the sample, and make each cause say its own name at the moment it
 happens. An unhandled API that leaves the stack wrong must announce itself where it
 occurs, because the crash it causes appears somewhere else entirely.
+
+**A check can be aimed at the right subject, be capable of failing, and still be
+run in a state where the behaviour it looks for cannot occur.** This is the third
+turn of the screw on that rule, and the sharpest. The question was whether the
+sample repairs `Wow64Transition` in its own ntdll copy or whether the harness had
+invented that value. Watching for the repair *while the harness was supplying it*
+could only ever record silence — a self-repair guarded by `if slot == 0` never
+executes, and the resulting nothing is indistinguishable from a sample that never
+looks. The fix was to **withhold the suspect value first** and then watch, which
+turned an unfalsifiable negative into a measured positive: the payload does the
+fixup, at `0x202f457`, and the harness's fill was redundant. *When testing whether
+your own scaffolding is load-bearing, take it away — a support that is never
+stressed cannot be shown to be unnecessary.*
 
 **Intercept where the code operates, not where the API is named.** Every name in
 stage 3's decoded capability set was an `Nt*` form, it read a pristine `ntdll` off
@@ -1949,20 +1966,37 @@ between `call dword ptr fs:[0xC0]` and the thunk at run time. It is also why
 `fs:[0xC0]` has to be filled and not just `Wow64Transition`: one export on this host
 can reach the kernel either way. 509 entries, `0x0`–`0x1fc`, no gaps.
 
-**The harness supplies one dword; the sample distributes it.** `patch_ntdll_copies()`
-fills the slot in a private copy, identified by exact `SizeOfImage` plus an export
-directory naming ntdll rather than by "there is a PE here". On a cold run it fires
-**once**, on the first manual map at 52.9M blocks — and all three of the payload's
-later copies then read the gate address, because the payload propagated it by copying.
-That was measured, not deduced from the absence of a second patch.
+**Nothing is invented, and the check that established that is the most useful thing
+here.** The first version filled the slot in every private copy the payload mapped,
+which was a judgement call the harness had no right to make: on real Windows a copy
+read off disk has that slot zeroed too. So it was measured instead — copy-filling
+disabled, a read watch on the only two sources a real process has (the loaded image's
+slot and `fs:[0xC0]`), and a write watch on each private copy's slot.
 
-**What is invented, stated plainly.** Filling the *loaded* image's slot and `fs:[0xC0]`
-restores what the loader contributes and is not a judgement call. Filling a copy the
-payload mapped itself is: on real Windows that copy's slot is zero too, so either the
-sample repairs it from somewhere this emulation has not reached, or it leans on a
-detail of a live WOW64 process not reproduced here. What is not in doubt is that it
-jumps through the slot expecting it to work, so leaving it zero stops the run at the
-harness instead of at the malware. One dword, in one place, named in the output.
+**The payload repairs itself, deliberately.** At 67,099,798 blocks, `0x202f454` reads
+the **loaded** ntdll's slot and `0x202f457` writes it a byte at a time into
+`0x2500014` — its own copy's slot — and into that copy only; the other two mapped
+copies stay zero. That is the fixup which makes self-unhooking work on real Windows,
+and it means the private-copy fill was **redundant**: the same run with it disabled
+reaches the identical clean return at 377,374,188 blocks.
+
+**So the original crash was the harness's own zero, propagated faithfully by the
+malware.** The loaded image was mapped from disk and nobody filled its slot, the
+payload dutifully copied that zero into its working copy, and the jump to address 0
+followed. Fill what the loader fills — the loaded image and `fs:[0xC0]`, neither of
+which is a judgement call — and the sample does the rest. `patch_ntdll_copies()`
+survives for exactly one job, called only from `repair_wow64_crash()`: a state
+captured *before* the loaded slot was filled recorded that zero, and the payload does
+its fixup once, so `after_scan.state` carries a stale zero that resuming will never
+repair. Snapshot repair, not a model of Windows, and the run output says so in those
+words.
+
+**The experiment had to be designed so it could fail.** The obvious version — watch
+for reads with the copy already filled — cannot: a self-repair path guarded by
+`if slot == 0` never executes, and the resulting silence is indistinguishable from a
+sample that never looks. Withholding the invented value first is what made the
+negative meaningful, and it turned out to be a positive. *A check aimed at the right
+subject still has to be run in a state where the behaviour it looks for is possible.*
 
 **`repair_wow64_crash()` resumes the dead machine instead of rebuilding it.**
 `after_scan.state` faulted *at* the jump, so stack, registers and every page are

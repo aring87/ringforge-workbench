@@ -304,13 +304,22 @@ def install_syscall_gate(mu, ntdll_base, transition_rva, gate=SYSCALL_GATE):
 def patch_ntdll_copies(mu, regions, transition_rva, image_size, gate=SYSCALL_GATE):
     """Fill `Wow64Transition` in every *private* copy of ntdll that is mapped.
 
-    Filling the loaded image is unambiguous -- the loader does it. A copy the
-    payload mapped itself is a judgement call, and worth stating: on real
-    Windows that copy's slot is zero too, so either the sample repairs it from
-    somewhere this emulation has not reached, or it depends on a detail of a
-    live WOW64 process not reproduced here. What is *not* in doubt is that the
-    sample jumps through the slot expecting it to work, so leaving it zero
-    stops the emulation at the harness rather than at the malware.
+    **This is snapshot repair and nothing more. A live run must not call it.**
+
+    It was written on the assumption that a payload mapping ntdll from disk
+    needs the slot supplied, and that assumption was measured and found wrong:
+    stage 3 copies the value out of the **loaded** image into its own copy, at
+    `0x202f457`, and only into the copy it goes on to execute from. That is the
+    fixup that makes self-unhooking work on real Windows, and it makes filling
+    a private copy redundant -- a full run with this disabled reaches exactly
+    the same place. Fill the loaded image's slot and `fs:[0xC0]`, which is the
+    loader's job, and the sample does the rest.
+
+    What it is still needed for: a state captured *before* the loaded slot was
+    filled recorded the zero the payload copied out of it, and the payload does
+    that fixup once. So `after_scan.state` carries a stale zero that no amount
+    of resuming will repair, and the next stub through it would go to address
+    0 again. See `Emulator.repair_wow64_crash`, the only caller.
 
     Detection is by exact `SizeOfImage` plus an export directory naming
     `ntdll`, not by "there is a PE here" -- the standing lesson being that a
