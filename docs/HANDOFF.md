@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-10. **The crash that has ended nine detonations is a hardcoded pointer in the malware, not a reaction to being watched.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. It is not page-aligned, so it was never an allocation that failed; nothing maps it on any machine. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-10. **The crash that has ended nine detonations is now located exactly, and its *cause* is still open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional** -- it runs only when a module-presence check returns non-zero -- so whether this is a broken build or a deliberate crash-on-detection is undecided, and an earlier revision of this paragraph asserted the first. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -700,11 +700,52 @@ haystack base for the marker search. It is **not page-aligned** (`& 0xFFF ==
 0x514`), so it was never an allocation base that failed to materialise — it is a
 fixed absolute pointer that nothing maps, on any machine.
 
-**So the deterministic crash is a bug in the malware, not a reaction to us.**
-Nine runs, nine identical faults, and the reason is a constant. Gap 4 says a
-deliberate anti-analysis bail is indistinguishable from a broken payload *from
-outside the guest*; that remains true, and this is what telling them apart looks
-like from inside — the dump plus forty-one bytes of disassembly.
+**"So the crash is a bug, not a reaction to us" — written here first, and it is
+not supported.** The store at `0x1605f` is **conditional**. It runs only on the
+non-zero branch of `test eax, eax` at `0x16054`, and the value being tested is
+the return of `0x2dc01` — which is `get_module_base_by_hash`, already documented
+in this file at `0x202ec01`: it walks `PEB->Ldr`, lowercases each `BaseDllName`,
+CRC-32s it, and returns `DllBase` on a match or 0 at the end of the list.
+
+So the sample writes that pointer **when a particular module is loaded**. A
+program that poisons a pointer on detecting something is not a broken build; it
+is a plausible crash-on-detection. Both readings now fit, and neither is
+established. What *is* established is that the fault reads a constant that
+appears as an immediate in the code, on a branch the emulator does not take.
+
+**The emulator takes the other branch and lives.** Measured from the entry
+point: `eax = 0` at `0x16054` at 17,299,166 blocks, the store is skipped, and it
+then runs all four marker searches — `0x160a1`, `0x160ab`, `0x160b5`, `0x160bf`
+— without faulting and exits cleanly. The blocks immediately before the branch
+are `0x2dc7e → 0x2dc85 → 0x2dc8c`, which is that function's *walked the whole
+list, found nothing, return 0* exit.
+
+**And the obvious next inference does not close either.** The hash looked up
+just before that branch is **`0xe11da208`** — the one this document already
+records as matching nothing on this host after a 4,419-name sweep. But none of
+the modules loaded in the crashed `RegSvcs` hash to it either:
+
+| | |
+|---|---|
+| `regsvcs.exe` | `0xe2e77daf` |
+| `ntdll.dll` | `0x0b4e1ae2` |
+| `wow64.dll` / `base` / `win` / `con` / `cpu` | `0x80515ad9` / `0x42d73626` / `0xcbedd56f` / `0x4ef3b040` / `0x79069242` |
+| `kernel32.dll` / `kernelbase.dll` | `0xadedab08` / `0x21094b62` |
+
+So on the guest that same lookup should also have returned 0 and skipped the
+store — yet the guest's context held the constant. Something does not line up,
+and the candidates are: a module present at the check and gone by the crash; a
+second store of the same value on a path the emulator never runs; or the
+association between that lookup and that branch being wrong. **Reading the
+minidump's unloaded-module list would discriminate, and two attempts at its
+layout produced garbage — a count of 7.6 quintillion, then the process id.**
+Loud failures, and the right point to stop guessing at structure layouts and
+find a parser that is known good.
+
+Gap 4 says a deliberate bail and a broken payload are indistinguishable *from
+outside the guest*. From inside we are closer than that — we know the exact
+instruction, the exact constant and the exact branch — and still cannot say
+which of the two this is.
 
 **Why the emulator never reproduced it.** `call 0x2cd91` at `0x1606a` returns 0
 every time under emulation, so it loops at `0x16014`–`0x1607a` and never reaches
