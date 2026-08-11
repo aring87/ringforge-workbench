@@ -316,6 +316,19 @@ class Emulator:
          self.ntdll_image_size) = winenv.syscall_table()
         winenv.install_syscall_gate(mu, winenv.NTDLL_BASE, self.transition_rva)
         winenv.map_kuser_shared_data(mu)
+        # A snapshot taken before the harness supplied the kernel's values holds
+        # the zero the payload copied out of the loaded image, in every private
+        # ntdll it had already mapped. The payload does that fixup once, so
+        # resuming such a state runs fine until the first syscall out of its own
+        # copy and then jumps through a null slot -- which is how `warm400M`
+        # started dying at 348M blocks, at the exact address the gate exists to
+        # prevent. Repairing at restore, not only in `repair_wow64_crash`, is
+        # what makes every stored state resumable rather than just the crashed
+        # one. Only zero slots are written, so a state that already has the
+        # value is untouched, and a state with no copies yet is a no-op.
+        for base in winenv.patch_ntdll_copies(
+                mu, self.allocs, self.transition_rva, self.ntdll_image_size):
+            self.patched_ntdll.append((self.blocks, base))
         self.advance_clock()
         self._install_hooks()
         return self
@@ -335,13 +348,9 @@ class Emulator:
         number this ntdll knows, and the return address on top of the stack must
         point at the `ret imm16` that ends a syscall stub.
 
-        The copy's own slot is filled here too, and *only* here. A fresh run
-        never needs that: the payload inherits the value from the loaded image
-        itself, deliberately, at `0x202f457`. But a state captured before the
-        loaded image's slot was filled recorded the zero the payload copied out
-        of it, and it does that fixup once -- so the stale zero would send the
-        very next stub back to address 0. This is snapshot repair, not a model
-        of Windows, which is why it does not run on the ordinary path.
+        The stale-slot repair that goes with this lives in `restore`, because
+        it is needed by *every* pre-gate snapshot and not only by the crashed
+        one -- `warm400M` resumes past the same transition and was dying at it.
         """
         mu = self.mu
         if mu.reg_read(UC_X86_REG_EIP) != 0:
@@ -354,9 +363,6 @@ class Emulator:
                 return False
         except UcError:
             return False
-        for base in winenv.patch_ntdll_copies(
-                mu, self.allocs, self.transition_rva, self.ntdll_image_size):
-            self.patched_ntdll.append((self.blocks, base))
         mu.reg_write(UC_X86_REG_EIP, winenv.SYSCALL_GATE)
         return True
 
