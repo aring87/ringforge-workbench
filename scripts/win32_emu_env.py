@@ -6,6 +6,7 @@ its own stub area at RVA 0x2000; every export points there, and a code hook on
 those addresses implements the API in Python.
 """
 import collections
+import os
 import struct
 from unicorn import *
 from unicorn.x86_const import *
@@ -140,6 +141,20 @@ EXTRA_MODULES = (
     "gdi32.dll", "rpcrt4.dll", "sechost.dll", "combase.dll", "kernelbase.dll",
     "urlmon.dll", "psapi.dll", "version.dll", "userenv.dll", "netapi32.dll",
 )
+#: A module added *only* to make a specific hash lookup succeed. Off by default.
+#:
+#: **This is not a real module name and must never be read as one.** Stage 3
+#: looks up modules by CRC-32 of the lowercased `BaseDllName`, and one lookup --
+#: `0xe11da208` -- decides whether it stores a poisoned pointer that kills it a
+#: few frames later. The real name behind that hash is unknown; no dictionary
+#: has matched it. `aqtd9dq.dll` is a *forged preimage*, solved for over GF(2),
+#: whose only property is that it hashes to the wanted value.
+#:
+#: It exists to answer one causal question -- does taking that branch produce
+#: the crash the guest suffers? -- without needing to know what the sample is
+#: actually looking for. Set `RINGFORGE_FORGE_MODULE=1` to include it.
+FORGED_HASH_MODULE = "aqtd9dq.dll"
+
 EXTRA_BASE = 0x70000000
 EXTRA_STRIDE = 0x100000
 
@@ -585,10 +600,16 @@ def setup(mu, image_base, image_size):
     mu.mem_write(PEB_ADDR + 0x08, struct.pack("<I", image_base))  # ImageBaseAddress
     mu.mem_write(PEB_ADDR + 0x0C, struct.pack("<I", LDR_ADDR))
 
+    extra = EXTRA_MODULES
+    if os.environ.get("RINGFORGE_FORGE_MODULE") == "1":
+        extra = extra + (FORGED_HASH_MODULE,)
+        print(f"win32_emu_env: loader list includes the FORGED module "
+              f"{FORGED_HASH_MODULE!r} -- a solved CRC preimage, not a real "
+              f"name. Anything downstream is a causal test, not an observation.")
     mods = [(image_base, image_size, IMAGE_NAME),
             (NTDLL_BASE, sizes[NTDLL_BASE], "ntdll.dll"),
             (KERNEL32_BASE, sizes[KERNEL32_BASE], "KERNEL32.DLL")]
-    for i, nm in enumerate(EXTRA_MODULES):
+    for i, nm in enumerate(extra):
         base = EXTRA_BASE + i * EXTRA_STRIDE
         mu.mem_map(base, 0x2000)
         # A DOS/PE header only: enough that a walker reading DllBase finds a

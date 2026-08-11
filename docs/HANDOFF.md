@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-10. **The crash that has ended nine detonations is now located exactly, and its *cause* is still open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional** -- it runs only when a module-presence check returns non-zero -- so whether this is a broken build or a deliberate crash-on-detection is undecided, and an earlier revision of this paragraph asserted the first. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-10. **The crash that has ended nine detonations is now located exactly, and its *cause* is still open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end, which makes this a deliberate bail rather than the broken build an earlier revision of this paragraph asserted. What the sample is detecting is still unknown -- the name behind that hash matches nothing on this bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -742,10 +742,42 @@ layout produced garbage — a count of 7.6 quintillion, then the process id.**
 Loud failures, and the right point to stop guessing at structure layouts and
 find a parser that is known good.
 
+**The chain is proven by forging the lookup, 10 Aug.** The real name behind
+`0xe11da208` is unknown and no dictionary has matched it — but the name is not
+needed to test causality, only the *hash*. CRC-32 is affine, so four bytes were
+solved for over GF(2): **`aqtd9dq.dll`** hashes to `0xe11da208` and has no other
+property. Added to the loader list behind `RINGFORGE_FORGE_MODULE=1`, which
+prints a warning naming it as forged whenever it is on.
+
+    17,304,968blk  rva 0x16056  branch on the lookup   eax=0x71400000
+    17,304,969blk  rva 0x1605f  STORE [esi+0x6d8] = 0x32dfd514
+    FAULT  addr 0x32dfd514  eip rva 0x02c53
+
+`eax` is the forged module's `DllBase`, so the lookup succeeded, the store ran,
+and the process died reading **the guest's exact faulting address**. The
+emulator had run this same code to a clean `ExitProcess` on every previous
+attempt.
+
+So: **module present → poisoned pointer → crash**, demonstrated end to end. That
+makes crash-on-detection much the better reading. A broken build crashes
+regardless of what is loaded; this one crashes only when it finds something.
+
+*The faulting instruction is rva `0x2c53`, not the guest's `0x2c7c`* — the same
+compare routine, which reads the poisoned pointer from several paths depending
+on the needle bytes, so which read faults first differs. The address matches
+exactly and the instruction does not; worth stating rather than rounding to
+"identical".
+
+**What is still open is only the name.** Something in the guest's `RegSvcs`
+hashed to `0xe11da208` and nothing in the crash dump's module list does — and
+that list is demonstrably incomplete, six entries against the spawn dump's
+eleven. So the candidate is a module the dump did not record. Identifying it
+wants a **guest-side inventory** — the DLLs under `System32`/`SysWOW64` and
+anything the monitoring stack injects — not more guessing from the bench.
+
 Gap 4 says a deliberate bail and a broken payload are indistinguishable *from
-outside the guest*. From inside we are closer than that — we know the exact
-instruction, the exact constant and the exact branch — and still cannot say
-which of the two this is.
+outside the guest*. From inside, with a dump and a forged preimage, they are
+not: the conditionality is the discriminator, and it points at a bail.
 
 **Why the emulator never reproduced it.** `call 0x2cd91` at `0x1606a` returns 0
 every time under emulation, so it loops at `0x16014`–`0x1607a` and never reaches
