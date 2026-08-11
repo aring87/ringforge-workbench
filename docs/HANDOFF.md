@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-10. **The crash that has ended nine detonations is now located exactly, and its *cause* is still open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end, which makes this a deliberate bail rather than the broken build an earlier revision of this paragraph asserted. What the sample is detecting is still unknown -- the name behind that hash matches nothing on this bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-10. **The crash that has ended nine detonations is now located exactly, and its *cause* is still open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -820,6 +820,41 @@ not a conclusion — this section has four of those already.
 **The remaining measurement is on the guest, not the bench.** Log what `0x2dc01`
 returns during a live run. Everything answerable from the artifacts here has
 been answered.
+
+### Pick up here — 10 Aug
+
+Ordered by value, with what each needs. Nothing below is blocked on a detonation
+except where it says so.
+
+1. **Re-run every hash sweep with bare stems.** `0x5c4ee455` was `"wow64"`, not
+   `wow64.dll`, and every earlier brute force in this document used filenames
+   with extensions. That blind spot covers `0xe11da208`, `0x79dbe71d` and the
+   **seven uncracked process-name hashes** from the anti-analysis blocklist.
+   Offline, minutes, and it is the cheapest thing on this list by a distance.
+2. **Stage 4, which is still the actual goal.** The emulator reaches a clean
+   `ExitProcess` *without* crashing, so the crash was never what stood between
+   us and stage 4 — the poll loop is. Whatever it waits seven times for is most
+   likely named among those seven hashes, which is the second reason item 1
+   comes first.
+3. **The crash's remaining contradiction** wants guest-side instrumentation:
+   log `0x2dc01`'s argument and return during a live run. Needs a detonation.
+4. **Three detectors that need no new collection.** The WER `app_timestamp`
+   against the on-disk binary's — Windows recorded stage 3's `5ff2b99b` for
+   `RegSvcs.exe`, so a mismatch is a hollowing signal from the event log alone,
+   and it would have flagged run `3f70058b`. Then `NtCreateFile` on
+   `\??\ntdll.dll` from a hollowing target. Then a report section for module
+   integrity, which is JSON-only and needed reading aloud on its first finding.
+5. **A known-good minidump parser.** Two hand-rolled attempts at the
+   unloaded-module list produced a count of 7.6 quintillion and then the process
+   id. The pipeline reads dumps constantly and this should not be guesswork.
+
+**And a warning to whoever picks this up, earned the hard way.** This section
+records five inferences about the crash trigger and four of them were wrong —
+a buffer overrun, `0xe11da208` twice in opposite directions, and the wow64
+check. Every *measurement* held. Every step taken **between** measurements did
+not. The thing that finally settled which lookup gates the branch was logging
+both sides and matching them by sequence, which took one run and should have
+been the first move rather than the fifth.
 
 Gap 4 says a deliberate bail and a broken payload are indistinguishable *from
 outside the guest*. From inside, with a dump and a forged preimage, they are
