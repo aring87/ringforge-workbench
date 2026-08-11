@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-10. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-10. **The crash that has ended nine detonations is a hardcoded pointer in the malware, not a reaction to being watched.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. It is not page-aligned, so it was never an allocation that failed; nothing maps it on any machine. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -678,6 +678,64 @@ moves between PE32 and PE32+, and reading the 32-bit layout on a 64-bit image
 returns the top half of the address. It printed `0x7fff` for every 64-bit
 module — plausible enough to skim past. Fixed by checking the optional-header
 magic.
+
+### Why it crashes, after nine detonations: a hardcoded pointer — 10 Aug
+
+`c0000005`, reading `0x32dfd514`, at RVA `0x2c7c` of stage 3's relocated copy.
+The instruction is `cmp al, byte ptr [esi+ecx]` inside the case-insensitive
+marker search. Forty-one bytes of disassembly settle it:
+
+    0x16054  test eax, eax
+    0x16056  je   0x16069
+    0x16058  mov  byte  [esi+0x138], 1
+    0x1605f  mov  dword [esi+0x6d8], 0x32dfd514      <-- an immediate
+    0x16069  push esi
+    0x1606a  call 0x2cd91                            <-- the emulator's route
+    0x1607a  je   0x16014                            <-- retry loop
+    0x160ab  call 0x29101                            <-- the guest's route
+
+**`0x32dfd514` is a literal in the code**, and it is the exact address the
+process died on. Stored into the context at `[esi+0x6d8]`, later used as the
+haystack base for the marker search. It is **not page-aligned** (`& 0xFFF ==
+0x514`), so it was never an allocation base that failed to materialise — it is a
+fixed absolute pointer that nothing maps, on any machine.
+
+**So the deterministic crash is a bug in the malware, not a reaction to us.**
+Nine runs, nine identical faults, and the reason is a constant. Gap 4 says a
+deliberate anti-analysis bail is indistinguishable from a broken payload *from
+outside the guest*; that remains true, and this is what telling them apart looks
+like from inside — the dump plus forty-one bytes of disassembly.
+
+**Why the emulator never reproduced it.** `call 0x2cd91` at `0x1606a` returns 0
+every time under emulation, so it loops at `0x16014`–`0x1607a` and never reaches
+`0x160ab`. That is why *every* emulated entry to the marker search arrives via
+`0x2935c` and none via `0x2914e`: sampled over 900M instructions and millions of
+calls, the emulator's haystack never once leaves its allocation. The harness is
+keeping the sample healthier than the real machine does, which is the opposite
+of the usual failure and worth remembering.
+
+**Three retractions from getting here**, all mine, all in one afternoon:
+
+- *"The scan overran its buffer into the guard page."* There is an unmapped gap
+  immediately after the relocated image, and it is irrelevant — the faulting
+  read is `0x30f1b514` past any region, not a few KB. **The dump had recorded
+  the exact address the whole time** in `MINIDUMP_EXCEPTION_STREAM`; I inferred
+  from layout instead of reading `ExceptionInformation[1]`.
+- *"`esi` is a garbage pointer."* `esi` is a **bias** and `ecx` is the needle's
+  address on the stack, so one increment walks both. The emulator's `esi` is not
+  a pointer either. Registers are only interpretable against the code that uses
+  them.
+- *The first A/B compared the emulator's **first** entry to the search against
+  the guest's **fatal** one.* This document already recorded that the search is
+  re-entered against different buffers; comparing different invocations and
+  calling the difference a divergence was a category error. The frame chain is
+  what made them comparable.
+
+**One method note worth keeping.** Disassembling this range from the wrong byte
+produces confident nonsense — the first attempt yielded a single instruction and
+stopped. The entry offset is now chosen as the one that puts **both known call
+sites on instruction boundaries**, which is a self-check the bytes themselves
+provide. Same failure the IL decoder had, same shape of fix.
 
 **Parsing is proven; the finding path is not.** Across nine ProcDump images of
 live malware it read 43 modules per dump with `rejected: 0` and
