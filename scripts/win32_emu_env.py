@@ -135,11 +135,21 @@ def build_fake_dll(name, base):
 #: match and retried forever -- 2.3 billion instructions hashing
 #: `kernel32.dll`, `ntdll.dll` and `stage3.exe`, the last of which was a name
 #: this file invented. A short module list is a divergence, not a simplification.
+#:
+#: The WOW64 five are not decoration either, and their absence was a real
+#: divergence. **Every** 32-bit process on 64-bit Windows carries them, and the
+#: guest's `RegSvcs` has all five; this list had none. Stage 3 looks up
+#: `crc32("wow64") == 0x5c4ee455` -- one of three hashes this project had never
+#: matched, recovered from the guest's own loaded-module inventory -- so the
+#: emulator was answering "not present" to a question that is always true on a
+#: real target. A synthetic module list is a claim about the machine, and this
+#: one was claiming something no 64-bit Windows host is.
 EXTRA_MODULES = (
     "user32.dll", "advapi32.dll", "msvcrt.dll", "ole32.dll", "oleaut32.dll",
     "shell32.dll", "shlwapi.dll", "ws2_32.dll", "wininet.dll", "crypt32.dll",
     "gdi32.dll", "rpcrt4.dll", "sechost.dll", "combase.dll", "kernelbase.dll",
     "urlmon.dll", "psapi.dll", "version.dll", "userenv.dll", "netapi32.dll",
+    "wow64.dll", "wow64base.dll", "wow64con.dll", "wow64cpu.dll", "wow64win.dll",
 )
 #: A module added *only* to make a specific hash lookup succeed. Off by default.
 #:

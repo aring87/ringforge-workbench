@@ -768,12 +768,58 @@ on the needle bytes, so which read faults first differs. The address matches
 exactly and the instruction does not; worth stating rather than rounding to
 "identical".
 
-**What is still open is only the name.** Something in the guest's `RegSvcs`
-hashed to `0xe11da208` and nothing in the crash dump's module list does — and
-that list is demonstrably incomplete, six entries against the spawn dump's
-eleven. So the candidate is a module the dump did not record. Identifying it
-wants a **guest-side inventory** — the DLLs under `System32`/`SysWOW64` and
-anything the monitoring stack injects — not more guessing from the bench.
+**The guest-side inventory arrived, and it cracked one hash and refuted two
+hypotheses.** 931 loaded-module names from the guest, run against the three
+values this project had never matched:
+
+| | |
+|---|---|
+| `0x5c4ee455` | **`"wow64"`** — no extension, plain ascii |
+| `0xe11da208` | no match, against all 931 |
+| `0x79dbe71d` | no match |
+
+**`"wow64"` is a lesson about the sweeps, not just an answer.** Every earlier
+brute force in this document used *filenames*, with extensions. This hash is a
+bare stem. Re-run the old sweeps with stems before concluding anything else is
+unmatchable.
+
+**It also exposed a real harness divergence, which then did not explain the
+crash.** The emulator's loader list carried none of the five WOW64 modules,
+which every 32-bit process on 64-bit Windows has and the guest's `RegSvcs` does.
+They are now in `EXTRA_MODULES` — a fidelity fix worth making regardless. It
+changed nothing: `eax` is still `0` at `0x16054` and the run still survives. The
+wow64 lookup is not what gates the store.
+
+**And the correlation reinstates the pairing this document just withdrew.**
+Rather than infer again, both sides were logged and matched by sequence: every
+`0x2dc01` call with its hash argument, every `test eax, eax` at `0x16054` with
+the value tested.
+
+    branch at 17,328,197blk   eax = 0x00000000
+    last lookup  0xe11da208   at 17,165,664blk
+    blocks before: 0x2dc7e -> 0x2dc85 -> 0x2dc8c -> 0x16051
+
+Those three blocks are `0x2dc01`'s not-found exit returning into `0x16051`, and
+the 162k-block gap is simply walking and hashing 24 module names. **So
+`0xe11da208` is the gate after all**, and the retraction of that pairing was
+itself wrong. Correlating took one run; four inferences preceded it.
+
+**Which leaves the contradiction sharp rather than resolved.** The gate is
+`0xe11da208`; nothing the guest has loaded hashes to it; yet the guest stored
+the constant. One of these is false and none of them is a guess any more.
+
+**A structural fact worth having before the next attempt:** `0x32dfd514` does
+**not** occur in the packed stage 3 at all, and occurs three times in the
+unpacked code — `0x16065` (the store) and `0x0d809` / `0x2dca9`, both
+`push 0x32dfd514 ; pushad ; call`. It is also strewn across the crash-time
+stack. A magic pushed before a `pushad` and a call looks more like an error or
+abort helper's argument than a buffer address, which would make the fault an
+unhandled error path rather than a poisoned pointer. That is a lead, explicitly
+not a conclusion — this section has four of those already.
+
+**The remaining measurement is on the guest, not the bench.** Log what `0x2dc01`
+returns during a live run. Everything answerable from the artifacts here has
+been answered.
 
 Gap 4 says a deliberate bail and a broken payload are indistinguishable *from
 outside the guest*. From inside, with a dump and a forged preimage, they are
