@@ -848,6 +848,56 @@ except where it says so.
    unloaded-module list produced a count of 7.6 quintillion and then the process
    id. The pipeline reads dumps constantly and this should not be guesswork.
 
+#### Mechanics, so a cold session does not have to rediscover them
+
+Everything runs on the host through `.venv`. The emulator lives in `scripts/`
+and imports its siblings by path, so run it from that directory.
+
+    cd scripts
+
+    # from the entry point; ~15 min to the clean exit at 629M blocks
+    ..\.venv\Scripts\python.exe emulate_native_stub.py ^
+      G:\ringforge-artifacts\422e30ed_stage2\stage3_native_e84f7824.xor9 ^
+      --entry 0x2680 --blocks 4000000000 --log-api
+
+    # resume a stored state instead; seconds
+    ... --load-state G:\ringforge-artifacts\422e30ed_stage2\after_scan.state
+
+    # is a restore sound?  memory sha256 + blocks + all 16 registers
+    ..\.venv\Scripts\python.exe test_emu_snapshot.py <payload> <warm60M.state>
+
+Stored states on the artifact drive, all resumable now that `restore()` repairs
+a pre-gate snapshot's ntdll copies:
+
+| | |
+|---|---|
+| `warm60M.state` | ~7M blocks. The equivalence check's split point |
+| `warm400M.state` | 96M blocks, **inside** the marker scan — note it is captured *within* `call 0x2cd91`, so it cannot show anything about that call's own entry |
+| `after_scan.state` | 348M blocks, at the old syscall crash. `repair_wow64_crash()` picks it up automatically |
+
+Addresses worth having, all RVAs into stage 3's relocated copy — add
+`0x2001000` for the emulator, `0x1530000` for the crash dump:
+
+| | |
+|---|---|
+| `0x02680` | entry point (`--entry 0x2680`) |
+| `0x02c31` | the case-insensitive compare; `0x02c7c` faulted on the guest, `0x02c53` under the forged module |
+| `0x02dc01` | `get_module_base_by_hash` — walks `PEB->Ldr`, lowercases, CRC-32s |
+| `0x16054` | `test eax, eax` — **the gating branch** |
+| `0x1605f` | `mov [esi+0x6d8], 0x32dfd514` — the store |
+| `0x160a1/ab/b5/bf` | the four marker searches |
+| `0x03181` | the XOR string/hash decoder (`push imm ; push key ; call`). Elsewhere in this document it appears as `0x2004181`, which is the same thing at the emulator's base — every other row here is an RVA, so mixing the two would send the next reader 32 MB off |
+
+`RINGFORGE_FORGE_MODULE=1` adds `aqtd9dq.dll`, a solved CRC preimage for
+`0xe11da208`, to the loader list and prints a warning saying so. It is a causal
+test, not a name. Off by default.
+
+Other pieces: `python -m dynamic_analysis.module_integrity <case>\memory`
+re-runs the hollowing check over dumps already on disk, no detonation needed.
+`pytest -m "not slow"` is 483 tests in under two seconds; the full run writes a
+real minidump and takes about a minute. The guest's 931 loaded-module names are
+in `docs/guestloaded.txt`, which is what the hash sweeps should start from.
+
 **And a warning to whoever picks this up, earned the hard way.** This section
 records five inferences about the crash trigger and four of them were wrong —
 a buffer overrun, `0xe11da208` twice in opposite directions, and the wow64
