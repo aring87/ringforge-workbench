@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-12. **The module that gates the crash is named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-12. **Both open name hashes are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -786,6 +786,12 @@ brute force in this document used *filenames*, with extensions. This hash is a
 bare stem. Re-run the old sweeps with stems before concluding anything else is
 unmatchable.
 
+> **Wrong, and the correction is the more useful lesson.** It is not a stem, it
+> is a **5-character substring** — the sample scans a lowercased string for a
+> fixed-length run whose first character and length are pushed as immediates at
+> the call site. Re-running the sweeps with stems was done and found nothing.
+> See *`0x79dbe71d` is `"sychpe32"`*.
+
 **It also exposed a real harness divergence, which then did not explain the
 crash.** The emulator's loader list carried none of the five WOW64 modules,
 which every 32-bit process on 64-bit Windows has and the guest's `RegSvcs` does.
@@ -916,9 +922,14 @@ therefore each at least eight characters, or use a character outside that
 alphabet.** That is a real constraint on the next attempt, and it is the first
 time this document can say what those names are *not*.
 
-### `0x79dbe71d` resisted a 230k-name corpus, and got characterised instead — 12 Aug
+### `0x79dbe71d` is `"sychpe32"` — and the hashes are substrings, not names — 12 Aug
 
-**It did not crack.** The injected-DLL class that produced `sbiedll.dll` was
+**Read the next subsection first if you only read one.** The wordlist attack
+below failed completely; what cracked this was reading the *call site*, and it
+turned out the whole "what name is this" framing was wrong.
+
+**A 230k-name corpus did not crack it.** The injected-DLL class that produced
+`sbiedll.dll` was
 widened to 235 entries across AV/EDR user-mode hooking, sandbox, VM guest
 additions and instrumentation, a non-filename artifact list was added (window
 classes, `\\.\` device paths, mutants), and — the big one — **every export of
@@ -958,16 +969,63 @@ ascii_name)`. Three things follow, and the third is the one to act on:
 - It is compared as a **bare stem**: `"wow64"` hashes to `0x5c4ee455` while
   `wow64.dll` hashes to `0x80515ad9`, so either the caller strips the extension
   or `0x202fd51` does.
-- **The narrowing does no case folding.** `get_module_base_by_hash` explicitly
-  lowercases; this path demonstrably does not, and whether `0x202fd51` does is
-  unread. So a **mixed-case** preimage is live, and the mixed-case tier only
-  reached 6 characters. That is the cheapest remaining shot and it is not taken.
+- **The narrowing does no case folding**, but `0x202fd51` does — `cmp al, 0x41 ;
+  cmp al, 0x5a ; add al, 0x20`, plain ASCII `A-Z`. So the name is lowercase and
+  the mixed-case tier was wasted work, which is worth saying because it was my
+  idea and it cost a search.
 
-**Where this leaves it.** Not in a 230,756-name dictionary; no lowercase
-preimage of ≤ 7 characters over `[a-z0-9._-]`; no mixed-case preimage of ≤ 6
-over `[a-zA-Z0-9._-]`; nothing from 7.8 billion token compositions. The
-next attempt should read `0x202fd51` for the case question and push the
-mixed-case tier to 7–8 with a plausibility filter, **not** try a fifth wordlist.
+#### The hashes are over fixed-length *substrings*, and the site says which
+
+`0x202fd51` is not a name comparison at all. It lowercases the whole string into
+a buffer, then **scans it for a fixed-length substring**: walk to each position
+whose character equals `arg2`, copy `arg3` bytes from there into a second
+buffer, hash that, compare to `arg1`. So `arg2` is the substring's **first
+character** and `arg3` is its **exact length**, and both are pushed as
+immediates at the call site in the clear.
+
+    0x02026100  push esi              ; the wide name
+    0x02026101  push 8                ; length
+    0x02026103  push 0x73             ; 's'
+    0x02026105  push 4                ; decoder key
+    0x02026107  push 0x6992d626       ; obfuscated hash -> 0x79dbe71d
+    0x0202610c  call 0x2004181
+
+The `0x5c4ee455` site two instructions later is `push 5 ; push 0x77` — length 5,
+`'w'` — and `"wow64"` is five characters starting with `w`. **The model is
+confirmed by the hash we already knew before it was used to crack the one we
+did not.** That ordering matters: the structure was validated against a known
+answer first.
+
+So the target is eight lowercase characters beginning with `s`, which the ≤ 7
+bound had missed by one. `mitm(0x79dbe71d, unknown=7, prefix="s")` returns 34
+candidates against ~32 expected by chance — and one of them is **`sychpe32`**.
+
+**`crc32("sychpe32") == 0x79dbe71d`.** It is not a random string: on ARM64
+Windows, `C:\Windows\SyChpe32` is the CHPE system directory, the architectural
+sibling of `SysWOW64`. And the substring model explains why its partner is the
+odd-looking bare `"wow64"` rather than `wow64.dll` — lowercased, `c:\windows\
+syswow64` contains `wow64` at offset 14, and `c:\windows\sychpe32` contains
+`sychpe32` at offset 11. Two substring probes of the same path.
+
+| | | |
+|---|---|---|
+| `0x5c4ee455` | `'w'`, 5 | `"wow64"` — matches inside `syswow64` |
+| `0x79dbe71d` | `'s'`, 8 | `"sychpe32"` — the CHPE directory |
+
+**So this pair is not anti-analysis at all. It is an architecture probe** — *am I
+x86-on-x64, or x86-on-ARM64?* — and `mov dword ptr [edi+0x728], 1` on the hit is
+setting an architecture flag in the context. That is a real and necessary
+question for this sample, because it does direct syscalls and process hollowing,
+and the syscall gate differs between WOW64 and CHPE. It also means **the loader
+is ARM64-aware**, which is worth knowing about a Formbook-family build.
+
+**The standing lesson, third time in two days.** `"wow64"` was recorded here as
+"a bare stem — re-run the sweeps with stems", and that was a wrong generalisation
+from a correct observation: it is not a stem, it is a substring, and the sweeps
+re-run with stems accordingly found nothing. Every one of these was cracked by
+reading what the code does with the value, and none by a larger wordlist. The
+call site had the length and the first character sitting in it as immediates the
+whole time.
 
 ### Pick up here — 12 Aug
 
@@ -983,11 +1041,15 @@ except where it says so.
    us and stage 4 — the poll loop is. Whatever it waits seven times for is most
    likely named among the seven blocklist hashes, which is why they still
    matter even though the sweep did not crack them.
-   **The `sbiedll.dll` result suggests where to point the next attempt**: the
-   population that worked was "things other software injects or installs", not
-   "files on a Windows box". For process names the equivalent population is the
-   published anti-analysis lists of the era, not this host's process table. All
-   eight remaining names are ≥ 8 characters, which rules out the short ones.
+   **Do the call sites first, not another wordlist.** Both hashes cracked in
+   two days were cracked by reading what consumes the value, and neither by a
+   larger corpus. For the seven blocklist hashes that means finding their
+   comparison site and checking whether it too carries a length and a first
+   character as immediates — if it does, each becomes a targeted search of
+   `39^(n-1)` instead of an open-ended one, which is how `"sychpe32"` fell.
+   `scripts/hash_call_sites.py` groups the sites; the blocklist constants come
+   from the process-name loop, not the 45 decoder sites, so they want locating
+   first.
 3. **The crash's remaining contradiction** wants guest-side instrumentation:
    log `0x2dc01`'s argument and return during a live run. Needs a detonation,
    and it is now a **one-bit question** — did the lookup for `0xe11da208`

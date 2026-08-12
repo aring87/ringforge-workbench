@@ -76,7 +76,8 @@ for _low, _i in _INV_LOW.items():
 
 # Measured elsewhere in this project and recorded in docs/HANDOFF.md.
 KNOWN = {
-    "wow64": 0x5C4EE455,          # the bare stem -- the reason this file exists
+    "wow64": 0x5C4EE455,          # not a stem after all -- a 5-char substring
+    "sychpe32": 0x79DBE71D,       # its 8-char sibling; both are arch directories
     "regsvcs.exe": 0xE2E77DAF,
     "ntdll.dll": 0x0B4E1AE2,
     "wow64.dll": 0x80515AD9,
@@ -103,7 +104,6 @@ def self_test() -> None:
 
 TARGETS = {
     0xE11DA208: "module lookup -- the gate on the crash branch",
-    0x79DBE71D: "module lookup -- never matched",
     0x0263178B: "blocklist process name 1 of 7",
     0x0CC39FEF: "blocklist process name 2 of 7",
     0x57585356: "blocklist process name 3 of 7",
