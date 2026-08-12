@@ -1027,6 +1027,48 @@ reading what the code does with the value, and none by a larger wordlist. The
 call site had the length and the first character sitting in it as immediates the
 whole time.
 
+### The blocklist seven: the call-site trick does not transfer — 12 Aug
+
+**They are not cracked.** The move that cracked `sbiedll.dll` and `sychpe32` was
+to stop guessing populations and read the consuming code. Applied here it fails,
+and it fails for a locatable reason: **there is nothing to read.** Four routes,
+all measured, all negative:
+
+| route | result |
+|---|---|
+| the 20 constants as dwords in the cold unpacked blob | absent |
+| as dwords in **any of 31 mapped regions**, sampled from 348M to 618M blocks — straight through the enumeration, including the 131 MB code region | absent |
+| among the 45 `0x2004181` decoder sites, rescanned against the **late** image in case more code had decrypted (still exactly 45) | none decodes to a blocklist constant |
+| the *names* as ascii or utf-16 strings in memory, same checkpoints | absent — every apparent hit was `perl` inside `properly` in ntdll's message table |
+
+So the constants are neither stored, nor compare-immediates, nor decoder output,
+nor derived from plaintext the sample holds. They are produced by some runtime
+computation that has not been located, and locating it is the actual task —
+**not another wordlist.** Note the shape of that last negative: it is the same
+class of claim as `collection_available` in gap 4b. *Could not find where they
+come from* is not *they are not there*.
+
+**Two mechanics worth keeping**, both of which cost time to rediscover:
+
+- **`after_scan.state` will not resume without `emu.repair_wow64_crash()`.**
+  Without it, `resume()` returns `Invalid memory fetch at eip 0x0` immediately
+  and the block count does not advance — which reads like a crash and is really
+  an unrepaired capture point. `main()` calls it; anything hand-rolled must too.
+- The allocation at 0x2001000 carries **the same 45 decoder sites at 47M blocks
+  and at 427M**, so the "more code decrypts later" theory is dead for this
+  region and a warmup-time scan is not missing sites.
+
+**One real constraint did come out of it: every one of the seven has a stem of
+at least eight characters.** The exhaustive tier covers stems of ≤ 7 with a
+`.exe` suffix, and that is not an assumption — run against the known names it
+recovers `perl.exe` (1 candidate), `netmon.exe` (3), `vmusrvc.exe` (24) and
+`procmon.exe` (37), and only fails on `wireshark.exe` because its 9-character
+stem is past the bound. The method demonstrably works on this exact shape, so
+its silence on the seven is evidence about their length rather than about the
+method. That puts them with `wireshark`, `vmwareservice` and
+`sandboxiedcomlaunch` — the long, multi-word end of the list — which is also
+where a 297-token composition search over 7.8 billion candidates found nothing.
+
 ### Pick up here — 12 Aug
 
 Ordered by value, with what each needs. Nothing below is blocked on a detonation
@@ -1041,15 +1083,16 @@ except where it says so.
    us and stage 4 — the poll loop is. Whatever it waits seven times for is most
    likely named among the seven blocklist hashes, which is why they still
    matter even though the sweep did not crack them.
-   **Do the call sites first, not another wordlist.** Both hashes cracked in
-   two days were cracked by reading what consumes the value, and neither by a
-   larger corpus. For the seven blocklist hashes that means finding their
-   comparison site and checking whether it too carries a length and a first
-   character as immediates — if it does, each becomes a targeted search of
-   `39^(n-1)` instead of an open-ended one, which is how `"sychpe32"` fell.
-   `scripts/hash_call_sites.py` groups the sites; the blocklist constants come
-   from the process-name loop, not the 45 decoder sites, so they want locating
-   first.
+   **Finding where the constants come from is the whole job**, and four routes
+   are now closed — see *The blocklist seven*. What is left is runtime
+   instrumentation rather than static search: resume `after_scan.state` (with
+   `repair_wow64_crash()`), let it reach the enumeration at ~396M blocks, and
+   hook narrowly enough to catch the comparison — the harness knows the exact
+   moment it serves `SystemProcessInformation`, so a fine-grained `UC_HOOK_CODE`
+   can be switched on only for the window after that call instead of running
+   over 250M blocks. Catch the compare and you get the constants *and* whatever
+   immediates sit beside them. Every one of the seven has a stem of ≥ 8
+   characters, so brute force alone will not finish this.
 3. **The crash's remaining contradiction** wants guest-side instrumentation:
    log `0x2dc01`'s argument and return during a live run. Needs a detonation,
    and it is now a **one-bit question** — did the lookup for `0xe11da208`
