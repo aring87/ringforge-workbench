@@ -151,18 +151,28 @@ EXTRA_MODULES = (
     "urlmon.dll", "psapi.dll", "version.dll", "userenv.dll", "netapi32.dll",
     "wow64.dll", "wow64base.dll", "wow64con.dll", "wow64cpu.dll", "wow64win.dll",
 )
-#: A module added *only* to make a specific hash lookup succeed. Off by default.
+#: The module behind the gating lookup. Off by default.
 #:
-#: **This is not a real module name and must never be read as one.** Stage 3
-#: looks up modules by CRC-32 of the lowercased `BaseDllName`, and one lookup --
-#: `0xe11da208` -- decides whether it stores a poisoned pointer that kills it a
-#: few frames later. The real name behind that hash is unknown; no dictionary
-#: has matched it. `aqtd9dq.dll` is a *forged preimage*, solved for over GF(2),
-#: whose only property is that it hashes to the wanted value.
+#: `crc32("sbiedll.dll") == 0xe11da208`, cracked by `scripts/crack_name_hashes.py`
+#: -- **Sandboxie's injected DLL**, the most commonly checked sandbox artifact
+#: there is, and the same product whose `sandboxiedcomlaunch` and
+#: `sandboxierpcss` processes are already on this sample's CRC-32 blocklist. So
+#: the branch that stores `0x32dfd514` and kills the process a few frames later
+#: is a **Sandboxie check**, not an unknown one.
 #:
-#: It exists to answer one causal question -- does taking that branch produce
-#: the crash the guest suffers? -- without needing to know what the sample is
-#: actually looking for. Set `RINGFORGE_FORGE_MODULE=1` to include it.
+#: This supersedes `aqtd9dq.dll`, a preimage solved for over GF(2) whose only
+#: property was hashing to the wanted value. That forgery answered the causal
+#: question -- does taking the branch cause the crash? -- when the name was
+#: unknown; it is kept below only so an older state or log naming it still
+#: makes sense. Prefer the real name: with it, everything the sample does past
+#: the gate is an *observation of its anti-Sandboxie path* rather than the
+#: behaviour of a machine that cannot exist.
+#:
+#: Set `RINGFORGE_FORGE_MODULE=1` to include it. Note what enabling it means
+#: now: the emulated victim is claiming to be running under Sandboxie.
+SANDBOXIE_MODULE = "sbiedll.dll"
+
+#: Retained for provenance only -- see above. Not used unless asked for by name.
 FORGED_HASH_MODULE = "aqtd9dq.dll"
 
 EXTRA_BASE = 0x70000000
@@ -612,10 +622,11 @@ def setup(mu, image_base, image_size):
 
     extra = EXTRA_MODULES
     if os.environ.get("RINGFORGE_FORGE_MODULE") == "1":
-        extra = extra + (FORGED_HASH_MODULE,)
-        print(f"win32_emu_env: loader list includes the FORGED module "
-              f"{FORGED_HASH_MODULE!r} -- a solved CRC preimage, not a real "
-              f"name. Anything downstream is a causal test, not an observation.")
+        extra = extra + (SANDBOXIE_MODULE,)
+        print(f"win32_emu_env: loader list includes {SANDBOXIE_MODULE!r} "
+              f"(crc32 {0xe11da208:#010x}) -- Sandboxie's injected DLL. The "
+              f"emulated victim is claiming to run under Sandboxie, which is "
+              f"what makes stage 3 take its detection branch.")
     mods = [(image_base, image_size, IMAGE_NAME),
             (NTDLL_BASE, sizes[NTDLL_BASE], "ntdll.dll"),
             (KERNEL32_BASE, sizes[KERNEL32_BASE], "KERNEL32.DLL")]

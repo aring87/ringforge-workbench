@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-10. **The crash that has ended nine detonations is now located exactly, and its *cause* is still open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-12. **The module that gates the crash is named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -742,8 +742,11 @@ layout produced garbage — a count of 7.6 quintillion, then the process id.**
 Loud failures, and the right point to stop guessing at structure layouts and
 find a parser that is known good.
 
-**The chain is proven by forging the lookup, 10 Aug.** The real name behind
-`0xe11da208` is unknown and no dictionary has matched it — but the name is not
+**The chain is proven by forging the lookup, 10 Aug.** *(The name was recovered
+two days later — it is `sbiedll.dll`, and `RINGFORGE_FORGE_MODULE=1` now adds
+that instead. The forgery below is what the causal test rested on at the time,
+and it still stands on its own.)* The real name behind
+`0xe11da208` was then unknown and no dictionary had matched it — but the name is not
 needed to test causality, only the *hash*. CRC-32 is affine, so four bytes were
 solved for over GF(2): **`aqtd9dq.dll`** hashes to `0xe11da208` and has no other
 property. Added to the loader list behind `RINGFORGE_FORGE_MODULE=1`, which
@@ -821,23 +824,124 @@ not a conclusion — this section has four of those already.
 returns during a live run. Everything answerable from the artifacts here has
 been answered.
 
-### Pick up here — 10 Aug
+### `0xe11da208` is `sbiedll.dll` — the gate is a Sandboxie check, 12 Aug
+
+`crc32("sbiedll.dll") == 0xe11da208`. That is **Sandboxie's injected DLL**, the
+most commonly checked sandbox artifact there is, and it is the value gating the
+branch at `0x16054` that stores `0x32dfd514` and kills the process.
+
+**So the crash is anti-analysis, and the reading changes from "plausible
+crash-on-detection" to "a named product check".** The conditionality was already
+established by the forged preimage; what was missing was *what it is looking
+for*. A sample that poisons a pointer when it finds Sandboxie loaded is doing
+exactly what the process blocklist three sections up is doing — and that
+blocklist already contains **`sandboxiedcomlaunch.exe` and
+`sandboxierpcss.exe`**. The same product, checked twice by two different
+mechanisms, in two layers written independently of each other. That
+corroboration is most of why this is worth believing.
+
+**State the weakness too.** A 32-bit hash has preimages everywhere, so an exact
+match is not by itself proof — `aqtd9dq.dll` matches equally well. The case
+rests on the match *plus* the name being a real and famous artifact *plus* the
+sample's existing Sandboxie entries. It is strong circumstantial identification,
+not the algebraic certainty the GF(2) solve had.
+
+**Verified in the emulator with the real name**, replacing the forgery:
+
+    win32_emu_env: loader list includes 'sbiedll.dll' (crc32 0xe11da208)
+    stopped: Invalid memory read (UC_ERR_READ_UNMAPPED) at eip 0x2003c53
+    basic blocks: 17,347,692
+    first fault: access 19 addr 0x32dfd514 eip 0x2003c53
+
+Same fault, same address, same rva as the forged run at 17,304,968 blocks — the
+small block delta is just the different name length being walked and hashed.
+`RINGFORGE_FORGE_MODULE=1` now adds `sbiedll.dll` rather than `aqtd9dq.dll`, so
+what happens past the gate is an **observation of the sample's anti-Sandboxie
+path** instead of the behaviour of a machine that cannot exist.
+
+**The contradiction does not resolve. It sharpens.** Neither guest inventory
+contains anything matching `sbie` or `sandbox` — not the 931-name
+`docs/guestloaded.txt`, not the 2,471-name host list. The guest was not running
+Sandboxie, the lookup should have returned 0 exactly as it does under emulation,
+and the guest stored the constant anyway. Naming the module removes the
+possibility that this was some obscure module nobody thought to check; it makes
+the remaining candidates from *Why it crashes* the whole field. **The guest-side
+measurement — log `0x2dc01`'s argument and return during a live run — is now the
+only thing that will settle it**, and it is worth more than it was this morning,
+because we now know which single answer to look for.
+
+**The bare-stem re-sweep itself found nothing, and that is the honest headline.**
+Every corpus name is now expanded into full, one-extension-stripped and
+all-extensions-stripped forms — 13,878 distinct candidates against 931 + 2,471
+guest names, four host system directories and a tool list. Not one of the nine
+open hashes fell to stems. `"wow64"` was a real lesson about sweep *inputs* and
+it did not generalise. **What actually cracked `0xe11da208` was a missing corpus
+*class*, not a missing spelling**: no quantity of System32 filenames, export
+tables or tool process names contains `sbiedll.dll`, because it is a DLL that
+*other* software injects. A PEB walk looking up modules by hash is looking for
+injected modules, and the corpus had never contained any. Sweeping harder was
+never going to do it; sweeping the right population did it immediately.
+
+**`scripts/crack_name_hashes.py`** is the tool, and it is self-tested three ways
+because a cracker checked only by whether it finds something will always find
+something: 11 known name/hash pairs including `"wow64"` itself, the exhaustive
+search made to rediscover `"wow64"` and `kernel32.dll`, and the composition
+search made to rebuild `vmwareservice.exe`, `procmon.exe` and
+`sandboxierpcss.exe` from morphemes. **Two of those self-tests failed first
+time**, both the same bug — base-39 index digits reassembled in the wrong
+direction — and the second one had been hiding behind the final `crc(cand) ==
+target` guard as a *silent miss* rather than a wrong answer. The composition
+search returned zero hits for every target when ~1.8 were expected by chance,
+and it was that implausible cleanliness, not any failing assertion, that exposed
+it. **A negative result at a rate far below its own noise floor is a bug
+report.**
+
+**The remaining eight now have a bound rather than a shrug.** Three searches, in
+increasing generality:
+
+| | |
+|---|---|
+| dictionary | 13,878 names, every stem and suffix form |
+| exhaustive | **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or plus `.exe`/`.dll`/`.sys` |
+| composition | up to 4 tokens from a 297-token vocabulary — 7.8 billion candidates — nothing but noise |
+
+The exhaustive tier is the one worth quoting, and it is cheap because CRC-32 is
+affine and its byte step invertible: meeting in the middle costs `39^ceil(L/2)`
+rather than `39^L`, so the whole space to seven characters is seconds. Past
+`L=6` the search stops being an answer — `39^L` against a 32-bit space passes
+one expected accidental preimage there and reaches ~1,250 by `L=8` — so the tool
+prints the expected collision count beside every hit and will not present
+long-length noise as a finding. **`0x79dbe71d` and the seven blocklist names are
+therefore each at least eight characters, or use a character outside that
+alphabet.** That is a real constraint on the next attempt, and it is the first
+time this document can say what those names are *not*.
+
+### Pick up here — 12 Aug
 
 Ordered by value, with what each needs. Nothing below is blocked on a detonation
 except where it says so.
 
-1. **Re-run every hash sweep with bare stems.** `0x5c4ee455` was `"wow64"`, not
-   `wow64.dll`, and every earlier brute force in this document used filenames
-   with extensions. That blind spot covers `0xe11da208`, `0x79dbe71d` and the
-   **seven uncracked process-name hashes** from the anti-analysis blocklist.
-   Offline, minutes, and it is the cheapest thing on this list by a distance.
+1. **DONE — the hash sweep, re-run with bare stems.** It cracked
+   `0xe11da208` = `sbiedll.dll`, though not by the route expected: stems found
+   nothing and the missing *corpus class* found it. Eight hashes remain, now
+   with a stated bound. See the section above.
 2. **Stage 4, which is still the actual goal.** The emulator reaches a clean
    `ExitProcess` *without* crashing, so the crash was never what stood between
    us and stage 4 — the poll loop is. Whatever it waits seven times for is most
-   likely named among those seven hashes, which is the second reason item 1
-   comes first.
+   likely named among the seven blocklist hashes, which is why they still
+   matter even though the sweep did not crack them.
+   **The `sbiedll.dll` result suggests where to point the next attempt**: the
+   population that worked was "things other software injects or installs", not
+   "files on a Windows box". For process names the equivalent population is the
+   published anti-analysis lists of the era, not this host's process table. All
+   eight remaining names are ≥ 8 characters, which rules out the short ones.
 3. **The crash's remaining contradiction** wants guest-side instrumentation:
-   log `0x2dc01`'s argument and return during a live run. Needs a detonation.
+   log `0x2dc01`'s argument and return during a live run. Needs a detonation,
+   and it is now a **one-bit question** — did the lookup for `0xe11da208`
+   return non-zero on a guest with no Sandboxie installed? Everything else
+   about the crash is settled.
+   Worth pairing with a check nobody has made: whether anything on the guest
+   maps a module named `sbiedll.dll` for reasons unrelated to Sandboxie.
 4. **Three detectors that need no new collection.** The WER `app_timestamp`
    against the on-disk binary's — Windows recorded stage 3's `5ff2b99b` for
    `RegSvcs.exe`, so a mismatch is a hollowing signal from the event log alone,
@@ -888,9 +992,29 @@ Addresses worth having, all RVAs into stage 3's relocated copy — add
 | `0x160a1/ab/b5/bf` | the four marker searches |
 | `0x03181` | the XOR string/hash decoder (`push imm ; push key ; call`). Elsewhere in this document it appears as `0x2004181`, which is the same thing at the emulator's base — every other row here is an RVA, so mixing the two would send the next reader 32 MB off |
 
-`RINGFORGE_FORGE_MODULE=1` adds `aqtd9dq.dll`, a solved CRC preimage for
-`0xe11da208`, to the loader list and prints a warning saying so. It is a causal
-test, not a name. Off by default.
+`RINGFORGE_FORGE_MODULE=1` adds **`sbiedll.dll`** — the real name behind
+`0xe11da208`, Sandboxie's injected DLL — to the loader list and prints a line
+saying so. Off by default; switching it on means *the emulated victim is
+claiming to run under Sandboxie*, which is what makes stage 3 take its
+detection branch and die. It supersedes `aqtd9dq.dll`, the GF(2) preimage used
+while the name was unknown, which is kept in `win32_emu_env.py` only so older
+logs naming it still parse.
+
+`scripts/crack_name_hashes.py` cracks these hashes: dictionary sweep, then an
+exhaustive meet-in-the-middle to a length bound, then a token-composition
+search. It needs nothing but `numpy` and runs in about a minute.
+
+    ..\.venv\Scripts\python.exe crack_name_hashes.py            # all three tiers
+    ..\.venv\Scripts\python.exe crack_name_hashes.py --dict-only
+    ..\.venv\Scripts\python.exe crack_name_hashes.py --hash 0x79dbe71d
+
+**`--blocks` on the emulator is an instruction budget, not a basic-block
+count**, and the two differ by about 4x. `--blocks 20000000` stops at 4.7M
+blocks and reports `returned or budget reached`, which reads exactly like a
+clean exit and is not one. Every block figure in this document — 17.3M for the
+gated fault, 629M for the real clean exit — wants roughly four times that many
+instructions. Use `--blocks 300000000` to reach the fault, `4000000000` for a
+full run.
 
 Other pieces: `python -m dynamic_analysis.module_integrity <case>\memory`
 re-runs the hollowing check over dumps already on disk, no detonation needed.
@@ -2199,6 +2323,15 @@ credential-store and LOLBin names across both encodings found none of them, so t
 blocker is a name this bench cannot guess. Reading `0x2017038`'s own caller for the
 context it expects is the next move, not more guessing — the standing lesson about
 brute force and method bodies, one layer up again.
+
+> **Two of those three are now cracked, and neither by a bigger wordlist.**
+> `0x5c4ee455` is `"wow64"`, a bare stem, from the guest's own inventory;
+> `0xe11da208` is `sbiedll.dll`, Sandboxie's injected DLL, from adding a corpus
+> class this bench had never swept — modules that *other software injects*.
+> Note what the paragraph above got right and wrong: "a name this bench cannot
+> guess" was correct, and "sweep more names of the kinds already tried" was the
+> wrong conclusion drawn from it. Only `0x79dbe71d` is still open. See
+> *`0xe11da208` is `sbiedll.dll`*.
 
 **The hang is fixed, and it was a bug in the harness — a precise, instructive one.**
 Sampling the whole frame chain forty times gave **one** chain every time, so the loop
