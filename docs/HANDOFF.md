@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-12. **Both open name hashes are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
+**Last updated:** 2026-08-12. **The blocklist mechanism is fully mapped, and mapping it retracted a conclusion published in this file hours earlier.** All 20 process-name constants *are* XOR-decoder output, from 20 contiguous call sites at `0x02016619`–`0x0201691a` feeding the compare at `0x2026181` — the earlier "they are not decoder output, four routes closed" was two compounding tool bugs: a linear capstone sweep that silently drops sites where it desynchronises, run against the *warmup* image when the allocation keeps decrypting (45 sites at 47M blocks, **65 by 380M**, with all 20 constants among the late ones). Both fixed; `hash_call_sites.py --late` reports 20 of 20. The seven names are **still uncracked**, but the site order preserves the author's list and groups them: two sit between the VMware pair and Sandboxie, five among `procmon`/`filemon`/`wireshark`/`netmon`. There is no substring structure to exploit here — the compare is against the whole-name hash — and none of the seven is a purely alphabetic 8-character stem. **Both open name hashes elsewhere are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
 addresses saw nothing — the run went quiet at 87 API calls and then jumped to address
@@ -1027,12 +1027,77 @@ reading what the code does with the value, and none by a larger wordlist. The
 call site had the length and the first character sitting in it as immediates the
 whole time.
 
-### The blocklist seven: the call-site trick does not transfer — 12 Aug
+### The blocklist mechanism, fully mapped — and the section below retracted, 12 Aug
+
+**The seven names are still not cracked. Everything else about them now is.**
+All 20 constants **are** decoder output, from a contiguous run of 20
+`0x2004181` call sites at `0x02016619`–`0x0201691a`, each feeding the compare at
+`0x2026181`. The section below says the opposite, and it is **wrong** — two
+compounding mistakes in my own tooling, both worth knowing because either one
+alone silently produces a confident negative:
+
+- **`hash_call_sites.py` walked a linear capstone disassembly.** Linear sweeps
+  desynchronise on data embedded in the code stream, and the sites they skip
+  are invisible rather than flagged. It is now matched on the instruction
+  *encoding* — `E8 rel32` targeting the decoder, preceded by `68 imm32`,
+  preceded by `6A imm8` or `68 imm32` — which cannot desynchronise.
+- **The allocation keeps decrypting, and I scanned it cold.** 45 sites at ~47M
+  blocks, **65 by ~380M**. All 20 blocklist constants are among the 20 that only
+  exist late. The claim below that it is "still exactly 45 sites at 427M as at
+  47M" was produced by the broken scanner agreeing with itself.
+
+`hash_call_sites.py --late` now resumes `after_scan.state` and scans there;
+it reports 20 of 20.
+
+**The order is preserved, and it groups the unknowns.** Reading the sites by
+address gives the list as the author wrote it:
+
+| | |
+|---|---|
+| `vmwareuser`, `vmwareservice` | |
+| **`0xd0c58467`, `0xa8d123c8`** | two unknowns *between the VMware pair and Sandboxie* |
+| `sandboxiedcomlaunch`, `sandboxierpcss` | |
+| `procmon`, `filemon`, `wireshark`, `netmon` | |
+| **`0xc72ce2d5`, `0x0263178b`, `0x57585356`, `0x9cb95240`, `0x0cc39fef`** | five unknowns *among the analysis tools* |
+| `vmsrvc`, `vmusrvc`, `python`, `perl`, `regmon` | |
+
+That is a real constraint on what to guess: two are almost certainly
+virtualisation processes, five almost certainly analysis tools.
+
+**No substring structure to exploit here.** Unlike the `0x202fe41` pair, the
+compare is `cmp eax, dword ptr [ebp + 8]` against the hash of the *whole*
+lowercased image name, reached by a two-argument call — no length and no first
+character as immediates. So the `sychpe32` route genuinely does not transfer;
+these have to be cracked.
+
+**Brute force, with the constraint applied.** Every one of the seven has a stem
+of ≥ 8 characters (verified: the ≤7 tier recovers `perl.exe`, `netmon.exe`,
+`vmusrvc.exe`, `procmon.exe` and misses only `wireshark.exe` at 9). Restricting
+the alphabet to `[a-z]` drops the noise floor to ~49 per target at stem length
+8 — and all seven produced only noise there, so **no unknown is a purely
+alphabetic 8-character stem.** At 9 and 10 the counts are 1,277 and 32,806, and
+filtering for candidates containing two real tokens leaves nothing coherent.
+They are long, and they likely contain a digit, underscore or hyphen.
+
+**The mechanics that cost the most time**, both now fixed in the tools:
+`after_scan.state` will not resume without `emu.repair_wow64_crash()` — without
+it `resume()` returns `Invalid memory fetch at eip 0x0` and the block count
+never advances, which reads exactly like a crash. And
+`scripts/trace_blocklist.py` is how the compare was found at all: it arms on
+`winenv.system_process_information` (safe to `emu_stop()` from inside — Unicorn
+finishes the callback, so the buffer is still written), then runs a
+per-instruction hook only in that window instead of over the 48M blocks before
+it.
+
+---
+
+#### Superseded: "the call-site trick does not transfer" — retracted above
 
 **They are not cracked.** The move that cracked `sbiedll.dll` and `sychpe32` was
 to stop guessing populations and read the consuming code. Applied here it fails,
 and it fails for a locatable reason: **there is nothing to read.** Four routes,
-all measured, all negative:
+all measured, all negative — *and the third and fourth rows are the wrong ones;
+see the retraction above*:
 
 | route | result |
 |---|---|
@@ -1083,16 +1148,17 @@ except where it says so.
    us and stage 4 — the poll loop is. Whatever it waits seven times for is most
    likely named among the seven blocklist hashes, which is why they still
    matter even though the sweep did not crack them.
-   **Finding where the constants come from is the whole job**, and four routes
-   are now closed — see *The blocklist seven*. What is left is runtime
-   instrumentation rather than static search: resume `after_scan.state` (with
-   `repair_wow64_crash()`), let it reach the enumeration at ~396M blocks, and
-   hook narrowly enough to catch the comparison — the harness knows the exact
-   moment it serves `SystemProcessInformation`, so a fine-grained `UC_HOOK_CODE`
-   can be switched on only for the window after that call instead of running
-   over 250M blocks. Catch the compare and you get the constants *and* whatever
-   immediates sit beside them. Every one of the seven has a stem of ≥ 8
-   characters, so brute force alone will not finish this.
+   **The mechanism is now fully mapped and there is no structure left to
+   exploit** — see *The blocklist mechanism, fully mapped*. The compare is over
+   the whole-name hash, so unlike `sychpe32` there is no length or first
+   character to harvest. What is left is a better guess, and the site order
+   narrows it: `0xd0c58467` and `0xa8d123c8` sit between the VMware pair and
+   Sandboxie, so try virtualisation processes; the other five sit among
+   `procmon`/`filemon`/`wireshark`/`netmon`, so try analysis tools. All seven
+   have stems of ≥ 8 characters and **none is purely alphabetic at 8**, so
+   expect a digit, underscore or hyphen, or a longer name. Candidates already
+   eliminated are in `TOOL_NAMES` and `INJECTED_DLLS` in
+   `scripts/crack_name_hashes.py` — check there before retrying one.
 3. **The crash's remaining contradiction** wants guest-side instrumentation:
    log `0x2dc01`'s argument and return during a live run. Needs a detonation,
    and it is now a **one-bit question** — did the lookup for `0xe11da208`
@@ -1168,10 +1234,18 @@ search. It needs nothing but `numpy` and runs in about a minute.
     ..\.venv\Scripts\python.exe crack_name_hashes.py --hash 0x79dbe71d
 
 `scripts/hash_call_sites.py` answers the question that should come *before*
-picking a wordlist: it decodes all 45 name hashes and groups them by the
-function that consumes each one, which is what says whether a hash is an export
-name, a module name, or something else. It warms the emulator, so allow a couple
-of minutes.
+picking a wordlist: it decodes every name hash and groups them by the function
+that consumes each one, which is what says whether a hash is an export name, a
+module name, or something else. **Use `--late`** — the allocation keeps
+decrypting and the warmup image holds only 45 of the 65 sites, missing all 20
+blocklist constants.
+
+`scripts/trace_blocklist.py` catches the process-name comparison live. It arms
+on `winenv.system_process_information` and only then installs a per-instruction
+hook, which is what makes it finish: hooking from `after_scan.state` onward
+would mean 48M blocks of Python callbacks. `--forward N` traces N instructions
+out of the crc32 epilogue with register values, which is how the compare at
+`0x2026181` was found.
 
 **`--blocks` on the emulator is an instruction budget, not a basic-block
 count**, and the two differ by about 4x. `--blocks 20000000` stops at 4.7M
