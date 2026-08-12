@@ -916,6 +916,59 @@ therefore each at least eight characters, or use a character outside that
 alphabet.** That is a real constraint on the next attempt, and it is the first
 time this document can say what those names are *not*.
 
+### `0x79dbe71d` resisted a 230k-name corpus, and got characterised instead — 12 Aug
+
+**It did not crack.** The injected-DLL class that produced `sbiedll.dll` was
+widened to 235 entries across AV/EDR user-mode hooking, sandbox, VM guest
+additions and instrumentation, a non-filename artifact list was added (window
+classes, `\\.\` device paths, mutants), and — the big one — **every export of
+every DLL in `System32` and `SysWOW64` was swept: 216,454 names off 7,063
+files**, against the 12 DLLs `decode_name_hashes.py` originally used. Corpus
+230,756 names. Nothing. A mixed-case exhaustive tier was added on the reasoning
+that the ≤7-character lowercase bound says nothing about a name never
+lowercased; it returned **exactly its own noise floor** (~17 hits per suffix
+against 17.6 expected), which is the search working, not the search finding.
+
+**What did move is knowing what kind of name it is, and that came from the
+sample rather than from a wordlist.** `scripts/hash_call_sites.py` groups all 45
+decoder sites by the function that consumes the decoded hash — one short forward
+walk, since every site is `push key ; push obf ; call 0x2004181 ; push eax ;
+call <consumer>`:
+
+| consumer | sites | |
+|---|---|---|
+| `0x202a311` | 38 | the API resolver — these are the export names |
+| `0x2026201` | 4 | |
+| **`0x202fe41`** | **2** | **`0x79dbe71d` and `0x5c4ee455` — and nothing else** |
+| `0x2026181` | 1 | |
+
+`0x5c4ee455` is `"wow64"`, the bare stem. **Its only co-tenant is
+`0x79dbe71d`**, which constrains the name far harder than any dictionary: it is
+whatever kind of thing `"wow64"` is, checked by the same two-site pair.
+
+**`0x202fe41` read out.** It takes `(hash, b, c, wide_name)`, returns 0
+immediately if `wide_name` is null, then `movzx edx, word ptr [esi]` and a loop
+copying **the low byte of each UTF-16 unit** into a `0x104` stack buffer —
+narrowing a wide string to ascii — before calling `0x202fd51(hash, b, c,
+ascii_name)`. Three things follow, and the third is the one to act on:
+
+- The input is **UTF-16**, so it is a Windows name of some kind — a
+  `BaseDllName`, a directory entry, or a `SystemProcessInformation` image name
+  are all wide strings and all fit.
+- It is compared as a **bare stem**: `"wow64"` hashes to `0x5c4ee455` while
+  `wow64.dll` hashes to `0x80515ad9`, so either the caller strips the extension
+  or `0x202fd51` does.
+- **The narrowing does no case folding.** `get_module_base_by_hash` explicitly
+  lowercases; this path demonstrably does not, and whether `0x202fd51` does is
+  unread. So a **mixed-case** preimage is live, and the mixed-case tier only
+  reached 6 characters. That is the cheapest remaining shot and it is not taken.
+
+**Where this leaves it.** Not in a 230,756-name dictionary; no lowercase
+preimage of ≤ 7 characters over `[a-z0-9._-]`; no mixed-case preimage of ≤ 6
+over `[a-zA-Z0-9._-]`; nothing from 7.8 billion token compositions. The
+next attempt should read `0x202fd51` for the case question and push the
+mixed-case tier to 7–8 with a plausibility filter, **not** try a fifth wordlist.
+
 ### Pick up here — 12 Aug
 
 Ordered by value, with what each needs. Nothing below is blocked on a detonation
@@ -1004,9 +1057,16 @@ logs naming it still parse.
 exhaustive meet-in-the-middle to a length bound, then a token-composition
 search. It needs nothing but `numpy` and runs in about a minute.
 
-    ..\.venv\Scripts\python.exe crack_name_hashes.py            # all three tiers
+    ..\.venv\Scripts\python.exe crack_name_hashes.py            # all four tiers
     ..\.venv\Scripts\python.exe crack_name_hashes.py --dict-only
+    ..\.venv\Scripts\python.exe crack_name_hashes.py --exports   # +216k export names, ~2 min
     ..\.venv\Scripts\python.exe crack_name_hashes.py --hash 0x79dbe71d
+
+`scripts/hash_call_sites.py` answers the question that should come *before*
+picking a wordlist: it decodes all 45 name hashes and groups them by the
+function that consumes each one, which is what says whether a hash is an export
+name, a module name, or something else. It warms the emulator, so allow a couple
+of minutes.
 
 **`--blocks` on the emulator is an instruction budget, not a basic-block
 count**, and the two differ by about 4x. `--blocks 20000000` stops at 4.7M

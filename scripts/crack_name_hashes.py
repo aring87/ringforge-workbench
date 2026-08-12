@@ -180,6 +180,58 @@ a2hooks32.dll kloehk.dll klsihk.dll mchinjdrv.dll
 tmmon.dll tmumh.dll pavshld.dll wrusr.dll mbae.dll mbamext.dll
 sophos_detoured.dll sophos_detoured_x64.dll
 speedhack-i386.dll wined3d.dll winex11.drv
+hmpalert.dll hmpalert.sys hmpsched.exe
+avcuf32.dll avcuf64.dll bdsnmp.dll gzflt.sys trufos.sys bdselfpr.sys
+ashldres.dll aswsp.sys aswmonflt.sys aswsnx.sys aswrdr2.sys
+avghookx64.dll avgtpx86.sys avgtpx64.sys
+a2hooks64.dll a2acc.dll a2util32.dll
+eamsi.dll eguiproxy.dll ekrnepfw.sys epfwwfp.sys ehdrv.sys eamonm.sys
+kl1.sys klif.sys klflt.sys klwtblfs.sys klhk.sys klupd.dll
+mfehcthe.dll mfehidk.sys hipi.dll hipsdll.dll mvbcf.dll epehshim.dll
+mfeavfk.sys mfewfpk.sys mfencbdc.sys
+tmactmon.sys tmevtmgr.sys tmmon64.dll tmcomm.sys tmtdi.sys
+fshook32.dll fshook64.dll fsdfw.sys fsatp.sys fsgk.sys
+symamsi.dll symefasi.sys symevnt.sys srtsp.sys ccsetx86.dll
+wrdll.dll wrcore.dll wrpdlla.dll wrkrn.sys
+mbae64.dll mbae-api.dll mbae-api-na.dll mbamswissarmy.sys mwac.sys
+panda_url_filtering.dll pavdrv.sys pavproc.sys
+360base.dll safemon.dll sysdiag.sys 360avflt.sys qutmdrv.sys
+csagent.sys umppc.dll cbstream.sys cbk7.sys carbonblackk.sys
+inprocessclient.dll inprocessclient64.dll sentinelmonitor.sys
+cyvrfsfd.sys cyverak.sys cyvrmtgn.sys tlaworker.dll cyoptics.sys
+cylancememdef.dll cymemdef.dll cymemdef64.dll
+rapportgp.dll rapportcerberus.dll dgapi.dll dgagent.dll
+sysferthunk64.dll cmdguard.sys cmdhlp.sys
+bsa.dll iprtprocess.dll netredirect.dll
+vboxoglcrutil.dll vboxoglerrorspu.dll vboxoglfeedbackspu.dll
+vboxoglpassthroughspu.dll vboxdispd3d.dll vboxnine.dll vboxsvga.dll
+vboxwddm.sys vboxmouse.sys vboxvideo.sys vboxguest.sys vboxsf.sys
+vm3dgl.dll vm3dum.dll vm3dum_10.dll vm3dum_loader.dll vmguestlibjava.dll
+vmusbmouse.sys vmmouse.sys vmhgfs.sys vmwsclnt.dll vmtray.dll vmx_svga.dll
+xenvbd.sys xennet.sys xenevtchn.sys xenbus.sys xeniface.dll
+dynamorio.dll drpreinject.dll drinjectlib.dll vehdebug-i386.dll
+qmemulator32.dll snxhk32.dll sf2_32.dll
+""".split()
+
+
+# Anti-analysis artifacts that are not filenames. Window classes, driver device
+# paths and named pipes are all checked by the same families that check for
+# `sbiedll.dll`, and none of them would appear in any filename or export corpus.
+# Case is preserved deliberately -- a window class comparison is usually exact.
+MISC_ARTIFACTS = """
+OLLYDBG WinDbgFrameClass ID Zeta_Debugger Rock_Debugger ObsidianGUI
+PROCEXPL PROCMON_WINDOW_CLASS TFormFileMon TFormRegmon Filemon Regmon
+SandboxieControlWndClass Sandboxie gdkWindowToplevel wireshark
+Afx:400000:0 TIdaWindow TApplication TWinControl
+\\\\.\\VBoxGuest \\\\.\\VBoxMiniRdrDN \\\\.\\VBoxTrayIPC \\\\.\\HGFS \\\\.\\vmci
+\\\\.\\pipe\\cuckoo \\\\.\\NPF_NdisWanIp \\\\.\\NPF \\\\.\\SICE \\\\.\\SIWDEBUG
+\\\\.\\NTICE \\\\.\\REGVXD \\\\.\\FILEVXD \\\\.\\TRW \\\\.\\ICEEXT
+VBoxGuest VBoxMiniRdrDN VBoxTrayIPC HGFS vmci SICE NTICE SIWDEBUG TRW ICEEXT
+VBoxService VBoxTray VBoxSF VBoxMouse VBoxVideo VBoxWddm
+SbieDll SbieSvc SbieCtrl BoxedAppSDK
+Sandboxie_DefaultBox Sandboxie_Session0
+_SB_SVC_MUTEX_ Frz_State DBWinMutex
+VMwareService VMwareTray VMwareUser vmtoolsd
 """.split()
 
 
@@ -200,12 +252,25 @@ def variants(raw: str) -> set[str]:
     return {v for v in out if v}
 
 
-def build_corpus(verbose: bool = True) -> dict[str, list[str]]:
+def build_corpus(verbose: bool = True, exports: bool = False) -> dict[str, list[str]]:
     """name -> the sources it came from, so a hit can be traced back."""
     corpus: dict[str, list[str]] = {}
 
     def add(name: str, source: str) -> None:
         for v in variants(name):
+            corpus.setdefault(v, [])
+            if source not in corpus[v]:
+                corpus[v].append(source)
+
+    def add_exact(name: str, source: str) -> None:
+        """For export names: no extension stripping, but both cases.
+
+        An API name is not a filename. `variants` would turn
+        `RtlGetVersion` into itself and nothing useful, but it would also
+        mangle anything containing a dot -- ordinal-style and C++ decorated
+        exports both do -- so those go in verbatim.
+        """
+        for v in (name, name.lower()):
             corpus.setdefault(v, [])
             if source not in corpus[v]:
                 corpus[v].append(source)
@@ -250,6 +315,44 @@ def build_corpus(verbose: bool = True) -> dict[str, list[str]]:
             add(t + ".dll", "injected-DLL list")
     counts["injected-DLL list"] = (len(INJECTED_DLLS), len(corpus) - before)
 
+    before = len(corpus)
+    for t in MISC_ARTIFACTS:
+        add_exact(t, "artifact list")
+        add(t, "artifact list")
+    counts["artifact list"] = (len(MISC_ARTIFACTS), len(corpus) - before)
+
+    # Every export of every system DLL, not the twelve `decode_name_hashes.py`
+    # used. `0x79dbe71d` came off the same decoder as 43 hashes that turned out
+    # to be API names, so "it is a module name" was only ever an assumption
+    # inherited from the two hashes either side of it.
+    if exports:
+        import pefile
+        before = len(corpus)
+        files = 0
+        for d in (r"C:\Windows\SysWOW64", r"C:\Windows\System32"):
+            try:
+                entries = os.listdir(d)
+            except OSError:
+                continue
+            for f in entries:
+                if not f.lower().endswith((".dll", ".exe", ".ocx", ".drv", ".cpl")):
+                    continue
+                path = os.path.join(d, f)
+                try:
+                    pe = pefile.PE(path, fast_load=True)
+                    pe.parse_data_directories([0])
+                    syms = getattr(pe, "DIRECTORY_ENTRY_EXPORT", None)
+                    if syms:
+                        for e in syms.symbols:
+                            if e.name:
+                                add_exact(e.name.decode("ascii", "replace"),
+                                          "system export tables")
+                    pe.close()
+                    files += 1
+                except Exception:
+                    continue
+        counts["system export tables"] = (files, len(corpus) - before)
+
     if verbose:
         for src, (read, added) in counts.items():
             print(f"  {added:>7,} new names from {read:,} entries  {src}")
@@ -270,6 +373,13 @@ def dictionary_sweep(corpus: dict[str, list[str]], targets: dict[int, str]) -> d
 
 ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789._-"
 
+#: The lowercase bound says nothing about a name that was never lowercased.
+#: `get_module_base_by_hash` lowercases its input, but 43 of the 45 hashes off
+#: the same decoder are API names, which are case-sensitive -- so a mixed-case
+#: preimage is only excluded once it is actually searched for.
+ALPHABET_MIXED = ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                  "0123456789._-")
+
 
 def _fwd(states: np.ndarray, chars: np.ndarray) -> np.ndarray:
     """Append one character: index becomes c * len(states) + old_index."""
@@ -287,7 +397,7 @@ def _bwd(states: np.ndarray, chars: np.ndarray) -> np.ndarray:
     return ((a << np.uint32(24)) | b).ravel()
 
 
-def _decode(index: int, n: int, reverse: bool) -> str:
+def _decode(index: int, n: int, reverse: bool, alphabet: str = ALPHABET) -> str:
     """Little-endian base-39; digit k is the k-th character that was added.
 
     `reverse` is about which end characters were added at. The forward half adds
@@ -297,14 +407,15 @@ def _decode(index: int, n: int, reverse: bool) -> str:
     """
     chars = []
     for _ in range(n):
-        index, d = divmod(index, len(ALPHABET))
-        chars.append(ALPHABET[d])
+        index, d = divmod(index, len(alphabet))
+        chars.append(alphabet[d])
     return "".join(reversed(chars)) if reverse else "".join(chars)
 
 
-def mitm(target: int, unknown: int, prefix: str = "", suffix: str = "") -> list[str]:
-    """Every string prefix + <unknown chars over ALPHABET> + suffix hashing to target."""
-    chars = np.array([ord(c) for c in ALPHABET], dtype=np.uint32)
+def mitm(target: int, unknown: int, prefix: str = "", suffix: str = "",
+         alphabet: str = ALPHABET) -> list[str]:
+    """Every string prefix + <unknown chars over alphabet> + suffix hashing to target."""
+    chars = np.array([ord(c) for c in alphabet], dtype=np.uint32)
 
     start = np.uint32(0xFFFFFFFF)
     for ch in prefix.encode():
@@ -338,16 +449,16 @@ def mitm(target: int, unknown: int, prefix: str = "", suffix: str = "") -> list[
         hi = np.searchsorted(fs, v, side="right")
         for fi in order_f[lo:hi]:
             cand = (prefix
-                    + _decode(int(fi), p, reverse=False)
-                    + _decode(int(bi), s, reverse=True)
+                    + _decode(int(fi), p, reverse=False, alphabet=alphabet)
+                    + _decode(int(bi), s, reverse=True, alphabet=alphabet)
                     + suffix)
             if crc(cand.encode()) == target:      # never trust the index arithmetic
                 out.append(cand)
     return sorted(set(out))
 
 
-def expected_collisions(unknown: int) -> float:
-    return len(ALPHABET) ** unknown / 2 ** 32
+def expected_collisions(unknown: int, alphabet: str = ALPHABET) -> float:
+    return len(alphabet) ** unknown / 2 ** 32
 
 
 def mitm_self_test() -> None:
@@ -358,6 +469,9 @@ def mitm_self_test() -> None:
     got2 = mitm(0xADEDAB08, unknown=8, suffix=".dll")
     if "kernel32.dll" not in got2:
         sys.exit(f"MITM failed to find 'kernel32.dll'; found {got2}")
+    got3 = mitm(crc(b"Sleep"), unknown=5, alphabet=ALPHABET_MIXED)
+    if "Sleep" not in got3:
+        sys.exit(f"MITM failed to find mixed-case 'Sleep'; found {got3}")
     print("MITM self-test: rediscovered 'wow64' (bare stem) and 'kernel32.dll' (suffixed)")
 
 
@@ -501,6 +615,8 @@ def main() -> None:
     ap.add_argument("--max-len", type=int, default=7,
                     help="longest unknown-character run to search exhaustively (default 7)")
     ap.add_argument("--dict-only", action="store_true")
+    ap.add_argument("--exports", action="store_true",
+                    help="also sweep every export of every system DLL (~2 min)")
     ap.add_argument("--hash", type=lambda s: int(s, 16), action="append",
                     help="crack this hash instead of the standing target list")
     args = ap.parse_args()
@@ -516,7 +632,7 @@ def main() -> None:
 
     print("\n" + "=" * 78)
     print("corpus")
-    corpus = build_corpus()
+    corpus = build_corpus(exports=args.exports)
 
     print("\n" + "=" * 78)
     print("dictionary sweep, every name in stem and suffixed form")
@@ -551,6 +667,22 @@ def main() -> None:
         if not found:
             print(f"    no preimage of <= {args.max_len} chars"
                   f" (plus {'/'.join(s or '<none>' for s in SUFFIXES)}) over this alphabet")
+
+    print("\n" + "=" * 78)
+    mixed_max = 6
+    print(f"exhaustive search, mixed case [a-zA-Z0-9._-], unknown runs of 1..{mixed_max}")
+    print("  the lowercase bound above says nothing about a name never lowercased")
+    for h, why in remaining.items():
+        found = []
+        for suffix in SUFFIXES:
+            for n in range(1, mixed_max + 1):
+                for cand in mitm(h, n, suffix=suffix, alphabet=ALPHABET_MIXED):
+                    e = expected_collisions(n, ALPHABET_MIXED)
+                    found.append(f"    {cand!r}"
+                                 + ("" if e < 0.05 else f"   [{e:.1f} expected by chance]"))
+        print(f"\n{h:#010x}  {why}")
+        print("\n".join(found) if found
+              else f"    no preimage of <= {mixed_max} mixed-case chars")
 
     print("\n" + "=" * 78)
     v = len(VOCAB)
