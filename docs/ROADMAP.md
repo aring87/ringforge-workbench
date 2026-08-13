@@ -57,28 +57,76 @@ Grouped by what unblocks each, because that determines the order.
 
 Nine items, one run. This is by far the best return available.
 
-### B. Needs a different sample or scenario
+### B. Needs a different sample or scenario — **mostly already done, 13 Aug**
 
-| Thing | What it actually needs |
+**I overstated this queue and the correction matters, because it shrinks what
+is left.** The ledger's "unproven" means *live-unexercised*, not *untested*, and
+I read it as the second. Checked one by one:
+
+| Thing | Actual state |
 |---|---|
-| Multi-region carve | A payload spanning two memory ranges. Two runs, never engaged |
-| Received-file collection | Something uploaded to FakeNet. Root resolution proven; collection never exercised |
-| Split-API YARA rule | Stage 2 present in a dump. Its subject has never been in memory on a run that scanned |
-| Adaptive window | Fired once, on the wrong case (a UPX control sitting at a prompt) |
-| Sysmon Event 25 | Enabled and silent. Does not catch hollowing; may catch something else |
+| Multi-region carve | **Already unit-proven.** `test_an_image_split_across_regions_is_reassembled` builds a payload cut across two adjacent ranges and asserts the carve produces all 0x4000 bytes, plus a gap case that refuses to bridge. My "drive it with a fixture" was work that already existed |
+| Received-file collection | **Already unit-proven**, 10 tests including a new upload being collected and FakeNet's own shipped files not being reported as uploads |
+| Adaptive window | **Already unit-proven**, 11 tests covering the cap, the silent-at-cap record, and a probe that throws |
+| Split-API YARA rule | **Was the real gap, now closed.** See below |
+| Sysmon Event 25 | Enabled and silent by measurement. Nothing to build |
 
-These do not block "done". They want recording as *known-unexercised with the
-reason*, which is a legitimate end state and much better than pretending.
+So queue B reduces to one item that genuinely needed work, and it is done.
 
-### C. Needs a corpus, not a sample
+**The split-API rule had only ever been proven not to *misfire*.** Zero matches
+across 13 live dumps and 120 genuine .NET assemblies says nothing about whether
+it detects, and its subject had never been in memory on a run that scanned. That
+is answerable offline: stage 2 is on the artifact drive.
 
-**No false-positive rate for ordinary software.** Both controls pass and the UPX
-control under-predicts by design, but nothing here has been run against a body
-of benign binaries. Every "not scored" note in the codebase is ultimately
-waiting on this number.
+    negative control, 3 unrelated processes  -> no match
+    the same 3 dumps with stage 2 resident   -> 3 of 3 matched
 
-This is the single largest gap between "works on three samples" and "trustworthy
-pipeline", and it is also the least glamorous.
+with each split fragment asserted individually, so a change in the loader's
+splitting names the fragment that went. `test_split_api_rule.py`, marked `slow`.
+
+*A trap recorded there because it looked like a false positive and was not:* the
+first control was a dump of the scanning process, and it matched before the
+payload was added. Stage 2 has to be unwrapped into the scanner's heap to be
+scanned, and the compiled rules hold `"kernel "` and `"Virtual "` as literals —
+**a scanner scanning itself always matches**.
+
+Everything remaining here is *unit-proven, live-unexercised*, which is a
+legitimate end state under exit criterion 1 and does not block "done".
+
+### C. Needs a corpus, not a sample — **harness built, first numbers in, 13 Aug**
+
+**No false-positive rate for ordinary software** was the single largest gap
+between "works on three samples" and "trustworthy pipeline". It turns out not to
+need the VM at all: the carver and module integrity consume minidumps, and this
+host has a couple of hundred ordinary processes.
+
+`scripts/benign_baseline.py` dumps them and runs the same passes. First result,
+8 processes and **152 modules compared**:
+
+| metric | benign |
+|---|---|
+| unmapped PE images | **0** |
+| unmapped in a hollowing target | **0** ← the emphatic branch, with an `svchost.exe` in the sample |
+| `replaced` / `header_mismatch` | **0 / 0** |
+| `resource_only` set aside | 7 — the known MUI class, handled not reported |
+
+**Treat that as encouraging, not as the number.** Sorting by smallest process
+put six copies of `conhost.exe` in the sample, so "0 across 8 processes" was
+really 0 across *three programs*. Selection now takes one process per distinct
+executable before any repeat — 14 distinct binaries are reachable here — and the
+wider run has not been taken yet.
+
+Two selection bugs found by running it, both recorded in the source because both
+produce a plausible-looking wrong answer: selecting on **working set** picked
+processes whose resident sets are small and whose reserved address spaces are
+not, producing 445 MB and 796 MB dumps (`vms` predicts dump size, `rss` does
+not); and taking the N smallest destroys binary diversity, which is the only
+thing a false-positive rate is actually about.
+
+**Still owed here:** the 14-binary run, and the same treatment for the two
+detectors this cannot reach — the WER timestamp check and the ntdll pass both
+need an event log and a Procmon capture, so their benign rate comes from Run 2
+rather than from this harness.
 
 ---
 
