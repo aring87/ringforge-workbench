@@ -140,7 +140,15 @@ WerFault were excluded, against 3 by the sample's own tree.
 
 ## The plan
 
-### Run 1 — the loader, current build
+### Run 1 — the loader, current build — **RAN 13 Aug as `bb51babb`, all rows passed**
+
+Queue A is clear and the registry-read question is answered: the sample makes
+73,825 registry reads and **none name a VM artifact**, verified against a
+positive control in the same stream. Gap 4b's finding path and gap 4's
+threshold both need a *different* sample now — re-running this one produces the
+same zero. The pre-flight below is kept because it applies to any future
+detonation, not because this run is still owed. See *Run `bb51babb`* in
+`docs/HANDOFF.md`.
 
 The one that clears queue A. Pre-flight, because three of these have bitten
 before:
