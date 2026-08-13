@@ -1061,8 +1061,27 @@ address gives the list as the author wrote it:
 | **`0xc72ce2d5`, `0x0263178b`, `0x57585356`, `0x9cb95240`, `0x0cc39fef`** | five unknowns *among the analysis tools* |
 | `vmsrvc`, `vmusrvc`, `python`, `perl`, `regmon` | |
 
-That is a real constraint on what to guess: two are almost certainly
-virtualisation processes, five almost certainly analysis tools.
+That suggested two are virtualisation processes and five are analysis tools.
+**The virtualisation reading was then tested hard and did not hold.** Three
+searches on `0xd0c58467` and `0xa8d123c8`, each with a control that passes:
+
+| search | scope | result |
+|---|---|---|
+| hand-listed VM names | 71 names × bare/`.exe`/`.dll` | nothing |
+| generated | 5,788 stems from 33 vendor prefixes × 60 suffixes × 3 separators, ×5 forms = **28,940** | nothing |
+| prefix-constrained exhaustive | 19 prefixes (`vm`, `vmware`, `vmware-`, `vbox`, `virtualbox`, `prl_`, `xen`, `qemu`, `sandboxie`, `hyperv`, `vmic`, …) × up to 6 unknown chars, **below the noise floor** | 57 candidates, all gibberish |
+
+Controls: `crc32("vmwareuser.exe")` reproduces, the generator does produce
+`vmwareuser`, and the prefix search rediscovers `vmwareuser.exe` from
+`prefix="vmware"` with 4 unknown characters. So the method works and the answer
+is not in that space.
+
+**Which weakens the adjacency argument itself, and it deserved less weight than
+I gave it.** The list is not strictly grouped: `vmsrvc` and `vmusrvc` are
+Virtual PC processes sitting at positions 16–17, next to `python` and `perl`,
+nowhere near the VMware pair at 1–2. Position is a hint about this author's
+ordering, not a category label, and two slots being adjacent to VMware entries
+does not make them VMware entries.
 
 **No substring structure to exploit here.** Unlike the `0x202fe41` pair, the
 compare is `cmp eax, dword ptr [ebp + 8]` against the hash of the *whole*
@@ -1148,17 +1167,22 @@ except where it says so.
    us and stage 4 — the poll loop is. Whatever it waits seven times for is most
    likely named among the seven blocklist hashes, which is why they still
    matter even though the sweep did not crack them.
-   **The mechanism is now fully mapped and there is no structure left to
-   exploit** — see *The blocklist mechanism, fully mapped*. The compare is over
-   the whole-name hash, so unlike `sychpe32` there is no length or first
-   character to harvest. What is left is a better guess, and the site order
-   narrows it: `0xd0c58467` and `0xa8d123c8` sit between the VMware pair and
-   Sandboxie, so try virtualisation processes; the other five sit among
-   `procmon`/`filemon`/`wireshark`/`netmon`, so try analysis tools. All seven
-   have stems of ≥ 8 characters and **none is purely alphabetic at 8**, so
-   expect a digit, underscore or hyphen, or a longer name. Candidates already
-   eliminated are in `TOOL_NAMES` and `INJECTED_DLLS` in
-   `scripts/crack_name_hashes.py` — check there before retrying one.
+   **The mechanism is fully mapped and there is no structure left to exploit** —
+   see *The blocklist mechanism, fully mapped*. The compare is over the
+   whole-name hash, so unlike `sychpe32` there is no length or first character
+   to harvest. What is left is a better guess, and the searched space is now
+   large enough that **listing what has been eliminated matters more than
+   another guess**: 230,756 dictionary names, 28,940 generated VM names, all
+   stems ≤ 7 over `[a-z0-9._-]`, all purely alphabetic stems of 8, and 19
+   prefix-constrained exhaustive searches to prefix + 6. Check
+   `TOOL_NAMES` / `INJECTED_DLLS` in `scripts/crack_name_hashes.py` and the
+   table in that section before retrying anything.
+   The remaining ideas worth spending on, in order: an actual published
+   blocklist from this family's era to diff against (the 13 known names are a
+   recognisable set and should identify the source list); then accepting the
+   names may simply be unrecoverable and moving to stage 4 by another route.
+   Do **not** infer the missing entries from their neighbours — that was tried
+   and the adjacency argument does not survive contact with the list.
 3. **The crash's remaining contradiction** wants guest-side instrumentation:
    log `0x2dc01`'s argument and return during a live run. Needs a detonation,
    and it is now a **one-bit question** — did the lookup for `0xe11da208`
