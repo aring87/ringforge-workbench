@@ -29,10 +29,14 @@ import argparse
 import base64
 import collections
 import json
+import struct
 from pathlib import Path
 
 import capstone
 from unicorn import UC_HOOK_CODE
+from unicorn.x86_const import (
+    UC_X86_REG_EAX, UC_X86_REG_EBP, UC_X86_REG_EBX,
+    UC_X86_REG_EDI, UC_X86_REG_ESI)
 
 import win32_emu_env as winenv
 from emulate_native_stub import Emulator
@@ -109,6 +113,59 @@ def record(args: argparse.Namespace) -> int:
     return 0
 
 
+def watch(args: argparse.Namespace) -> int:
+    """Stop at one address inside a pass and read the comparison's operands.
+
+    The diff says the quiet pass compares a record dword against a stack array;
+    it cannot say what either holds. This does: at `--dump-at`, report the
+    register under test and the array it is being compared against, so the field
+    gets named from data rather than from reading the disassembly.
+    """
+    emu = Emulator.restore(args.state)
+    emu.repair_wow64_crash()
+    print(f"restored at {emu.blocks:,} blocks")
+
+    if not arm_at_process_list(emu, args.which):
+        return 1
+
+    target = args.dump_at
+    seen = {"n": 0}
+
+    def cb(uc, address, size, _user):
+        if address != target:
+            return
+        seen["n"] += 1
+        eax = uc.reg_read(UC_X86_REG_EAX)
+        ebx = uc.reg_read(UC_X86_REG_EBX)
+        esi = uc.reg_read(UC_X86_REG_ESI)
+        edi = uc.reg_read(UC_X86_REG_EDI)
+        ebp = uc.reg_read(UC_X86_REG_EBP)
+        print(f"\n  hit {seen['n']} at {address:#010x}")
+        print(f"    eax={eax:#010x} ({eax})   esi={esi}  edi={edi}  ebx={ebx}")
+        count = min(edi if 0 < edi < 64 else 16, 64)
+        try:
+            raw = uc.mem_read(ebp - 0x44, count * 4)
+        except Exception as error:  # the frame may not be mapped that far
+            print(f"    array at ebp-0x44 unreadable: {error}")
+        else:
+            values = struct.unpack("<" + "I" * count, bytes(raw))
+            print(f"    [ebp-0x44] x{count}: " +
+                  " ".join(f"{v:#x}" for v in values))
+        if seen["n"] >= args.dump_count:
+            uc.emu_stop()
+
+    handle = emu.mu.hook_add(UC_HOOK_CODE, cb)
+    print(f"  watching {target:#010x} for {args.dump_count} hit(s)...")
+    status = emu.resume(count=args.window)
+    emu.mu.hook_del(handle)
+    print(f"\n  {status}  ({emu.blocks:,} blocks)")
+    if not seen["n"]:
+        print(f"  {target:#010x} never executed in the window -- widen --window "
+              "or check the address against a --diff of this pass.")
+        return 1
+    return 0
+
+
 def diff(args: argparse.Namespace) -> int:
     left, right = (json.loads(Path(p).read_text(encoding="utf-8")) for p in args.diff)
     lc = {int(a): c for a, c in left["counts"].items()}
@@ -168,9 +225,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--diff", nargs=2, metavar=("LEFT", "RIGHT"))
     ap.add_argument("--runs", type=int, default=8, help="regions to print per side")
     ap.add_argument("--lines", type=int, default=24, help="instructions per region")
+    ap.add_argument("--dump-at", type=lambda v: int(v, 0), default=None,
+                    help="stop inside the pass at this address and read the "
+                         "comparison's operands")
+    ap.add_argument("--dump-count", type=int, default=8,
+                    help="how many hits at --dump-at to report")
     args = ap.parse_args(argv)
 
-    return diff(args) if args.diff else record(args)
+    if args.diff:
+        return diff(args)
+    return watch(args) if args.dump_at is not None else record(args)
 
 
 if __name__ == "__main__":

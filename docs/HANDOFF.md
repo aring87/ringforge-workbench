@@ -1818,14 +1818,54 @@ decode as exactly what they should — the CRC-32 table builder and loop at
 `hash_call_sites.py` already names, and a case-folder at `0x0202fd21`
 (`cmp al, 0x41` / `cmp al, 0x5a`).
 
-**The 46 unique to the quiet pass are the open question**, and the first attempt
-to read them failed twice over, both times in ways this file already documents.
-A linear capstone sweep from the allocation base desynchronises and renders them
-`iretd` / `fmul` / `?`. Decoding at each executed address instead still gave
-nonsense, because **the allocation keeps decrypting as it runs** and the bytes
-were being read from a fresh restore at 348M blocks while the code executed at
-597M. `trace_poll_pass.py` now stores the allocation captured at trace time
-alongside the counts, which is the only way that disassembly can be right.
+**Reading the 46 unique to the quiet pass failed twice first**, both times in
+ways this file already documents. A linear capstone sweep from the allocation
+base desynchronises and renders them `iretd` / `fmul` / `?`. Decoding at each
+executed address instead *still* gave nonsense, because **the allocation keeps
+decrypting as it runs** and the bytes were being read from a fresh restore at
+348M blocks while the code executed at 597M. `trace_poll_pass.py` now stores the
+allocation captured at trace time alongside the counts, which is the only moment
+at which that disassembly can be correct.
+
+#### The quiet pass is a second enumeration, and it compares numbers not names
+
+With the disassembly fixed, the 46 addresses read as one loop:
+
+    0x020153db  call 0x2014271              ; iterator INIT  (cursor, record)
+    0x02015400  call 0x202f471              ; prepare a 0x104 = MAX_PATH buffer
+    0x02015413  call 0x202fa81              ; record name -> local buffer
+    0x02015431  test eax, eax               ; inner loop head
+    0x02015435  cmp  eax, [ebp+esi*4-0x44]  ; a record dword vs a stack ARRAY
+    0x02015457  jb   0x2015431              ; ...bounded by edi
+    0x02015469  cmp  ebx, 0xc               ; twelve
+    0x0201546c  jae  0x2015489              ; stop at twelve
+    0x02015479  call 0x20142b1              ; iterator NEXT
+    0x02015483  jne  0x20153f1              ; loop while NEXT succeeds
+
+**`cmp ebx, 0xc` is twelve, and `PROCESS_LIST` has exactly twelve entries.** So
+both passes walk the same served list to the same bound. The difference is what
+they do with each record: the hashing pass CRC-32s the *name* against 20
+constants, and this one converts the name into a MAX_PATH buffer, discards it,
+and compares a **dword** field at `[ebp-0x3c4]` against an accumulated array at
+`[ebp+esi*4-0x44]`.
+
+**A reading, not yet a measurement:** a numeric process-record field checked
+against a carried list is the shape of PID or parent-PID tracking across polls —
+asking whether something expected has appeared, or whether something seen before
+is still alive. That would explain the ending's structure, and it would explain
+why the emulator can never get past it: `system_process_information` serves a
+**static** list, byte-identical on every call, so nothing can ever appear or
+disappear however many times the sample looks.
+
+If that holds, the fix to try is a process list that *changes between calls*,
+which no version of this harness has ever served. Confirm the field first:
+
+    ..\.venv\Scripts\python.exe trace_poll_pass.py --which 7 --dump-at 0x2015435
+
+which stops inside the pass and reports `eax` against the array at `[ebp-0x44]`,
+`edi` long. **Do not skip that step and go straight to editing `PROCESS_LIST`** —
+the four conclusions this document has already withdrawn were all inferences
+from structure that a measurement would have caught.
 
 **One honest limit.** #2 and #3 are unmeasured, so the pattern across all seven
 is inference from four points.
@@ -1906,9 +1946,14 @@ made somewhere nobody has looked. **That reorders what follows:** the quiet
 pass is now the first question, and the uncracked names are the second, because
 they are consumed by the pass that is *not* making the decision.
 
-- **What the quiet pass does.** `trace_poll_pass.py --diff` puts the two passes'
-  executed addresses side by side; the code unique to the quiet one is the
-  shortest path to the exit condition. Nothing has read it yet.
+- **What the quiet pass compares.** Its code has now been read: a second walk
+  of the same twelve served processes that compares a record *dword* against a
+  carried array rather than hashing names — see *The poll loop is not seven
+  identical sweeps*. The open step is one command,
+  `trace_poll_pass.py --which 7 --dump-at 0x2015435`, which names the field from
+  data. If it is a PID, the harness serving a **static** process list is what
+  makes the loop unsatisfiable, and a list that changes between calls is the
+  first thing to try.
 
 - **The uncracked names, cracked by reading the consuming code.** Both names
   solved so far fell to reading the call site, neither to a corpus, and each
