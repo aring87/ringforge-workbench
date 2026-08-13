@@ -22,7 +22,21 @@ from typing import Any
 ANALYZER_TOOL_IMAGE_MARKERS = (
     "windivert",     # FakeNet-NG's traffic diverter
     "pydivert",      # ...and the Python package that ships it
-    "\\fakenet",
+    # Bare, not `\fakenet`. This helper's contract is "a path **or image
+    # name**", and a marker carrying a separator can only ever match the first
+    # -- `is_analyzer_image("fakenet.exe")` returned False while the same tool
+    # matched fine as a full path. Procmon reports a bare `Process Name`, so
+    # any pass keyed on that missed FakeNet, which runs during every single
+    # run. Found sweeping for this bug class after three attribution bugs in
+    # one day.
+    #
+    # `\wireshark\` below keeps its separators deliberately and is **not** the
+    # same case: Wireshark is not RingForge tooling -- the pipeline captures
+    # with tshark and dumpcap -- so that marker exists to catch an analyst's
+    # separately installed copy by directory, and broadening it to a bare name
+    # would suppress a *sample* called wireshark.exe. Widening a suppression
+    # list on speculation is how attribution gets replaced by a name list.
+    "fakenet",
     "procmon",
     "procdump",
     "autorunsc",
