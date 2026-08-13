@@ -24,6 +24,10 @@ from dynamic_analysis.memory_dump import (
     DEFAULT_SPAWN_REDUMP_SECONDS,
 )
 from dynamic_analysis.orchestrator import ContainmentError, run_dynamic_analysis
+from dynamic_analysis.procmon_config import (
+    DEFAULT_PROCMON_CONFIG_NAME,
+    describe_procmon_filter,
+)
 from static_triage_engine.scoring import combined_score_from_case_dir
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
@@ -207,7 +211,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.procmon_config_var = tk.StringVar(
             value=cfg.get(
                 "dynamic_procmon_config_path",
-                str(project_root / "tools" / "procmon-configs" / "dynamic_default.pmc"),
+                str(project_root / "tools" / "procmon-configs" / DEFAULT_PROCMON_CONFIG_NAME),
             )
         )
 
@@ -879,9 +883,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 "• Run elevated when Procmon capture requires it.\n"
                 "• Prefer isolated networking for unknown samples.\n"
                 "• Output is stored under the case home folder in dynamic_analysis.\n"
-                "• dynamic_registry_reads.pmc also captures registry reads, so a "
-                "sample checking for a VM is visible. Costs event volume — use a "
-                "shorter window, since those checks happen at startup."
+                "• dynamic_registry_reads.pmc is the default: it also captures "
+                "registry reads, so a sample checking for a VM is visible. Costs "
+                "event volume — use a shorter window, since those checks happen "
+                "at startup. dynamic_default.pmc drops those reads at capture, "
+                "and no later pass can recover them."
             )
         ttk.Label(notes, text=note_text, justify="left", wraplength=980).grid(row=0, column=0, sticky="w", padx=8, pady=(4 if compact else 6))
 
@@ -2098,6 +2104,22 @@ ul {{ margin-top: 8px; }}
                     "but Procmon may run with default capture behavior:\n"
                     f"{procmon_config_path}"
                 )
+            else:
+                # Ask the file, not the filename -- a config can be renamed.
+                # This is worth saying before the run rather than after: a
+                # registry read dropped at capture is gone, and re-exporting
+                # the PML afterwards cannot bring it back.
+                described = describe_procmon_filter(procmon_config_path)
+                if described.get("readable") and not described.get("captures_registry_reads"):
+                    warnings.append(
+                        "This Procmon config captures no registry reads, so a "
+                        "sample checking for a VM artifact could not be seen. "
+                        "The reads are dropped at capture and no later pass can "
+                        "recover them.\n\n"
+                        f"{procmon_config_path}\n\n"
+                        "Use tools/procmon-configs/dynamic_registry_reads.pmc "
+                        "instead."
+                    )
 
         autorunsc_path = self._find_autorunsc_path()
         if autorunsc_path is None:

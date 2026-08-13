@@ -147,9 +147,12 @@ before:
 
 1. **`git pull` on the guest.** It is many commits behind; every 13 Aug detector
    is host-side only until it does.
-2. **Point the Procmon config at `dynamic_registry_reads.pmc`.** A run on the
-   default config cannot see registry reads, and a previous run was set up for
-   exactly this and tested none of it because the field was left on the default.
+2. **Confirm the Procmon config reads `dynamic_registry_reads.pmc`.** It is now
+   the default and the launch pre-flight warns if the chosen config captures no
+   registry reads, so this should take a glance — but a saved
+   `dynamic_procmon_config_path` in `config.json` still wins over the default.
+   Three runs were set up for exactly this and tested none of it because the
+   field was left alone.
 3. **Decide about `procmon.exe` before launching, not after.** It is on this
    sample's blocklist — measured, not suspected: serving a hit diverts it 233M
    blocks earlier and it never creates its mutex. If the chain ever gets past

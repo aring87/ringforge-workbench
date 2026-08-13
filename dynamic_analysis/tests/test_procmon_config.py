@@ -22,6 +22,7 @@ from dynamic_analysis.procmon_config import (
     COLUMN_PROCESS_NAME,
     REGISTRY_READ_OPERATIONS,
     RELATION_IS,
+    DEFAULT_PROCMON_CONFIG_NAME,
     describe_procmon_filter,
     included_operations,
     read_filter_rules,
@@ -175,6 +176,18 @@ class DescribeFilterTests(unittest.TestCase):
                 self.assertFalse(described["readable"])
                 self.assertFalse(described["captures_registry_reads"])
                 self.assertTrue(described["note"])
+
+
+class DefaultConfigTests(unittest.TestCase):
+    def test_the_default_config_exists_and_captures_registry_reads(self) -> None:
+        # This is the regression that cost three detonations, so it is pinned
+        # rather than left to whoever is reading the settings dialog. If the
+        # default is ever pointed back at a config without registry reads, a
+        # run set up to look for a VM-artifact check silently captures none.
+        default = CONFIGS / DEFAULT_PROCMON_CONFIG_NAME
+
+        self.assertTrue(default.exists(), f"default Procmon config missing: {default}")
+        self.assertTrue(describe_procmon_filter(default)["captures_registry_reads"])
 
 
 if __name__ == "__main__":

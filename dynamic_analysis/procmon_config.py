@@ -69,6 +69,15 @@ _RULE_TRAILER = b"\x00" * 8
 #: works.
 REGISTRY_READ_OPERATIONS = ("RegQueryValue", "RegOpenKey")
 
+#: The config a run uses when nobody chooses one.
+#:
+#: Deliberately not `dynamic_default.pmc`. Three consecutive detonations were
+#: set up to look for a VM-artifact check and captured none, because the
+#: default drops the reads at capture and the field was left alone. A default
+#: that is wrong only when someone remembers is the wrong way round; this one
+#: costs two operations of extra volume when it is not wanted.
+DEFAULT_PROCMON_CONFIG_NAME = "dynamic_registry_reads.pmc"
+
 
 @dataclass
 class FilterRule:
