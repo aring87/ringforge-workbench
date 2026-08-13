@@ -53,13 +53,48 @@ def _scratch() -> Path:
     return root
 
 
+#: Servicing replaces these together, so the newest of them dates the last
+#: Windows Update that could have invalidated a cached dump.
+_SERVICING_WITNESSES = (
+    r"C:\Windows\System32\ntdll.dll",
+    r"C:\Windows\System32\kernel32.dll",
+    r"C:\Windows\System32\KERNELBASE.dll",
+    r"C:\Windows\System32\combase.dll",
+)
+
+
+def _is_stale(dump: Path) -> bool:
+    """True when Windows was patched after this dump was written.
+
+    Learned the expensive way. The dump is reused across runs, and on
+    2026-08-11 an update replaced fourteen System32 DLLs that a dump cached on
+    the 10th still described. Every one of them then read as `header_mismatch`
+    -- **correctly**, because the loader's record really did disagree with the
+    file -- and four tests here failed with counts that looked like a detector
+    bug and were not.
+
+    The old comment claimed a stale dump "shows up immediately as modules that
+    no longer resolve to a matching build". It does. What it does not do is say
+    *why*, and a day was spent deciding whether the detector or the fixture was
+    wrong. Cheaper to check the mtimes.
+    """
+    written = dump.stat().st_mtime
+    for witness in _SERVICING_WITNESSES:
+        try:
+            if os.stat(witness).st_mtime > written:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def setUpModule() -> None:
     global _DUMP
     target = _scratch() / "reference_self.dmp"
-    # Reused across runs. It is a dump of *this* interpreter, so it stays valid
-    # as long as the interpreter and its DLLs do; a stale one shows up
-    # immediately as modules that no longer resolve to a matching build.
-    if not target.exists() or target.stat().st_size < 1_000_000:
+    # Reused across runs -- writing 125 MB takes tens of seconds -- but only
+    # while it still describes this machine. See `_is_stale`.
+    if (not target.exists() or target.stat().st_size < 1_000_000
+            or _is_stale(target)):
         write_self_dump(target)
     _DUMP = target
 

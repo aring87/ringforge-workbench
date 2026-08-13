@@ -135,10 +135,27 @@ class _AddressSpace:
 #: because ASLR randomises per boot rather than per process. Without this the
 #: same relocation is recomputed a dozen times and the pass adds minutes to a
 #: teardown this project already considers too slow.
-_REFERENCE_CACHE: dict[tuple, Optional[list]] = {}
-#: Modules whose on-disk file exists but whose identity does not match what
-#: the loader recorded. Keyed the same way, populated during lookup.
-_MISMATCHED: dict[tuple, dict] = {}
+#: `key -> (sections, identity_mismatch)`.
+#:
+#: The mismatch travels *with* the sections rather than in a second dict, and
+#: that is a bug fix rather than tidying. It used to live in a parallel
+#: `_MISMATCHED` map written during lookup and read afterwards, with the cache
+#: eviction between them:
+#:
+#:     _MISMATCHED[key] = {...}          # this module disagrees with its file
+#:     ...
+#:     if len(_REFERENCE_CACHE) >= _CACHE_LIMIT:
+#:         _REFERENCE_CACHE.clear()
+#:         _MISMATCHED.clear()           # <- including the entry just written
+#:     _REFERENCE_CACHE[key] = sections
+#:
+#: So whichever module happened to cross the 96-entry limit lost its
+#: `header_mismatch` and was then graded *by degree* -- exactly the outcome the
+#: comment on that branch says must never happen, since a payload sharing most
+#: of its bytes with the file it impersonates would file as `identical`. Any
+#: process with more than 96 distinct modules could hit it, and a browser or
+#: `explorer.exe` has hundreds. One dict cannot desynchronise from itself.
+_REFERENCE_CACHE: dict[tuple, tuple[Optional[list], Optional[dict]]] = {}
 _CACHE_LIMIT = 96
 
 
@@ -182,8 +199,10 @@ def _mapped_header(space: "_AddressSpace", base: int) -> dict[str, Any]:
     return out
 
 
-def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int,
-                        roots: Iterable[str] = ()) -> Optional[list]:
+def _reference_sections(
+    path: str, timestamp: int, size_of_image: int, base: int,
+    roots: Iterable[str] = (),
+) -> tuple[Optional[list], Optional[dict]]:
     """Executable sections of the file this module came from, relocated to
     `base`. `None` when this host has no matching build.
 
@@ -206,6 +225,7 @@ def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int
         return _REFERENCE_CACHE[key]
 
     sections: Optional[list] = None
+    mismatch: Optional[dict] = None
     candidates = [Path(path)] + [Path(root) / name for root in roots]
     for candidate in candidates:
         try:
@@ -226,7 +246,7 @@ def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int
                 # *because it is not that file*, which is the finding, not a
                 # reason to stop looking. The comparison still runs; the verdict
                 # records that the identity check failed.
-                _MISMATCHED[(name, timestamp, size_of_image, base)] = {
+                mismatch = {
                     "file_timestamp": pe.FILE_HEADER.TimeDateStamp,
                     "file_size_of_image": pe.OPTIONAL_HEADER.SizeOfImage,
                     "module_timestamp": timestamp,
@@ -256,9 +276,8 @@ def _reference_sections(path: str, timestamp: int, size_of_image: int, base: int
 
     if len(_REFERENCE_CACHE) >= _CACHE_LIMIT:
         _REFERENCE_CACHE.clear()
-        _MISMATCHED.clear()
-    _REFERENCE_CACHE[key] = sections
-    return sections
+    _REFERENCE_CACHE[key] = (sections, mismatch)
+    return sections, mismatch
 
 
 def compare_module(space: _AddressSpace, module: dict[str, Any],
@@ -281,10 +300,9 @@ def compare_module(space: _AddressSpace, module: dict[str, Any],
     # rather than approximate: without it every ASLR-relocated system DLL reads
     # as lightly modified and the threshold would have to be loosened to cover
     # fixups, which is exactly the slack a hollow would hide in.
-    key = (result["name"], module.get("timestamp", 0), module.get("size", 0), base)
-    sections = _reference_sections(module.get("path", ""), module.get("timestamp", 0),
-                                   module.get("size", 0), base, roots)
-    mismatch = _MISMATCHED.get(key)
+    sections, mismatch = _reference_sections(
+        module.get("path", ""), module.get("timestamp", 0),
+        module.get("size", 0), base, roots)
     if mismatch:
         # Whatever is mapped here is not the file the loader named. Describe it
         # from its own header, which is the cheapest description of a payload
