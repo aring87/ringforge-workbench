@@ -310,6 +310,20 @@ def compare_module(space: _AddressSpace, module: dict[str, Any],
         result["identity"] = mismatch
         result["mapped_header"] = _mapped_header(space, base)
     if sections is None:
+        # A known identity disagreement outranks having nothing to compare.
+        # The `if not total` branch below already applies that rule when there
+        # were sections but none was readable; this exit did not, so the same
+        # knowledge produced `header_mismatch` on one path and `no_reference`
+        # -- *could not tell* -- on the other.
+        #
+        # **Not a demonstrated bug.** Reaching it needs `mismatch` set and
+        # `sections` None, which means the reference opened, disagreed, and
+        # then failed to relocate; pefile tolerated every malformed reloc
+        # directory tried, so it is written as a guard rather than a fix. The
+        # rule is what matters: never report *could not tell* about something
+        # already known.
+        if mismatch:
+            result["verdict"] = "header_mismatch"
         return result
     result["relocated"] = True
 

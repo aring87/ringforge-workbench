@@ -123,5 +123,52 @@ class MismatchSurvivesEviction(unittest.TestCase):
         self.assertIsNone(mismatch)
 
 
+class KnownMismatchOutranksCouldNotTell(unittest.TestCase):
+    """Both exits from `compare_module` must agree about the same knowledge.
+
+    `if not total: if mismatch: header_mismatch` already says a known identity
+    disagreement beats having nothing to compare. The `sections is None` exit
+    used to return `no_reference` instead -- *could not tell* about something
+    already known.
+
+    Driven through a stub because the natural route needs pefile to fail a
+    relocation, and it tolerated every malformed reloc directory tried. The
+    rule is worth pinning even where the path is hard to reach.
+    """
+
+    def setUp(self):
+        self._real = mi._reference_sections
+        self.addCleanup(setattr, mi, "_reference_sections", self._real)
+
+    class _Space:
+        def read(self, *_a, **_k):
+            return None
+
+    def _compare(self, sections, mismatch):
+        mi._reference_sections = lambda *a, **k: (sections, mismatch)
+        return mi.compare_module(
+            self._Space(),
+            {"base": 0x400000, "path": r"C:\Windows\RegSvcs.exe",
+             "timestamp": 0xDEADBEEF, "size": 0x2000})
+
+    IDENTITY = {"file_timestamp": 1, "module_timestamp": 0xDEADBEEF,
+                "file_size_of_image": 0x2000, "module_size_of_image": 0x2000,
+                "reference": r"C:\Windows\RegSvcs.exe"}
+
+    def test_no_sections_but_a_known_mismatch_is_header_mismatch(self):
+        result = self._compare(None, self.IDENTITY)
+        self.assertEqual(result["verdict"], "header_mismatch")
+        self.assertEqual(result["identity"], self.IDENTITY)
+
+    def test_empty_sections_and_a_known_mismatch_agree_with_it(self):
+        result = self._compare([], self.IDENTITY)
+        self.assertEqual(result["verdict"], "header_mismatch")
+
+    def test_no_sections_and_no_mismatch_is_still_no_reference(self):
+        # The genuine "could not tell" case must keep saying so.
+        result = self._compare(None, None)
+        self.assertEqual(result["verdict"], "no_reference")
+
+
 if __name__ == "__main__":
     unittest.main()
