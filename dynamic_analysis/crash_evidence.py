@@ -184,6 +184,50 @@ def _image_name(value: object) -> str:
     return str(value or "").replace("/", "\\").rsplit("\\", 1)[-1].strip().lower()
 
 
+#: Extensions WER keeps in the dump's file name before the PID.
+_WER_IMAGE_EXTENSIONS = {"exe", "com", "scr", "dll"}
+
+
+def _parse_wer_dump_name(filename: str) -> tuple[str, Optional[int]]:
+    """`(image name, pid)` from a WER local-dump file name.
+
+    **WER writes two shapes and this only handled one.** The comment here used
+    to say "<image>.<pid>.dmp" and the code read the PID from index 1, which is
+    right for `RegSvcs.10784.dmp` and wrong for `RegSvcs.exe.9132.dmp` -- there
+    index 1 is `"exe"`, so the PID parsed as `None`. Both forms occur; the
+    second is what the guest produced on run `d7cc5044`.
+
+    The PID is therefore taken as the *last* all-digit component before the
+    extension rather than by position, which is stable across both shapes and
+    across an image whose own name contains digits.
+    """
+    parts = filename.split(".")
+    if len(parts) < 2:
+        return filename.strip().lower(), None
+
+    body = parts[:-1]                       # drop ".dmp"
+
+    pid = None
+    pid_index = None
+    for index in range(len(body) - 1, 0, -1):
+        if body[index].isdigit():
+            pid = _safe_pid(body[index])
+            pid_index = index
+            break
+
+    # The image name is everything before the PID, and keeps its extension when
+    # WER included one -- the bare stem "RegSvcs" is not in HOLLOWING_TARGETS,
+    # which once scored a crash-dump image `present` where the same image from a
+    # live dump scored `strong`.
+    name_parts = body[:pid_index] if pid_index else body
+    if not name_parts:
+        name_parts = body[:1]
+    name = ".".join(name_parts).lower()
+    if len(name_parts) == 1 or name_parts[-1].lower() not in _WER_IMAGE_EXTENSIONS:
+        name += ".exe"
+    return name, pid
+
+
 # ---------------------------------------------------------------------------
 # The image Windows was running vs the file it was started from
 # ---------------------------------------------------------------------------
@@ -678,12 +722,24 @@ class CrashDumpCollector:
         if self.dump_folder is not None:
             self._before = _snapshot(self.dump_folder)
 
-    def collect(self, sample_names: set[str] | None = None) -> dict[str, Any]:
+    def collect(
+        self,
+        sample_names: set[str] | None = None,
+        sample_pids: set[int] | None = None,
+    ) -> dict[str, Any]:
         """Copy this run's dumps into the case directory.
 
         Records are shaped like the memory watcher's so the same YARA pass
         scans them: a crash dump of a hollowed process is exactly the image the
         scheduled offsets keep missing.
+
+        **Attribution is by PID first and image name second**, the same contract
+        `summarize_crashes` keeps, and for the same reason: a crash dump of the
+        sample's *child* is the interesting case and its name is not the
+        sample's. Run `d7cc5044` is the demonstration -- `RegSvcs.exe.9132.dmp`
+        reported `attributed_to_sample: false` while pid 9132 sat in
+        `missed_descendants` with the sample as its parent. The tree was known;
+        this collector was the only thing not being told about it.
         """
         result: dict[str, Any] = {
             "collected": False,
@@ -707,12 +763,20 @@ class CrashDumpCollector:
         dumps: list[dict[str, Any]] = []
         for path_text in new_files:
             source = Path(path_text)
-            # WER names them <image>.<pid>.dmp.
-            stem = source.name.split(".")
-            process_name = stem[0].lower() + ".exe" if stem else ""
-            pid = _safe_pid(stem[1]) if len(stem) > 2 else None
+            process_name, pid = _parse_wer_dump_name(source.name)
 
-            attributed = (not names) or process_name in names
+            # PID first. `names` is seeded from the sample's own image and the
+            # processes the memory watcher *observed*, so a child it never got
+            # to see -- which is exactly the short-lived hollowing target this
+            # dump exists to capture -- is absent from it by construction.
+            by_pid = (
+                sample_pids is not None and pid is not None and pid in sample_pids
+            )
+            by_name = bool(names) and process_name in names
+            if sample_pids is None and not names:
+                attributed = True          # no lineage at all: attribute nothing away
+            else:
+                attributed = by_pid or by_name
             try:
                 size = source.stat().st_size
             except OSError:

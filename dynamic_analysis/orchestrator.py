@@ -1893,6 +1893,12 @@ def run_dynamic_analysis(
     # the sample's own name so a run whose Sysmon lineage came back empty can
     # still attribute the obvious case.
     crash_names: set[str] = {sample_path.name.lower()}
+    # The sample's process tree, shared by the crash-event and crash-dump
+    # collectors. Declared here so the dump collector still has it when crash
+    # evidence is disabled -- and passed to *both*, which it was not: the dump
+    # collector attributed by name only, so a crash dump of the sample's own
+    # child reported attributed_to_sample: false. See CrashDumpCollector.collect.
+    crash_pids: set[int] | None = None
 
     memory_dump_result: dict[str, Any] = {}
     memory_summary: dict[str, Any] = {}
@@ -2432,7 +2438,9 @@ def run_dynamic_analysis(
 
         if crash_collector is not None:
             try:
-                crash_dump_result = crash_collector.collect(sample_names=crash_names)
+                crash_dump_result = crash_collector.collect(
+                    sample_names=crash_names, sample_pids=crash_pids
+                )
                 write_json(crash_dumps_json, crash_dump_result)
                 counts = crash_dump_result.get("counts", {}) or {}
                 if counts.get("dumps"):
