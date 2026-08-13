@@ -123,7 +123,7 @@ def main() -> int:
     # hook, since the compare may be against memory, may use sub/xor, and may
     # live outside the pre-decoded range. crc32 returns in EAX, so one register
     # read per instruction catches the hash however it is then consumed.
-    served = {crc(n.lower().encode()): n for n, _pid, _ppid in winenv.PROCESS_LIST}
+    served = {crc(n.lower().encode()): n for n, _pid, _ppid in winenv.served_process_list()}
     targets = dict(served)
     for h, n in KNOWN.items():
         targets[h] = f"blocklist:{n}"

@@ -762,7 +762,7 @@ class Emulator:
                     pid = struct.unpack("<I", mu.mem_read(a(3), 4))[0]
                 except UcError:
                     pid = 0
-            known = {p for _, p, _ in winenv.PROCESS_LIST}
+            known = {p for _, p, _ in winenv.served_process_list()}
             if pid and pid not in known:
                 # Refuse a pid this harness never claimed existed. The process
                 # list is a fiction and it has to be a *consistent* one -- a
@@ -1077,8 +1077,9 @@ def main(argv: list[str] | None = None) -> int:
           f"({emu.clock_sleep_100ns / 1e7:.2f}s of it slept)")
     if emu.served_process_list:
         print(f"\nprocess list served {emu.served_process_list}x -- INVENTED, from "
-              f"winenv.PROCESS_LIST ({len(winenv.PROCESS_LIST)} entries incl. "
-              f"{', '.join(n for n, _, _ in winenv.PROCESS_LIST[-2:])}). Everything "
+              f"winenv.served_process_list() ({len(winenv.served_process_list())} "
+              f"entries incl. {', '.join(n for n, _, _ in winenv.served_process_list()[-2:])}). "
+              f"Everything "
               f"below is conditional on it.")
     if emu.named_objects:
         print("\nnamed kernel objects (a loader's mutant is an IOC):")
@@ -1087,7 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
     if emu.remote_targets:
         print("\nprocesses it tried to open:")
         for t in emu.remote_targets:
-            who = next((n for n, p, _ in winenv.PROCESS_LIST if p == t["pid"]), "?")
+            who = next((n for n, p, _ in winenv.served_process_list() if p == t["pid"]), "?")
             print(f"  {t['blocks']:>13,}blk  {t['call']} pid {t['pid']} ({who})"
                   f"  {'opened' if t['opened'] else 'REFUSED - not in the served list'}")
     if emu.section_maps:

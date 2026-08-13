@@ -267,6 +267,29 @@ PROCESS_LIST = (
     (IMAGE_NAME, 9592, 2448),
 )
 
+#: A child of `explorer.exe`, served only when asked for.
+#:
+#: Measured 13 Aug, not guessed: the quiet half of the poll loop walks this list
+#: and compares each record's **parent pid** against an array holding exactly one
+#: value, `0x1054` -- which is `explorer.exe`'s pid above. The probe is
+#: `trace_poll_pass.py --which 7 --dump-at 0x2015435`, and it reported `eax` as
+#: 4, 488, 488 across three hits, matching the ppid column of `smss`, `csrss` and
+#: `wininit` in order. **The sample is waiting for a process whose parent is
+#: explorer**, which fits FormBook's documented shape: reach explorer, then
+#: migrate into something explorer spawns.
+#:
+#: Nothing above has ppid 4180, and the list is byte-identical on every call, so
+#: the wait can never end. That makes the clean `ExitProcess` this document has
+#: long read as "the sample runs out of things to do" **an artefact of the
+#: harness**.
+#:
+#: Off by default, because serving a target manufactures the outcome we want and
+#: every conclusion drawn from a run is conditional on this tuple. Set
+#: `RINGFORGE_EXPLORER_CHILD=1` to include it and the run says so. The name is
+#: deliberately ordinary -- the compare that matters is on the pid, not the name,
+#: and a name from any blocklist would confound the two.
+EXPLORER_CHILD = ("notepad.exe", 5120, 4180)
+
 #: The environment the payload is told about. **Invented**, like PROCESS_LIST,
 #: and declared here for the same reason.
 #:
@@ -302,7 +325,33 @@ _PROC_SIZE, _THREAD_SIZE = 0xB8, 0x40
 _PROC_IMAGE_NAME, _PROC_IDS = 0x38, 0x44
 
 
-def system_process_information(base, entries=PROCESS_LIST):
+def served_process_list():
+    """The effective process list, which is the only list anything may consult.
+
+    **Every consumer has to read this, not `PROCESS_LIST`.** The fiction only
+    works while it is consistent: `NtOpenProcess` refuses any pid the harness
+    never claimed existed, and the first version of the explorer-child toggle
+    augmented the enumeration alone. The sample was shown `notepad.exe` and then
+    told that pid was invalid -- `STATUS_INVALID_CID` -- which is the same
+    contradiction the opener guards against, arriving from the other side. It
+    cost a full run to see.
+    """
+    if os.environ.get("RINGFORGE_EXPLORER_CHILD") != "1":
+        return PROCESS_LIST
+    if not served_process_list.announced:
+        name, pid, ppid = EXPLORER_CHILD
+        print(f"win32_emu_env: process list includes {name!r} (pid {pid}, "
+              f"parent {ppid}) -- a child of explorer.exe. The quiet half of "
+              f"the poll loop compares each record's parent pid against "
+              f"explorer's, so this is the entry it has been waiting for.")
+        served_process_list.announced = True
+    return PROCESS_LIST + (EXPLORER_CHILD,)
+
+
+served_process_list.announced = False
+
+
+def system_process_information(base, entries=None):
     """A `SYSTEM_PROCESS_INFORMATION` chain, as `NtQuerySystemInformation`
     class 5 returns it, laid out to be read at `base`.
 
@@ -315,6 +364,7 @@ def system_process_information(base, entries=PROCESS_LIST):
     own pid. That is not decoration: `NtQueueApcThread` is in the decoded
     capability set, and queueing an APC needs a thread id to aim at.
     """
+    entries = served_process_list() if entries is None else entries
     sizes = [_PROC_SIZE + _THREAD_SIZE + ((len(n.encode("utf-16-le")) + 8) & ~7)
              for n, _, _ in entries]
     out, cursor = bytearray(), 0
