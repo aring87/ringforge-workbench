@@ -1,169 +1,164 @@
-# Roadmap
+# Finishing dynamic analysis
 
-Written 13 Aug 2026, to answer three questions: what is actually in this
-program, is the dynamic side finished enough to leave, and what does moving to
-static and the API workflows involve.
-
-`README.md` has a roadmap already. It is a feature wishlist — fifteen bullets,
-unranked, no statement of risk. This is the other kind: what is load-bearing,
-what is untested, and what order the work wants doing in.
+Written 13 Aug 2026. Scope is `dynamic_analysis/` — the pipeline. The emulator
+in `scripts/` belongs to the `422e30ed` investigation, not to this, and mixing
+the two is why "how much is left" keeps feeling unanswerable.
 
 ---
 
-## What the program is
+## What "done" means here
 
-Six workflows over one case-folder model, across roughly 47,000 lines of Python:
+Not "every feature built". The build queue is nearly empty already. Done is:
 
-| Area | Lines | Test files | Tests |
-|---|---:|---:|---:|
-| `dynamic_analysis/` | 27,122 | 46 | **550** fast, 564 with `slow` |
-| `gui/` | 13,667 | 0 | 0 |
-| `static_triage_engine/` | 6,419 | 1 | **2** |
-| `scripts/` | 4,913 | — | manual tools |
-| `integrations/` | 0 | — | empty directory |
+> **Every detector has fired at least once on real data, or is explicitly
+> recorded as never having fired and why.** Nothing scores that has not been
+> measured. Nothing silently reads as clean when it was never collected.
 
-The workflows: static triage, dynamic runtime collection, a manual API tester,
-OpenAPI/Swagger spec review, browser-extension inspection, and unified
-reporting. The GUI is the front door to all of them.
+That is the project's own standard, applied to itself. The proven/unproven
+ledger in `docs/HANDOFF.md` is the checklist; this is the plan for emptying it.
 
----
-
-## Is the dynamic side in a good spot?
-
-**Broadly yes, and for a specific reason worth naming before it gets lost.**
-The dynamic side is not mature because it has a lot of detectors. It is mature
-because of a discipline that shows up in every one of them:
-
-- **Every detector says whether its input was collected.** `collection_available`
-  in the registry-read pass, `available` in module integrity, the *Not Compared*
-  renders in the report. A zero from a run that collected nothing never reads
-  as a clean result.
-- **Every filter counts what it removed.** Background reads, other-process
-  crashes, images set aside as resource-only, opens by processes outside the
-  tree. A signal that fires on everything says nothing, and the only way to know
-  which you have is to keep the number you discarded.
-- **Tests aim at the failure mode.** The uncollected render must differ from the
-  clean render. The whole page is rendered, not just the fragment, because a
-  section function never called is indistinguishable from one returning `""`.
-- **The lineage contract is honoured everywhere.** `None` means count
-  everything, an empty set means attribute nothing. Audited across all five
-  passes on 13 Aug; no pass conflates them.
-
-That discipline exists because the project paid for it repeatedly — the
-dead-marker bug that discarded every file write for the life of the project, the
-analyzer-attribution filter, the carver and the identity gate both skipping the
-same object, and most recently a cache eviction that silently dropped
-`header_mismatch` for any process with more than 96 modules.
-
-### What is genuinely left on the dynamic side
-
-Nothing that blocks moving on. In rough order of value:
-
-1. **The detectors have never been measured on a live run.** The ntdll-unhooking
-   pass, the WER timestamp check and module integrity are all built, tested and
-   *unscored on purpose*, because their false-positive rates are unknown. One
-   detonation with the current build turns three "probably useful" detectors
-   into three measured ones. **This is the highest-value dynamic work left, and
-   it is a run rather than a code change.**
-2. **`procmon.exe` is on the sample's blocklist and the guest runs Procmon.**
-   Measured, not suspected: serving a hit diverts the sample 233M blocks earlier.
-   Decide about renaming before the next detonation, not after reading a quiet
-   report.
-3. **Gap 4's active half** — "read a VM artifact, then went quiet" — is still
-   only a collection path. It wants a live run before a detector is built on it.
-4. **Scoring is untouched by the last three detectors.** They feed the report,
-   not the verdict. That is correct until (1) happens, and then it is a decision.
-
-### What I would not claim
-
-The dynamic side has never been run end to end against a *benign* corpus of any
-size. Both controls pass and the UPX control under-predicts by design, but
-"false positive rate across ordinary software" is not a number this project has.
-That is the honest gap behind every "not scored" note.
+**The shape of the remaining work is validation, not construction.** One
+detector is unbuilt. Fourteen things are built and unproven. That ratio is the
+whole roadmap.
 
 ---
 
-## The thing that actually matters before static
+## The build queue — one item
 
-**`static_triage_engine/` is 6,419 lines with two tests, and `pytest` does not
-run them.** `pytest.ini` sets `testpaths = dynamic_analysis/tests`, so
-`static_triage_engine/tests/test_scoring.py` is only reached by naming it
-explicitly. Both tests cover one function — the installer-context flag in
-`score_static`.
+**Gap 4's active detector: "read a VM artifact, then went quiet."** The
+collection path underneath it is *proven end to end* (07 Aug 14:53, 143,805
+registry reads captured, lineage resolved, hits produced, and its first contact
+with real data found the Windows-background false-positive class it needed to).
+What does not exist is the thing that reads a VM check followed by silence and
+says so.
 
-Compare what is in there: `engine.py` (1,291 lines), `report.py` (1,160),
-`scoring.py` (1,150), `api_spec_analysis.py` (928). Scoring and reporting logic
-that produces verdicts an analyst acts on.
-
-**This is where the next "count that never moved" is hiding, and nothing would
-tell you.** Every class of bug this project has found on the dynamic side —
-markers that match nothing, a filter that excludes the interesting object, a
-detector whose input was never collected, a count derived from a truncated list
-— is equally possible in static triage, and there is no test that would fail.
-
-That is not an argument for stopping. It is an argument for the *first* piece of
-static work being a harness rather than a feature.
+It is deliberately last. It needs a live run to show what it fires on, and
+building it before that is the mistake this project has corrected repeatedly.
 
 ---
 
-## Roadmap
+## The proof queue
 
-### Phase 1 — make static legible before extending it
+Grouped by what unblocks each, because that determines the order.
 
-1. **Put `static_triage_engine/tests` on `testpaths`.** One line. Until then
-   every test written there is invisible to the default run.
-2. **Characterisation tests for `score_static`.** Not aspirational tests —
-   pin what it *currently* does on a handful of real cases, so refactoring is
-   possible at all. This is the enabling step for everything below.
-3. **Apply the `collection_available` pattern.** For each static step — capa,
-   FLOSS, YARA, VirusTotal, LIEF — the summary should distinguish *the tool ran
-   and found nothing* from *the tool was absent, failed, or was skipped*. On the
-   dynamic side that distinction has caught real bugs four times. `tools/capa`,
-   `tools/floss` and `tools/yara` are external and can silently be missing.
-4. **Audit the static scoring for the same bug class**: counts derived from
-   truncated lists, markers matched with the wrong separator convention,
-   filters that drop the object of interest. The dynamic audit notes in
-   `docs/HANDOFF.md` are the checklist.
+### A. Unblocked by one detonation of the current build
 
-### Phase 2 — the API workflows
+| Thing | Status today |
+|---|---|
+| WER image-timestamp check | Built 13 Aug, never run live |
+| ntdll-unhooking pass | Built 13 Aug, never run live |
+| Module-integrity report section | Rendered 13 Aug, never run live |
+| Module integrity `replaced` verdict | Never seen in the wild |
+| Dropped-file lineage | Fixed, unproven |
+| Carve on long paths | Fixed, unproven |
+| Crash-dump `hollowing_target` | Fixed, unproven |
+| `procmon_filter` in the summary | Built, unproven |
+| Windows-response suppression | Proven by replay, unproven on a fresh run |
 
-There are two distinct things both called "API", and they should be kept apart:
+Nine items, one run. This is by far the best return available.
 
-- **Manual API tester** (`gui/api_window.py`, `static_triage_engine/api_analysis.py`,
-  241 lines) — an analyst-driven request/response tool with evidence capture.
-- **OpenAPI spec analysis** (`api_spec_analysis.py`, 928 lines,
-  `gui/spec_window.py`, fixture at `test_specs/petstore3_openapi.json`) — static
-  review of a specification.
+### B. Needs a different sample or scenario
 
-The spec analyser is the one with real logic and zero tests, and it already has
-a fixture sitting next to it. That fixture plus characterisation tests is the
-cheapest way to make it safe to extend. The README's "additional API Spec
-Analysis depth and rule tuning" is exactly the kind of work that wants tests
-first, because rule tuning without a regression suite is how a rule set quietly
-stops matching.
+| Thing | What it actually needs |
+|---|---|
+| Multi-region carve | A payload spanning two memory ranges. Two runs, never engaged |
+| Received-file collection | Something uploaded to FakeNet. Root resolution proven; collection never exercised |
+| Split-API YARA rule | Stage 2 present in a dump. Its subject has never been in memory on a run that scanned |
+| Adaptive window | Fired once, on the wrong case (a UPX control sitting at a prompt) |
+| Sysmon Event 25 | Enabled and silent. Does not catch hollowing; may catch something else |
 
-### Phase 3 — the surfaces
+These do not block "done". They want recording as *known-unexercised with the
+reason*, which is a legitimate end state and much better than pretending.
 
-- **`gui/` has 13,667 lines and no tests.** Not necessarily wrong for a GUI, but
-  the controllers under `gui/controllers/` hold logic that is testable and
-  currently is not.
-- **`integrations/` is an empty directory** with only a `__pycache__`. Either it
-  is vestigial and should go, or something was planned there. Worth deciding
-  rather than leaving.
-- **Unified reporting** (`gui/unified_report_window.py`, 1,442 lines) is where
-  static and dynamic meet. It is the natural place for a cross-workflow verdict,
-  and the natural place for two scoring models to disagree in a way nobody
-  notices.
+### C. Needs a corpus, not a sample
+
+**No false-positive rate for ordinary software.** Both controls pass and the UPX
+control under-predicts by design, but nothing here has been run against a body
+of benign binaries. Every "not scored" note in the codebase is ultimately
+waiting on this number.
+
+This is the single largest gap between "works on three samples" and "trustworthy
+pipeline", and it is also the least glamorous.
 
 ---
 
-## If you do one thing next
+## The plan
 
-**Detonate the current build.** Three detectors are finished and unmeasured, the
-guest is a commit behind, and every one of them was written to be judged by what
-it fires on rather than by argument. It is also the only item here that cannot
-be done later at the same cost — the sample, the guest and the questions are all
-loaded right now.
+### Run 1 — the loader, current build
 
-**If you would rather move to static, do Phase 1 items 1 and 2 first.** They are
-small, and they are what makes everything after them reversible.
+The one that clears queue A. Pre-flight, because three of these have bitten
+before:
+
+1. **`git pull` on the guest.** It is many commits behind; every 13 Aug detector
+   is host-side only until it does.
+2. **Point the Procmon config at `dynamic_registry_reads.pmc`.** A run on the
+   default config cannot see registry reads, and a previous run was set up for
+   exactly this and tested none of it because the field was left on the default.
+3. **Decide about `procmon.exe` before launching, not after.** It is on this
+   sample's blocklist — measured, not suspected: serving a hit diverts it 233M
+   blocks earlier and it never creates its mutex. If the chain ever gets past
+   the crash, Procmon's presence aborts the payload.
+4. **Write the expected results down first.** That is what made gap 1 findable.
+
+Then read, in this order: `crash_summary.image_timestamps`,
+`memory\module_integrity.json`, `procmon\ntdll_unhooking.json`.
+
+**Pre-registered prediction**, so the run can disagree: the WER timestamp check
+fires (Windows recorded `5ff2b99b` for a `RegSvcs.exe` whose file is
+`68531ee1`), module integrity reports `header_mismatch` on `regsvcs.exe @
+0x400000`, and the ntdll pass shows the sample opening `ntdll.dll` — because the
+emulator watched it do exactly that at `0x202f457`. If the ntdll pass shows
+*nothing*, the interesting question is whether the read happens before Procmon
+attaches.
+
+### Run 2 — the same build, benign
+
+A handful of ordinary installers and signed applications through the same
+pipeline. Purpose is queue C: what do these detectors say about software that is
+not malware. Cheap, and it is the number that decides whether any of the three
+new detectors may score.
+
+### Then — decide scoring
+
+With A and C measured, each new detector gets one of three outcomes, recorded
+either way:
+
+- scores, with a band and a reason
+- stays context-only, with the false-positive rate that made that the right call
+- is removed
+
+Right now all three are context-only *by default* rather than by decision, which
+is the correct temporary state and a bad permanent one.
+
+### Then — build gap 4's detector
+
+Last, with the data to aim it.
+
+---
+
+## Exit criteria
+
+Dynamic is finished when all five hold:
+
+1. The proven/unproven ledger has no row reading "built, unproven" without a
+   named reason it cannot be exercised.
+2. Every detector that fires on the loader has a recorded false-positive count
+   from the benign corpus.
+3. Every detector is either scored or explicitly context-only *by decision*.
+4. Gap 4's active detector exists, or is recorded as declined with a reason.
+5. `pytest` is green including `slow`, and the `slow` fixture staleness guard
+   has survived at least one Windows Update. *(It was added 13 Aug after a
+   patched host silently rotted the reference dump for two days.)*
+
+None of that requires new features. It requires runs, and writing down what they
+showed.
+
+---
+
+## After dynamic
+
+Not now — but so it is not lost. `static_triage_engine/` is 6,419 lines with two
+tests, and until 13 Aug `pytest` did not collect them at all. `gui/` is 13,667
+lines with none. The first static task is a harness, not a feature: pin what
+`score_static` currently does, then apply the `collection_available` pattern to
+capa / FLOSS / YARA / VirusTotal, all of which can be silently absent.
