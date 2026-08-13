@@ -1443,6 +1443,59 @@ knowledge that a 3-second child cannot be caught by any scheduled offset — if 
 `RegSvcs` image is wanted, the crash dump via WER `LocalDumps` is the only route
 that has ever produced one.
 
+### The crash dump closes the last row of run `d7cc5044` — 13 Aug
+
+The run's `cases\` directory was lost, but `C:\werdumps\RegSvcs.exe.9132.dmp`
+survived because WER writes outside it. That one file settles the prediction the
+run left open, and it did so **without a detonation** —
+`python -m dynamic_analysis.module_integrity <dir>` over a dump already on disk.
+
+    *** HEADER MISMATCH  regsvcs.exe @ 0x400000  (a process loaders hollow)
+          loader says  timestamp 0x5ff2b99b  size_of_image 0x46000
+          the file has timestamp 0x68531ee1  size_of_image 0xe000
+          in memory     entry 0x2680  image_base 0x400000  sections 1
+          99.10% of 25,420 bytes differ
+
+Every value matches the 10 Aug finding independently, `entry 0x2680` included —
+the entry point the emulator has been driven from all session. **So the row
+failed this morning for the reason diagnosed and not for any fault in the pass:
+there was no `RegSvcs` image to examine, and given one it reports the hollow.**
+
+**The carver on the same dump shows the mechanism outright:**
+
+| address | size | timestamp | what |
+|---|---|---|---|
+| `0x400000` | `0x46000` | `0x5ff2b99b` | stage 3, at `RegSvcs.exe`'s preferred base |
+| `0x820000` | `0xe000` | `0x68531ee1` | the **real** `RegSvcs.exe`, .NET, relocated away |
+
+Mapped alongside at the preferred base, confirmed on a second run and a second
+sample of the same chain. Not overwrite-in-place.
+
+**And two unmapped `ntdll` copies sit in private memory** — `0x13b0000` and
+`0x156f000`, both 1,830,912 bytes, both carrying ntdll's `0xd277d290`. That is
+the self-unhooking visible in *memory structure*, independent of the Procmon
+file-opens the ntdll pass keyed on. The dump also records
+`host_image_timestamp 0x5ff2b99b`, the payload's rather than the file's, which
+is precisely why the event-log check works.
+
+**Five lines of evidence, four independent sources** — the event log, the module
+list against disk, the memory layout, and Procmon — converging on one act. No
+single one of them could see what the others saw.
+
+The split-API YARA rule does **not** match this dump, and that is correct rather
+than a miss: stage 2's managed literals live in the sample's own process, while
+`RegSvcs` holds stage 3, which is native and carries no plaintext. A real
+malware dump that lacks the rule's subject declining to fire is a small extra
+negative control.
+
+**Two operational notes worth keeping.** WER dumps land in `C:\werdumps`, which
+survives losing `cases\` but **not** a revert — so it is the first thing to copy
+off, not the last. And `attributed_to_sample` reads **false** on this dump even
+though pid 9132's parent is the sample and `missed_descendants` says so: the
+crash-dump collector is not consulting the lineage the rest of the run used.
+That is the same attribution family as the two contamination bugs this run
+exposed, and it is unfixed.
+
 ### Pick up here — 12 Aug
 
 Ordered by value, with what each needs. Nothing below is blocked on a detonation
