@@ -1,17 +1,21 @@
 """Record which code a single process enumeration runs, so two passes can be diffed.
 
-The seven enumerations before `ExitProcess` are not seven identical sweeps.
-Measured with `trace_blocklist.py --which N`, passes #4 and #6 reach the crc32
-epilogue after 2.3M blocks, while #5 and #7 run 9.4M and put no served name and
-no blocklist constant in EAX at all. Two shapes, alternating, with the exact
-same numbers each time -- so the last thing the sample does before leaving is a
-pass that never consults the blocklist.
+The seven enumerations before `ExitProcess` are not seven identical sweeps: some
+consult the process-name blocklist and some do not. `trace_blocklist.py --which
+N` shows that much, because a served name's hash reaches EAX on #4 and #6 and on
+neither #5 nor #7.
 
-`trace_blocklist.py` cannot say what that pass *does*, because it anchors on a
-known value reaching EAX and in the quiet pass no known value ever does. This
-asks the other question: which addresses execute. Run it on a hashing pass and a
-non-hashing one, then `--diff` the two, and what comes out is the code that is
-unique to the pass that decides to give up.
+**It cannot say how long a pass is, and reading its block counts that way is a
+mistake this tool exists partly to correct.** It calls `emu_stop()` a few
+hundred instructions after it captures a hit, so a pass that hashes appears
+short (~2.3M blocks) purely because the instrument stopped. Measured here
+without that early stop, #6 runs 9,449,663 blocks and #7 runs 9,439,946 -- the
+same length within 0.1%.
+
+So the difference is *which code runs*, not how much. This records the addresses
+executed inside the allocation during one enumeration; `--diff` two passes and
+what comes out is the code unique to each, which for the quiet pass is the
+shortest path to whatever decides to give up.
 
     ..\\.venv\\Scripts\\python.exe trace_poll_pass.py --which 6 --out pass6.json
     ..\\.venv\\Scripts\\python.exe trace_poll_pass.py --which 7 --out pass7.json
@@ -22,6 +26,7 @@ Run it from `scripts/`.
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import json
 from pathlib import Path
@@ -34,12 +39,27 @@ from emulate_native_stub import Emulator
 from trace_blocklist import STATE, arm_at_process_list
 
 
-def _disassembly(emu: Emulator) -> dict[int, tuple[str, str]]:
-    alloc_base, alloc_size = emu.allocs[0]
-    blob = bytes(emu.mu.mem_read(alloc_base, alloc_size))
+def _decode_at(blob: bytes, base: int, address: int) -> str:
+    """Decode one instruction at an address the CPU actually executed.
+
+    Two ways to get this wrong, both already recorded in the handoff as having
+    produced a retracted conclusion, and both hit here on the first attempt.
+
+    A linear sweep from `base` desynchronises and renders ordinary code as
+    `iretd` / `fmul` / `?`. Every address in a trace was executed, so decoding
+    one instruction at each is exact by construction and needs no sweep.
+
+    Worse, the allocation **keeps decrypting as it runs**. Bytes read from a
+    fresh restore of `after_scan.state` at 348M blocks are not the bytes that
+    executed at 597M, so the disassembly must come from memory captured at
+    trace time -- which is why `counts` and `alloc` travel together in one file.
+    """
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
-    md.skipdata = True
-    return {i.address: (i.mnemonic, i.op_str) for i in md.disasm(blob, alloc_base)}
+    offset = address - base
+    if not 0 <= offset < len(blob):
+        return "(outside the captured allocation)"
+    decoded = next(md.disasm(blob[offset:offset + 16], address), None)
+    return f"{decoded.mnemonic:<8} {decoded.op_str}" if decoded else "(undecodable)"
 
 
 def record(args: argparse.Namespace) -> int:
@@ -70,6 +90,10 @@ def record(args: argparse.Namespace) -> int:
     print(f"  {status}  ({emu.blocks:,} blocks, {ran:,} in this pass)")
     print(f"  {len(counts):,} distinct addresses executed in the allocation")
 
+    # Captured *after* the pass, because the allocation decrypts as it runs and
+    # a disassembly taken from any other moment is of different bytes.
+    alloc = bytes(emu.mu.mem_read(alloc_base, alloc_size))
+
     payload = {
         "which": args.which,
         "state": args.state,
@@ -77,6 +101,7 @@ def record(args: argparse.Namespace) -> int:
         "blocks_run": ran,
         "status": status,
         "alloc_base": alloc_base,
+        "alloc": base64.b64encode(alloc).decode("ascii"),
         "counts": {str(a): c for a, c in counts.items()},
     }
     Path(args.out).write_text(json.dumps(payload), encoding="utf-8")
@@ -97,25 +122,25 @@ def diff(args: argparse.Namespace) -> int:
     print(f"\nonly in #{left['which']}: {len(only_left):,}")
     print(f"only in #{right['which']}: {len(only_right):,}")
 
-    # Re-disassemble once so the diff is readable without a second emulator run.
-    emu = Emulator.restore(args.state)
-    dis = _disassembly(emu)
-
-    for label, addrs, counts in (
-        (f"only in pass #{left['which']} (the hashing pass)", only_left, lc),
-        (f"only in pass #{right['which']} (the quiet pass)", only_right, rc),
+    for label, addrs, counts, side in (
+        (f"only in pass #{left['which']}", only_left, lc, left),
+        (f"only in pass #{right['which']}", only_right, rc, right),
     ):
         print(f"\n{'=' * 70}\n{label}\n{'=' * 70}")
         if not addrs:
             print("  nothing")
             continue
+        if "alloc" not in side:
+            print("  no allocation captured -- re-record with the current tool")
+            continue
+        blob = base64.b64decode(side["alloc"])
+        base = side["alloc_base"]
         runs = _contiguous(addrs)
         for start, end in runs[: args.runs]:
             total = sum(counts[a] for a in addrs if start <= a <= end)
             print(f"\n  {start:#010x}-{end:#010x}   {total:,} executions")
             for a in [x for x in addrs if start <= x <= end][: args.lines]:
-                m, o = dis.get(a, ("?", ""))
-                print(f"    {a:#010x}  {m:<9} {o}")
+                print(f"    {a:#010x}  {counts[a]:>7}x  {_decode_at(blob, base, a)}")
         if len(runs) > args.runs:
             print(f"\n  ... {len(runs) - args.runs} more regions")
     return 0

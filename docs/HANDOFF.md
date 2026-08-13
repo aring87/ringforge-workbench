@@ -1776,23 +1776,32 @@ modules all `identical`.
 
 This document has described the ending as "seven enumerations,
 `NtDelayExecution` between them, then `ExitProcess`", as though one action
-repeated. **It is two actions alternating**, measured with
-`trace_blocklist.py --which N`:
+repeated. **Some passes consult the process-name blocklist and some do not**,
+measured with `trace_blocklist.py --which N`:
 
-| pass | armed at | blocks run | hashed a served name? |
-|---|---|---|---|
-| #1 | — | — | **yes** |
-| #4 | 500,413,069 | 2.3M | **yes** |
-| #5 | 531,625,464 | 9.4M | no |
-| #6 | 565,844,270 | 2.3M | **yes** |
-| #7 | 597,056,665 | 9.4M | no |
+| pass | armed at | a served name's hash reached EAX? |
+|---|---|---|
+| #1 | — | **yes** |
+| #4 | 500,413,069 | **yes** |
+| #5 | 531,625,464 | no |
+| #6 | 565,844,270 | **yes** |
+| #7 | 597,056,665 | no |
 
-Two shapes with the *same two numbers* each time, 2.3M and 9.4M. That is not
-hook flakiness, and the control rules out the obvious alternative explanation:
-on #1 the hook fires cleanly and shows the table-driven CRC-32 at
-`0x02017301`–`0x02017325` (`xor eax, [ebp+edx*4-0x404]` against the table,
-`not eax` for the final NOT). So the quiet passes are quiet about the
-*blocklist*, not about the instrument.
+The control rules out the instrument: on #1 the hook fires cleanly and shows the
+table-driven CRC-32 at `0x02017301`–`0x02017325` (`xor eax, [ebp+edx*4-0x404]`
+against the table, `not eax` for the final NOT). The quiet passes are quiet
+about the *blocklist*, not about the hook.
+
+**A first version of this section also claimed two distinct pass lengths, 2.3M
+blocks and 9.4M, and that was an artefact of the instrument.**
+`trace_blocklist.py` calls `emu_stop()` a few hundred instructions after it
+captures a hit, so a pass that hashes *appears* short because the tool stopped
+itself; a pass that never hashes runs on. Re-measured without the early stop,
+**#6 runs 9,449,663 blocks and #7 runs 9,439,946 — the same length within
+0.1%.** The passes take the same time and differ in what they do with it. This
+is the third time in this file that a block count has turned out to describe the
+harness rather than the sample; the tell each time was a number that repeated
+too exactly.
 
 **Why it matters: the last thing before `ExitProcess` is a pass that never
 consults the blocklist.** The exit is therefore not "I swept the process list
@@ -1801,11 +1810,25 @@ altogether. Whatever decides to leave lives in the other pass, and nothing has
 ever looked at it. That also demotes the uncracked names: they are consumed by
 the pass that *isn't* making the decision.
 
-**Two honest limits.** #2 and #3 are unmeasured, so "alternating from #4" is
-inference from four points. And `trace_blocklist.py` prints
-`returned or budget reached` without distinguishing a traced function returning
-from the emulator finishing, which is worth separating before leaning on the
-9.4M figure.
+**What the two passes actually differ by**, from `trace_poll_pass.py` recording
+executed addresses inside the allocation: #6 touches 1,084 distinct addresses
+and #7 touches 943, with **187 unique to #6 and 46 unique to #7**. The 187
+decode as exactly what they should — the CRC-32 table builder and loop at
+`0x02017251` (58,976 executions), the blocklist compare at `0x02026181` that
+`hash_call_sites.py` already names, and a case-folder at `0x0202fd21`
+(`cmp al, 0x41` / `cmp al, 0x5a`).
+
+**The 46 unique to the quiet pass are the open question**, and the first attempt
+to read them failed twice over, both times in ways this file already documents.
+A linear capstone sweep from the allocation base desynchronises and renders them
+`iretd` / `fmul` / `?`. Decoding at each executed address instead still gave
+nonsense, because **the allocation keeps decrypting as it runs** and the bytes
+were being read from a fresh restore at 348M blocks while the code executed at
+597M. `trace_poll_pass.py` now stores the allocation captured at trace time
+alongside the counts, which is the only way that disassembly can be right.
+
+**One honest limit.** #2 and #3 are unmeasured, so the pattern across all seven
+is inference from four points.
 
 `scripts/trace_poll_pass.py` is the follow-up instrument: it records which
 addresses inside the allocation execute during one enumeration, so a hashing
