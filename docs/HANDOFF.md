@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-13. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. 602 fast tests. **The detonation queue is empty too, as of run `bb51babb`** — the registry-read run that three consecutive sessions were set up for has now happened, passed all twelve `verify_run.py` rows, and hit every pre-registered prediction. **Its headline result is a negative and a real one: 73,825 registry reads by the sample, none naming a VM artifact**, with a positive control in the same stream (the collector caught `VBoxSF` reads by the sample's own PowerShell child and correctly binned them as routine network-provider enumeration). So this variant checks for analysis environments by module hash and CRC-32 process name, never by registry — **gap 4b's finding path needs a different sample, not another run of this one**, and gap 4's threshold stays uncalibrated for the same reason. The config field that was missed three runs running is now the default rather than something to remember, with a pre-flight warning and a test pinning it. **What is left is the sample, and it is emulator work, not a detonation.** See *Run `bb51babb`* and *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
+**Last updated:** 2026-08-13. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. 602 fast tests. **The detonation queue is empty too, as of run `bb51babb`** — the registry-read run that three consecutive sessions were set up for has now happened, passed all twelve `verify_run.py` rows, and hit every pre-registered prediction. **Its headline result is a negative and a real one: 73,825 registry reads by the sample, none naming a VM artifact**, with a positive control in the same stream (the collector caught `VBoxSF` reads by the sample's own PowerShell child and correctly binned them as routine network-provider enumeration). So this variant checks for analysis environments by module hash and CRC-32 process name, never by registry. **A second run the same day settled that a different sample does not fix it either:** `a6a86646…` was chosen for this behaviour, announced *"cannot run inside a virtual machine"* in a dialog box, and still reported `artifacts_read: 0` — registry, file, device-namespace and WMI routes each ruled out from its own events. **Two for two on samples that provably detect virtualisation, so gap 4 should be recorded context-only by decision rather than left awaiting calibration.** The config field that was missed three runs running is now the default rather than something to remember, with a pre-flight warning and a test pinning it. **What is left is the sample, and it is emulator work, not a detonation.** See *Run `bb51babb`* and *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
 tdll.dll` twice -- and first contact with live data exposed two contamination bugs in it, both known classes with helpers already in `utils` that the pass was not calling: `WerFault.exe` supplied 30 of 41 opens credited to the sample, and **`procdump64.exe`, the pipeline's own tool**, supplied 18 of 60 background opens. Fixing both took the false-positive baseline from **60 to 2** while leaving the finding untouched -- and that baseline is the number deciding whether the detector may ever score. Module integrity's prediction failed for a locatable reason: there was no `RegSvcs` image to examine. Registry reads were **still** not collected, wrong Procmon config for the third time, and the guard said so rather than reporting a silent zero. See *Run `d7cc5044`*. Before that, **gaps 4 and 5's remaining build items were closed: all three detectors and a real minidump reader.** `dynamic_analysis/minidump.py` is now the one tested dump reader and `pe_carve` delegates to it; the unloaded-module list that defeated two hand-rolled attempts is its headline case, and the reason is structural — `MINIDUMP_UNLOADED_MODULE_LIST` opens with `SizeOfHeader/SizeOfEntry/NumberOfEntries`, not the bare count the loaded list uses, so reading it the same way shifts every field. `dynamic_analysis/ntdll_unhooking.py` catches a process opening `ntdll` *as a file*, which is how self-unhooking starts and which this sample does. Suite 483 → 543. **Chasing four failing `slow` tests then found a live false negative in the hollowing detector.** The 15 header mismatches were *correct* — the cached reference dump predated a Windows Update that replaced fourteen System32 DLLs — but the investigation exposed that `header_mismatch` was handed between the reference lookup and its caller through a module-global dict that the cache eviction cleared in between, so **whichever module crossed the 96-entry cache limit lost its mismatch and was graded by degree**, which is how a payload sharing most of its bytes with the file it impersonates files as `identical`. Reproduced against the pre-fix code, fixed, and pinned by four fast tests. Suite 561 with `slow`. Before that, **two hollowing detectors landed, both off the pick-up list and neither needing a detonation.** The WER `app_timestamp` check compares the `TimeDateStamp` of the image that was *executing* against the file on disk — equal for an ordinary process, different for a hollowed one, and on run `3f70058b` Windows recorded stage 3's `5ff2b99b` for a `RegSvcs.exe` whose file is `68531ee1`. It fires without needing the fault to land in the injected region and without needing a dump at all, so it survives every way the dump watcher misses a short-lived process. And **module integrity is finally in the HTML report** rather than JSON-only, which is how its first live finding had to be read aloud by hand. Suite 483 → 511. See *Two hollowing detectors*. Before that, **the blocklist was identified as the canonical FormBook 20-entry list with six entries swapped, and the public table cracked one of them and named the slot of the rest.** 14 of 20 positions hash-match Stormshield's published table exactly, so `0x9cb95240` is `sharedintapp.exe` (Parallels) and the remaining six sit in the slots the published list fills with `vboxservice`, `vboxtray`, `prl_tools_service`, `prl_tools`, `prl_cc` and `vmtoolsd`. **That same table independently confirms `sbiedll.dll` = `0xe11da208`**, which this project had cracked circumstantially and can now treat as corroborated by an analysis that never saw this sample. Six names remain and they are this variant's own substitutions, absent from every public write-up found. **The blocklist mechanism is also fully mapped, and mapping it retracted a conclusion published in this file hours earlier.** All 20 process-name constants *are* XOR-decoder output, from 20 contiguous call sites at `0x02016619`–`0x0201691a` feeding the compare at `0x2026181` — the earlier "they are not decoder output, four routes closed" was two compounding tool bugs: a linear capstone sweep that silently drops sites where it desynchronises, run against the *warmup* image when the allocation keeps decrypting (45 sites at 47M blocks, **65 by 380M**, with all 20 constants among the late ones). Both fixed; `hash_call_sites.py --late` reports 20 of 20. The seven names are **still uncracked**, but the site order preserves the author's list and groups them: two sit between the VMware pair and Sandboxie, five among `procmon`/`filemon`/`wireshark`/`netmon`. There is no substring structure to exploit here — the compare is against the whole-name hash — and none of the seven is a purely alphabetic 8-character stem. **Both open name hashes elsewhere are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
@@ -1608,6 +1608,14 @@ configured for three runs and captured on one, and this sample has never
 produced a read the pass could see. The mechanism is testable offline, the
 constant is not, so the constant is labelled rather than dressed up.
 
+**As of 13 Aug that framing is superseded, and the answer is not "wait for a
+better run".** Two samples that provably detect virtualisation — FormBook by
+module hash, `a6a86646…` by something at CPU or API level, announced with an
+on-screen dialog — both produced `artifacts_read: 0`. The threshold's input is
+structurally rarer than assumed, so **this detector should be recorded as
+context-only by decision** rather than left indefinitely awaiting calibration.
+See *Run `8f4ca91…`*.
+
 ### Run `bb51babb`, 13 Aug — registry reads collected at last, and the answer is no
 
 The run the last three were supposed to be. `dynamic_registry_reads.pmc` was
@@ -1689,6 +1697,81 @@ but a revert, so it accumulates across runs. Harmless this time and easy to
 misattribute later; check the pid against `observed_processes` before crediting
 any dump in that folder to a run.
 
+### Run `8f4ca91…`, 13 Aug — a VM bail the pass structurally cannot see
+
+Sample `a6a86646b0066a630d7e6004ce08d52e70d81e77d98268b98a34b588cacded0a`,
+picked specifically because it should exercise gap 4b. It did the opposite, and
+the result is worth more than the calibration number would have been.
+
+**This run has ground truth, which `bb51babb` did not.** The sample put a message
+box on screen: *"This application cannot run inside a virtual machine or while
+being debugged5"* — trailing `5` and all, which is a stray variable in its own
+format string and a free signature, since a crypter does not rewrite payload
+strings. So there is no doubt whatsoever that a VM check happened and that the
+sample bailed on it. **And `vm_artifact_reads` reported `artifacts_read: 0`.**
+That is a measured false negative against a known positive, not another sample
+that happens not to check.
+
+**Every telemetry-visible mechanism is ruled out**, each from pid 7956's own
+events in `export.csv`:
+
+| mechanism | evidence it was not used |
+|---|---|
+| registry VM keys | `artifacts_read: 0` across the sample's 1,761 reads |
+| VM product/driver files | 0 of the capture's 78 VM-named events belong to the sample — all `Explorer.EXE` enumerating VBOX SCSI device classes and `svchost` touching `VBoxTray.exe` |
+| device namespace (`\\.\VBoxGuest`) | **no device-namespace opens at all** |
+| WMI | no `wbem*`, `fastprox` or `wmiutils` image loads (`Load Image` is in the config, so this is a real negative) |
+
+What is left is CPUID, an RDTSC timing check, `GetSystemFirmwareTable`, or an
+API-level process sweep — plausibly inside NSIS's `System.dll` plugin, which the
+sample drops to `Temp\nsoC67D.tmp\System.dll` and which exists to call arbitrary
+Win32 from install script. **None of that touches a file or a key, so no
+Procmon-based detector can see it, and Sysmon would not either.**
+
+**Note this run had no internal positive control**, unlike `bb51babb`:
+`background_artifact_reads` is 0 too, so nothing in 124,967 reads independently
+demonstrates the matcher would have fired. The two runs are complementary —
+`bb51babb` had a control but no ground truth about the sample, this one has
+ground truth but no control. Neither alone is conclusive; together they are.
+
+#### What this does to gap 4
+
+**Two consecutive samples that demonstrably detect virtualisation used
+mechanisms the registry pass cannot observe** — FormBook by module hash over
+`PEB->Ldr`, this one by something at CPU or API level. That is no longer a
+statement about one sample. It is a **scope statement about the detector**: the
+registry is one narrow surface of VM detection and the field does not favour it.
+
+The practical consequence is that `vm_check_and_bail`'s threshold of 10 may not
+be calibratable from field samples at any useful rate. **The honest ledger entry
+is "stays context-only because its input is rarer than assumed", not "awaiting
+calibration"** — which is one of the three outcomes `docs/ROADMAP.md` already
+allows, and is a decision rather than a default. Do not keep booking detonations
+hoping to aim it; two samples chosen *for* this behaviour both missed.
+
+If it is ever to be aimed, the input has to be manufactured rather than found: a
+sample known to read `\acpi\dsdt\vbox__`, confirmed by reading its code rather
+than by a sandbox signature.
+
+#### The crypter is worth more than the payload here
+
+The sample is an **NSIS installer**, and its build style is loud:
+
+- `HKCU\ufordjelighedens\fucoids` — **282 reads**, config or payload staged in
+  the registry and read back in pieces
+- `…\Start Menu\hydnocarpic` — **5,119 `PATH NOT FOUND` probes** into one
+  directory that does not exist
+- `C:\Program Files (x86)\streamere`,
+  `Temp\studieskolen\tandstickor\microphotography`
+- **5,403 of 6,234 `CreateFile` calls failed**
+
+Random dictionary words for every path and key, with a Scandinavian lean
+(`studieskolen`, `tandstickor`) that suggests one builder's wordlist. That
+volume of failed probes into nonsense paths is a cheap, robust behavioural
+signature — and unlike the anti-VM check itself, it is one this pipeline can
+actually see. Clean bail otherwise: no crash, no injection, one process, 141
+modules all `identical`.
+
 ### Pick up here — 13 Aug
 
 **Read this first if you are cold.** The dynamic pipeline's build queue is
@@ -1699,17 +1782,21 @@ three consecutive sessions were set up for has now happened and passed all
 twelve rows. **There is no dynamic run left that is worth booking.** What
 remains is the sample, and it is not a detonation problem.
 
-#### 1. Do not book another detonation for gap 4b
+#### 1. Do not book another detonation for gap 4b — a different sample will not fix it
 
-The obvious next action is the wrong one. Run `bb51babb` collected 73,825
-registry reads by the sample and **none of them named a VM artifact**, with a
-positive control in the same stream proving the matcher works (see *Run
-`bb51babb`*). This sample checks for analysis environments by module hash and by
-CRC-32 process name, never by registry. Another run produces the same zero.
+This was tried, on 13 Aug, and it is now settled with two data points rather
+than one. Run `bb51babb` (FormBook) collected 73,825 registry reads and named no
+VM artifact. Run `8f4ca91…` used a sample **picked for this behaviour**, which
+then put *"cannot run inside a virtual machine"* on screen and still produced
+`artifacts_read: 0` — a false negative against a known positive, with the
+registry, file, device-namespace and WMI routes all individually ruled out.
 
-Gap 4b's finding path and gap 4's uncalibrated threshold both now need **a
-different sample**, not another run of this one — which makes them a
-queue-C-shaped errand rather than the main line. Neither blocks anything.
+**Two for two, on samples that demonstrably detect virtualisation.** The
+registry is a narrow surface and the field does not favour it. Gap 4b's finding
+path is not waiting on a better sample; it is waiting on an input that is rarer
+than this document assumed. **Record gap 4 as context-only by decision and stop
+booking runs at it** — see *Run `8f4ca91…`*. Aiming the threshold now needs a
+sample confirmed by reading its code, not by a sandbox signature.
 
 The run settings, kept here only because they are measured and a future
 detonation of *some* sample will want them:

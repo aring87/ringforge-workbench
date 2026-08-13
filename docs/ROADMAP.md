@@ -201,6 +201,17 @@ is the correct temporary state and a bad permanent one.
 
 Last, with the data to aim it.
 
+**Built 13 Aug, and the data to aim it did not arrive — by measurement, not by
+omission.** Two samples that provably detect virtualisation both produced
+`artifacts_read: 0`: FormBook checks by module hash, and `a6a86646…` — chosen
+*because* a sandbox flagged it as reading VirtualBox ACPI keys — announced
+*"cannot run inside a virtual machine"* on screen while touching no registry VM
+key, no VM-named file, no device namespace and no WMI. The registry is one
+narrow surface of VM detection and the field does not favour it, so the
+threshold's input is rarer than this plan assumed. **Take the second outcome
+above: context-only, with the reason recorded.** Aiming it later needs a sample
+confirmed by reading its code, not by a sandbox signature.
+
 ---
 
 ## Exit criteria
