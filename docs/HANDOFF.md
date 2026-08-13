@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-13. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
+**Last updated:** 2026-08-13. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. 601 fast tests. **What is left is one config field on the next detonation** — `dynamic_registry_reads.pmc`, missed three runs running — which closes gap 4b's never-fired finding path *and* gives the new detector its first real data. See *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
 tdll.dll` twice -- and first contact with live data exposed two contamination bugs in it, both known classes with helpers already in `utils` that the pass was not calling: `WerFault.exe` supplied 30 of 41 opens credited to the sample, and **`procdump64.exe`, the pipeline's own tool**, supplied 18 of 60 background opens. Fixing both took the false-positive baseline from **60 to 2** while leaving the finding untouched -- and that baseline is the number deciding whether the detector may ever score. Module integrity's prediction failed for a locatable reason: there was no `RegSvcs` image to examine. Registry reads were **still** not collected, wrong Procmon config for the third time, and the guard said so rather than reporting a silent zero. See *Run `d7cc5044`*. Before that, **gaps 4 and 5's remaining build items were closed: all three detectors and a real minidump reader.** `dynamic_analysis/minidump.py` is now the one tested dump reader and `pe_carve` delegates to it; the unloaded-module list that defeated two hand-rolled attempts is its headline case, and the reason is structural — `MINIDUMP_UNLOADED_MODULE_LIST` opens with `SizeOfHeader/SizeOfEntry/NumberOfEntries`, not the bare count the loaded list uses, so reading it the same way shifts every field. `dynamic_analysis/ntdll_unhooking.py` catches a process opening `ntdll` *as a file*, which is how self-unhooking starts and which this sample does. Suite 483 → 543. **Chasing four failing `slow` tests then found a live false negative in the hollowing detector.** The 15 header mismatches were *correct* — the cached reference dump predated a Windows Update that replaced fourteen System32 DLLs — but the investigation exposed that `header_mismatch` was handed between the reference lookup and its caller through a module-global dict that the cache eviction cleared in between, so **whichever module crossed the 96-entry cache limit lost its mismatch and was graded by degree**, which is how a payload sharing most of its bytes with the file it impersonates files as `identical`. Reproduced against the pre-fix code, fixed, and pinned by four fast tests. Suite 561 with `slow`. Before that, **two hollowing detectors landed, both off the pick-up list and neither needing a detonation.** The WER `app_timestamp` check compares the `TimeDateStamp` of the image that was *executing* against the file on disk — equal for an ordinary process, different for a hollowed one, and on run `3f70058b` Windows recorded stage 3's `5ff2b99b` for a `RegSvcs.exe` whose file is `68531ee1`. It fires without needing the fault to land in the injected region and without needing a dump at all, so it survives every way the dump watcher misses a short-lived process. And **module integrity is finally in the HTML report** rather than JSON-only, which is how its first live finding had to be read aloud by hand. Suite 483 → 511. See *Two hollowing detectors*. Before that, **the blocklist was identified as the canonical FormBook 20-entry list with six entries swapped, and the public table cracked one of them and named the slot of the rest.** 14 of 20 positions hash-match Stormshield's published table exactly, so `0x9cb95240` is `sharedintapp.exe` (Parallels) and the remaining six sit in the slots the published list fills with `vboxservice`, `vboxtray`, `prl_tools_service`, `prl_tools`, `prl_cc` and `vmtoolsd`. **That same table independently confirms `sbiedll.dll` = `0xe11da208`**, which this project had cracked circumstantially and can now treat as corroborated by an analysis that never saw this sample. Six names remain and they are this variant's own substitutions, absent from every public write-up found. **The blocklist mechanism is also fully mapped, and mapping it retracted a conclusion published in this file hours earlier.** All 20 process-name constants *are* XOR-decoder output, from 20 contiguous call sites at `0x02016619`–`0x0201691a` feeding the compare at `0x2026181` — the earlier "they are not decoder output, four routes closed" was two compounding tool bugs: a linear capstone sweep that silently drops sites where it desynchronises, run against the *warmup* image when the allocation keeps decrypting (45 sites at 47M blocks, **65 by 380M**, with all 20 constants among the late ones). Both fixed; `hash_call_sites.py --late` reports 20 of 20. The seven names are **still uncracked**, but the site order preserves the author's list and groups them: two sit between the VMware pair and Sandboxie, five among `procmon`/`filemon`/`wireshark`/`netmon`. There is no substring structure to exploit here — the compare is against the whole-name hash — and none of the seven is a purely alphabetic 8-character stem. **Both open name hashes elsewhere are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
@@ -1545,57 +1545,161 @@ obvious failure. When adding a pass, the question is not "does it attribute" but
 "does it attribute with everything the run already knows" — and the answer
 belongs in a test at the helper level, which is where it now is.
 
-### Pick up here — 12 Aug
+### Benign rates measured, scoring decided, gap 4 built — 13 Aug
 
-Ordered by value, with what each needs. Nothing below is blocked on a detonation
-except where it says so.
+**The dynamic side's build queue is empty.** What follows is the last of it.
 
-1. **DONE — the hash sweep, re-run with bare stems.** It cracked
-   `0xe11da208` = `sbiedll.dll`, though not by the route expected: stems found
-   nothing and the missing *corpus class* found it. Eight hashes remain, now
-   with a stated bound. See the section above.
-2. **Stage 4, which is still the actual goal.** The emulator reaches a clean
-   `ExitProcess` *without* crashing, so the crash was never what stood between
-   us and stage 4 — the poll loop is. Whatever it waits seven times for is most
-   likely named among the seven blocklist hashes, which is why they still
-   matter even though the sweep did not crack them.
-   **The mechanism is fully mapped and there is no structure left to exploit** —
-   see *The blocklist mechanism, fully mapped*. The compare is over the
-   whole-name hash, so unlike `sychpe32` there is no length or first character
-   to harvest. What is left is a better guess, and the searched space is now
-   large enough that **listing what has been eliminated matters more than
-   another guess**: 230,756 dictionary names, 28,940 generated VM names, all
-   stems ≤ 7 over `[a-z0-9._-]`, all purely alphabetic stems of 8, and 19
-   prefix-constrained exhaustive searches to prefix + 6. Check
-   `TOOL_NAMES` / `INJECTED_DLLS` in `scripts/crack_name_hashes.py` and the
-   table in that section before retrying anything.
-   **The published list has now been found and diffed** — see *The published
-   FormBook list identifies the blocklist*. It cracked one
-   (`sharedintapp.exe`) and named the slot of the other six, but those six are
-   this variant's own substitutions and are not in any public write-up. What is
-   left is a write-up of *this* variant specifically, or accepting them as
-   unrecoverable. Do **not** infer the missing entries from their neighbours —
-   that was tried twice and failed twice.
-3. **The crash's remaining contradiction** wants guest-side instrumentation:
-   log `0x2dc01`'s argument and return during a live run. Needs a detonation,
-   and it is now a **one-bit question** — did the lookup for `0xe11da208`
-   return non-zero on a guest with no Sandboxie installed? Everything else
-   about the crash is settled.
-   Worth pairing with a check nobody has made: whether anything on the guest
-   maps a module named `sbiedll.dll` for reasons unrelated to Sandboxie.
-4. **CLOSED — all three detectors are built, 13 Aug.** The WER `app_timestamp`
-   check, the module-integrity report section and the ntdll-unhooking pass
-   all exist. See *Two hollowing detectors* and *The ntdll-unhooking pass*.
-   None is scored; the unhooking pass keeps a background count precisely so
-   the next live run measures its false-positive rate instead of assuming it.
-5. **CLOSED — `dynamic_analysis/minidump.py`, 13 Aug.** One tested reader,
-   with the unloaded-module list its headline case, and `pe_carve` delegating
-   to it. See *The ntdll-unhooking pass and a real minidump reader*.
-   The four failing `slow` tests it turned up are **resolved**: a stale cached
-   fixture, and behind it a real false negative in the hollowing detector. See
-   *The 15 header mismatches*.
+**Both scored detectors now have measured benign rates, and neither needed the
+VM.**
+
+`scripts/benign_baseline.py` dumps ordinary processes on the host and runs the
+carver and module integrity over them. **12 distinct programs, 491 MB, 300
+modules: 0 unmapped, 0 replaced, 0 header_mismatch, 0 on the hollowing-target
+branch** — with an `svchost.exe` in the corpus, so that branch was exercised
+rather than merely unhit. Two selection bugs found by running it, both recorded
+in the source: selecting on working set picks processes whose *reserved* address
+space is huge (445 MB and 796 MB dumps; `vms` predicts dump size, `rss` does
+not), and taking the N smallest gives six copies of `conhost.exe`, so "0 across
+8 processes" was really 0 across three programs.
+
+`scripts/benign_crash_baseline.py` answers the WER check, and **noticing the
+question saves a VM run**: that check only evaluates processes that *crashed*,
+so a benign detonation yields `checked: 0` and says nothing. The real question
+is "given a benign crash, does the running image disagree with the file?", and
+this host's Application Error log is already a benign crash corpus. **35 crashes
+over 180 days: 1 mismatch (2.9%), 0 in a hollowing target.** The one mismatch is
+`steamwebhelper.exe` running an image built 24 Jul against a file built 3 Aug —
+**Steam updated itself while a helper process was still running**, which is the
+exact failure mode predicted before looking and the reason `strong` requires a
+hollowing target. A corpus of 35 crashes but only three distinct programs; the
+load-bearing number is the zero.
+
+**The scoring decision, and the constraint that made it.** The category doc
+says a category must fire at most once however many events back it, "otherwise
+a single chatty behaviour outvotes three quiet ones", and the carver was already
+folded into `process_injection` for that reason. On run `d7cc5044` one act —
+hollowing `RegSvcs.exe` — was visible to the crash route, the WER route, module
+integrity *and* the ntdll pass. Scored separately, **one hollow would have
+outvoted persistence, C2 and a dropped payload combined.**
+
+| detector | decision |
+|---|---|
+| Module integrity `header_mismatch` | folded into `process_injection`; `strong` in a hollowing target. Benign rate measured, 0/300 |
+| WER image timestamp | folded in; `strong` in a hollowing target. Benign 0/35 in a target |
+| ntdll unhooking | **context-only, by decision** — one observation, benign rate needs a Procmon capture, and its claim is *defence evasion* rather than injection. Folding it in would score a different behaviour through the wrong category |
+
+Both are gated on the pass reporting `available`, so a run that compared nothing
+contributes nothing in either direction. A test asserts all five injection
+routes firing still yields exactly one category.
+
+**Gap 4's active detector exists** — `correlate_vm_check_with_silence` in
+`vm_artifact_reads.py`. Four verdicts: `not_collected`, `no_vm_check`,
+`checked_then_active`, `checked_then_quiet`. Only `vm_specific` reads count as
+the check, because `identity_surface` is where a VM check looks *and* where an
+inventory agent looks. Position is by capture order rather than clock —
+Procmon's `Time of Day` has no date. A hit that cannot be located in the stream
+reports `available: false` rather than "zero events after", because that degrade
+would have read as a bail.
+
+**Its threshold is not calibrated and says so** in the payload, the report card
+and the tests. This was built against this document's own advice that it should
+come last because it needs a live run to aim it; registry reads have been
+configured for three runs and captured on one, and this sample has never
+produced a read the pass could see. The mechanism is testable offline, the
+constant is not, so the constant is labelled rather than dressed up.
+
+### Pick up here — 13 Aug
+
+**Read this first if you are cold.** The dynamic pipeline's build queue is
+empty: every detector is built, every one is either scored or context-only *by
+decision*, and both scored ones have measured benign rates. What is left is one
+detonation and then the sample itself.
+
+#### 1. The next detonation — one config field is the whole point
+
+`tools/procmon-configs/dynamic_registry_reads.pmc`. The default config drops
+`RegQueryValue` at capture, and the field has been left on the default for
+**three runs running**. It now buys two things at once: it closes gap 4b's
+finding path, which has never once fired, and it gives gap 4's new detector its
+first real data — that detector's quiet threshold is a placeholder until then.
+
+Everything else for that run, measured rather than defaulted:
+
+| setting | value | why |
+|---|---|---|
+| Procmon config | `dynamic_registry_reads.pmc` | the point of the run |
+| Offsets | `1, 25, 55` | dormancy has been +20s to +60s; `1, 25` risks landing entirely before the unpack |
+| Max processes | `24` | the cap counts dumps, and re-dumps are taken last |
+| Re-dump | `1`s | `RegSvcs` lived 2.14s and 3.03s on two runs; 3s fired nothing |
+| Profile | `deep` | longer window |
+
+And the three that are not settings: **`git pull` on the guest after the
+revert** (reverting restores the clone to the baseline's commit, so pulling
+first throws it away); **export before the next revert**, because `cases\` is
+destroyed and `C:\werdumps` survives losing `cases\` but not a revert;
+and run `scripts/verify_run.py <run-dir>` afterwards, which checks all nine
+ledger rows and the pre-registered predictions in one command.
+
+**Expect the dump watcher to miss `RegSvcs` again.** It lived 3.03 seconds on
+run `d7cc5044` and no scheduled offset can catch that. The WER crash dump is
+the only route that has ever produced an image of it, twice now.
+
+#### 2. Then the sample, which is where the actual goal has always been
+
+Stage 4 is unrecovered and the emulator reaches a clean `ExitProcess` without
+crashing, so the crash was never what stood between us and it — the poll loop
+is. Two open threads:
+
+- **The crash's remaining contradiction**, now a one-bit question: the gate is
+  `crc32("sbiedll.dll")`, the guest has no Sandboxie, and the guest stored the
+  constant anyway. Log `0x2dc01`'s argument and return during a live run.
+- **Six blocklist names**, this FormBook variant's own substitutions, absent
+  from every public write-up found. **Do not try a fifth wordlist** — check the
+  eliminated space first (230,756 dictionary names, 28,940 generated VM names,
+  every stem ≤ 7, every purely alphabetic stem of 8, 19 prefix-constrained
+  searches). Both names cracked in two days fell to reading the consuming code,
+  neither to a corpus.
+
+#### 3. Optional, and honestly optional
+
+A **benign detonation** now serves only the ntdll pass, which is unscored — so
+it buys information, not a decision. Lower value than the registry run.
+
+#### 4. When dynamic is done, the static engine is the cliff
+
+`static_triage_engine/` is 6,419 lines producing verdicts, with **two tests**,
+and until 13 Aug `pytest` did not collect them at all. `gui/` is 13,667 lines
+with none. The first static task is a harness, not a feature: pin what
+`score_static` currently does, then apply the `collection_available` pattern to
+capa / FLOSS / YARA / VirusTotal, all of which can be silently absent. See
+`docs/ROADMAP.md`.
 
 #### Mechanics, so a cold session does not have to rediscover them
+
+**The tools added 13 Aug**, all host-side, none needing the VM:
+
+    ..\.venv\Scripts\python.exe verify_run.py <run-dir>       # nine ledger rows + predictions
+    ..\.venv\Scripts\python.exe benign_baseline.py --count 14 # dump-based detectors vs ordinary software
+    ..\.venv\Scripts\python.exe benign_crash_baseline.py --days 180
+    ..\.venv\Scripts\python.exe hash_call_sites.py --late     # what consumes each name hash
+    ..\.venv\Scripts\python.exe crack_name_hashes.py --exports
+    ..\.venv\Scripts\python.exe trace_blocklist.py --forward 220
+
+`verify_run.py` is the one to reach for after a detonation: it distinguishes
+**ABSENT from FAIL**, because a missing summary key means the guest did not pull
+and an empty one means the detector found nothing, and conflating them wasted a
+run once already.
+
+`python -m dynamic_analysis.module_integrity <dir>` re-runs the hollowing check
+over dumps already on disk — that is how the crash dump settled run
+`d7cc5044`'s open prediction without a second detonation.
+
+The suite is **601 fast tests in about four seconds**; `pytest` alone adds the
+`slow` ones, which write a real minidump and take about ninety more. The `slow`
+fixture is cached between runs and now self-invalidates when Windows servicing
+overtakes it — before that guard it rotted silently for two days and produced
+four failures that looked like a detector bug.
+
 
 Everything runs on the host through `.venv`. The emulator lives in `scripts/`
 and imports its siblings by path, so run it from that directory.
