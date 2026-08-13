@@ -132,6 +132,58 @@ class Collection(unittest.TestCase):
         self.assertEqual(result["modules"], ["kernel32.dll", "ntdll.dll"])
 
 
+class ContaminationFoundOnTheFirstLiveRun(unittest.TestCase):
+    """Both ends of run d7cc5044 were inflated, by two known bug classes.
+
+    The pass shipped without using either helper `utils` already had, and the
+    first live run showed why both exist:
+
+    * `WerFault.exe` is legitimately in the sample's tree -- Windows starts it
+      as a child of the process that crashed -- and it reads ntdll, kernel32
+      and kernelbase because that is what a crash reporter does. It accounted
+      for about thirty of the forty-one opens attributed to the sample.
+    * `procdump64.exe`, the pipeline's *own* dumping tool, opened ntdll twenty
+      times and every one landed in the background count -- the analyzer
+      inflating the number that is supposed to be this detector's
+      false-positive baseline.
+    """
+
+    def test_werfault_is_not_the_sample_unhooking(self):
+        events = [
+            _open(NT_PATH, process="RegSvcs.exe", pid=9132),
+            _open(NT_PATH, process="WerFault.exe", pid=5108),
+            _open(NT_PATH, process="WerFault.exe", pid=5108),
+        ]
+        result = collect_ntdll_unhooking(events, {9132, 5108})
+        self.assertEqual(result["counts"]["ntdll_opens_by_sample"], 1)
+        self.assertEqual(result["counts"]["windows_response_opens_excluded"], 2)
+        self.assertEqual([o["process"] for o in result["opens"]], ["RegSvcs.exe"])
+
+    def test_the_analyzers_own_tool_does_not_inflate_the_baseline(self):
+        events = [
+            _open(SYSTEM32, process="procdump64.exe", pid=6460),
+            _open(SYSTEM32, process="svchost.exe", pid=700),
+        ]
+        result = collect_ntdll_unhooking(events, {9132})
+        self.assertEqual(result["counts"]["analyzer_opens_excluded"], 1)
+        # The baseline keeps the genuine background open and loses the tool's.
+        self.assertEqual(result["counts"]["system_dll_opens_by_others"], 1)
+        self.assertEqual(result["background_opens"][0]["process"], "svchost.exe")
+
+    def test_exclusions_are_counted_and_named_never_silently_dropped(self):
+        events = [_open(NT_PATH, process="WerFault.exe", pid=5108),
+                  _open(NT_PATH, process="procdump64.exe", pid=6460)]
+        result = collect_ntdll_unhooking(events, {5108})
+        reasons = {o["excluded"] for o in result["excluded_opens"]}
+        self.assertEqual(reasons,
+                         {"Windows responding to the sample", "analyzer tooling"})
+
+    def test_a_hollowing_target_still_survives_both_filters(self):
+        # The thing the pass exists for must not be filtered by either.
+        result = collect_ntdll_unhooking([_open(NT_PATH)], {9592})
+        self.assertEqual(result["counts"]["ntdll_opens_in_hollowing_target"], 1)
+
+
 class ReportSection(unittest.TestCase):
     def _summary(self, events, pids={9592}):
         return {"ntdll_unhooking": collect_ntdll_unhooking(events, pids)}

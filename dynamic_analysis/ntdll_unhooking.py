@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Any
 
 from dynamic_analysis.crash_evidence import is_hollowing_target
+from dynamic_analysis.utils import is_analyzer_image, is_windows_response_process
 
 #: Procmon operations that open a file. `CreateFile` is the open, whatever the
 #: disposition -- Windows names it that even for a read of an existing file.
@@ -149,9 +150,12 @@ def collect_ntdll_unhooking(
     opens_in_stream = 0
     sample_opens = 0
     background_opens = 0
+    analyzer_excluded = 0
+    response_excluded = 0
 
     hits: list[dict[str, Any]] = []
     background_hits: list[dict[str, Any]] = []
+    excluded_hits: list[dict[str, Any]] = []
 
     for event in events:
         if not is_file_open(event):
@@ -163,18 +167,49 @@ def collect_ntdll_unhooking(
             continue
 
         pid = _event_pid(event)
-        mine = descendant_pids is None or (pid is not None and pid in descendant_pids)
-
+        name = event.get("process_name", "")
         entry = {
-            "process": event.get("process_name", ""),
+            "process": name,
             "pid": pid,
             "module": classified["module"],
             "reason": classified["reason"],
             "path": event.get("path", ""),
             "result": event.get("result", ""),
             "timestamp": event.get("timestamp", ""),
-            "hollowing_target": is_hollowing_target(event.get("process_name")),
+            "hollowing_target": is_hollowing_target(name),
         }
+
+        # Both exclusions run *before* attribution, and both count what they
+        # removed. Found on this pass's first live run, and neither is a new
+        # idea -- `utils` already had the helper for each and this module was
+        # not using them, which is how the first result came out inflated at
+        # both ends.
+        if is_analyzer_image(name) or is_analyzer_image(event.get("path")):
+            # `procdump64.exe` opened ntdll twenty times on run d7cc5044 and
+            # every one landed in the background count -- the analyzer's own
+            # dumping tool inflating the very number that is supposed to be
+            # this detector's false-positive baseline. The pipeline measuring
+            # itself is the bug class this project has now hit five times.
+            analyzer_excluded += 1
+            entry["excluded"] = "analyzer tooling"
+            excluded_hits.append(entry)
+            continue
+
+        if is_windows_response_process(name):
+            # WerFault is *correctly* in the sample's tree -- it is started as
+            # a child of the process that crashed -- and it reads ntdll,
+            # kernel32 and kernelbase because that is what a crash reporter
+            # does. On run d7cc5044 it accounted for roughly thirty of the
+            # forty-one opens attributed to the sample. Lineage says the
+            # process belongs to the tree; it cannot say the behaviour belongs
+            # to the malware, which is the distinction WINDOWS_RESPONSE_PROCESSES
+            # exists to draw.
+            response_excluded += 1
+            entry["excluded"] = "Windows responding to the sample"
+            excluded_hits.append(entry)
+            continue
+
+        mine = descendant_pids is None or (pid is not None and pid in descendant_pids)
         if mine:
             sample_opens += 1
             hits.append(entry)
@@ -199,11 +234,18 @@ def collect_ntdll_unhooking(
             # already use.
             "ntdll_opens_in_hollowing_target": len(in_target),
             "system_dll_opens_by_others": background_opens,
+            # Counted, never silently dropped -- the same contract every other
+            # filter in this pipeline keeps.
+            "analyzer_opens_excluded": analyzer_excluded,
+            "windows_response_opens_excluded": response_excluded,
         },
         "opens": hits[:50],
         # Kept, not dropped: this is the false-positive baseline, and until a
         # live run produces one nothing here should be scored.
         "background_opens": background_hits[:20],
+        # What the two filters removed, so a suppressed finding can be argued
+        # with rather than taken on trust.
+        "excluded_opens": excluded_hits[:20],
         "modules": sorted({h["module"] for h in hits}),
     }
 
@@ -220,8 +262,11 @@ def empty_ntdll_unhooking(reason: str = "not collected") -> dict[str, Any]:
             "ntdll_opens_by_sample": 0,
             "ntdll_opens_in_hollowing_target": 0,
             "system_dll_opens_by_others": 0,
+            "analyzer_opens_excluded": 0,
+            "windows_response_opens_excluded": 0,
         },
         "opens": [],
         "background_opens": [],
+        "excluded_opens": [],
         "modules": [],
     }
