@@ -1153,6 +1153,10 @@ def _evidence_categories(
     hollowing_target_crashes: int,
     unmapped_pe_images: int,
     unmapped_pe_in_hollowing_target: int,
+    image_timestamp_mismatches: int = 0,
+    image_timestamp_mismatch_in_target: int = 0,
+    module_header_mismatches: int = 0,
+    module_header_mismatch_in_target: int = 0,
     sysmon_high: int,
     suspicious_tasks: int,
     suspicious_services: int,
@@ -1225,24 +1229,66 @@ def _evidence_categories(
             # is silent on this technique and the crash route only fires when
             # something faults, so a loader that hollows and runs cleanly was
             # invisible to both.
+            # Two further routes, folded in for exactly the reason the carver
+            # was: they are the same claim reached differently, and a hollow
+            # that fired all five would otherwise outvote three quiet
+            # categories on its own.
+            #
+            # The WER route compares the TimeDateStamp Windows recorded for the
+            # *running* image against the file it was started from. It needs no
+            # dump at all, which is why it is here: on run d7cc5044 the watcher
+            # missed the hollowed child entirely -- it lived 3.03 seconds -- and
+            # this was the only route that saw the hollow while it happened.
+            #
+            # The module-integrity route compares a loaded module's executable
+            # sections against its own file. Measured against 300 modules
+            # across 12 ordinary programs it produced zero mismatches, so the
+            # benign rate behind `strong` here is not a guess.
+            #
+            # Both are `strong` only in a binary loaders hollow, the same test
+            # the other three routes use. The reason is the same too: a
+            # long-running process still holding an image that has since been
+            # patched on disk produces a legitimate mismatch, and Windows
+            # servicing does that to something on every update. A hollowing
+            # target is spawned on demand and short-lived, so it cannot have
+            # outlived an update -- and nothing legitimate starts RegSvcs.exe.
             "present": (
                 sysmon_injections > 0
                 or unmapped_memory_crashes > 0
                 or unmapped_pe_images > 0
+                or image_timestamp_mismatches > 0
+                or module_header_mismatches > 0
             ),
             "strong": (
                 sysmon_injections >= 2
                 or hollowing_target_crashes > 0
                 or unmapped_pe_in_hollowing_target > 0
+                or image_timestamp_mismatch_in_target > 0
+                or module_header_mismatch_in_target > 0
             ),
             "detail": (
                 f"{sysmon_injections} injection event(s), "
                 f"{unmapped_memory_crashes} crash(es) in unmapped memory "
                 f"({hollowing_target_crashes} in a process loaders hollow), "
                 f"{unmapped_pe_images} unmapped PE image(s) in memory "
-                f"({unmapped_pe_in_hollowing_target} in a process loaders hollow)"
+                f"({unmapped_pe_in_hollowing_target} in a process loaders hollow), "
+                f"{image_timestamp_mismatches} running image(s) not matching the "
+                f"file on disk ({image_timestamp_mismatch_in_target} in a process "
+                f"loaders hollow), "
+                f"{module_header_mismatches} loaded module(s) disagreeing with "
+                f"their file ({module_header_mismatch_in_target} in a process "
+                f"loaders hollow)"
             ),
             "reason": (
+                "Windows recorded a different image timestamp for a binary "
+                "loaders commonly hollow than the file it was started from -- "
+                "the process was running something other than its own image."
+                if image_timestamp_mismatch_in_target
+                else
+                "A loaded module in a binary loaders commonly hollow disagrees "
+                "with the file on disk it claims to be."
+                if module_header_mismatch_in_target
+                else
                 "A PE image was found in the memory of a binary loaders "
                 "commonly hollow, at an address that process's own module list "
                 "does not cover -- an executable the loader never mapped."
@@ -1361,6 +1407,7 @@ def calculate_dynamic_score(
     powershell_summary: dict[str, Any] | None = None,
     crash_summary: dict[str, Any] | None = None,
     pe_carve_summary: dict[str, Any] | None = None,
+    module_integrity_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = findings_summary.get("counts", {}) if isinstance(findings_summary, dict) else {}
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
@@ -1480,6 +1527,31 @@ def calculate_dynamic_score(
         carve_counts.get("unmapped_in_hollowing_target", 0) or 0
     )
 
+    # The WER route. `available` is checked rather than the count alone: a run
+    # that could compare nothing must not read the same as one that compared
+    # and agreed.
+    stamps = (crashes.get("image_timestamps", {}) or {})
+    stamp_counts = stamps.get("counts", {}) or {}
+    image_timestamp_mismatches = (
+        int(stamp_counts.get("mismatch", 0) or 0) if stamps.get("available") else 0
+    )
+    image_timestamp_mismatch_in_target = (
+        int(stamp_counts.get("mismatch_in_hollowing_target", 0) or 0)
+        if stamps.get("available") else 0
+    )
+
+    # The module-integrity route, same contract.
+    integrity = module_integrity_summary if isinstance(module_integrity_summary, dict) else {}
+    integrity_counts = integrity.get("counts", {}) or {}
+    module_header_mismatches = (
+        int(integrity_counts.get("header_mismatch", 0) or 0)
+        if integrity.get("available") else 0
+    )
+    module_header_mismatch_in_target = (
+        int(integrity.get("header_mismatch_in_hollowing_target", 0) or 0)
+        if integrity.get("available") else 0
+    )
+
     # --- Context: how busy the run was ------------------------------------
     #
     # Volume is not evidence. Two runs of the same control produced scores nine
@@ -1509,6 +1581,10 @@ def calculate_dynamic_score(
         hollowing_target_crashes=hollowing_target_crashes,
         unmapped_pe_images=unmapped_pe_images,
         unmapped_pe_in_hollowing_target=unmapped_pe_in_hollowing_target,
+        image_timestamp_mismatches=image_timestamp_mismatches,
+        image_timestamp_mismatch_in_target=image_timestamp_mismatch_in_target,
+        module_header_mismatches=module_header_mismatches,
+        module_header_mismatch_in_target=module_header_mismatch_in_target,
         sysmon_high=sysmon_high,
         suspicious_tasks=suspicious_tasks,
         suspicious_services=suspicious_services,
@@ -2861,6 +2937,7 @@ def run_dynamic_analysis(
         powershell_summary=powershell_summary,
         crash_summary=crash_summary,
         pe_carve_summary=pe_carve_summary,
+        module_integrity_summary=module_integrity_summary,
     )
 
     if cancelled:
