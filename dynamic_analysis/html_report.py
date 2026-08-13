@@ -77,8 +77,14 @@ def _severity_class_for_score(score: Any, severity: Any = "") -> str:
     return "sev-none"
 
 
-def _section_badge(label: str, value: Any) -> str:
-    cls = _severity_class_for_count(value)
+def _section_badge(label: str, value: Any, context: bool = False) -> str:
+    """``context`` marks a count whose size carries no severity.
+
+    The same distinction `_list_section` already draws, and for the same reason:
+    a section that says "not scored" in its own heading must not then render an
+    amber badge because the count happened to reach three.
+    """
+    cls = "sev-none" if context else _severity_class_for_count(value)
     return f'<span class="badge {cls}">{_esc(label)}: {_esc(value)}</span>'
 
 
@@ -168,14 +174,16 @@ def _dict_list_table(
     emphasize: bool = False,
     empty_text: str = "None",
     limit: int = 100,
+    context: bool = False,
 ) -> str:
+    """``context`` marks a table whose row count carries no severity."""
     section_class = "card card-alert" if emphasize and items else "card"
     if not items:
         return f"""
         <section class="{section_class}">
           <div class="section-head">
             <h2>{_esc(title)}</h2>
-            {_section_badge("Count", 0)}
+            {_section_badge("Count", 0, context=context)}
           </div>
           <p class="muted">{_esc(empty_text)}</p>
         </section>
@@ -209,7 +217,7 @@ def _dict_list_table(
     <section class="{section_class}">
       <div class="section-head">
         <h2>{_esc(title)}</h2>
-        {_section_badge("Count", len(items))}
+        {_section_badge("Count", len(items), context=context)}
       </div>
       {truncated}
       <div class="table-wrap">
@@ -1516,6 +1524,85 @@ def _image_timestamp_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _ntdll_unhooking_section(summary: dict[str, Any]) -> str:
+    """System DLLs opened as files, which is how user-mode unhooking starts.
+
+    Not scored, and the section says so in its own text. Reading `ntdll.dll` off
+    disk is not by itself malicious and this pass has never run against a live
+    capture; the background count is shown precisely so the next run measures
+    the false-positive rate instead of assuming it.
+    """
+    unhook = summary.get("ntdll_unhooking", {}) or {}
+    counts = unhook.get("counts", {}) or {}
+    if not unhook:
+        return ""
+
+    if not unhook.get("collection_available"):
+        return """
+    <section class="card">
+      <div class="section-head">
+        <h2>Reads Of ntdll — Not Collected</h2>
+      </div>
+      <p class="muted">
+        This capture recorded no file opens, so a process reading
+        <code>ntdll.dll</code> off disk could not have been seen. That is a
+        statement about the capture, <b>not</b> about the sample.
+      </p>
+    </section>
+    """
+
+    opens = unhook.get("opens", []) or []
+    rows = [
+        {
+            "Process": o.get("process", ""),
+            "PID": o.get("pid", ""),
+            "Module": o.get("module", ""),
+            "Hollowing target": "yes" if o.get("hollowing_target") else "",
+            "Result": o.get("result", ""),
+            "Path": o.get("path", ""),
+        }
+        for o in opens
+    ]
+
+    background = _to_int(counts.get("system_dll_opens_by_others", 0))
+    background_note = (
+        f"<p class='muted'>{background} further open(s) came from processes "
+        "outside the sample's tree. That number is kept deliberately: it is the "
+        "false-positive baseline, and until a live run produces one, nothing "
+        "here should be scored.</p>"
+    )
+    in_target = _to_int(counts.get("ntdll_opens_in_hollowing_target", 0))
+    target_note = (
+        "<p class='muted'>At least one open came from a binary loaders hollow. "
+        "That is a different claim from any process doing it — nothing "
+        "legitimate starts one of these and has it read <code>ntdll</code> off "
+        "disk.</p>"
+        if in_target else ""
+    )
+
+    return f"""
+    <section class="{'card card-alert' if in_target else 'card'}">
+      <div class="section-head">
+        <h2>System DLLs Opened As Files (context, not scored)</h2>
+        {_section_badge("ntdll opens", _to_int(counts.get("ntdll_opens_by_sample", 0)),
+                        context=True)}
+      </div>
+      <p class="muted">
+        Every process has <code>ntdll</code> mapped by the loader, which raises
+        <code>Load Image</code> and not <code>CreateFile</code>. A process that
+        opens the <b>file</b> wants a second, clean copy — the usual reason
+        being that the copy in memory has had its syscall stubs hooked, and
+        overwriting them with the on-disk bytes removes the hooks.
+        {_to_int(counts.get("file_opens_in_stream", 0))} file open(s) examined.
+      </p>
+      {target_note}
+      {_dict_list_table("System DLL Opens By The Sample", rows, context=True,
+                        empty_text="The sample opened no system DLL as a file.")}
+      {background_note}
+    </section>
+    """
+
+
 def _module_integrity_section(summary: dict[str, Any]) -> str:
     """Loaded modules against the files they were loaded from.
 
@@ -2590,6 +2677,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_unmapped_pe_section(summary)}
 {_module_integrity_section(summary)}
 {_image_timestamp_section(summary)}
+{_ntdll_unhooking_section(summary)}
 {_vm_artifact_reads_section(summary)}
 {_autoruns_suspicious_sections(summary)}
 {_autoruns_analyzer_section(summary)}

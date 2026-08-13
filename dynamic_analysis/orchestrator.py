@@ -83,6 +83,10 @@ from dynamic_analysis.procmon_parser import (
     summarize_procmon_events,
 )
 from dynamic_analysis.procmon_config import describe_procmon_filter
+from dynamic_analysis.ntdll_unhooking import (
+    collect_ntdll_unhooking,
+    empty_ntdll_unhooking,
+)
 from dynamic_analysis.vm_artifact_reads import (
     collect_vm_artifact_reads,
     empty_vm_artifact_reads,
@@ -1678,6 +1682,7 @@ def run_dynamic_analysis(
     procmon_json = paths["procmon"] / "parsed_events.json"
     procmon_interesting_json = paths["procmon"] / "interesting_events.json"
     vm_artifact_reads_json = paths["procmon"] / "vm_artifact_reads.json"
+    ntdll_unhooking_json = paths["procmon"] / "ntdll_unhooking.json"
 
     tasks_before_json = paths["persistence"] / "tasks_before.json"
     tasks_after_json = paths["persistence"] / "tasks_after.json"
@@ -1881,6 +1886,7 @@ def run_dynamic_analysis(
     crash_summary: dict[str, Any] = empty_crash_summary("not collected")
     abnormal_termination: dict[str, Any] = {"chain_crashed": False}
     vm_artifact_reads: dict[str, Any] = empty_vm_artifact_reads("not collected")
+    ntdll_unhooking: dict[str, Any] = empty_ntdll_unhooking("not collected")
     crash_dump_result: dict[str, Any] = {"collected": False, "note": "not collected"}
     crash_collector: CrashDumpCollector | None = None
     # Shared by the crash-event and crash-dump collectors below. Seeded with
@@ -2572,6 +2578,36 @@ def run_dynamic_analysis(
                         f"{vm_artifact_reads.get('background_reads', 0)} by other processes.",
                     )
 
+                # A process that opens ntdll.dll as a *file* is asking for a
+                # clean copy off disk, which is how user-mode unhooking starts.
+                # Load Image is excluded deliberately: every process maps ntdll,
+                # so counting that would fire on the whole machine. Not scored
+                # until a live run shows the background rate.
+                _emit(status_cb, "Checking for self-unhooking reads of ntdll...")
+                ntdll_unhooking = collect_ntdll_unhooking(
+                    events,
+                    descendant_pids=set(resolved) if resolved is not None else None,
+                )
+                write_json(ntdll_unhooking_json, ntdll_unhooking)
+
+                if not ntdll_unhooking.get("collection_available"):
+                    _emit(
+                        status_cb,
+                        "This capture recorded no file opens, so a read of ntdll "
+                        "could not have been seen.",
+                    )
+                else:
+                    nt_counts = ntdll_unhooking.get("counts", {})
+                    _emit(
+                        status_cb,
+                        f"System DLL opens: {nt_counts.get('ntdll_opens_by_sample', 0)} of "
+                        f"ntdll by the sample's tree "
+                        f"({nt_counts.get('ntdll_opens_in_hollowing_target', 0)} in a "
+                        f"hollowing target), "
+                        f"{nt_counts.get('system_dll_opens_by_others', 0)} by other "
+                        f"processes.",
+                    )
+
                 _emit(status_cb, "Triaging dropped-file candidates...")
                 resolved_pids = findings_summary.get("descendant_pids")
                 dropped_candidates = collect_dropped_file_candidates(
@@ -2922,6 +2958,7 @@ def run_dynamic_analysis(
         "crash_summary": crash_summary,
         "abnormal_termination": abnormal_termination,
         "vm_artifact_reads": vm_artifact_reads,
+        "ntdll_unhooking": ntdll_unhooking,
         "crash_dumps": crash_dump_result,
         "powershell_preflight": powershell_preflight,
         "powershell_summary": powershell_summary,

@@ -54,6 +54,7 @@ import struct
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
+from dynamic_analysis import minidump as _minidump
 from dynamic_analysis.crash_evidence import is_hollowing_target
 from dynamic_analysis.utils import sha256_file
 
@@ -165,68 +166,24 @@ def _u64(data: Any, offset: int) -> int:
 
 
 def _streams(data: Any, size: int) -> dict[int, tuple[int, int]]:
-    """Stream type -> (rva, size), from the minidump directory."""
-    if size < 32 or data[:4] != _MINIDUMP_SIGNATURE:
-        raise ValueError("not a minidump (bad signature)")
+    """Stream type -> (rva, size), from the minidump directory.
 
-    stream_count = _u32(data, 8)
-    directory_rva = _u32(data, 12)
-
-    streams: dict[int, tuple[int, int]] = {}
-    for index in range(stream_count):
-        entry = directory_rva + index * 12
-        if entry + 12 > size:
-            break
-        stream_type = _u32(data, entry)
-        data_size = _u32(data, entry + 4)
-        rva = _u32(data, entry + 8)
-        if rva + data_size <= size:
-            streams[stream_type] = (rva, data_size)
-    return streams
+    Delegates to `dynamic_analysis.minidump`, which is the one tested reader.
+    These wrappers keep the signatures the carver and module-integrity already
+    call, so the structure knowledge lives in one place instead of being
+    re-derived per module -- which is what let a hand-rolled unloaded-module
+    read report 7.6 quintillion entries.
+    """
+    return _minidump.Minidump(data, size).streams
 
 
 def _minidump_string(data: Any, size: int, rva: int) -> str:
-    if rva <= 0 or rva + 4 > size:
-        return ""
-    length = _u32(data, rva)
-    start = rva + 4
-    if length <= 0 or start + length > size:
-        return ""
-    try:
-        return data[start:start + length].decode("utf-16-le", errors="replace").rstrip("\x00")
-    except Exception:
-        return ""
+    return _minidump.Minidump(data, size).string(rva)
 
 
 def read_modules(data: Any, size: int, streams: dict[int, tuple[int, int]]) -> list[dict[str, Any]]:
     """The loader's own module list: what Windows mapped, and where."""
-    location = streams.get(_MODULE_LIST_STREAM)
-    if not location:
-        return []
-
-    rva, stream_size = location
-    if rva + 4 > size:
-        return []
-
-    count = _u32(data, rva)
-    modules: list[dict[str, Any]] = []
-    for index in range(count):
-        entry = rva + 4 + index * _MODULE_ENTRY_SIZE
-        if entry + _MODULE_ENTRY_SIZE > size or entry + _MODULE_ENTRY_SIZE > rva + stream_size + 4:
-            break
-        base = _u64(data, entry)
-        image_size = _u32(data, entry + 8)
-        timestamp = _u32(data, entry + 16)
-        name_rva = _u32(data, entry + 20)
-        modules.append(
-            {
-                "base": base,
-                "size": image_size,
-                "timestamp": timestamp,
-                "path": _minidump_string(data, size, name_rva),
-            }
-        )
-    return modules
+    return _minidump.Minidump(data, size).modules()
 
 
 def read_regions(data: Any, size: int, streams: dict[int, tuple[int, int]]) -> list[_Region]:
@@ -238,48 +195,10 @@ def read_regions(data: Any, size: int, streams: dict[int, tuple[int, int]]) -> l
     with DumpType=1 is still worth looking at, even though it may not contain
     the injected region at all.
     """
-    regions: list[_Region] = []
-
-    location = streams.get(_MEMORY64_LIST_STREAM)
-    if location:
-        rva, _ = location
-        if rva + 16 <= size:
-            count = _u64(data, rva)
-            base_rva = _u64(data, rva + 8)
-            offset = base_rva
-            for index in range(count):
-                entry = rva + 16 + index * 16
-                if entry + 16 > size:
-                    break
-                start_va = _u64(data, entry)
-                data_size = _u64(data, entry + 8)
-                if offset + data_size > size:
-                    # A dump truncated mid-write. Everything before the cut is
-                    # still readable, so the loop keeps what it has.
-                    remaining = max(0, size - offset)
-                    if remaining:
-                        regions.append(_Region(start_va, offset, remaining))
-                    break
-                regions.append(_Region(start_va, offset, data_size))
-                offset += data_size
-        return regions
-
-    location = streams.get(_MEMORY_LIST_STREAM)
-    if location:
-        rva, _ = location
-        if rva + 4 <= size:
-            count = _u32(data, rva)
-            for index in range(count):
-                entry = rva + 4 + index * 16
-                if entry + 16 > size:
-                    break
-                start_va = _u64(data, entry)
-                data_size = _u32(data, entry + 8)
-                data_rva = _u32(data, entry + 12)
-                if data_rva + data_size <= size:
-                    regions.append(_Region(start_va, data_rva, data_size))
-
-    return regions
+    return [
+        _Region(va, offset, length)
+        for va, offset, length in _minidump.Minidump(data, size).memory_ranges()
+    ]
 
 
 # ---------------------------------------------------------------------------
