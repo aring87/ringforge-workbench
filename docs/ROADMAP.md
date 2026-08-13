@@ -41,21 +41,21 @@ building it before that is the mistake this project has corrected repeatedly.
 
 Grouped by what unblocks each, because that determines the order.
 
-### A. Unblocked by one detonation of the current build
+### A. Unblocked by one detonation — **run `d7cc5044` happened, 13 Aug**
 
-| Thing | Status today |
+| Thing | Outcome |
 |---|---|
-| WER image-timestamp check | Built 13 Aug, never run live |
-| ntdll-unhooking pass | Built 13 Aug, never run live |
-| Module-integrity report section | Rendered 13 Aug, never run live |
-| Module integrity `replaced` verdict | Never seen in the wild |
-| Dropped-file lineage | Fixed, unproven |
-| Carve on long paths | Fixed, unproven |
-| Crash-dump `hollowing_target` | Fixed, unproven |
-| `procmon_filter` in the summary | Built, unproven |
-| Windows-response suppression | Proven by replay, unproven on a fresh run |
+| WER image-timestamp check | **Proven on real malware.** Prediction exact, and it fired on a run where no usable dump existed at all |
+| ntdll-unhooking pass | **Proven.** `RegSvcs.exe` opened `ntdll` twice; two contamination bugs found and fixed, baseline now 2 |
+| Module-integrity report section | **Rendered live** |
+| `header_mismatch` on the payload | **Proven** — from the WER crash dump, offline, after the run |
+| Module integrity `replaced` verdict | Still never seen in the wild |
+| Windows-response suppression | **Proven on a fresh run**, by being the fix this one needed |
+| Registry-read finding path | **Still unexercised** — wrong Procmon config, third attempt |
+| Dropped-file lineage / long-path carve / crash-dump `hollowing_target` | Untouched: this run dropped no files and carved nothing from a long path |
 
-Nine items, one run. This is by far the best return available.
+The run cost one detonation and settled five rows, exposed four attribution
+bugs, and left one item needing only a checkbox next time.
 
 ### B. Needs a different sample or scenario — **mostly already done, 13 Aug**
 
@@ -100,33 +100,41 @@ between "works on three samples" and "trustworthy pipeline". It turns out not to
 need the VM at all: the carver and module integrity consume minidumps, and this
 host has a couple of hundred ordinary processes.
 
-`scripts/benign_baseline.py` dumps them and runs the same passes. First result,
-8 processes and **152 modules compared**:
+`scripts/benign_baseline.py` dumps them and runs the same passes. **Measured
+13 Aug: 12 distinct programs, 491 MB of dumps, 300 modules compared.**
 
 | metric | benign |
 |---|---|
+| modules compared | **300, all `identical`** |
 | unmapped PE images | **0** |
-| unmapped in a hollowing target | **0** ← the emphatic branch, with an `svchost.exe` in the sample |
+| unmapped in a hollowing target | **0** — with an `svchost.exe` in the corpus |
 | `replaced` / `header_mismatch` | **0 / 0** |
-| `resource_only` set aside | 7 — the known MUI class, handled not reported |
+| `resource_only` set aside | 5 — the known MUI class, handled not reported |
+| `no_reference` | 2, both in a Canon printer utility, counted not skipped |
 
-**Treat that as encouraging, not as the number.** Sorting by smallest process
-put six copies of `conhost.exe` in the sample, so "0 across 8 processes" was
-really 0 across *three programs*. Selection now takes one process per distinct
-executable before any repeat — 14 distinct binaries are reachable here — and the
-wider run has not been taken yet.
+The corpus is a browser, a browser host process, a music client, a shell, a
+printer utility, a toast-notification host, a Windows background task host, a
+crash handler, Python, and `svchost.exe` — which matters because it is in
+`HOLLOWING_TARGETS`, so the **emphatic branch was exercised and did not fire**.
+Two processes refused `OpenProcess` (a game anti-cheat and an NVIDIA helper) and
+are counted as `dump_failures` rather than passed over.
 
-Two selection bugs found by running it, both recorded in the source because both
-produce a plausible-looking wrong answer: selecting on **working set** picked
-processes whose resident sets are small and whose reserved address spaces are
-not, producing 445 MB and 796 MB dumps (`vms` predicts dump size, `rss` does
-not); and taking the N smallest destroys binary diversity, which is the only
-thing a false-positive rate is actually about.
+**Set against the malware, the discrimination is clean.** The same two passes on
+run `d7cc5044`'s crash dump reported `header_mismatch` on `regsvcs.exe @
+0x400000` at 99.10% differing, plus two unmapped `ntdll` copies in private
+memory. Benign: nothing, 300 times.
 
-**Still owed here:** the 14-binary run, and the same treatment for the two
-detectors this cannot reach — the WER timestamp check and the ntdll pass both
-need an event log and a Procmon capture, so their benign rate comes from Run 2
-rather than from this harness.
+**State it as what it is.** This is *0 in 300 module comparisons across 12
+programs on one machine at one moment* — not a percentage with a confidence
+interval. It is enough to say the dump-based passes do not fire on ordinary
+desktop software, and not enough to characterise a rate.
+
+**Still owed here:** the same treatment for the two detectors this harness
+cannot reach. The WER timestamp check needs an event log and the ntdll pass
+needs a Procmon capture, so their benign rates come from a benign *detonation*
+— Run 2 — not from dumping local processes. Note the ntdll pass already has a
+partial answer from the malware run: 2 background opens after the analyzer and
+WerFault were excluded, against 3 by the sample's own tree.
 
 ---
 
