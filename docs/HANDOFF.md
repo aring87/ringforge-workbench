@@ -1496,6 +1496,55 @@ crash-dump collector is not consulting the lineage the rest of the run used.
 That is the same attribution family as the two contamination bugs this run
 exposed, and it is unfixed.
 
+### Four attribution bugs in one day, and the sweep for the rest — 13 Aug
+
+All four are one shape: **the lineage existed and the consumer was not using
+it.** Worth naming as a class, because it is now the most productive bug type
+this project has, and because three of the four were found by a single live run
+rather than by reading code.
+
+| bug | effect |
+|---|---|
+| `ntdll_unhooking` counted `WerFault.exe` | 30 of 41 opens credited to the sample were a crash reporter reading ntdll |
+| `ntdll_unhooking` counted `procdump64.exe` | 18 of 60 background opens were the pipeline's own dumping tool, inflating its false-positive baseline |
+| `CrashDumpCollector` attributed by name only | the only image of the hollowed process the run captured reported `attributed_to_sample: false` |
+| `is_analyzer_image("fakenet.exe")` returned `False` | a marker written `akenet` could never match a bare process name |
+
+The first three were live-run findings; the fourth came from sweeping for the
+rest of the class afterwards.
+
+**The crash-dump one had two bugs stacked**, which is why it read as one. The
+PID never parsed — the code took index 1 of the dotted file name, correct for
+`RegSvcs.10784.dmp` and wrong for `RegSvcs.exe.9132.dmp` where index 1 is
+`"exe"`; WER writes both shapes and the comment described one. And attribution
+was by image name against a set seeded from the sample's own name plus the
+processes the memory watcher *observed* — so a child the watcher never saw,
+which is exactly the short-lived hollowing target these dumps exist to capture,
+could not be in it. It now takes `sample_pids` and attributes by PID first,
+name second, the contract `summarize_crashes` already documented.
+
+**What the sweep found clean**, recorded so it is not redone: every pass taking
+`descendant_pids` honours the `None` / empty-set contract; `sysmon_collector`
+passes full `Image` paths and was unaffected by the FakeNet gap; and
+`findings.py` and `dropped_file_triage.py` carrying their own analyzer lists is
+mostly *not* divergence — they match process names, path noise and
+case-directory subpaths for three different purposes. The one apparent gap,
+`utils` lacking `autoruns64.exe`, is theoretical: the pipeline ships
+`autorunsc64.exe` and `autorunsc` matches it.
+
+**What was deliberately not widened.** `\wireshark\` keeps its separators —
+Wireshark is not this pipeline's tooling, so the marker catches an analyst's
+installed copy by directory and a bare name would suppress a *sample* called
+`wireshark.exe`. `python.exe` stays absent: the analyzer runs on Python, but so
+does Cuckoo's agent and it is on this sample's own blocklist. Widening a
+suppression list on speculation is how attribution gets replaced by a name list.
+
+**The lesson for the next detector.** Every one of these shipped with lineage
+available and unused, and every one produced a *plausible* number rather than an
+obvious failure. When adding a pass, the question is not "does it attribute" but
+"does it attribute with everything the run already knows" — and the answer
+belongs in a test at the helper level, which is where it now is.
+
 ### Pick up here — 12 Aug
 
 Ordered by value, with what each needs. Nothing below is blocked on a detonation
