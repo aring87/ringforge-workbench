@@ -184,10 +184,150 @@ def _image_name(value: object) -> str:
     return str(value or "").replace("/", "\\").rsplit("\\", 1)[-1].strip().lower()
 
 
+# ---------------------------------------------------------------------------
+# The image Windows was running vs the file it was started from
+# ---------------------------------------------------------------------------
+#
+# `app_timestamp` is the `TimeDateStamp` of the image that was *executing*, not
+# of the file on disk. For an ordinary process those are the same number. For a
+# hollowed one they are not: the payload carries its own header, and Windows
+# faithfully reports the payload's.
+#
+# On run `3f70058b` Windows recorded `5ff2b99b` for `RegSvcs.exe`, while the
+# `RegSvcs.exe` on that guest is `68531ee1`. That is process hollowing, visible
+# in the event log alone, on a run where the pipeline scored the injection from
+# a memory dump instead.
+#
+# Two reasons it earns its place next to the dump-based passes rather than
+# duplicating them:
+#
+# * **It does not need the payload to crash inside the injected region.**
+#   `executed_from_unmapped_memory` only fires when the fault address is in
+#   private memory; a hollowed process that dies inside `ntdll` looks ordinary
+#   to it and still has the wrong timestamp here.
+# * **It does not need a dump at all.** `module_integrity` answers the same
+#   question far better, but only for processes something managed to dump. This
+#   works off one event-log field.
+#
+# The standing caution about comparing against a reference applies exactly as it
+# does in `module_integrity`: **this belongs on the guest**, where the file the
+# process was started from is the file being read. Off-guest the binary is a
+# different build and every comparison is meaningless, so a missing or unreadable
+# file is reported as `no_reference` and never as agreement.
+
+_TIMESTAMP_VERDICTS = ("mismatch", "identical", "no_reference", "unparsable")
+
+
+def _parse_recorded_timestamp(value: object) -> Optional[int]:
+    """`app_timestamp` as written by WER: hex, occasionally 0x-prefixed."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text, 16)
+    except ValueError:
+        return None
+
+
+def read_pe_timestamp(path: str | Path) -> Optional[int]:
+    """`TimeDateStamp` from a PE on disk, or None if it cannot be read.
+
+    Read structurally rather than with `pefile`: it is two bounded seeks, it
+    cannot raise on a malformed image the way a full parse can, and this runs
+    against whatever path an event log happened to name.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(0x40)
+            if len(head) < 0x40 or head[:2] != b"MZ":
+                return None
+            e_lfanew = int.from_bytes(head[0x3C:0x40], "little")
+            if not 0 < e_lfanew < (1 << 28):
+                return None
+            handle.seek(e_lfanew)
+            header = handle.read(12)          # 'PE\0\0' + Machine + Sections + TDS
+            if len(header) < 12 or header[:4] != b"PE\0\0":
+                return None
+            return int.from_bytes(header[8:12], "little")
+    except OSError:
+        return None
+
+
+def check_image_timestamp(
+    record: dict[str, Any],
+    read_timestamp=read_pe_timestamp,
+) -> dict[str, Any]:
+    """Compare one crash's recorded image timestamp against the file on disk."""
+    recorded = _parse_recorded_timestamp(record.get("app_timestamp"))
+    path = str(record.get("app_path") or "").strip()
+    process = record.get("app_name") or _image_name(path)
+
+    entry: dict[str, Any] = {
+        "process": process,
+        "pid": record.get("pid"),
+        "path": path,
+        "recorded": f"{recorded:#010x}" if recorded is not None else "",
+        "on_disk": "",
+        "hollowing_target": is_hollowing_target(process),
+        "verdict": "unparsable",
+    }
+    if recorded is None:
+        return entry
+
+    on_disk = read_timestamp(path) if path else None
+    if on_disk is None:
+        # Not "it matched". The file was not there to compare against, which is
+        # the distinction `collection_available` exists to preserve everywhere
+        # else in this pipeline.
+        entry["verdict"] = "no_reference"
+        return entry
+
+    entry["on_disk"] = f"{on_disk:#010x}"
+    entry["verdict"] = "identical" if on_disk == recorded else "mismatch"
+    return entry
+
+
+def summarize_image_timestamps(
+    crashes: list[dict[str, Any]],
+    read_timestamp=read_pe_timestamp,
+) -> dict[str, Any]:
+    """Roll the per-crash timestamp checks into the shape the summary carries.
+
+    `available` is false when nothing could be compared, so a run that read no
+    files reports *could not tell* rather than a silent zero.
+    """
+    checks = [check_image_timestamp(c, read_timestamp) for c in crashes]
+    comparable = [c for c in checks if c["verdict"] in ("mismatch", "identical")]
+    mismatches = [c for c in checks if c["verdict"] == "mismatch"]
+    in_target = [c for c in mismatches if c["hollowing_target"]]
+
+    return {
+        "available": bool(comparable),
+        "counts": {
+            "checked": len(checks),
+            "comparable": len(comparable),
+            "mismatch": len(mismatches),
+            # The emphatic subset, by the same rule the rest of this module
+            # uses: nothing legitimate runs RegSvcs.exe off a different image
+            # than the one on disk.
+            "mismatch_in_hollowing_target": len(in_target),
+            "no_reference": sum(1 for c in checks if c["verdict"] == "no_reference"),
+            "unparsable": sum(1 for c in checks if c["verdict"] == "unparsable"),
+        },
+        # Named, not merely counted -- the module_integrity lesson: on its first
+        # live finding the unnamed skip *was* the entire answer.
+        "mismatches": mismatches[:20],
+        "no_reference_processes": [
+            c["process"] for c in checks if c["verdict"] == "no_reference"
+        ][:20],
+    }
+
+
 def summarize_crashes(
     events: list[dict[str, Any]],
     sample_pids: set[int] | None = None,
     sample_names: set[str] | None = None,
+    read_timestamp=read_pe_timestamp,
 ) -> dict[str, Any]:
     """Reduce crash events to the shape the run summary carries.
 
@@ -218,14 +358,20 @@ def summarize_crashes(
 
     unmapped = [c for c in crashes if c["executed_from_unmapped_memory"]]
     in_target = [c for c in unmapped if is_hollowing_target(c.get("app_name"))]
+    timestamps = summarize_image_timestamps(crashes, read_timestamp)
 
     return {
         "collected": True,
         "note": "",
         "attributed_by_lineage": sample_pids is not None or bool(names),
+        "image_timestamps": timestamps,
         "counts": {
             "crashes": len(crashes),
             "crashes_in_unmapped_memory": len(unmapped),
+            # A hollowed process reports the *payload's* TimeDateStamp, so this
+            # fires without needing the fault to land in the injected region.
+            "timestamp_mismatch_in_hollowing_target":
+                timestamps["counts"]["mismatch_in_hollowing_target"],
             # The subset that is emphatic rather than merely unexplained. See
             # HOLLOWING_TARGETS: a managed process faulting in JITted code
             # looks identical to one faulting in injected code, so the identity
@@ -259,11 +405,22 @@ def empty_crash_summary(note: str = "") -> dict[str, Any]:
         "counts": {
             "crashes": 0,
             "crashes_in_unmapped_memory": 0,
+            "timestamp_mismatch_in_hollowing_target": 0,
             "crashes_in_hollowing_target": 0,
             "other_process_crashes_excluded": 0,
         },
         "crashes": [],
         "unmapped_memory_crashes": [],
+        "image_timestamps": {
+            "available": False,
+            "counts": {
+                "checked": 0, "comparable": 0, "mismatch": 0,
+                "mismatch_in_hollowing_target": 0,
+                "no_reference": 0, "unparsable": 0,
+            },
+            "mismatches": [],
+            "no_reference_processes": [],
+        },
     }
 
 

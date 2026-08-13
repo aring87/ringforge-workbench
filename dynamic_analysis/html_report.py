@@ -1424,6 +1424,186 @@ def _abnormal_termination_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _image_timestamp_section(summary: dict[str, Any]) -> str:
+    """The image Windows was running vs the file it was started from.
+
+    `app_timestamp` on Application Error 1000 is the `TimeDateStamp` of the
+    *executing* image. For an ordinary process it equals the file's. For a
+    hollowed one it is the payload's, because that is the header now mapped at
+    the base address. Comparing the two turns one event-log field into a
+    hollowing signal that needs no memory dump and no signature.
+
+    Kept separate from the carver and from module integrity because it answers
+    the same question from a source that survives when they fail: it fires even
+    when the fault lands inside a real DLL, and it needs nothing to have been
+    dumped at all.
+
+    Silent when nothing was comparable, apart from saying so.
+    """
+    crashes = summary.get("crash_summary", {}) or {}
+    stamps = crashes.get("image_timestamps", {}) or {}
+    counts = stamps.get("counts", {}) or {}
+    if not _to_int(counts.get("checked", 0)):
+        return ""
+
+    mismatches = stamps.get("mismatches", []) or []
+    rows = [
+        {
+            "Process": m.get("process", ""),
+            "PID": m.get("pid", ""),
+            "Running image": m.get("recorded", ""),
+            "File on disk": m.get("on_disk", ""),
+            "Hollowing target": "yes" if m.get("hollowing_target") else "",
+            "Path": m.get("path", ""),
+        }
+        for m in mismatches
+    ]
+
+    if not stamps.get("available"):
+        unnamed = stamps.get("no_reference_processes", []) or []
+        who = ", ".join(_esc(str(p)) for p in unnamed[:6])
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Running Image vs File On Disk — Not Compared</h2>
+        {_section_badge("Could not compare", _to_int(counts.get("checked", 0)))}
+      </div>
+      <p class="muted">
+        {_to_int(counts.get("checked", 0))} crash(es) recorded an image
+        timestamp, and none could be checked against the binary it was started
+        from{f': {who}' if who else ''}. That is a statement about this
+        machine, <b>not</b> about the sample: the comparison only means anything
+        where the file on disk is the file the process ran, so it belongs on the
+        guest. Off-guest the binary is a different build and any verdict would
+        be noise.
+      </p>
+    </section>
+    """
+
+    in_target = _to_int(counts.get("mismatch_in_hollowing_target", 0))
+    target_note = (
+        "<p class='muted'>A mismatch in one of these is emphatic rather than "
+        "merely odd: nothing legitimate starts one of the binaries loaders "
+        "hollow and runs it from an image other than its own file.</p>"
+        if in_target else ""
+    )
+    no_ref = _to_int(counts.get("no_reference", 0))
+    no_ref_note = (
+        f"<p class='muted'>{no_ref} further crash(es) named a binary that could "
+        "not be read, and were counted rather than passed. An unreadable file "
+        "is not agreement.</p>"
+        if no_ref else ""
+    )
+
+    return f"""
+    <section class="{'card card-alert' if rows else 'card'}">
+      <div class="section-head">
+        <h2>Running Image vs File On Disk</h2>
+        {_section_badge("Timestamp mismatches", _to_int(counts.get("mismatch", 0)))}
+      </div>
+      <p class="muted">
+        Windows records the <code>TimeDateStamp</code> of the image that was
+        executing. A process running its own file reports that file's stamp; a
+        <b>hollowed</b> process reports the payload's, because the payload's
+        header is what sits at the image base. {_to_int(counts.get("comparable", 0))}
+        crash(es) compared.
+      </p>
+      {target_note}
+      {_dict_list_table("Image Timestamp Mismatches", rows, emphasize=True,
+                        empty_text="Every comparable crash ran the image it was started from.")}
+      {no_ref_note}
+    </section>
+    """
+
+
+def _module_integrity_section(summary: dict[str, Any]) -> str:
+    """Loaded modules against the files they were loaded from.
+
+    The counterpart to the carver: that one finds a payload mapped *beside* the
+    real image, this one finds it written *over* it. Both were needed because
+    each is blind to the other's case.
+
+    This was JSON-only for its first live finding, and that finding had to be
+    read aloud out of `memory\\module_integrity.json` -- an image at
+    `0x400000` claiming to be RegSvcs and demonstrably not being it. A detector
+    whose output nobody sees is most of the way to not existing.
+    """
+    integrity = summary.get("module_integrity_summary", {}) or {}
+    counts = integrity.get("counts", {}) or {}
+    if not integrity and not counts:
+        return ""
+
+    replaced = integrity.get("replaced", []) or []
+    mismatched = integrity.get("header_mismatch", []) or []
+    findings = replaced + mismatched
+    if not integrity.get("available") and not findings:
+        unnamed = integrity.get("no_reference_modules", []) or []
+        who = ", ".join(_esc(str(m.get("name", "?"))) for m in unnamed[:8])
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>Module Integrity — Not Compared</h2>
+        {_section_badge("no_reference", _to_int(counts.get("no_reference", 0)))}
+      </div>
+      <p class="muted">
+        No loaded module could be compared against the file it came from{f': {who}' if who else ''}.
+        The reference has to be the same build, so this pass belongs on the
+        guest; off-guest almost everything lands here and the run says <b>could
+        not tell</b> rather than <b>nothing was modified</b>.
+      </p>
+    </section>
+    """
+
+    rows = [
+        {
+            "Module": m.get("name", ""),
+            "Base": m.get("base", ""),
+            "Verdict": m.get("verdict", ""),
+            "Differs": m.get("differing_fraction", ""),
+            "Hollowing target": "yes" if m.get("hollowing_target") else "",
+            "Dump": m.get("dump", ""),
+        }
+        for m in findings
+    ]
+
+    no_ref = _to_int(counts.get("no_reference", 0))
+    no_ref_note = (
+        f"<p class='muted'>{no_ref} module(s) had no matching build to compare "
+        "against and were counted, never skipped silently. On the first live "
+        "run of this pass the unnamed skip was the entire answer.</p>"
+        if no_ref else ""
+    )
+    header_note = (
+        "<p class='muted'><code>header_mismatch</code> means the file exists but "
+        "its recorded identity disagrees with the mapped image. It is reported "
+        "by identity and never by degree -- a payload that shares most of its "
+        "bytes with the file it impersonates must not round down to "
+        "<code>identical</code>.</p>"
+        if mismatched else ""
+    )
+
+    return f"""
+    <section class="{'card card-alert' if rows else 'card'}">
+      <div class="section-head">
+        <h2>Loaded Modules vs Their Files On Disk</h2>
+        {_section_badge("Replaced or mismatched", len(findings))}
+      </div>
+      <p class="muted">
+        Every loaded module's executable sections compared against its own file,
+        with relocations applied so the comparison is exact rather than
+        approximate. {_to_int(integrity.get("modules_compared", 0))} module(s)
+        compared; {_to_int(counts.get("identical", 0))} identical,
+        {_to_int(counts.get("patched", 0))} patched,
+        {_to_int(counts.get("replaced", 0))} replaced.
+      </p>
+      {header_note}
+      {_dict_list_table("Modules That Do Not Match Their File", rows, emphasize=True,
+                        empty_text="Every comparable module matched the file it was loaded from.")}
+      {no_ref_note}
+    </section>
+    """
+
+
 def _vm_artifact_reads_section(summary: dict[str, Any]) -> str:
     """What the sample read about the machine it was running on.
 
@@ -2408,6 +2588,8 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_network_sections(summary)}
 {_memory_sections(summary)}
 {_unmapped_pe_section(summary)}
+{_module_integrity_section(summary)}
+{_image_timestamp_section(summary)}
 {_vm_artifact_reads_section(summary)}
 {_autoruns_suspicious_sections(summary)}
 {_autoruns_analyzer_section(summary)}
