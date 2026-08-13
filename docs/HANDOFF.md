@@ -1772,6 +1772,49 @@ signature — and unlike the anti-VM check itself, it is one this pipeline can
 actually see. Clean bail otherwise: no crash, no injection, one process, 141
 modules all `identical`.
 
+### The poll loop is not seven identical sweeps — 13 Aug
+
+This document has described the ending as "seven enumerations,
+`NtDelayExecution` between them, then `ExitProcess`", as though one action
+repeated. **It is two actions alternating**, measured with
+`trace_blocklist.py --which N`:
+
+| pass | armed at | blocks run | hashed a served name? |
+|---|---|---|---|
+| #1 | — | — | **yes** |
+| #4 | 500,413,069 | 2.3M | **yes** |
+| #5 | 531,625,464 | 9.4M | no |
+| #6 | 565,844,270 | 2.3M | **yes** |
+| #7 | 597,056,665 | 9.4M | no |
+
+Two shapes with the *same two numbers* each time, 2.3M and 9.4M. That is not
+hook flakiness, and the control rules out the obvious alternative explanation:
+on #1 the hook fires cleanly and shows the table-driven CRC-32 at
+`0x02017301`–`0x02017325` (`xor eax, [ebp+edx*4-0x404]` against the table,
+`not eax` for the final NOT). So the quiet passes are quiet about the
+*blocklist*, not about the instrument.
+
+**Why it matters: the last thing before `ExitProcess` is a pass that never
+consults the blocklist.** The exit is therefore not "I swept the process list
+and found no analysis tool" — by then it has stopped looking at names
+altogether. Whatever decides to leave lives in the other pass, and nothing has
+ever looked at it. That also demotes the uncracked names: they are consumed by
+the pass that *isn't* making the decision.
+
+**Two honest limits.** #2 and #3 are unmeasured, so "alternating from #4" is
+inference from four points. And `trace_blocklist.py` prints
+`returned or budget reached` without distinguishing a traced function returning
+from the emulator finishing, which is worth separating before leaning on the
+9.4M figure.
+
+`scripts/trace_poll_pass.py` is the follow-up instrument: it records which
+addresses inside the allocation execute during one enumeration, so a hashing
+pass and a quiet one can be diffed and the quiet pass's own code read off.
+
+    ..\.venv\Scripts\python.exe trace_poll_pass.py --which 6 --out pass6.json
+    ..\.venv\Scripts\python.exe trace_poll_pass.py --which 7 --out pass7.json
+    ..\.venv\Scripts\python.exe trace_poll_pass.py --diff pass6.json pass7.json
+
 ### Pick up here — 13 Aug
 
 **Read this first if you are cold.** The dynamic pipeline's build queue is
@@ -1831,11 +1874,18 @@ is. **This is the main line now, and it is emulator work rather than VM work.**
 **Start with the poll loop, because it is what actually ends the emulated run.**
 The sample genuinely runs out of things to do: it polls seven times, finds
 nothing, and returns cleanly. `NtWriteVirtualMemory` is never called, no process
-is opened, and the injection instrumentation sits in place and idle. Whatever it
-is waiting for never appears, so stage 4 never has a reason to come out. That
-puts the uncracked name hashes at the front — **whatever it polls seven times
-for is most likely named among them** — and it makes this one question rather
-than two:
+is opened, and the injection instrumentation sits in place and idle.
+
+**And the seven passes are two alternating shapes, not one repeated** — see
+*The poll loop is not seven identical sweeps*. The pass immediately before
+`ExitProcess` never consults the blocklist at all, so the decision to leave is
+made somewhere nobody has looked. **That reorders what follows:** the quiet
+pass is now the first question, and the uncracked names are the second, because
+they are consumed by the pass that is *not* making the decision.
+
+- **What the quiet pass does.** `trace_poll_pass.py --diff` puts the two passes'
+  executed addresses side by side; the code unique to the quiet one is the
+  shortest path to the exit condition. Nothing has read it yet.
 
 - **The uncracked names, cracked by reading the consuming code.** Both names
   solved so far fell to reading the call site, neither to a corpus, and each
@@ -1884,6 +1934,7 @@ capa / FLOSS / YARA / VirusTotal, all of which can be silently absent. See
     ..\.venv\Scripts\python.exe hash_call_sites.py --late     # what consumes each name hash
     ..\.venv\Scripts\python.exe crack_name_hashes.py --exports
     ..\.venv\Scripts\python.exe trace_blocklist.py --forward 220
+    ..\.venv\Scripts\python.exe trace_poll_pass.py --which 7      # what one poll pass runs
 
 `verify_run.py` is the one to reach for after a detonation: it distinguishes
 **ABSENT from FAIL**, because a missing summary key means the guest did not pull
