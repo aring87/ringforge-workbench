@@ -89,7 +89,9 @@ from dynamic_analysis.ntdll_unhooking import (
 )
 from dynamic_analysis.vm_artifact_reads import (
     collect_vm_artifact_reads,
+    correlate_vm_check_with_silence,
     empty_vm_artifact_reads,
+    empty_vm_check_correlation,
 )
 from dynamic_analysis.snapshot_services import (
     snapshot_services,
@@ -1758,6 +1760,7 @@ def run_dynamic_analysis(
     procmon_json = paths["procmon"] / "parsed_events.json"
     procmon_interesting_json = paths["procmon"] / "interesting_events.json"
     vm_artifact_reads_json = paths["procmon"] / "vm_artifact_reads.json"
+    vm_check_bail_json = paths["procmon"] / "vm_check_and_bail.json"
     ntdll_unhooking_json = paths["procmon"] / "ntdll_unhooking.json"
 
     tasks_before_json = paths["persistence"] / "tasks_before.json"
@@ -1962,6 +1965,7 @@ def run_dynamic_analysis(
     crash_summary: dict[str, Any] = empty_crash_summary("not collected")
     abnormal_termination: dict[str, Any] = {"chain_crashed": False}
     vm_artifact_reads: dict[str, Any] = empty_vm_artifact_reads("not collected")
+    vm_check_bail: dict[str, Any] = empty_vm_check_correlation("not collected")
     ntdll_unhooking: dict[str, Any] = empty_ntdll_unhooking("not collected")
     crash_dump_result: dict[str, Any] = {"collected": False, "note": "not collected"}
     crash_collector: CrashDumpCollector | None = None
@@ -2667,6 +2671,24 @@ def run_dynamic_analysis(
                 # Load Image is excluded deliberately: every process maps ntdll,
                 # so counting that would fire on the whole machine. Not scored
                 # until a live run shows the background rate.
+                # Gap 4's active half, built on the reads just collected: a
+                # sample that checks for a hypervisor and then stops. Not
+                # scored, and its threshold is declared uncalibrated -- no run
+                # has yet produced a VM read for it to be aimed with.
+                vm_check_bail = correlate_vm_check_with_silence(
+                    vm_artifact_reads,
+                    events,
+                    descendant_pids=set(resolved) if resolved is not None else None,
+                )
+                write_json(vm_check_bail_json, vm_check_bail)
+                if vm_check_bail.get("verdict") == "checked_then_quiet":
+                    _emit(
+                        status_cb,
+                        "The sample read a VM-specific artifact and then went "
+                        "quiet. Read an otherwise-empty run as inconclusive "
+                        "rather than clean.",
+                    )
+
                 _emit(status_cb, "Checking for self-unhooking reads of ntdll...")
                 ntdll_unhooking = collect_ntdll_unhooking(
                     events,
@@ -3043,6 +3065,7 @@ def run_dynamic_analysis(
         "crash_summary": crash_summary,
         "abnormal_termination": abnormal_termination,
         "vm_artifact_reads": vm_artifact_reads,
+        "vm_check_and_bail": vm_check_bail,
         "ntdll_unhooking": ntdll_unhooking,
         "crash_dumps": crash_dump_result,
         "powershell_preflight": powershell_preflight,

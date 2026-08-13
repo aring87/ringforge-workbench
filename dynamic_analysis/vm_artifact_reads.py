@@ -408,6 +408,163 @@ def _note(
     )
 
 
+# ---------------------------------------------------------------------------
+# Gap 4's active half: read a VM artifact, and then go quiet
+# ---------------------------------------------------------------------------
+#
+# The passive half -- `summarize_abnormal_termination` -- refuses to let a
+# crashed chain read as a clean one. This is the other shape the same problem
+# takes: a sample that checks for a hypervisor, decides it does not like the
+# answer, and *exits tidily*. No crash, no error, an empty report and a clean
+# verdict. From outside the guest that is indistinguishable from a sample that
+# simply had nothing to do, and this does not pretend otherwise. What it does is
+# make the *coincidence* visible: the last thing the sample did before going
+# quiet was ask whether it was on a virtual machine.
+#
+# **Nothing here is scored, and the thresholds below are not calibrated.**
+# Registry-read collection has now been configured for three runs and captured
+# on one, and the sample this exists for has never produced a read this pass
+# could see. So the mechanism is built and its numbers are declared unvalidated
+# rather than presented as tuned -- the alternative is a detector whose
+# false-positive rate is a guess wearing a constant's clothing.
+
+#: Events by the sample's own tree after the check, below which the run is
+#: described as having gone quiet.
+#:
+#: **A placeholder, and labelled as one.** It is a count rather than a duration
+#: because Procmon's `Time of Day` carries no date and parsing it to compare
+#: across midnight is a second bug waiting to happen; capture order is exact and
+#: needs no parsing. The right value is whatever a live run shows separates a
+#: bail from a pause, and no live run has shown it.
+QUIET_EVENT_THRESHOLD = 10
+
+
+def correlate_vm_check_with_silence(
+    vm_reads: dict[str, Any],
+    events: list[dict[str, Any]],
+    descendant_pids: set[int] | None = None,
+) -> dict[str, Any]:
+    """Did the sample check for a VM and then stop doing anything?
+
+    Answers one of four ways, and the distinction between the first two is the
+    whole point:
+
+    * ``not_collected`` -- the Procmon filter captured no registry reads, so no
+      check could have been seen. Says nothing about the sample.
+    * ``no_vm_check`` -- reads were captured and none named a VM artifact.
+    * ``checked_then_active`` -- it looked, and carried on working.
+    * ``checked_then_quiet`` -- it looked, and then did almost nothing. The
+      case worth a human reading the run again.
+
+    Only `vm_specific` reads count as the check. An `identity_surface` read --
+    `SystemBiosVersion` and friends -- is where a VM check looks *and* where an
+    inventory agent looks, so building a bail detector on one would fire on
+    ordinary software asking what machine it is on.
+    """
+    result: dict[str, Any] = {
+        "available": False,
+        "scored": False,
+        "verdict": "not_collected",
+        "checked_at_event": None,
+        "last_check": {},
+        "events_after_check": 0,
+        "sample_events_after_check": 0,
+        "threshold": QUIET_EVENT_THRESHOLD,
+        "threshold_calibrated": False,
+        "note": "",
+    }
+
+    if not vm_reads.get("collection_available"):
+        result["note"] = (
+            "This run captured no registry reads, so a VM check could not have "
+            "been seen. Nothing here is a statement about the sample."
+        )
+        return result
+
+    result["available"] = True
+
+    vm_specific = [
+        h for h in (vm_reads.get("hits") or [])
+        if h.get("specificity") == "vm_specific"
+    ]
+    if not vm_specific:
+        result["verdict"] = "no_vm_check"
+        result["note"] = (
+            "Registry reads were captured and none of them named an artifact "
+            "that only exists on a virtual machine."
+        )
+        return result
+
+    last = vm_specific[-1]
+    result["last_check"] = {
+        k: last.get(k) for k in
+        ("timestamp", "process_name", "pid", "path", "artifact", "family",
+         "result", "artifact_found")
+    }
+
+    # Position by capture order rather than by clock. Matching on the tuple the
+    # hit was built from, because a path can be read more than once and it is
+    # the *last* one that the silence has to follow.
+    index = None
+    for position, event in enumerate(events):
+        if (str(event.get("path", "") or "").lower() == str(last.get("path", "")).lower()
+                and _event_pid(event) == last.get("pid")
+                and str(event.get("timestamp", "") or "") == last.get("timestamp")):
+            index = position
+    if index is None:
+        result["note"] = (
+            "A VM-specific read was found but could not be located in the event "
+            "stream, so what followed it could not be measured."
+        )
+        result["available"] = False
+        return result
+
+    after = events[index + 1:]
+    result["checked_at_event"] = index
+    result["events_after_check"] = len(after)
+
+    mine = 0
+    for event in after:
+        pid = _event_pid(event)
+        if descendant_pids is None or (pid is not None and pid in descendant_pids):
+            mine += 1
+    result["sample_events_after_check"] = mine
+
+    if mine <= QUIET_EVENT_THRESHOLD:
+        result["verdict"] = "checked_then_quiet"
+        result["note"] = (
+            f"The sample read {last.get('artifact', 'a VM artifact')} and then "
+            f"produced {mine} further event(s) before the run ended. A sample "
+            "that checks for a hypervisor and then stops is the shape of a "
+            "deliberate bail -- but a sample with nothing left to do looks "
+            "identical from here, so read an otherwise-empty run as "
+            "inconclusive rather than clean."
+        )
+    else:
+        result["verdict"] = "checked_then_active"
+        result["note"] = (
+            f"The sample read {last.get('artifact', 'a VM artifact')} and went "
+            f"on to produce {mine} further event(s), so the check did not end "
+            "the run."
+        )
+    return result
+
+
+def empty_vm_check_correlation(reason: str = "not collected") -> dict[str, Any]:
+    return {
+        "available": False,
+        "scored": False,
+        "verdict": "not_collected",
+        "checked_at_event": None,
+        "last_check": {},
+        "events_after_check": 0,
+        "sample_events_after_check": 0,
+        "threshold": QUIET_EVENT_THRESHOLD,
+        "threshold_calibrated": False,
+        "note": reason,
+    }
+
+
 def empty_vm_artifact_reads(reason: str = "not collected") -> dict[str, Any]:
     """The shape a run that never got here still reports."""
     return {

@@ -1524,6 +1524,83 @@ def _image_timestamp_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _vm_check_and_bail_section(summary: dict[str, Any]) -> str:
+    """Gap 4's active half: it checked for a VM, then stopped.
+
+    Rendered as a `card-alert` above the evidence for the same reason the
+    chain-crashed warning is: it does not score, and its whole job is to stop an
+    otherwise-empty run reading as a clean one.
+
+    Silent unless there is something to say. A run that never captured registry
+    reads gets the *Not Collected* note instead, because "no VM check seen" and
+    "a VM check could not have been seen" are different claims.
+    """
+    bail = summary.get("vm_check_and_bail", {}) or {}
+    verdict = bail.get("verdict", "")
+    if not bail or verdict in ("", "no_vm_check"):
+        return ""
+
+    if verdict == "not_collected":
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>VM Check Before Silence — Not Collected</h2>
+      </div>
+      <p class="muted">{_esc(bail.get("note", ""))}</p>
+    </section>
+    """
+
+    check = bail.get("last_check", {}) or {}
+    who = f"{check.get('process_name', '?')} (pid {check.get('pid')})"
+    found = check.get("artifact_found")
+    told = ("and was told it **is** on one" if found is True
+            else "and the check came back clean" if found is False
+            else "with an inconclusive result")
+
+    if verdict == "checked_then_active":
+        return f"""
+    <section class="card">
+      <div class="section-head">
+        <h2>VM Check (context, not scored)</h2>
+        {_section_badge("Checks", 1, context=True)}
+      </div>
+      <p class="muted">
+        {_esc(who)} read {_esc(check.get("artifact", "a VM artifact"))}
+        {_esc(told.replace("**", ""))}, then carried on:
+        {_to_int(bail.get("sample_events_after_check", 0))} further event(s).
+        The check did not end the run.
+      </p>
+    </section>
+    """
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>VM Check, Then Silence — Result May Be Inconclusive</h2>
+      </div>
+      <p class="muted">
+        {_esc(who)} read
+        <b>{_esc(check.get("artifact", "a VM artifact"))}</b>
+        {_esc(told.replace("**", ""))}, and then produced
+        <b>{_to_int(bail.get("sample_events_after_check", 0))}</b> further
+        event(s) before the run ended.
+      </p>
+      <p class="muted">
+        A sample that asks whether it is on a virtual machine and then stops is
+        the shape of a deliberate bail — but a sample with nothing left to do
+        looks identical from out here, and the pipeline cannot tell them apart.
+        Where this run is otherwise empty, read it as <b>inconclusive rather
+        than clean</b>.
+      </p>
+      <p class="muted">
+        Not scored. The quiet threshold
+        ({_to_int(bail.get("threshold", 0))} events) is
+        <b>not calibrated</b> — no run has yet produced a VM read to aim it with.
+      </p>
+    </section>
+    """
+
+
 def _ntdll_unhooking_section(summary: dict[str, Any]) -> str:
     """System DLLs opened as files, which is how user-mode unhooking starts.
 
@@ -2648,6 +2725,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_containment_section(summary)}
 {_observation_window_section(summary)}
 {_abnormal_termination_section(summary)}
+{_vm_check_and_bail_section(summary)}
 {_evidence_section(summary)}
 
 <div class="grid">
