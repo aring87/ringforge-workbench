@@ -87,6 +87,8 @@ KNOWN = {
     "wow64cpu.dll": 0x79069242,
     "kernel32.dll": 0xADEDAB08,
     "kernelbase.dll": 0x21094B62,
+    "sbiedll.dll": 0xE11DA208,     # confirmed against Stormshield's published table
+    "sharedintapp.exe": 0x9CB95240,  # Parallels; FormBook blocklist position 14
     "aqtd9dq.dll": 0xE11DA208,     # the solved GF(2) preimage, not a real name
 }
 
@@ -102,15 +104,17 @@ def self_test() -> None:
 
 # ------------------------------------------------------------ the targets
 
+# The blocklist is the canonical FormBook 20-entry list in the canonical order:
+# 14 of 20 positions hash-match the published table exactly. The six below are
+# this variant's substitutions, and the position names the slot each one filled.
 TARGETS = {
     0xE11DA208: "module lookup -- the gate on the crash branch",
-    0x0263178B: "blocklist process name 1 of 7",
-    0x0CC39FEF: "blocklist process name 2 of 7",
-    0x57585356: "blocklist process name 3 of 7",
-    0x9CB95240: "blocklist process name 4 of 7",
-    0xA8D123C8: "blocklist process name 5 of 7",
-    0xC72CE2D5: "blocklist process name 6 of 7",
-    0xD0C58467: "blocklist process name 7 of 7",
+    0xD0C58467: "blocklist pos 3  (published: vboxservice.exe)",
+    0xA8D123C8: "blocklist pos 4  (published: vboxtray.exe)",
+    0xC72CE2D5: "blocklist pos 11 (published: prl_tools_service.exe)",
+    0x0263178B: "blocklist pos 12 (published: prl_tools.exe)",
+    0x57585356: "blocklist pos 13 (published: prl_cc.exe)",
+    0x0CC39FEF: "blocklist pos 15 (published: vmtoolsd.exe)",
 }
 
 # Analysis, sandbox, VM and AV process names. The thirteen already recovered are
