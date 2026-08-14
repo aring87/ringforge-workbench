@@ -290,7 +290,7 @@ class Emulator:
             # v2 adds the syscall counters. The SSN table itself is *not*
             # stored: it is derived from the host's own ntdll and rebuilt on
             # restore, so a snapshot can never carry a stale numbering.
-            "version": 2,
+            "version": 3,
             "base": self.base,
             "regions": regions,
             "regs": {r: self.mu.reg_read(self._reg_id(r)) for r in self._REGS},
@@ -309,6 +309,10 @@ class Emulator:
             "blocks": self.blocks,
             "files": files,
             "log": self.log,
+            # v3. Without this a restored state cannot say where the
+            # injected code starts, and the entry point has to be passed
+            # in by hand from the run that captured it.
+            "thread_contexts": self.thread_contexts,
         }
         Path(path).write_bytes(pickle.dumps(state, protocol=4))
 
@@ -349,6 +353,9 @@ class Emulator:
         self.snapshots = []
         self.log = state["log"]
         self.files = state["files"]
+        # v3. Absent from v1 and v2 states, which stay readable -- the entry
+        # point then has to be supplied by whoever captured it.
+        self.thread_contexts = state.get("thread_contexts", [])
         for f in self.files:
             f["data"] = self.backing(f["path"])
 
