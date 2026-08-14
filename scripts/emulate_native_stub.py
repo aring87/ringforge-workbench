@@ -76,7 +76,8 @@ from typing import Optional
 from pathlib import Path
 
 from unicorn import (UC_ARCH_X86, UC_HOOK_BLOCK, UC_HOOK_CODE,
-                     UC_HOOK_MEM_UNMAPPED, UC_MODE_32, Uc, UcError)
+                     UC_HOOK_MEM_UNMAPPED, UC_HOOK_MEM_WRITE, UC_MODE_32,
+                     Uc, UcError)
 from unicorn.x86_const import (UC_X86_REG_EAX, UC_X86_REG_EBP, UC_X86_REG_EIP,
                                UC_X86_REG_ESP)
 
@@ -171,6 +172,11 @@ class Emulator:
         self.sections: dict[int, int] = {}
         self.section_views: dict[int, int] = {}
         self.section_maps: list[dict] = []
+        #: What the sample asked NtCreateSection for, and what it wrote
+        #: into the view. The written extents are the evidence; the view
+        #: itself is carved from unzeroed heap.
+        self.section_requests: list[dict] = []
+        self.section_writes: list[dict] = []
         self.control_calls: list[dict] = []
         self.process_handles: dict[int, int] = {}
         self._next_handle = 0x400
@@ -524,6 +530,30 @@ class Emulator:
         self._next_handle += 4
         return self._next_handle
 
+    def _watch_section_view(self, base: int, size: int) -> None:
+        """Record which bytes of a section view the sample actually writes.
+
+        The view is not freshly mapped -- `alloc` carves it out of the heap that
+        is already mapped and never zeroes -- so reading the view back at the end
+        of a run shows stale bytes from earlier in the run mixed with whatever
+        was written. A 24.8 MB view came back 97.5% non-zero at entropy 7.96 and
+        looked like a written payload; it was mostly leftovers.
+
+        Only the written extents are evidence. Coalesced, because a `rep movsb`
+        of a payload arrives as one callback per byte.
+        """
+        spans: list[list[int]] = []
+        self.section_writes.append({"base": base, "size": size, "spans": spans})
+
+        def on_write(uc, access, address, length, value, _user):
+            end = address + length
+            if spans and address <= spans[-1][1] + 0x40:
+                spans[-1][1] = max(spans[-1][1], end)
+            else:
+                spans.append([address, end])
+
+        self.mu.hook_add(UC_HOOK_MEM_WRITE, on_write, begin=base, end=base + size - 1)
+
     def alloc(self, size: int) -> int:
         size = max(size, 0x1000)
         p = self.next_free
@@ -820,13 +850,23 @@ class Emulator:
             #  Attributes, FileHandle)
             nargs = 7
             size = 0x1000
+            raw = b""
             if a(3):
                 try:
-                    size = struct.unpack("<Q", mu.mem_read(a(3), 8))[0] or 0x1000
+                    raw = bytes(mu.mem_read(a(3), 8))
+                    size = struct.unpack("<Q", raw)[0] or 0x1000
                 except UcError:
                     pass
             handle = self.new_handle()
             self.sections[handle] = min(max(size, 0x1000), 0x4000000)
+            # Log the size the *sample* asked for, not the clamped one. A view
+            # is carved out of the already-mapped heap by `alloc`, which never
+            # zeroes, so an oversized section reads back full of stale bytes
+            # from earlier in the run and looks like 24 MB of written payload.
+            # The requested size is what tells those apart.
+            self.section_requests.append({
+                "handle": handle, "raw": raw.hex(), "requested": size,
+                "granted": self.sections[handle], "blocks": self.blocks})
             wr(a(0), handle)
             val = 0
         elif name == "NtMapViewOfSection":
@@ -843,6 +883,8 @@ class Emulator:
             existing = self.section_views.get(a(0))
             p = existing if existing else self.alloc(size)
             self.section_views[a(0)] = p
+            if not existing:
+                self._watch_section_view(p, size)
             wr(a(2), p)
             if a(6):
                 mu.mem_write(a(6), struct.pack("<I", size))
@@ -1091,6 +1133,22 @@ def main(argv: list[str] | None = None) -> int:
             who = next((n for n, p, _ in winenv.served_process_list() if p == t["pid"]), "?")
             print(f"  {t['blocks']:>13,}blk  {t['call']} pid {t['pid']} ({who})"
                   f"  {'opened' if t['opened'] else 'REFUSED - not in the served list'}")
+    if emu.section_requests:
+        print("\nsections requested (the size the sample asked for):")
+        for r in emu.section_requests:
+            print(f"  {r['blocks']:>13,}blk  MaximumSize raw {r['raw']} -> "
+                  f"{r['requested']:#x} ({r['requested']:,} bytes), "
+                  f"granted {r['granted']:#x}")
+    if emu.section_writes:
+        print("\nbytes actually written into section views:")
+        for w in emu.section_writes:
+            total = sum(e - s2 for s2, e in w["spans"])
+            print(f"  view at {w['base']:#x} ({w['size']:,} bytes): "
+                  f"{total:,} bytes written across {len(w['spans'])} span(s)")
+            for s2, e in w["spans"][:12]:
+                print(f"    {s2:#x}-{e:#x}  (+{s2 - w['base']:#x}, {e - s2:,} bytes)")
+            if len(w["spans"]) > 12:
+                print(f"    ... {len(w['spans']) - 12} more spans")
     if emu.section_maps:
         print("\nsection views mapped:")
         for m in emu.section_maps:
