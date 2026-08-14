@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-08-13. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. 602 fast tests. **The detonation queue is empty too, as of run `bb51babb`** — the registry-read run that three consecutive sessions were set up for has now happened, passed all twelve `verify_run.py` rows, and hit every pre-registered prediction. **Its headline result is a negative and a real one: 73,825 registry reads by the sample, none naming a VM artifact**, with a positive control in the same stream (the collector caught `VBoxSF` reads by the sample's own PowerShell child and correctly binned them as routine network-provider enumeration). So this variant checks for analysis environments by module hash and CRC-32 process name, never by registry. **A second run the same day settled that a different sample does not fix it either:** `a6a86646…` was chosen for this behaviour, announced *"cannot run inside a virtual machine"* in a dialog box, and still reported `artifacts_read: 0` — registry, file, device-namespace and WMI routes each ruled out from its own events. **Two for two on samples that provably detect virtualisation, so gap 4 should be recorded context-only by decision rather than left awaiting calibration.** The config field that was missed three runs running is now the default rather than something to remember, with a pre-flight warning and a test pinning it. **What is left is the sample, and it is emulator work, not a detonation.** **And the emulator has now reached the injection.** Measuring the poll loop showed stage 3 waiting for a process whose parent is `explorer.exe`; serving one took it through `NtOpenProcess` → `NtCreateSection` → two `NtMapViewOfSection` → thread redirect, none of which any previous run reached. It is **section-mapping injection**, so `NtWriteVirtualMemory` — which this harness was built to catch — is not on its path at all. Stage 4 is still not out in plaintext, but it is **located, sized and sourced**: the section is deliberately sized at random between 2 MB and 131 MB and filled with keystream — anti-analysis rather than the divergence this file briefly suspected — and the content is 273,408 bytes copied from `0x27e7000` in a single pass ending 645 blocks before the section is closed. **`alloc_27e7000.bin` is a new stage and lives only in a scratchpad; it belongs on the artifact drive.** See *Serving one child of explorer reached the injection* and *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
+**Last updated:** 2026-08-13. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. 602 fast tests. **The detonation queue is empty too, as of run `bb51babb`** — the registry-read run that three consecutive sessions were set up for has now happened, passed all twelve `verify_run.py` rows, and hit every pre-registered prediction. **Its headline result is a negative and a real one: 73,825 registry reads by the sample, none naming a VM artifact**, with a positive control in the same stream (the collector caught `VBoxSF` reads by the sample's own PowerShell child and correctly binned them as routine network-provider enumeration). So this variant checks for analysis environments by module hash and CRC-32 process name, never by registry. **A second run the same day settled that a different sample does not fix it either:** `a6a86646…` was chosen for this behaviour, announced *"cannot run inside a virtual machine"* in a dialog box, and still reported `artifacts_read: 0` — registry, file, device-namespace and WMI routes each ruled out from its own events. **Two for two on samples that provably detect virtualisation, so gap 4 should be recorded context-only by decision rather than left awaiting calibration.** The config field that was missed three runs running is now the default rather than something to remember, with a pre-flight warning and a test pinning it. **What is left is the sample, and it is emulator work, not a detonation.** **The emulator now runs the injected code itself** — the far side's entry is a thread-hijack trampoline in front of a deliberate 512,371,392-iteration stall, and `after_inject.state` starts any experiment at the injection in seconds rather than 380M blocks. See *The far side runs — 14 Aug*. **And the emulator reached the injection in the first place** because measuring the poll loop showed stage 3 waiting for a process whose parent is `explorer.exe`; serving one took it through `NtOpenProcess` → `NtCreateSection` → two `NtMapViewOfSection` → thread redirect, none of which any previous run reached. It is **section-mapping injection**, so `NtWriteVirtualMemory` — which this harness was built to catch — is not on its path at all. Stage 4 is still not out in plaintext, but it is **located, sized and sourced**: the section is deliberately sized at random between 2 MB and 131 MB and filled with keystream — anti-analysis rather than the divergence this file briefly suspected — and the content is 273,408 bytes copied from `0x27e7000` in a single pass ending 645 blocks before the section is closed. **`alloc_27e7000.bin` is a new stage and lives only in a scratchpad; it belongs on the artifact drive.** See *Serving one child of explorer reached the injection* and *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
 tdll.dll` twice -- and first contact with live data exposed two contamination bugs in it, both known classes with helpers already in `utils` that the pass was not calling: `WerFault.exe` supplied 30 of 41 opens credited to the sample, and **`procdump64.exe`, the pipeline's own tool**, supplied 18 of 60 background opens. Fixing both took the false-positive baseline from **60 to 2** while leaving the finding untouched -- and that baseline is the number deciding whether the detector may ever score. Module integrity's prediction failed for a locatable reason: there was no `RegSvcs` image to examine. Registry reads were **still** not collected, wrong Procmon config for the third time, and the guard said so rather than reporting a silent zero. See *Run `d7cc5044`*. Before that, **gaps 4 and 5's remaining build items were closed: all three detectors and a real minidump reader.** `dynamic_analysis/minidump.py` is now the one tested dump reader and `pe_carve` delegates to it; the unloaded-module list that defeated two hand-rolled attempts is its headline case, and the reason is structural — `MINIDUMP_UNLOADED_MODULE_LIST` opens with `SizeOfHeader/SizeOfEntry/NumberOfEntries`, not the bare count the loaded list uses, so reading it the same way shifts every field. `dynamic_analysis/ntdll_unhooking.py` catches a process opening `ntdll` *as a file*, which is how self-unhooking starts and which this sample does. Suite 483 → 543. **Chasing four failing `slow` tests then found a live false negative in the hollowing detector.** The 15 header mismatches were *correct* — the cached reference dump predated a Windows Update that replaced fourteen System32 DLLs — but the investigation exposed that `header_mismatch` was handed between the reference lookup and its caller through a module-global dict that the cache eviction cleared in between, so **whichever module crossed the 96-entry cache limit lost its mismatch and was graded by degree**, which is how a payload sharing most of its bytes with the file it impersonates files as `identical`. Reproduced against the pre-fix code, fixed, and pinned by four fast tests. Suite 561 with `slow`. Before that, **two hollowing detectors landed, both off the pick-up list and neither needing a detonation.** The WER `app_timestamp` check compares the `TimeDateStamp` of the image that was *executing* against the file on disk — equal for an ordinary process, different for a hollowed one, and on run `3f70058b` Windows recorded stage 3's `5ff2b99b` for a `RegSvcs.exe` whose file is `68531ee1`. It fires without needing the fault to land in the injected region and without needing a dump at all, so it survives every way the dump watcher misses a short-lived process. And **module integrity is finally in the HTML report** rather than JSON-only, which is how its first live finding had to be read aloud by hand. Suite 483 → 511. See *Two hollowing detectors*. Before that, **the blocklist was identified as the canonical FormBook 20-entry list with six entries swapped, and the public table cracked one of them and named the slot of the rest.** 14 of 20 positions hash-match Stormshield's published table exactly, so `0x9cb95240` is `sharedintapp.exe` (Parallels) and the remaining six sit in the slots the published list fills with `vboxservice`, `vboxtray`, `prl_tools_service`, `prl_tools`, `prl_cc` and `vmtoolsd`. **That same table independently confirms `sbiedll.dll` = `0xe11da208`**, which this project had cracked circumstantially and can now treat as corroborated by an analysis that never saw this sample. Six names remain and they are this variant's own substitutions, absent from every public write-up found. **The blocklist mechanism is also fully mapped, and mapping it retracted a conclusion published in this file hours earlier.** All 20 process-name constants *are* XOR-decoder output, from 20 contiguous call sites at `0x02016619`–`0x0201691a` feeding the compare at `0x2026181` — the earlier "they are not decoder output, four routes closed" was two compounding tool bugs: a linear capstone sweep that silently drops sites where it desynchronises, run against the *warmup* image when the allocation keeps decrypting (45 sites at 47M blocks, **65 by 380M**, with all 20 constants among the late ones). Both fixed; `hash_call_sites.py --late` reports 20 of 20. The seven names are **still uncracked**, but the site order preserves the author's list and groups them: two sit between the VMware pair and Sandboxie, five among `procmon`/`filemon`/`wireshark`/`netmon`. There is no substring structure to exploit here — the compare is against the whole-name hash — and none of the seven is a purely alphabetic 8-character stem. **Both open name hashes elsewhere are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
@@ -2005,6 +2005,80 @@ Each produced a plausible answer, which is what makes them dangerous:
   trace 143M blocks short and reported `0 writes to that range`, which reads
   like a finding rather than a truncated run.
 
+### The far side runs — 14 Aug
+
+The transform turned out to be a dead end, and that is what forced the better
+route. Source and destination are both ciphertext and their XOR is entropy
+**7.999 with no period at any tested length** — there is nothing to solve for
+offline. Whatever decrypts the payload runs in the thread the loader redirected,
+so the answer was to **run that thread** rather than reverse its input.
+
+#### What made it cheap
+
+Two calls had been going unhandled, which set `nargs` to 0 and left their
+arguments on the stack for the caller's own `ret` to return into. Implementing
+`NtGetContextThread` / `NtSetContextThread` with the right arity is the fix;
+capturing the record is the point, because **the `CONTEXT` a hollowing loader
+writes is the only thing that says where the injected code starts**:
+
+    [725,274,879blk] NtSetContextThread eip=0x3e9f89b eax=0x2fcf0c esp=0x2fcd6c
+
+`0x3e9f89b` sits inside the payload at offset **`0xbc27`**. The loader sets
+`Eip` directly rather than the `Eax`/`RtlUserThreadStart` convention —
+`decode_context` reads both, because guessing wrong looks exactly like resuming
+into nothing. And `esp` is `0x2fcd6c`, already inside the mapped stack, so the
+fabricated remote stack the plan allowed for was never needed.
+
+`--snapshot-after-inject` writes **`after_inject.state`** at the first
+`NtResumeThread`. Everything from here starts there, in seconds, instead of
+paying ~380M blocks from `after_scan.state`. Snapshots are v3 and carry
+`thread_contexts`; v1 and v2 stay readable.
+
+#### The entry is a thread-hijack trampoline
+
+    0x03e9f89b  push  0x7707aa80   ; where the thread was suspended, in ntdll
+    0x03e9f8a0  pushal             ; save the victim thread's registers
+    0x03e9f8a1  call  0x3e9f0c4    ; run the payload
+    0x03e9f8a6  popal
+    0x03e9f8a7  ret                ; let the thread carry on as if nothing happened
+
+Which explains the choice of `NtSetContextThread` over creating a thread: it
+**borrows an existing thread and gives it back**, leaving no new-thread artifact.
+
+#### And what it calls first is a deliberate stall
+
+    0x03e9f6a3  cmp  ecx, [ebp-0x168]   ; i > 512,371,392 ?
+    0x03e9f6b1  imul edx, [ebp-0xd4]    ; acc *= k -- computes nothing useful
+    0x03e9f6b8  mov  [ebp-0x13c], edx
+
+**512,371,392 iterations, about 3.07 billion instructions.** Nothing was broken
+and nothing diverged; it had not finished. `--survey` is what turned that from a
+mystery into a diagnosis in a single run — watching the payload alone reported
+*1 byte written*, which reads identically as a failed resume, a diverged
+emulation, or a stub decrypting elsewhere. Adding where writes land (9,988,297
+into the stack) and which code is hot (**one** 4 KB page, 10,016,624 blocks)
+named it at once.
+
+**Do not patch `[ebp-0x168]` to shorten it.** The body accumulates into
+`[ebp-0x13c]`, and a delay loop whose result is later used as a key or a check
+is the standard way to punish that shortcut: a short-circuited run yields a
+wrong accumulator and a plausible-looking wrong answer. Three billion
+instructions of honest emulation is cheaper than that.
+
+#### Open, and running as this was written
+
+A full-length run past the stall is in flight. **Its outcome decides how this
+section should read**, so treat what follows as pending rather than settled:
+
+- more than one hot code page, and writes into the payload, means it cleared the
+  stall and began decrypting — stage 4 follows
+- still one page means the budget was short again
+- cleared but *not* decrypting means the accumulator feeds something else, and
+  the disassembly at `0x3e9f6c0` where the loop exits is the next read — it is
+  already in the dumped region and needs no run
+
+    ..\.venv\Scripts\python.exe follow_injection.py --blocks 4000000000 --survey
+
 ### Pick up here — 13 Aug
 
 **Read this first if you are cold.** The dynamic pipeline's build queue is
@@ -2081,10 +2155,11 @@ they are consumed by the pass that is *not* making the decision.
 - **Also done.** `[edi+0x250]` is 273,408 bytes, and the buffer at `0x27e7000`
   holding exactly that much is confirmed as the injection source — read once per
   byte in a pass ending 645 blocks before `NtClose` on the section.
-- **The live lead is the transform.** The source goes into the view altered, so
-  watch writes to the view across `700,695,844`–`700,969,251` for the
-  destination offset, then XOR source against destination. No long run needed,
-  and it is the shortest path to stage 4 in plaintext.
+- **The transform was a dead end, and that is settled.** Source and destination
+  are both ciphertext, their XOR is entropy 7.999 with no period, so there is
+  nothing to solve offline. **The route is to run the injected thread**, which
+  works: see *The far side runs*. Start from `after_inject.state` and
+  `follow_injection.py`, not from `after_scan.state`.
 
 - **The uncracked names, cracked by reading the consuming code.** Both names
   solved so far fell to reading the call site, neither to a corpus, and each
