@@ -2026,8 +2026,24 @@ writes is the only thing that says where the injected code starts**:
 `0x3e9f89b` sits inside the payload at offset **`0xbc27`**. The loader sets
 `Eip` directly rather than the `Eax`/`RtlUserThreadStart` convention —
 `decode_context` reads both, because guessing wrong looks exactly like resuming
-into nothing. And `esp` is `0x2fcd6c`, already inside the mapped stack, so the
-fabricated remote stack the plan allowed for was never needed.
+into nothing.
+
+**And `esp` was wrong — that is retracted.** This section first read: *"`esp` is
+`0x2fcd6c`, already inside the mapped stack, so the fabricated remote stack the
+plan allowed for was never needed."* The opposite is true. `NtGetContextThread`
+was answering with the **live machine's** registers, so the record handed back
+carried the *loader's own* `Esp`; the loader copied it into what it passed to
+`NtSetContextThread`, and the injected thread then ran on the loader's stack and
+flattened it with ten million pushes. Resuming the loader afterwards died at
+`eip 0x2fcd68`, executing its own wreckage. The plan's instinct — fabricate a
+remote stack — was right, and a real mapped address looking like good news is
+what talked this document out of it. `REMOTE_STACK` at `0x10000000` now serves
+one, and `ContextFlags` is `CONTEXT_FULL` rather than the `0x0` noted below.
+
+**What survives the retraction is the entry point.** Regenerated with the fix,
+`NtSetContextThread` still reports `eip=0x3e9f89b` while `esp` passes through as
+`0x10080000` — so the loader does a read-modify-write and sets **only `Eip`**.
+The entry is genuinely its choice; the stack was always ours.
 
 `--snapshot-after-inject` writes **`after_inject.state`** at the first
 `NtResumeThread`. Everything from here starts there, in seconds, instead of
@@ -2065,19 +2081,53 @@ is the standard way to punish that shortcut: a short-circuited run yields a
 wrong accumulator and a plausible-looking wrong answer. Three billion
 instructions of honest emulation is cheaper than that.
 
-#### Open, and running as this was written
+#### The stall cannot end here, and no budget would have helped
 
-A full-length run past the stall is in flight. **Its outcome decides how this
-section should read**, so treat what follows as pending rather than settled:
+That run finished, and the answer was a fourth outcome this document did not
+list: **the loop is unterminating by construction.** Eight billion instructions
+produced the same one hot page, and the reason is not the budget:
 
-- more than one hot code page, and writes into the payload, means it cleared the
-  stall and began decrypting — stage 4 follows
-- still one page means the budget was short again
-- cleared but *not* decrypting means the accumulator feeds something else, and
-  the disassembly at `0x3e9f6c0` where the loop exits is the next read — it is
-  already in the dumped region and needs no run
+    0x3e9f575  movzx eax, byte ptr [ebp-0x119]   ; the flag, 0x1d
+    0x3e9f57e  je    0x3e9f6c5                   ; leaves only when it is zero
+    ...
+    0x3e9f65c  edx = flag                         ; 0x1d
+    0x3e9f663  eax = [ebp-0xa8]                   ; 0x3e9f8a8, hardcoded
+    0x3e9f669  ecx = byte [eax]                   ; currently 0xb1
+    0x3e9f66c  cmp edx, ecx                       ; equal?
+    0x3e9f670    flag = 0 ; jmp exit              ; only then
+    0x3e9f679  edx = [ebp-0x170]                  ; = ptr + 5
+    0x3e9f67f  byte [edx] = 0x56                  ; the only write it makes
 
-    ..\.venv\Scripts\python.exe follow_injection.py --blocks 4000000000 --survey
+The exit needs `*0x3e9f8a8 == 0x1d`. The loop's single write goes to **`ptr+5`**,
+never to `ptr`. Nothing it does can satisfy its own condition, so it spins for
+as long as it is given — the payload byte count went 1, then 2, and would go on
+counting outer passes forever.
+
+**`0x3e9f8a8` is a data cell, not code.** It sits immediately after the
+trampoline's `ret` — payload `+0xbc34` — and the pointer to it is a hardcoded
+absolute (`mov dword [ebp-0xa8], 0x3e9f8a8` at `0x3e9f4be`), which is only
+sensible because the loader relocated the payload to where it mapped it. So the
+payload is a manually mapped, relocated image with a small handshake area
+attached to its entry stub: `ptr[0]` is what the stub waits on, `ptr[5]` is what
+it answers with.
+
+**The live hypothesis is a two-party handshake over the shared section**, the
+loader being the other party — it is still alive in its own thread issuing 36
+`NtDelayExecution` calls, and both processes map the same section. It fits what
+has been observed: run only the loader and `ptr+5` stays ciphertext, so it never
+sees `0x56`; run only the stub and `ptr` stays ciphertext, so it never sees
+`0x1d`. Each waits for the other, and both were observed doing exactly that.
+
+`scripts/handshake_probe.py` tests it by interleaving — run the stub to its
+write, restore the loader's registers, let it continue, and watch the cell.
+**Untested as of writing.** The first attempt was void: the stub was still
+running on the loader's stack (see the retraction above), so the loader died at
+138K blocks and the probe reported *"the loader never touches it"* from a
+corpse. The probe now refuses a verdict unless the loader ran to completion.
+
+Note the limit of the design even when it works: two phases is one exchange, not
+concurrency. If the real protocol needs several rounds, a single interleave will
+not show it.
 
 ### Pick up here — 13 Aug
 
