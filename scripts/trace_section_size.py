@@ -30,7 +30,7 @@ import collections
 from pathlib import Path
 
 import capstone
-from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_WRITE
+from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
 from unicorn.x86_const import (UC_X86_REG_EAX, UC_X86_REG_EBP, UC_X86_REG_ECX,
                                UC_X86_REG_EDX, UC_X86_REG_EIP)
 
@@ -40,6 +40,68 @@ from trace_blocklist import STATE
 
 #: Where the run logged `NtCreateSection`, so the trace can stop just past it.
 CREATE_SECTION_BLOCKS = 542_537_463
+
+
+def reads_of(args: argparse.Namespace) -> int:
+    """Who reads a buffer, and when -- for linking a source to a destination.
+
+    The section's base size is `0x42c00`, and an allocation of exactly that size
+    exists at `0x27e7000` holding 273,408 bytes of high-entropy data that match
+    nothing on the artifact drive. Tempting, but its bytes do not appear in the
+    section view at any offset, so the size match alone proves nothing.
+
+    A read-watch settles it. If the loader reads this buffer during the copy
+    window then the two are linked and whatever sits between them is a
+    transformation; if it never touches it, the size match is chance and the
+    real source is somewhere else.
+    """
+    emu = Emulator.restore(args.state)
+    emu.repair_wow64_crash()
+    print(f"restored at {emu.blocks:,} blocks")
+    lo, hi = args.reads_of, args.reads_of + args.reads_len
+    print(f"watching reads of {lo:#x}..{hi:#x} until {args.until:,} blocks")
+
+    first: list = []
+    spans: list[list[int]] = []
+    readers: collections.Counter = collections.Counter()
+    total = {"n": 0}
+
+    def on_read(uc, access, address, length, value, _user):
+        total["n"] += 1
+        eip = uc.reg_read(UC_X86_REG_EIP)
+        readers[eip] += 1
+        if not first:
+            first.append((emu.blocks, eip, address))
+        end = address + length
+        if spans and address <= spans[-1][1] + 0x40:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([address, end])
+
+    handle = emu.mu.hook_add(UC_HOOK_MEM_READ, on_read, begin=lo, end=hi - 1)
+    status = ""
+    while emu.blocks < args.until:
+        status = emu.resume(count=200_000_000)
+        if "returned" not in status:
+            break
+    emu.mu.hook_del(handle)
+    print(f"  {status}  ({emu.blocks:,} blocks)")
+    print(f"  {total['n']:,} read(s) of that buffer\n")
+
+    if not total["n"]:
+        print("  never read -- the size match is coincidence, or the copy")
+        print("  happens outside this window. Widen --until before concluding.")
+        return 1
+
+    blocks, eip, address = first[0]
+    print(f"  first read at {blocks:,}blk  eip {eip:#010x}  [{address:#x}]")
+    print(f"  {len(spans)} span(s) touched:")
+    for lo2, hi2 in spans[:10]:
+        print(f"    {lo2:#x}-{hi2:#x}  (+{lo2 - args.reads_of:#x}, {hi2 - lo2:,} bytes)")
+    print(f"\n  readers, by instruction:")
+    for eip, count in readers.most_common(8):
+        print(f"    {eip:#010x}  {count:,}x")
+    return 0
 
 
 def regs_at(args: argparse.Namespace) -> int:
@@ -99,11 +161,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--len", type=int, default=8)
     ap.add_argument("--keep", type=int, default=24,
                     help="how many of the most recent writes to report")
+    ap.add_argument("--reads-of", type=lambda v: int(v, 0), default=None,
+                    help="watch reads of a buffer, to link a source to a copy")
+    ap.add_argument("--reads-len", type=lambda v: int(v, 0), default=0x42C00)
     ap.add_argument("--dump-alloc", default=None,
                     help="write the allocation as it stands at the stop point")
     ap.add_argument("--until", type=int, default=CREATE_SECTION_BLOCKS + 2_000_000)
     args = ap.parse_args(argv)
 
+    if args.reads_of is not None:
+        return reads_of(args)
     if args.regs_at:
         return regs_at(args)
 
