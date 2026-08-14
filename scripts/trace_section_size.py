@@ -46,6 +46,75 @@ CREATE_SECTION_BLOCKS = 542_537_463
 #: Nothing is logged in between, because the copy is ordinary instructions.
 COPY_WINDOW = (547_430_617, 700_969_896)
 
+#: The payload copy itself, measured: 0x0202f454 reads the source exactly
+#: once per byte across this span, ending 645 blocks before NtClose. The
+#: rest of COPY_WINDOW is keystream fill.
+COPY_PASS = (700_695_844, 700_969_251)
+
+
+def copy_dest(args: argparse.Namespace) -> int:
+    """Where in the view the payload lands, and what the copy does to it.
+
+    The source at `0x27e7000` is read exactly once per byte across
+    700,695,844-700,969,251 blocks and its bytes are not in the view verbatim,
+    so the copy transforms them. Watching writes to the view during only that
+    window isolates the destination from the 24 MB of keystream fill that
+    precedes it -- the fill would otherwise drown the 273,408 bytes that matter.
+
+    With source and destination in hand the transform is one XOR away.
+    """
+    emu = Emulator.restore(args.state)
+    emu.repair_wow64_crash()
+    print(f"restored at {emu.blocks:,} blocks")
+    lo, hi = args.copy_dest, args.copy_dest + args.dest_len
+    print(f"watching writes to {lo:#x}..{hi:#x}")
+    print(f"recording only within {COPY_PASS[0]:,}-{COPY_PASS[1]:,} blocks\n")
+
+    spans: list[list[int]] = []
+    writers: collections.Counter = collections.Counter()
+    total = {"n": 0, "ignored": 0}
+
+    def on_write(uc, access, address, length, value, _user):
+        if not COPY_PASS[0] <= emu.blocks <= COPY_PASS[1]:
+            total["ignored"] += 1
+            return
+        total["n"] += 1
+        writers[uc.reg_read(UC_X86_REG_EIP)] += 1
+        end = address + length
+        if spans and address <= spans[-1][1] + 0x40:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([address, end])
+
+    handle = emu.mu.hook_add(UC_HOOK_MEM_WRITE, on_write, begin=lo, end=hi - 1)
+    status = ""
+    while emu.blocks < args.until:
+        status = emu.resume(count=200_000_000)
+        if "returned" not in status:
+            break
+    emu.mu.hook_del(handle)
+    print(f"  {status}  ({emu.blocks:,} blocks)")
+    print(f"  {total['n']:,} write(s) inside the pass, {total['ignored']:,} outside it\n")
+
+    if not total["n"]:
+        print("  nothing written in that window -- check COPY_PASS against a")
+        print("  fresh --reads-of before concluding the copy goes elsewhere.")
+        return 1
+
+    print(f"  {len(spans)} destination span(s):")
+    for lo2, hi2 in spans[:10]:
+        print(f"    {lo2:#x}-{hi2:#x}  (+{lo2 - args.copy_dest:#x}, {hi2 - lo2:,} bytes)")
+    print("\n  writers:")
+    for eip, count in writers.most_common(6):
+        print(f"    {eip:#010x}  {count:,}x")
+
+    if args.dump_dest and spans:
+        start = spans[0][0]
+        end = spans[-1][1]
+        Path(args.dump_dest).write_bytes(bytes(emu.mu.mem_read(start, end - start)))
+        print(f"\n  destination {start:#x}-{end:#x} written to {args.dump_dest}")
+    return 0
+
 
 def reads_of(args: argparse.Namespace) -> int:
     """Who reads a buffer, and when -- for linking a source to a destination.
@@ -184,6 +253,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--len", type=int, default=8)
     ap.add_argument("--keep", type=int, default=24,
                     help="how many of the most recent writes to report")
+    ap.add_argument("--copy-dest", type=lambda v: int(v, 0), default=None,
+                    help="watch writes to the view during the copy pass only")
+    ap.add_argument("--dest-len", type=lambda v: int(v, 0), default=0x17ABC00)
+    ap.add_argument("--dump-dest", default=None,
+                    help="write the destination bytes for XOR against the source")
     ap.add_argument("--reads-of", type=lambda v: int(v, 0), default=None,
                     help="watch reads of a buffer, to link a source to a copy")
     ap.add_argument("--reads-len", type=lambda v: int(v, 0), default=0x42C00)
@@ -192,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--until", type=int, default=CREATE_SECTION_BLOCKS + 2_000_000)
     args = ap.parse_args(argv)
 
+    if args.copy_dest is not None:
+        return copy_dest(args)
     if args.reads_of is not None:
         return reads_of(args)
     if args.regs_at:
