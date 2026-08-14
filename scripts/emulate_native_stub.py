@@ -86,6 +86,19 @@ from dotnet_meta import XOR_SUFFIX, xor_unwrap
 
 IMAGE_BASE = 0x400000
 STACK, STACK_SIZE = 0x200000, 0x200000
+
+#: A stack for the *remote* thread a hollowing loader redirects, clear of both
+#: `STACK` and the heap at `HEAP_BASE`.
+#:
+#: This exists because the first `NtGetContextThread` answered with the live
+#: machine's registers, so the `CONTEXT` handed back carried the **loader's own**
+#: `Esp`. The loader wrote that straight into the record it passed to
+#: `NtSetContextThread`, which made the injected entry appear to run on a stack
+#: that was really the loader's -- and the injected code then flattened the
+#: loader's frames with ten million pushes. On a real machine the two threads
+#: live in different processes and share nothing but the section. Answering with
+#: a separate region is what makes that true here.
+REMOTE_STACK, REMOTE_STACK_SIZE = 0x10000000, 0x100000
 #: Basic blocks between allocation snapshots. Low enough that the
 #: did-it-actually-unpack check reports on an ordinary budget rather than only
 #: on an overnight one -- a diagnostic that never fires is not a diagnostic.
@@ -212,6 +225,9 @@ class Emulator:
         self.thread_contexts: list[dict] = []
         #: Set by main() from --snapshot-after-inject. Cleared once used.
         self.snapshot_on_resume = None
+        #: ESP handed to the redirected thread, and the flag saying its
+        #: stack is mapped. Zero until an injection asks for one.
+        self.remote_esp = 0
         self.section_requests: list[dict] = []
         self.section_writes: list[dict] = []
         self.control_calls: list[dict] = []
@@ -578,6 +594,24 @@ class Emulator:
         which allocate from 0x1000 upward."""
         self._next_handle += 4
         return self._next_handle
+
+    def _map_remote_stack(self) -> None:
+        """Map the redirected thread's stack, once.
+
+        Lazy rather than mapped at construction because a run that never reaches
+        an injection should not carry a region it never touches -- snapshots
+        store every mapped region, and this one would be a megabyte of zeroes in
+        each of them.
+        """
+        if self.remote_esp:
+            return
+        try:
+            self.mu.mem_map(REMOTE_STACK, REMOTE_STACK_SIZE)
+        except UcError:
+            pass                      # already mapped, e.g. in a restored state
+        self.remote_esp = REMOTE_STACK + REMOTE_STACK_SIZE // 2
+        print(f"  [{self.blocks:,}blk] mapped a stack for the remote thread at "
+              f"{REMOTE_STACK:#x}, esp {self.remote_esp:#x}", flush=True)
 
     def _watch_section_view(self, base: int, size: int) -> None:
         """Record which bytes of a section view the sample actually writes.
@@ -967,21 +1001,31 @@ class Emulator:
                           f"eax={fields.get('Eax', 0):#x} esp={fields.get('Esp', 0):#x} "
                           f"flags={fields.get('ContextFlags', 0):#x}", flush=True)
             else:
-                # Answer with the current machine, so a loader that does the
-                # ordinary read-modify-write gets a record whose reserved fields
-                # it did not invent. Writing nothing would leave it editing
-                # whatever was on the stack.
+                # Describe a *remote* thread, not this one.
+                #
+                # The first version answered with the live machine's registers,
+                # which is wrong in a way that survives a long way downstream:
+                # the loader copies what it reads into the record it later hands
+                # to NtSetContextThread, so the injected thread inherited the
+                # loader's Esp, ran on the loader's stack, and destroyed it. The
+                # value looked entirely plausible -- it was a real mapped stack
+                # address -- which is exactly why it went unnoticed until the
+                # loader was resumed after the injected code had run.
+                self._map_remote_stack()
                 if ctx_ptr:
                     blob = bytearray(CONTEXT_SIZE)
-                    live = {
-                        "Eax": UC_X86_REG_EAX, "Ebp": UC_X86_REG_EBP,
-                        "Eip": UC_X86_REG_EIP, "Esp": UC_X86_REG_ESP,
+                    remote = {
+                        "Esp": self.remote_esp,
+                        "Ebp": self.remote_esp,
+                        # Parked in ntdll, where a suspended thread waits.
+                        "Eip": winenv.NTDLL_BASE + 0x9FF0,
+                        "Eax": 0,
+                        "ContextFlags": 0x10007,        # CONTEXT_FULL
+                        "SegCs": 0x23,
+                        "SegSs": 0x2B,
                     }
-                    for field, reg in live.items():
-                        struct.pack_into("<I", blob, CONTEXT_OFFSETS[field],
-                                         mu.reg_read(reg))
-                    struct.pack_into("<I", blob, CONTEXT_OFFSETS["SegCs"], 0x23)
-                    struct.pack_into("<I", blob, CONTEXT_OFFSETS["SegSs"], 0x2B)
+                    for field, value in remote.items():
+                        struct.pack_into("<I", blob, CONTEXT_OFFSETS[field], value)
                     try:
                         mu.mem_write(ctx_ptr, bytes(blob))
                     except UcError:
