@@ -88,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--len", type=lambda v: int(v, 0), default=PAYLOAD_LEN)
     ap.add_argument("--blocks", type=int, default=50_000_000)
     ap.add_argument("--dump-region", default=None)
+    ap.add_argument("--resume", action="store_true",
+                    help="the state is one this script saved mid-stall; "
+                         "keep its registers instead of re-seeding")
+    ap.add_argument("--save-state", default=None,
+                    help="snapshot where the budget ran out, so a long "
+                         "stall can be continued instead of restarted")
     ap.add_argument("--survey", action="store_true",
                     help="also record where every write lands and which "
                          "code is hot, to tell a stub decrypting elsewhere "
@@ -138,9 +144,16 @@ def main(argv: list[str] | None = None) -> int:
         emu.mu.hook_add(UC_HOOK_MEM_WRITE, on_any_write)
         emu.mu.hook_add(UC_HOOK_BLOCK, on_block)
 
-    emu.mu.reg_write(UC_X86_REG_ESP, esp)
-    emu.mu.reg_write(UC_X86_REG_EAX, eax)
-    emu.mu.reg_write(UC_X86_REG_EIP, eip)
+    if args.resume:
+        # Continuing a state this script itself saved: its registers are
+        # already correct and mid-loop. Re-seeding them would silently
+        # restart the stall from zero and look like no progress at all.
+        eip = emu.mu.reg_read(UC_X86_REG_EIP)
+        print(f"  continuing mid-run at eip={eip:#x} (registers left alone)")
+    else:
+        emu.mu.reg_write(UC_X86_REG_ESP, esp)
+        emu.mu.reg_write(UC_X86_REG_EAX, eax)
+        emu.mu.reg_write(UC_X86_REG_EIP, eip)
 
     status = emu.run(eip - emu.base, 0xFFFFFFF, count=args.blocks)
     print(f"\nstopped: {status}  ({emu.blocks:,} blocks)")
@@ -173,6 +186,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.dump_region:
         Path(args.dump_region).write_bytes(after)
         print(f"\n  region written to {args.dump_region}")
+
+    # A stall of 512,371,392 iterations at two basic blocks each is over a
+    # billion blocks, and guessing the budget wrong means paying the whole run
+    # again. Saving here makes a long run resumable: `--state` the result back
+    # in with `--eip 0` and it continues from wherever the budget ran out
+    # rather than from the injection.
+    if args.save_state:
+        emu.snapshot(args.save_state)
+        print(f"  state saved to {args.save_state} at {emu.blocks:,} blocks")
     return 0
 
 
