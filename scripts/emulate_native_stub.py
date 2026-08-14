@@ -320,7 +320,12 @@ class Emulator:
     def restore(cls, path: str | Path) -> "Emulator":
         """Rebuild an emulator from a snapshot, hooks and all."""
         state = pickle.loads(Path(path).read_bytes())
-        if state.get("version") not in (1, 2):
+        # Every version this class has ever written stays readable. Bumping the
+        # writer without widening this guard makes each new snapshot unloadable
+        # by the code that wrote it -- which is how a state saved after an
+        # eight-billion-instruction run came back "unsupported snapshot version
+        # 3" and nearly cost the run twice.
+        if state.get("version") not in (1, 2, 3):
             raise ValueError(f"unsupported snapshot version {state.get('version')}")
         self = cls.__new__(cls)
         self.raw = b""
