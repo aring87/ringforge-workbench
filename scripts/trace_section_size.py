@@ -41,6 +41,11 @@ from trace_blocklist import STATE
 #: Where the run logged `NtCreateSection`, so the trace can stop just past it.
 CREATE_SECTION_BLOCKS = 542_537_463
 
+#: The window in which the payload has to reach the view: the local
+#: `NtMapViewOfSection` at 547M through `NtClose` on the section handle at 700M.
+#: Nothing is logged in between, because the copy is ordinary instructions.
+COPY_WINDOW = (547_430_617, 700_969_896)
+
 
 def reads_of(args: argparse.Namespace) -> int:
     """Who reads a buffer, and when -- for linking a source to a destination.
@@ -64,12 +69,22 @@ def reads_of(args: argparse.Namespace) -> int:
     first: list = []
     spans: list[list[int]] = []
     readers: collections.Counter = collections.Counter()
+    # First and last block at which each instruction touched the buffer. *When*
+    # a reader runs is what links it to the copy: the payload goes into the view
+    # between the two NtMapViewOfSection calls and NtClose on the section, so a
+    # linear pass inside that window is the copy and one outside it is not.
+    windows: dict[int, list[int]] = {}
     total = {"n": 0}
 
     def on_read(uc, access, address, length, value, _user):
         total["n"] += 1
         eip = uc.reg_read(UC_X86_REG_EIP)
         readers[eip] += 1
+        seen = windows.get(eip)
+        if seen is None:
+            windows[eip] = [emu.blocks, emu.blocks]
+        else:
+            seen[1] = emu.blocks
         if not first:
             first.append((emu.blocks, eip, address))
         end = address + length
@@ -98,9 +113,17 @@ def reads_of(args: argparse.Namespace) -> int:
     print(f"  {len(spans)} span(s) touched:")
     for lo2, hi2 in spans[:10]:
         print(f"    {lo2:#x}-{hi2:#x}  (+{lo2 - args.reads_of:#x}, {hi2 - lo2:,} bytes)")
-    print(f"\n  readers, by instruction:")
+    print(f"\n  readers, by instruction, with the window each ran in:")
     for eip, count in readers.most_common(8):
-        print(f"    {eip:#010x}  {count:,}x")
+        lo2, hi2 = windows[eip]
+        inside = COPY_WINDOW[0] <= lo2 and hi2 <= COPY_WINDOW[1]
+        overlaps = lo2 <= COPY_WINDOW[1] and hi2 >= COPY_WINDOW[0]
+        where = ("INSIDE the copy window" if inside
+                 else "overlaps the copy window" if overlaps
+                 else "outside the copy window")
+        print(f"    {eip:#010x}  {count:,}x  {lo2:,}-{hi2:,}blk  -- {where}")
+    print(f"\n  copy window is {COPY_WINDOW[0]:,}-{COPY_WINDOW[1]:,}blk: the two "
+          f"NtMapViewOfSection calls\n  through NtClose on the section handle.")
     return 0
 
 
