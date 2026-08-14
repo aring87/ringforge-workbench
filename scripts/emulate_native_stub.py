@@ -110,6 +110,37 @@ def read_wide(mu, addr: int, limit: int = 520) -> str:
     return raw.decode("utf-16-le", "replace")
 
 
+#: Field offsets in the x86 `CONTEXT` record, which is what a hollowing loader
+#: hands to `NtSetContextThread` to say where the injected code starts.
+#:
+#: **Read `Eip` and `Eax` both.** Loaders split roughly evenly between setting
+#: `Eip` directly and setting only `Eax`, because a freshly created thread is
+#: suspended at `RtlUserThreadStart`, which jumps to whatever `Eax` holds.
+#: Reading one and not the other looks exactly like "it resumed into nothing".
+CONTEXT_OFFSETS = {
+    "ContextFlags": 0x00, "Edi": 0x9C, "Esi": 0xA0, "Ebx": 0xA4, "Edx": 0xA8,
+    "Ecx": 0xAC, "Eax": 0xB0, "Ebp": 0xB4, "Eip": 0xB8, "SegCs": 0xBC,
+    "EFlags": 0xC0, "Esp": 0xC4, "SegSs": 0xC8,
+}
+CONTEXT_SIZE = 0x2CC
+
+
+def decode_context(raw: bytes) -> dict[str, int]:
+    """The interesting registers out of an x86 `CONTEXT` blob.
+
+    Pure and separate from the emulator so it can be tested without a run --
+    which for this file is the difference between a unit test and twenty
+    minutes. Short records are read as far as they go rather than raising: a
+    loader may pass `ContextFlags` asking for a subset, and a partial record
+    still names the entry point.
+    """
+    out: dict[str, int] = {}
+    for field, off in CONTEXT_OFFSETS.items():
+        if off + 4 <= len(raw):
+            out[field] = struct.unpack_from("<I", raw, off)[0]
+    return out
+
+
 def entropy(data: bytes) -> float:
     if not data:
         return 0.0
@@ -175,6 +206,12 @@ class Emulator:
         #: What the sample asked NtCreateSection for, and what it wrote
         #: into the view. The written extents are the evidence; the view
         #: itself is carved from unzeroed heap.
+        #: Every CONTEXT the loader read or wrote. NtSetContextThread's
+        #: record names the injected entry point, which is the only way to
+        #: know where the far side would start.
+        self.thread_contexts: list[dict] = []
+        #: Set by main() from --snapshot-after-inject. Cleared once used.
+        self.snapshot_on_resume = None
         self.section_requests: list[dict] = []
         self.section_writes: list[dict] = []
         self.control_calls: list[dict] = []
@@ -894,6 +931,53 @@ class Emulator:
             val = 0
         elif name == "NtUnmapViewOfSection":
             val, nargs = 0, 2
+        elif name in ("NtGetContextThread", "NtSetContextThread"):
+            # (HANDLE, PCONTEXT). These went unhandled until 14 Aug, which set
+            # `nargs` to 0 and left both arguments on the stack for the caller's
+            # own `ret` to return into -- so **everything after the first of
+            # them was unsound**, including the NtResumeThread and the 36
+            # NtDelayExecution calls that followed it. Getting the arity right
+            # is the fix; capturing the record is the point.
+            nargs = 2
+            ctx_ptr = a(1)
+            if name == "NtSetContextThread":
+                # The loader is saying where the injected code starts.
+                try:
+                    raw = bytes(mu.mem_read(ctx_ptr, CONTEXT_SIZE))
+                except UcError:
+                    raw = b""
+                fields = decode_context(raw) if raw else {}
+                self.thread_contexts.append({
+                    "call": name, "blocks": self.blocks, "handle": a(0),
+                    "context_at": ctx_ptr, "fields": fields})
+                if fields:
+                    print(f"  [{self.blocks:,}blk] {name} eip={fields.get('Eip', 0):#x} "
+                          f"eax={fields.get('Eax', 0):#x} esp={fields.get('Esp', 0):#x} "
+                          f"flags={fields.get('ContextFlags', 0):#x}", flush=True)
+            else:
+                # Answer with the current machine, so a loader that does the
+                # ordinary read-modify-write gets a record whose reserved fields
+                # it did not invent. Writing nothing would leave it editing
+                # whatever was on the stack.
+                if ctx_ptr:
+                    blob = bytearray(CONTEXT_SIZE)
+                    live = {
+                        "Eax": UC_X86_REG_EAX, "Ebp": UC_X86_REG_EBP,
+                        "Eip": UC_X86_REG_EIP, "Esp": UC_X86_REG_ESP,
+                    }
+                    for field, reg in live.items():
+                        struct.pack_into("<I", blob, CONTEXT_OFFSETS[field],
+                                         mu.reg_read(reg))
+                    struct.pack_into("<I", blob, CONTEXT_OFFSETS["SegCs"], 0x23)
+                    struct.pack_into("<I", blob, CONTEXT_OFFSETS["SegSs"], 0x2B)
+                    try:
+                        mu.mem_write(ctx_ptr, bytes(blob))
+                    except UcError:
+                        pass
+                self.thread_contexts.append({
+                    "call": name, "blocks": self.blocks, "handle": a(0),
+                    "context_at": ctx_ptr, "fields": {}})
+            val = 0
         elif name in ("NtQueueApcThread", "NtResumeThread", "NtSuspendThread",
                       "NtTerminateProcess", "NtTerminateThread"):
             # Recorded and answered success. Arity matters more than behaviour:
@@ -904,6 +988,17 @@ class Emulator:
                      "NtTerminateThread": 2}[name]
             self.control_calls.append({"call": name, "blocks": self.blocks,
                                        "args": [a(i) for i in range(nargs)]})
+            # The injection is complete here: the view is mapped and written and
+            # the target's thread has been pointed at it. Everything after this
+            # starts from this moment, and reaching it costs ~380M blocks from
+            # `after_scan.state`. Save it once and every later experiment starts
+            # in seconds instead.
+            if name == "NtResumeThread" and self.snapshot_on_resume:
+                path = self.snapshot_on_resume
+                self.snapshot_on_resume = None      # the first resume, not each
+                self.snapshot(path)
+                print(f"  [{self.blocks:,}blk] snapshot after the injection -> {path}",
+                      flush=True)
             val = 0
         elif name == "NtDelayExecution":
             # (Alertable, PLARGE_INTEGER Interval). Negative is a relative
@@ -1065,6 +1160,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--blocks", type=int, default=50_000_000,
                     help="instruction budget before giving up")
     ap.add_argument("--dump", metavar="DIR", help="write every allocation here")
+    ap.add_argument("--snapshot-after-inject", metavar="FILE",
+                    help="save state at the first NtResumeThread, so later work "
+                         "starts at the injection instead of 380M blocks before it")
     ap.add_argument("--log-api", action="store_true",
                     help="record every API call with arguments and return value")
     ap.add_argument("--log-json", metavar="FILE", help="write the API log as JSON")
@@ -1090,11 +1188,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  state was captured at the jump through an empty "
                   f"Wow64Transition; resuming at the gate as "
                   f"{emu.ssn2name[ssn]} (ssn {ssn:#x})")
+        emu.snapshot_on_resume = args.snapshot_after_inject
         print(f"stopped: {emu.resume(count=args.blocks)}")
     else:
         emu = Emulator(raw)
         if args.log_api or args.log_json:
             emu.log = []
+        emu.snapshot_on_resume = args.snapshot_after_inject
         print(f"image {len(raw)} bytes at {emu.base:#x}, entry {args.entry:#x}")
         print(f"stopped: {emu.run(args.entry, args.stop or 0xFFFFFFF, count=args.blocks)}")
     if args.save_state:
@@ -1133,6 +1233,17 @@ def main(argv: list[str] | None = None) -> int:
             who = next((n for n, p, _ in winenv.served_process_list() if p == t["pid"]), "?")
             print(f"  {t['blocks']:>13,}blk  {t['call']} pid {t['pid']} ({who})"
                   f"  {'opened' if t['opened'] else 'REFUSED - not in the served list'}")
+    if emu.thread_contexts:
+        print("\nthread contexts (NtSetContextThread names the injected entry):")
+        for c in emu.thread_contexts:
+            f = c["fields"]
+            if f:
+                print(f"  {c['blocks']:>13,}blk  {c['call']} handle {c['handle']:#x}  "
+                      f"eip={f.get('Eip', 0):#010x} eax={f.get('Eax', 0):#010x} "
+                      f"esp={f.get('Esp', 0):#010x}")
+            else:
+                print(f"  {c['blocks']:>13,}blk  {c['call']} handle {c['handle']:#x}  "
+                      f"(record at {c['context_at']:#x})")
     if emu.section_requests:
         print("\nsections requested (the size the sample asked for):")
         for r in emu.section_requests:
