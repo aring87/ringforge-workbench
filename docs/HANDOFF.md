@@ -2579,15 +2579,51 @@ the wedge this file documents: VBoxManage returns when a state change is queued,
 not done. The scripts wait for the state to settle; a manual call running
 alongside one does not.
 
-### Pick up here — 13 Aug
+### Pick up here — 16 Aug
 
-**Read this first if you are cold.** The dynamic pipeline's build queue is
-empty, and as of run `bb51babb` **the detonation queue is empty too**. Every
-detector is built, every one is either scored or context-only *by decision*,
-both scored ones have measured benign rates, and the registry-read run that
-three consecutive sessions were set up for has now happened and passed all
-twelve rows. **There is no dynamic run left that is worth booking.** What
-remains is the sample, and it is not a detonation problem.
+**Read this first if you are cold.** The build queue is empty, the detonation
+queue is empty, and as of today **the signature queue is empty too**. What
+remains is one question, and it is an emulator-harness question.
+
+**Done today, so do not re-derive it:**
+
+- **A YARA rule exists and is validated** —
+  `RingForge_FormBook_422e30ed_ContextCookie`, on the `[esi+0x6d8]` context
+  cookie. Two runs, three rules, all memory-only, 0/7,014 clean set. It is
+  **stage-agnostic on purpose**; see the two subsections above for why a
+  stage-4-only rule is not reachable.
+- **The IOC strings cannot be reached by running the payload.** 322 in-run
+  checkpoints found none. 23 of stage 4's 67 pages ever execute.
+- **The baseline was rebuilt** and now carries the local rules. Before today no
+  run had ever scanned one of this project's own rules.
+- **Run `38f27025` happened**, crashed in stage 3 like the ten before it, and
+  its summary was lost — the reconstruction above is the record.
+
+#### 0. The one open question: stage 4 has nothing to steal
+
+Stage 4's capability is established and its runtime behaviour is not. It runs to
+completion, touches 23 of 67 pages, drops nothing, opens no socket, and wipes two
+64 KB regions on the way out. **The two thirds that never runs is the credential
+harvesting**, and the obvious reason is that this environment holds no browser
+profile, no credential store and no C2.
+
+The move is to give it something to steal and watch which pages light up. **The
+trap is the same one `RINGFORGE_EXPLORER_CHILD` carries** — serving a target
+manufactures the outcome, and every conclusion from such a run is conditional on
+the fixture. So the order matters:
+
+1. **First find out what it asks for.** Log stage 4's own calls and every path,
+   key and name it queries, separated from the loader's. If it never opens a
+   file, bait cannot help and the branch is decided somewhere earlier.
+2. **Then build bait that answers what was asked**, not what the FLOSS strings
+   suggest. Those strings came from decoders emulated in isolation and do not
+   prove the payload ever asks for those paths on this path.
+3. **Off by default, announced when on**, exactly as the explorer child is.
+
+Getting this wrong produces a run that looks like a stealer stealing and is
+really a harness feeding itself.
+
+#### 1. Do not book another detonation for gap 4b — a different sample will not fix it
 
 #### 1. Do not book another detonation for gap 4b — a different sample will not fix it
 
