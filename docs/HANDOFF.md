@@ -2627,14 +2627,42 @@ Not "what gates the credential harvesting" — there is no unpacked stealer to
 gate. The stub decrypts nothing and transfers control nowhere. Something in
 those **592 blocks** decides to return, and the stub is mapped to find it in.
 
-**Where it stands after the last measurement of the day.** Stage 4 opens
-`\??\ntdll.dll` from disk *and* walks the loaded ntdll's 2,517 export names —
-124,453 reads into the export directory, past block 26,000,000, which no
-truncated run ever reached. **The harness-patch theory is dead** (*0ab*): the one
-slot this harness writes inside ntdll is never read. What is live is whether
-those export resolutions **succeed**, and that is a measurement rather than a
-story. Log what `+0x2ca71` compares and what each lookup returns, with the
-EIP-based run check in place.
+**ANSWERED — the resolutions succeed, and `LdrLoadDll` is the tell.**
+
+Converting a matched export name to an address requires reading
+`AddressOfNameOrdinals` then `AddressOfFunctions`, so those reads are an exact
+success signal. Measured over the full run, payload reads only:
+
+    AddressOfNameOrdinals : 8 reads, 8 distinct indexes
+    AddressOfFunctions    : 8 reads, 8 distinct indexes
+
+**Eight lookups, eight successes, zero failures.** Import resolution is *not* the
+gate. What it resolves:
+
+    LdrLoadDll                      <-- resolved, NEVER CALLED
+    NtCreateFile                    called
+    NtQueryInformationFile          called
+    NtClose                         called
+    RtlDosPathNameToNtPathName_U    called
+    RtlAllocateHeap                 called
+    RtlFreeHeap                     called (x2)
+    RtlGetProcessHeaps              called
+
+**Seven of the eight are called. The exception is `LdrLoadDll`** — the function
+stage 4 would use to load the next thing. It resolves the loader, opens
+`\??\ntdll.dll`, queries it with `NtQueryInformationFile`, closes it, and then
+**declines to load anything**.
+
+So the whole stub reduces to one decision: it prepares to load a module, inspects
+`ntdll.dll` on disk, and does not proceed. **That is where the payload stops
+being a stealer**, and it is a single branch rather than a region.
+
+**The next measurement, and it is small.** `NtQueryInformationFile` is the only
+input between resolving `LdrLoadDll` and not calling it. Log the
+`FileInformationClass` it asks for and the value the harness returns, then check
+what the payload does with it. If the harness answers that query with something a
+real ntdll would not — a zero size, a wrong timestamp — **the decline is ours**,
+and unlike the patch theory this one has an input we demonstrably control.
 
 **Things that will NOT work, each disproved by measurement.** Listed because
 each was a coherent story that explained every observation before it was tested:
