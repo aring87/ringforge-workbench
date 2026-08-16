@@ -2356,12 +2356,26 @@ still read `dumps_scanned: 11`.
 |---|---|
 | `RegSvcs.exe` 2084 at t34, t55, t64, t64_redump; 9044 at t55, t64 | **`RingForge_FormBook_422e30ed_ContextCookie`** — 6/6, memory-only |
 | launcher 1292 at t34_atspawn | **`RingForge_Loader_422e30ed_Stage2`** — memory-only |
-| launcher 1292 at t1, t25, t34_atspawn; `powershell.exe` 9732 at t34 | `RingForge_Split_API_Injection_Loader` |
+| launcher 1292 at t1, t25, t34_atspawn; `powershell.exe` 9732 at t34 | **`RingForge_Split_API_Injection_Loader`** — memory-only |
 | `WerFault.exe` 9992 at t64 | *nothing* |
+| the sample on disk, 1,029,120 bytes | *nothing* |
 
-`memory_rules: 3, memory_only_rules: 2, total_matches: 11`. The exported
-`dynamic_run_summary.json` still records zero — **the rescan is the result, and
-the JSON on disk is not**.
+`disk_rules: 0, memory_rules: 3, memory_only_rules: 3, total_matches: 11`.
+**All three are memory-only** — the packed launcher carries none of them at
+rest. The exported `dynamic_run_summary.json` still records zero, so the rescan
+JSON is the result and the run summary is not.
+
+**The first rescan understated that, and the cause is worth keeping.** It
+reported `memory_only_rules: 2`, dropping Split_API. The run summary's key is
+`sample_path`; `rescan_memory_yara.py` read `path`/`image`, got `""`, and fell
+through to the first dump record — so the memory-vs-disk delta was computed
+**dump against dump**, and every rule matching the launcher's own image was
+subtracted as though it had been found on disk. Fixed, and guarded three ways: a
+sample path resolving to one of the dumps is rejected, a missing sample exits 5
+rather than computing a delta with nothing to subtract, and `--sample` supplies
+one when the summary names a file that no longer exists. Note the direction —
+with no sample at all, *every* memory match reports as memory-only, which
+overstates the scored finding.
 
 **`RingForge_Loader_422e30ed_Stage2` had never fired.** Written 07 Aug against
 the 892 KB SmartAssembly assembly, and only the parent-at-spawn trigger reaches

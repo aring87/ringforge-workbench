@@ -63,6 +63,10 @@
    text in a large GUI process dump -- did not appear, which is what the
    mandatory-fragment condition was for. Treat a hit as confirmed.
 
+   And it is MEMORY-ONLY: the 1,029,120-byte packed launcher on disk matches
+   nothing, so the fragments exist only once the assembly is in memory. That is
+   the delta this rule was written to expose, measured rather than assumed.
+
    RingForge_Loader_422e30ed_Stage2 below fired on the same run, on the
    t34_atspawn dump, and had never fired before: only the parent-at-spawn
    trigger reaches the 892 KB image.
