@@ -92,7 +92,12 @@ def _load_dump_records(case_dir: Path) -> tuple[list[dict], str]:
     if summary_json.is_file():
         summary = json.loads(summary_json.read_text(encoding="utf-8", errors="replace"))
         sample = summary.get("sample") or {}
-        sample_path = sample.get("path") or sample.get("image") or ""
+        # The summary's key is `sample_path`. Reading `path`/`image` first got ""
+        # and fell through to the first dump, so the memory-vs-disk delta was
+        # computed memory-against-memory and quietly dropped every rule that
+        # matched the launcher's own image from memory_only_rules.
+        sample_path = (sample.get("sample_path") or sample.get("path")
+                       or sample.get("image") or "")
 
     if dumps_json.is_file():
         data = json.loads(dumps_json.read_text(encoding="utf-8", errors="replace"))
@@ -122,6 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("case_dir", help="the run's case directory")
     ap.add_argument("--rules-dir", default=None,
                     help="defaults to the same resolution the orchestrator uses")
+    ap.add_argument("--sample", default=None,
+                    help="the sample on disk, when the run summary does not name "
+                         "one that still exists. Required for the memory-vs-disk "
+                         "delta to mean anything")
     ap.add_argument("--expect", action="append", default=[],
                     help="a rule name that must be in the compiled set; repeatable. "
                          "Absent means exit 3 rather than a zero that reads as coverage")
@@ -140,8 +149,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"!! no dump records and no .dmp files under {case_dir / 'memory'}")
         return 2
     print(f"{len(records)} dump(s) from {case_dir}")
-    if sample_path:
-        print(f"sample: {sample_path}")
+
+    # The delta is the whole point of the pass: a rule matching memory but not
+    # the file on disk means a payload packed or encrypted at rest. Comparing a
+    # dump against another dump answers a different question and looks identical
+    # in the output, so say so rather than computing it.
+    dump_paths = {str(Path(r.get("path", "")).resolve()).lower() for r in records}
+    if sample_path and str(Path(sample_path).resolve()).lower() in dump_paths:
+        sample_path = ""
+    if sample_path and Path(sample_path).is_file():
+        print(f"sample on disk: {sample_path}")
+    else:
+        missing = sample_path or "not recorded in the run summary"
+        print(f"\n*** NO SAMPLE ON DISK ({missing}).")
+        print("    memory_only_rules is the memory-vs-disk delta, so without the")
+        print("    sample there is nothing to subtract and every memory match")
+        print("    would be reported as memory-only. Pass --sample <path>.")
+        if not args.sample:
+            return 5
+    if args.sample:
+        sample_path = args.sample
+        print(f"sample on disk: {sample_path} (from --sample)")
 
     # -- what is actually in the ruleset, before anything is scanned
     rules_dir = Path(args.rules_dir) if args.rules_dir else None
@@ -160,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
 
     result = scan_memory_dumps(
         records,
-        sample_path=sample_path or records[0]["path"],
+        sample_path=sample_path,
         rules_dir=args.rules_dir,
         timeout=args.timeout,
         status_cb=lambda m: print(f"  [scan] {m}"),
