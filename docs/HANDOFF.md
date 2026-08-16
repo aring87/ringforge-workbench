@@ -2627,12 +2627,14 @@ Not "what gates the credential harvesting" — there is no unpacked stealer to
 gate. The stub decrypts nothing and transfers control nowhere. Something in
 those **592 blocks** decides to return, and the stub is mapped to find it in.
 
-**The leading candidate, as of the last measurement of the day:** stage 4 opens
-`\??\ntdll.dll` and queries it — an unhooking check comparing the clean on-disk
-copy against the loaded one. **This harness patches the mapped ntdll**, with a
-syscall gate and `patch_ntdll_copies`. If the comparison sees those patches, the
-quiet return is *ours*, not the sample's. Testable, and **untested** — treat it
-as a hypothesis, because five were falsified today.
+**Where it stands after the last measurement of the day.** Stage 4 opens
+`\??\ntdll.dll` from disk *and* walks the loaded ntdll's 2,517 export names —
+124,453 reads into the export directory, past block 26,000,000, which no
+truncated run ever reached. **The harness-patch theory is dead** (*0ab*): the one
+slot this harness writes inside ntdll is never read. What is live is whether
+those export resolutions **succeed**, and that is a measurement rather than a
+story. Log what `+0x2ca71` compares and what each lookup returns, with the
+EIP-based run check in place.
 
 **Things that will NOT work, each disproved by measurement.** Listed because
 each was a coherent story that explained every observation before it was tested:
@@ -2700,12 +2702,41 @@ stated below.
 the 1,665-byte keystream census, the 322-checkpoint string sweep, and
 `--survey`'s 249 changed bytes / 7,941 payload writes.
 
-**The lead this opens.** The harness *patches the mapped ntdll* — a syscall gate
-and `patch_ntdll_copies`. If stage 4 compares the clean on-disk copy against the
-loaded one, it sees our patches. **A harness-induced bail is now the leading
-explanation for the quiet return**, and it is testable. Treat it as a hypothesis:
-five were falsified today and this section has already had to retract one that
-looked stronger.
+#### 0ab. The ntdll-patch hypothesis is DEAD, and the real second half appears
+
+**Tested, cheaply, before building anything.** The only bytes this harness writes
+inside ntdll's image are 4 at `ntdll_base + transition_rva` — the
+`Wow64Transition` slot, at `0x7713b014`. Hooking payload reads of the loaded
+ntdll after block 26,000,000:
+
+    payload reads of the loaded ntdll image: 124,453 over 13 pages
+    reads of the Wow64Transition slot:       0
+
+**Zero.** The patched range is never read, so it cannot be what makes stage 4
+leave. Hypothesis dead for the cost of one hook. (It was weak anyway: the kernel
+fills that slot at load on real Windows too, and it is zero in the file on disk
+either way, so a loaded-vs-disk comparison flags it on a real machine as well.)
+
+**But the reads themselves are the find.** They cluster at ntdll RVA
+`0x126000`–`0x12b000`, which is **inside ntdll's export directory**
+(`0x11fd60`–`0x133695`), in the export *name strings* — with page `0x122000`,
+`AddressOfNames`, read 2,340 times. Two instructions drive it, payload
+`+0x2ca71` and `+0x2d155`, 58,115 times each.
+
+**So stage 4 resolves imports against ntdll's 2,517 export names, and this
+project has never seen it** — it happens past block 26,000,000, and every run
+before this was truncated at 16,096,220.
+
+**Both readings of the earlier loop stand.** The 990,570 comparisons at 14–16M
+blocks really are a self-location scan (*0l*). This is a *different, later* loop.
+The retraction in *0l* was right about what it retracted and wrong as a blanket
+claim that stage 4 does no import resolution.
+
+**Where that leaves THE QUESTION.** Import-resolution failure is live again as
+an explanation, but now it has to be measured at full budget rather than
+inferred — the same mistake is available in the new region. The next probe is
+whether those resolutions *succeed*: log what `+0x2ca71` compares and what the
+lookup returns, with the EIP-based run check in place.
 
 #### 0a. RETRACTED by 0aa: stage 4 asks for nothing, so bait is not the lever
 
