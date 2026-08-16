@@ -2865,10 +2865,43 @@ unsurprising rather than contradictory — those blobs were copied at blocks
 they are near-certainly a different context or a different keystream offset.
 **The key is well-evidenced as what this KSA consumed, and nothing more.**
 
-**Next:** capture what *this* instance processes, around block 1,710,037 — hook
-the PRGA at `0x03e97f47`, record the keystream byte at `[eax+0x8c]` and the
-buffer the caller XORs it into. That gives ciphertext and plaintext together and
-settles the key by demonstration rather than by inference from read counts.
+#### 0j. Key confirmed; RC4 wraps keys here, it does not decrypt strings
+
+Hooking the PRGA store (`mov [eax+0x8c], ecx` at `0x03e97f5c`) and clustering
+byte writes settles both questions.
+
+**The key is confirmed by its expansion buffer.** A 260-byte run at
+`0x1007f5ec` holds the 20 bytes tiled:
+
+    48 4d c8 73 | 48 4d c8 73 10 a6 96 f2 a9 38 f8 2f dd eb 90 15 79 ba 3b a5 | 48 4d c8 73 …
+
+That is the KSA's `key[i mod 20]`, so the key is established by demonstration
+rather than by read-count inference.
+
+**But RC4 is not the string decryptor.** Across the entire 16,096,220-block run
+it emits **1,665 keystream bytes**, and the first 18 are `00 25 4c 55 14 59`
+**repeated three times** — it is re-keyed three times with the same key, six
+bytes each. Six- and twenty-byte quantities are tokens, not text. A stealer's
+string table would need orders of magnitude more keystream.
+
+**There is a second key, and the blobs are key material.** The slot at
+`0x1007fdf0` later holds
+`dc 3d 73 b1 84 d6 2d 30 3d 48 43 ed 49 9b 2b d7 ed ca 80 67`, which is
+byte-for-byte the 20-byte blob copied at block 15,452,101. So the copies traced
+in *0g* are keys moving between slots, not encrypted strings — which is why
+decrypting them as ciphertext produced nothing.
+
+**Net:** RC4 here is key wrapping. The string decoders are still in the 44 of 67
+pages that never execute, and this closes the loop from a third direction —
+after the page count and the instruction-level trace, the cipher census now says
+the same thing. **No plaintext was produced, and none should have been expected
+from this routine.**
+
+**Next, if this is picked up again:** the keystream is sparse enough to enumerate
+completely. All 1,665 bytes, the three re-keyings and the second key are
+recoverable in one run, so the question worth asking is *what consumes the six
+decrypted bytes* — hook reads of the PRGA output at `[eax+0x8c]` and follow the
+consumer, rather than looking for plaintext that this routine never produces.
 
 **Two probes failed first, both instructive.** Hooking the state address over the
 whole run filled a 4,000-entry cap by block 261,438 with ordinary stack-frame
