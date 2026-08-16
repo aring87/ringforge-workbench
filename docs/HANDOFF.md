@@ -2623,6 +2623,57 @@ addresses, so it derives values rather than resolving imports.
 payload return**, not what to put on disk. A fixture only becomes meaningful
 once something asks for one.
 
+#### 0c. TRACED — stage 4 is resolving imports, and 999,994 in a million fail
+
+`scripts/trace_stage4_loop.py` counts every basic block in the two hot pages.
+92 distinct blocks, 14,007,772 entries, and both routines are recognisable:
+
+- **`0x3ea8000` is CRC-32.** `add eax,eax / xor eax,0x4c11db7` — the standard
+  polynomial, bitwise MSB-first, 8 iterations a byte, 2,243,584 inner passes.
+- **`0x3ec0000` is a case-folding name walker** (`cmp al,0x41` skipping the fold
+  below `'A'`), entered **990,570 times**.
+
+**990,564 of those exit through `xor eax,eax / ret` — no match.** Six succeed in
+a million attempts, and exactly one became an API call. Against the host's real
+export tables, 1,665 in kernel32 and 2,517 in ntdll, 990,570 hashes is about
+**237 full walks of both directories**: stage 4 is trying to resolve roughly 237
+imports and getting almost none.
+
+**The cause is a harness gap, and this file already argued the principle.**
+`setup()` maps real exports for exactly two DLLs:
+
+    for base, nm in ((KERNEL32_BASE, "KERNEL32.DLL"), (NTDLL_BASE, "ntdll.dll")):
+        exports, size = map_real_dll(...)
+
+`EXTRA_MODULES` lists the whole stealer toolkit — `advapi32`, `crypt32`,
+`wininet`, `ws2_32`, `shell32`, `shlwapi`, `ole32`, `urlmon` — but they are
+built as *"a DOS/PE header only … without pretending to export anything."* So
+stage 4 sees `crypt32.dll` in the loader list, walks it for
+`CryptUnprotectData`, and finds an empty header. `CryptUnprotectData` is how
+Chrome and IE credentials are decrypted; the HTTP stack behind the Nokia user
+agent is in `wininet`. **None of it is reachable.**
+
+The note above `EXTRA_MODULES` makes the case itself — *"A short module list is
+a divergence, not a simplification"* — after a run burned 2.3 billion
+instructions hashing three names. The list was lengthened then. The exports
+were not.
+
+**This explains every open observation at once:** 44 of 67 pages never running,
+no file ever opened, the IOC strings never built, and bait being unreachable.
+All of it sits behind resolutions that cannot succeed in an address space
+missing the libraries.
+
+**The fixture is the missing exports, not a credential file** — and note this is
+a *fidelity* fix rather than a fed answer. A real hollowed `RegSvcs.exe` has
+these modules loaded with real export directories; serving them claims nothing
+about the machine that is not true of every 32-bit Windows process. That is the
+distinction between this and bait, and it is why this one does not need to be
+off by default the way `RINGFORGE_EXPLORER_CHILD` does.
+
+**Next:** `map_real_dll` the stealer-relevant subset of `EXTRA_MODULES` from
+`SysWOW64`, rerun `stage4_asks.py`, and see whether the one API call becomes
+many. If it does, *then* a bait file has something to be found by.
+
 #### 0b. If it ever does ask: the fixture rules
 
 Stage 4's capability is established and its runtime behaviour is not. It runs to
