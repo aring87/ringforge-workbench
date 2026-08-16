@@ -800,6 +800,26 @@ class Emulator:
             size = len(f["data"]) if f else 0
             if a(4) == 5 and a(2):                            # FileStandardInformation
                 mu.mem_write(a(2), struct.pack("<QQIBB6x", size, size, 1, 0, 0))
+            elif a(4) == 9 and a(2) and f:                    # FileNameInformation
+                # **This class was unimplemented and it stopped stage 4 dead.**
+                # Every other class fell through to `val = 0` with the caller's
+                # buffer untouched -- STATUS_SUCCESS reporting a zero-length
+                # name. Stage 4 opens ntdll.dll, asks what the file is called,
+                # is told "" and successfully so, and then declines to call the
+                # `LdrLoadDll` it had already resolved. A silent wrong answer,
+                # which is the failure mode this harness is most prone to.
+                #
+                # FILE_NAME_INFORMATION is {ULONG FileNameLength; WCHAR Name[]},
+                # and the real one is the path *without* the drive, so
+                # `\??\ntdll.dll` answers as `\Windows\SysWOW64\ntdll.dll`.
+                name = f.get("path", "")
+                if name.startswith("\\??\\"):
+                    name = name[4:]
+                if "\\" not in name:                # a bare name the loader found
+                    name = "\\Windows\\SysWOW64\\" + name
+                wide = name.encode("utf-16-le")
+                room = max(int(a(3)) - 4, 0)
+                mu.mem_write(a(2), struct.pack("<I", len(wide)) + wide[:room])
             if a(1):
                 mu.mem_write(a(1), struct.pack("<II", 0, a(3)))
             val = 0

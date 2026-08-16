@@ -2657,12 +2657,50 @@ So the whole stub reduces to one decision: it prepares to load a module, inspect
 `ntdll.dll` on disk, and does not proceed. **That is where the payload stops
 being a stealer**, and it is a single branch rather than a region.
 
-**The next measurement, and it is small.** `NtQueryInformationFile` is the only
-input between resolving `LdrLoadDll` and not calling it. Log the
-`FileInformationClass` it asks for and the value the harness returns, then check
-what the payload does with it. If the harness answers that query with something a
-real ntdll would not — a zero size, a wrong timestamp — **the decline is ours**,
-and unlike the patch theory this one has an input we demonstrably control.
+#### 0ac. FOUND: the gate was an unimplemented `NtQueryInformationFile` class
+
+Stage 4 asks for **class 9, `FileNameInformation`**, with a 520-byte buffer. The
+handler implemented **only class 5**; every other class fell through to
+`val = 0` with the caller's buffer untouched. So the payload asked what the file
+it had just opened was called, and was told `""` — **successfully**.
+
+    class 9 = FileNameInformation, Length 520
+    buffer before: 00 00 00 ... (all zero)
+    buffer after : 00 00 00 ... (all zero)   <-- harness wrote nothing, returned SUCCESS
+
+The backing was fine — `\??\ntdll.dll` had all 1,821,376 real bytes. Only the
+name query was missing, and it failed by *succeeding*, which is the failure mode
+this harness is most prone to and the hardest to notice.
+
+**Implemented** in `emulate_native_stub.py`: `FILE_NAME_INFORMATION` is
+`{ULONG FileNameLength; WCHAR Name[]}` and the real one is the path without the
+drive, so `\??\ntdll.dll` answers as `\Windows\SysWOW64\ntdll.dll`.
+
+**Stage 4 then goes much further, and it is a process launcher.** With the class
+implemented it opens files twice, **reads** one, runs past 52,744,158 blocks, and
+reaches **`CreateProcessInternalW`**:
+
+    4 RtlFreeHeap   3 RtlAllocateHeap   2 NtCreateFile   2 NtQueryInformationFile
+    2 NtClose       2 RtlDosPathNameToNtPathName_U       1 NtReadFile
+    1 RtlGetProcessHeaps                                 1 CreateProcessInternalW
+
+**Two caveats, both unresolved and both load-bearing:**
+
+1. **`CreateProcessInternalW` is UNHANDLED** — the next blocker, and precisely
+   the "stub returning nothing" class `stage4_asks.py` flags. Implementing it is
+   the obvious next step, and it is where the chain either continues or stops.
+2. **The path looks malformed.** The captured argument reads
+   `'ntdll.dll\Windows\SysWOW64\compa…'`. `FILE_NAME_INFORMATION` is *not*
+   NUL-terminated, so either the write needs a terminator the real API does not
+   supply, or the probe's wide-string display simply runs past the end into
+   adjacent memory. **Settle which before trusting any path taken from it** — a
+   plausible-looking wrong path is exactly how today went wrong five times.
+
+**What this establishes regardless:** the quiet return was **ours**, not the
+sample's. A single unimplemented information class stopped a payload that
+otherwise proceeds to process creation — and it was invisible for the whole
+project's history because it happens past block 26,000,000, beyond where the
+instruction budget had always cut the run off.
 
 **Things that will NOT work, each disproved by measurement.** Listed because
 each was a coherent story that explained every observation before it was tested:
