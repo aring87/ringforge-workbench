@@ -2244,7 +2244,28 @@ after itself.
 #### CLOSED — the YARA rule is written, and it is not made of the IOCs — 16 Aug
 
 `tools\yara\local\ringforge_formbook_stage4.yar`,
-`RingForge_FormBook_Stage4_ContextCookie`.
+`RingForge_FormBook_422e30ed_ContextCookie`.
+
+**It does not identify a stage, and this section first said it did.** The rule
+shipped as `..._Stage4_ContextCookie` and was described here as a stage 4
+detector. Aligned on the seed, `stage4_mapped_b454edc7` and
+`stage3_alloc_at540M_dc038cc7` — stage 3's own allocation, decrypted in place at
+540M blocks — are **97.5% byte-identical**, 266,597 of 273,408 bytes, and all
+four anchors fall inside shared runs (the seed in 16,444 bytes, the rest in
+87,806). Stage 3 and stage 4 are one framework body carrying different data.
+
+That reframes the validation below rather than undoing it. Run `bb51babb`
+crashed in stage 3 like the other eight, so **the six RegSvcs matches are stage
+3**, not stage 4 — the rule fired in a process stage 4 was never reached in. As
+a detector for the chain that is correct and useful; as a claim about which
+stage is resident it would have answered the project's central open question
+wrongly while looking like evidence. Renamed, and the meta carries
+`caveat = "a match does not establish that stage 4 was reached"`.
+
+Telling the stages apart needs an anchor among the 6,811 bytes that differ, and
+whether any of those are stable code rather than relocations or data is not yet
+established. **That is the next question for anyone who wants a stage 4
+signature specifically.**
 
 **The premise recorded here is retracted.** This section read: *"The Nokia user
 agent and the SQLite URL are stack-built, so a rule over a file will not see
@@ -2257,7 +2278,7 @@ contain them either:
   behind, so they are not stack literals in this image at all; they come out of
   decoders FLOSS reaches by emulating functions one at a time.
 - Against all sixteen minidumps on hand, **including the six `RegSvcs.exe`
-  images in which this stage was resident** — zero.
+  images in which this framework was resident** — zero.
 - Emulated from `after_handshake.state` through 42,072,701 blocks of stage 4,
   then every mapped region swept — zero. The only hits anywhere were `windir`,
   `ProgramFiles`, `Program Files` and `SysWOW64` inside ntdll's and kernel32's
@@ -2273,8 +2294,8 @@ Measured with the yara engine, not by substring search:
 
 | target | result |
 |---|---|
-| `RegSvcs.exe` dumps, run `bb51babb` | **6/6 match** — scheduled, exit, and two WER crash dumps |
-| decrypted stage artifacts | 2/2 match (`stage4_mapped`, `stage3_alloc540M`) |
+| `RegSvcs.exe` dumps, run `bb51babb` | **6/6 match** — scheduled, exit, and two WER crash dumps. That run crashed in stage 3, so these are stage 3 matches |
+| decrypted framework artifacts | 2/2 match (`stage4_mapped`, `stage3_alloc540M`) — reading both is the point, not a miss |
 | other dumps from the same run | 0/10 — launcher at t1 and t25, conhost ×3, powershell ×4, one unrelated |
 | encrypted twin and packed stage 3 | 0/2 — it reads decrypted, not stored |
 | `System32` + `SysWOW64` | 0/7,014 PE files |
