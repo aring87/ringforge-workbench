@@ -2698,11 +2698,31 @@ reaches **`CreateProcessInternalW`**:
    value returned**, and therefore not fixable by changing what
    `FileNameInformation` answers. Unresolved.
 
-3. **The target varies between runs**: `compact.exe` on one, `label.exe` on the
-   next, both legitimate SysWOW64 binaries. **Random system-binary selection is a
-   documented FormBook trait**, and it means there is no single "correct" image
-   to expect — a run that always launched the same one would be the suspicious
-   result.
+#### 0ad. THE HOST TARGET LIST — nine processes, all CREATE_SUSPENDED
+
+With `CreateProcessInternalW` implemented, stage 4 does not create one process.
+**It iterates a list of nine**, every one a legitimate SysWOW64 binary and every
+one with `CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_NO_WINDOW` (`0x0800000c`):
+
+    compact.exe    msiexec.exe    AtBroker.exe
+    runonce.exe    cacls.exe      regini.exe
+    replace.exe    wextract.exe   label.exe
+
+**This is a FormBook host-process candidate list, and it is an IOC** — the second
+this chain has produced, and unlike the FLOSS strings it came out of the payload
+*running* rather than out of decoders emulated in isolation.
+
+**Retracting what was written one commit earlier.** That entry said the target
+"varies between runs — `compact.exe` on one, `label.exe` on the next … random
+system-binary selection". Wrong: it is a single ordered walk within one run, and
+the two probes had simply caught its first and last entries. The mechanism is a
+list, not a random draw, which is a different and more useful fact — the list can
+be signatured.
+
+**And the run is VOID again at 400M instructions** — 111,343,494 blocks with EIP
+still inside the payload. Getting past `CreateProcessInternalW` moved the finish
+line well beyond where it was this morning, so the budget needs raising again.
+Note how this failure now announces itself instead of being adopted as a result.
 
 **What this establishes regardless:** the quiet return was **ours**, not the
 sample's. A single unimplemented information class stopped a payload that
