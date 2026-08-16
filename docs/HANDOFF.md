@@ -2689,12 +2689,20 @@ reaches **`CreateProcessInternalW`**:
 1. **`CreateProcessInternalW` is UNHANDLED** — the next blocker, and precisely
    the "stub returning nothing" class `stage4_asks.py` flags. Implementing it is
    the obvious next step, and it is where the chain either continues or stops.
-2. **The path looks malformed.** The captured argument reads
-   `'ntdll.dll\Windows\SysWOW64\compa…'`. `FILE_NAME_INFORMATION` is *not*
-   NUL-terminated, so either the write needs a terminator the real API does not
-   supply, or the probe's wide-string display simply runs past the end into
-   adjacent memory. **Settle which before trusting any path taken from it** — a
-   plausible-looking wrong path is exactly how today went wrong five times.
+2. **The path is malformed, and it is NOT the `FileNameInformation` write.**
+   Traced every write into the buffer: the payload itself writes `ntdll.dll`
+   there byte by byte at block 43,621,788, from `+0x2c876` — *after* the query
+   at 35.9M — then appends `\Windows\SysWOW64\<target>.exe` contiguously, with
+   no NUL between the parts. So `lpApplicationName` reads
+   `ntdll.dll\Windows\SysWOW64\<target>.exe`. **Not residue, not caused by the
+   value returned**, and therefore not fixable by changing what
+   `FileNameInformation` answers. Unresolved.
+
+3. **The target varies between runs**: `compact.exe` on one, `label.exe` on the
+   next, both legitimate SysWOW64 binaries. **Random system-binary selection is a
+   documented FormBook trait**, and it means there is no single "correct" image
+   to expect — a run that always launched the same one would be the suspicious
+   result.
 
 **What this establishes regardless:** the quiet return was **ours**, not the
 sample's. A single unimplemented information class stopped a payload that

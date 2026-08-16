@@ -423,6 +423,26 @@ _PROC_SIZE, _THREAD_SIZE = 0xB8, 0x40
 _PROC_IMAGE_NAME, _PROC_IDS = 0x38, 0x44
 
 
+#: Processes the payload has created during this run, as (name, pid, ppid).
+#:
+#: Appended to by the `CreateProcessInternalW` handler. It has to live here
+#: rather than in the handler because of the lesson `served_process_list` was
+#: written for: a pid the harness reports once and then does not stand behind is
+#: worse than no pid at all. Stage 4 creates its target **suspended**, which
+#: means the very next thing it does is open and write to it, and every one of
+#: those calls checks this list.
+SPAWNED: list[tuple[str, int, int]] = []
+
+#: Where invented pids start. Above anything in PROCESS_LIST so a spawned
+#: process can never collide with one the harness already claims exists.
+SPAWN_PID_BASE = 7000
+
+#: The pid the harness claims for the process the payload is running inside --
+#: `IMAGE_NAME`'s entry in PROCESS_LIST. A spawned process's parent is this, and
+#: naming it here keeps the two definitions from drifting apart.
+SELF_PID = 9592
+
+
 def served_process_list():
     """The effective process list, which is the only list anything may consult.
 
@@ -434,8 +454,9 @@ def served_process_list():
     contradiction the opener guards against, arriving from the other side. It
     cost a full run to see.
     """
+    base = PROCESS_LIST + tuple(SPAWNED)
     if os.environ.get("RINGFORGE_EXPLORER_CHILD") != "1":
-        return PROCESS_LIST
+        return base
     if not served_process_list.announced:
         name, pid, ppid = EXPLORER_CHILD
         print(f"win32_emu_env: process list includes {name!r} (pid {pid}, "
@@ -443,7 +464,7 @@ def served_process_list():
               f"the poll loop compares each record's parent pid against "
               f"explorer's, so this is the entry it has been waiting for.")
         served_process_list.announced = True
-    return PROCESS_LIST + (EXPLORER_CHILD,)
+    return base + (EXPLORER_CHILD,)
 
 
 served_process_list.announced = False

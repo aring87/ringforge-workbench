@@ -191,6 +191,11 @@ class Emulator:
         """
         self.next_free = winenv.HEAP_BASE + 0x1000
         self.allocs: list[list[int]] = []
+        #: Processes the payload created, with the flags it asked for. Kept
+        #: because CREATE_SUSPENDED plus a system-directory target is the whole
+        #: signature of a hollowing launch, and a run that reports only "a
+        #: process was created" loses the part that matters.
+        self.spawned: list[dict] = []
         self.calls: collections.Counter = collections.Counter()
         self.unhandled: collections.Counter = collections.Counter()
         #: Syscalls dispatched by service number, and numbers this ntdll has no
@@ -823,6 +828,38 @@ class Emulator:
             if a(1):
                 mu.mem_write(a(1), struct.pack("<II", 0, a(3)))
             val = 0
+        elif name == "CreateProcessInternalW":
+            # (hUserToken, lpApplicationName, lpCommandLine, lpProcessAttributes,
+            #  lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment,
+            #  lpCurrentDirectory, lpStartupInfo, lpProcessInformation, hNewToken)
+            #
+            # Stage 4 reaches here with CREATE_SUSPENDED and a SysWOW64 target,
+            # which is the hollowing shape: create suspended, inject, resume. So
+            # the process it is told about has to be one the harness will keep
+            # standing behind -- the very next calls open it and write to it, and
+            # each checks `served_process_list`. Reporting a pid and then
+            # refusing it is the `STATUS_INVALID_CID` contradiction that cost a
+            # full run on the explorer-child toggle.
+            nargs = 12
+            image = read_wide(mu, a(1)) if a(1) else (
+                    read_wide(mu, a(2)) if a(2) else "")
+            leaf = image.rsplit("\\", 1)[-1] or "spawned.exe"
+            pid = winenv.SPAWN_PID_BASE + 4 * (len(winenv.SPAWNED) + 1)
+            winenv.SPAWNED.append((leaf, pid, winenv.SELF_PID))
+            hproc, hthread = self.new_handle(), self.new_handle()
+            self.spawned.append({"image": image, "leaf": leaf, "pid": pid,
+                                 "flags": a(6), "blocks": self.blocks,
+                                 "hprocess": hproc, "hthread": hthread})
+            if a(10):
+                mu.mem_write(a(10), struct.pack("<IIII", hproc, hthread,
+                                                pid, pid + 1))
+            flags = a(6)
+            print(f"win32_emu_env: CreateProcessInternalW -> {leaf!r} "
+                  f"pid {pid}, flags {flags:#010x}"
+                  + ("  CREATE_SUSPENDED" if flags & 0x4 else "")
+                  + f". Invented, and now in the served process list so the "
+                    f"injection that follows finds it consistent.")
+            val = 1
         elif name == "NtSetInformationFile":
             if a(1):
                 mu.mem_write(a(1), struct.pack("<II", 0, 0))
