@@ -151,6 +151,104 @@ EXTRA_MODULES = (
     "urlmon.dll", "psapi.dll", "version.dll", "userenv.dll", "netapi32.dll",
     "wow64.dll", "wow64base.dll", "wow64con.dll", "wow64cpu.dll", "wow64win.dll",
 )
+#: Where real export tables for EXTRA_MODULES live.
+#:
+#: They cannot go at EXTRA_BASE. That layout is a fixed 1 MB stride and shell32
+#: alone is 6.34 MB, and widening the stride there walks 0x70000000 straight
+#: through KERNEL32_BASE (0x76000000) and NTDLL_BASE (0x77000000). So the real
+#: images are packed sequentially in their own region and each loader entry's
+#: DllBase is repointed at them, which also keeps the entry order -- and so the
+#: module list a walker sees -- exactly as it was.
+REAL_MODULE_BASE = 0x20000000
+REAL_MODULE_LIMIT = 0x30000000
+
+#: Bases are 64 KB aligned because that is Windows' allocation granularity, and
+#: a payload that rounds a module base down to it must land back on the base.
+_ALLOC_GRANULARITY = 0x10000
+
+
+def map_extra_module_exports(mu, verbose: bool = True) -> dict:
+    """Give the EXTRA_MODULES real export tables, in place.
+
+    **Why this exists.** `setup()` mapped real images for `kernel32` and `ntdll`
+    only; every other module in the loader list got "a DOS/PE header only ...
+    without pretending to export anything". That was adequate while payloads
+    only counted modules. Stage 4 does not count them, it *resolves through*
+    them: it CRC-32s export names case-insensitively and looks up ~237 imports,
+    and against two real export tables it matched **6 in 990,570 attempts** and
+    made one API call. `CryptUnprotectData` is in `crypt32` and the HTTP stack
+    behind its Nokia user agent is in `wininet`, so with header-only stubs the
+    credential path cannot run at all -- which is why 44 of its 67 pages never
+    execute and why no bait on disk could ever be reached.
+
+    This is a *fidelity* fix rather than a fed answer, and the distinction
+    matters: every 32-bit Windows process has these loaded with real export
+    directories, so serving them claims nothing about the machine that is not
+    already true. `RINGFORGE_EXPLORER_CHILD` needs an opt-in because it invents
+    a process; this does not, because it stops inventing an address space.
+
+    Idempotent, and safe on a restored snapshot: entries already pointing at a
+    real image are skipped, so it can run at `setup()` time and again at
+    `restore()` for states captured before it existed.
+
+    Returns {virtual address: export name} to merge into the caller's index.
+    """
+    exports: dict[int, str] = {}
+    cursor = REAL_MODULE_BASE
+    entry_size, first = 0x100, LDR_ADDR + 0x100
+    promoted, missing = [], []
+
+    for i in range(64):
+        e = first + i * entry_size
+        try:
+            base, _entry, size = struct.unpack("<III", mu.mem_read(e + 0x18, 12))
+        except Exception:
+            break
+        if not base:
+            break
+        # Only the header-only stubs are candidates. A real image -- kernel32,
+        # ntdll, the payload itself, or one promoted by an earlier call -- is
+        # left exactly as it is.
+        if size != 0x2000:
+            continue
+        try:
+            length, _max, buf = struct.unpack("<HHI", mu.mem_read(e + 0x2C, 8))
+            name = bytes(mu.mem_read(buf, length)).decode("utf-16-le")
+        except Exception:
+            continue
+        path = SYSWOW64 + name.lower()
+        if not os.path.exists(path):
+            missing.append(name)
+            continue
+        try:
+            got, mapped = map_real_dll(mu, path, cursor)
+        except Exception as error:            # a DLL with no export directory
+            missing.append(f"{name} ({type(error).__name__})")
+            continue
+        exports.update(got)
+        # Repoint the loader entry. SizeOfImage has to move with DllBase or a
+        # walker reading past the old 0x2000 stub length runs off the image.
+        mu.mem_write(e + 0x18, struct.pack("<III", cursor, cursor, mapped))
+        promoted.append((name, cursor, mapped, len(got)))
+        cursor = (cursor + mapped + _ALLOC_GRANULARITY - 1) & ~(_ALLOC_GRANULARITY - 1)
+        if cursor >= REAL_MODULE_LIMIT:
+            raise MemoryError("real module region exhausted; raise REAL_MODULE_LIMIT")
+
+    if verbose and promoted:
+        total = sum(m for _n, _b, m, _c in promoted)
+        names = sum(c for _n, _b, _m, c in promoted)
+        print(f"win32_emu_env: {len(promoted)} module(s) given real export "
+              f"tables, {total / 1048576:.1f} MB, {names:,} exported names. "
+              f"Header-only stubs answer every name lookup with a miss, which "
+              f"is not what a 32-bit Windows process looks like.")
+        for name, base, mapped, count in promoted:
+            print(f"    {name:16} {base:#010x}  {mapped / 1048576:5.2f} MB  "
+                  f"{count:>5} exports")
+        if missing:
+            print(f"    left as stubs (no SysWOW64 file): {', '.join(missing)}")
+    return exports
+
+
 #: The module behind the gating lookup. Off by default.
 #:
 #: `crc32("sbiedll.dll") == 0xe11da208`, cracked by `scripts/crack_name_hashes.py`
@@ -731,6 +829,9 @@ def setup(mu, image_base, image_size):
     for head in heads.values():
         assert struct.unpack("<I", mu.mem_read(head + 0x18, 4))[0] == 0, \
             "list head +0x18 is non-zero; module walks will not terminate"
+
+    # Real export tables for the rest of the list, now that the entries exist.
+    real_exports.update(map_extra_module_exports(mu))
 
     install_gdt(mu, TEB_ADDR)
 

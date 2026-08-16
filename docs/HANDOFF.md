@@ -2670,9 +2670,36 @@ about the machine that is not true of every 32-bit Windows process. That is the
 distinction between this and bait, and it is why this one does not need to be
 off by default the way `RINGFORGE_EXPLORER_CHILD` does.
 
-**Next:** `map_real_dll` the stealer-relevant subset of `EXTRA_MODULES` from
-`SysWOW64`, rerun `stage4_asks.py`, and see whether the one API call becomes
-many. If it does, *then* a bait file has something to be found by.
+#### 0d. DONE, and the hypothesis is WRONG — 16 Aug
+
+`winenv.map_extra_module_exports()` now gives all 20 `EXTRA_MODULES` real export
+tables from `SysWOW64` — 24.1 MB, **10,316 exported names** — packed in their own
+region at `REAL_MODULE_BASE` (`0x20000000`) with each loader entry's `DllBase`
+and `SizeOfImage` repointed. It runs from `setup()` *and* from `restore()`,
+because the stored checkpoints are what stage 4 is actually run from and a
+fresh-runs-only fix would never reach it. `_install_hooks` covers the new region,
+without which a resolved export would execute the DLL's real body — a worse
+failure than the empty headers, because it looks like it is working.
+
+**And stage 4 did not change.** Same one API call, and **16,096,220 blocks —
+bit-identical to the run before**. A search space gaining 10,316 resolvable
+names would move the block count if it were being walked. It was not touched.
+
+**So the empty export tables were a real divergence and are not the gate.** The
+~237 walks are of `kernel32` and `ntdll` only, stage 4 never calls
+`LoadLibrary`, and it therefore never reaches for `crypt32` or `wininet` on this
+path at all. Whatever decides it has nothing to do is upstream of import
+resolution, not caused by it.
+
+The change is kept regardless: this file already argues that a short module list
+is a divergence, and a module list whose entries export nothing is the same
+claim in a different place. But **it bought no progress on stage 4**, and the
+next person should not re-run it expecting any.
+
+**Still open, and now narrower:** what the CRC-32 loop is hashing, given it is
+not the new tables. The six matches are the thing to identify — instrument the
+matcher at `0x3ec0714` to log the six names it accepts, which is a far smaller
+question than "why does it do nothing".
 
 #### 0b. If it ever does ask: the fixture rules
 

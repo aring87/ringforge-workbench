@@ -260,6 +260,16 @@ class Emulator:
             hi = max((a for a in self.addr2name if dll <= a < dll + 0x1000000),
                      default=dll)
             mu.hook_add(UC_HOOK_CODE, self._on_stub, begin=dll, end=hi + 0x20)
+        # And the promoted EXTRA_MODULES. Their exports are real addresses in
+        # their own region, so without a hook covering it every name stage 4
+        # resolves there would resolve correctly and then execute the DLL's
+        # actual body -- which is a worse failure than the empty headers were,
+        # because it looks like it is working.
+        real = [a for a in self.addr2name
+                if winenv.REAL_MODULE_BASE <= a < winenv.REAL_MODULE_LIMIT]
+        if real:
+            mu.hook_add(UC_HOOK_CODE, self._on_stub,
+                        begin=min(real), end=max(real) + 0x20)
         # The syscall boundary. This is where this payload actually operates:
         # it maps a clean ntdll and calls stubs out of its own copy, so an
         # export-address hook never sees it -- which is why the API log went
@@ -387,6 +397,13 @@ class Emulator:
          self.ntdll_image_size) = winenv.syscall_table()
         winenv.install_syscall_gate(mu, winenv.NTDLL_BASE, self.transition_rva)
         winenv.map_kuser_shared_data(mu)
+        # Same argument as the syscall gate above: rebuilt rather than restored,
+        # so a state captured while every module but kernel32 and ntdll was a
+        # header-only stub comes back with real export tables. Without this the
+        # fix reaches fresh runs only, and every stored checkpoint -- which is
+        # what stage 4 is actually run from -- would keep resolving into empty
+        # headers. Idempotent, so a state that already has them is untouched.
+        self.addr2name.update(winenv.map_extra_module_exports(mu))
         # A snapshot taken before the harness supplied the kernel's values holds
         # the zero the payload copied out of the loaded image, in every private
         # ntdll it had already mapped. The payload does that fixup once, so
