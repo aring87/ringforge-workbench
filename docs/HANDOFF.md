@@ -2696,10 +2696,45 @@ is a divergence, and a module list whose entries export nothing is the same
 claim in a different place. But **it bought no progress on stage 4**, and the
 next person should not re-run it expecting any.
 
-**Still open, and now narrower:** what the CRC-32 loop is hashing, given it is
-not the new tables. The six matches are the thing to identify — instrument the
-matcher at `0x3ec0714` to log the six names it accepts, which is a far smaller
-question than "why does it do nothing".
+#### 0e. THE LEAD: stage 4 tests for `API-`, and the PEB has no ApiSetMap
+
+Chasing the matcher's accepted names failed three times — the arguments are not
+the `(begin, end)` pair the disassembly suggests, `0x3ec0005` is not its result
+check despite matching call counts, and "990,564 failures, 6 successes" was an
+*inference* from block counts rather than a measurement. **Do not build on that
+framing.** What is measured is 990,570 entries and 990,564 exits through
+`xor eax,eax / ret`.
+
+Counting rarely-entered blocks instead found the only low-count code in the
+page: an ASCII→UTF-16 widening routine, entered exactly twice. Hooking it gives
+the two strings stage 4 builds on this whole path:
+
+    [14,000,244blk]  'kernel32.dll'
+    [15,695,162blk]  'API-'
+
+**`API-` is the API set prefix** — `api-ms-win-core-*`. Stage 4 resolves an
+export, finds a **forwarder**, and tests whether the target is an API set before
+following it. Measured on this host: `kernel32` has 1,665 exports, **208 of them
+forwarders, 82 forwarding to API sets** (`AddDllDirectory ->
+api-ms-win-core-libraryloader-l1-1-0.AddDllDirectory`).
+
+**And `ApiSetMap` is never written.** Nothing in `win32_emu_env.py` sets the PEB
+field, so it reads zero. A payload doing its own forwarder resolution has
+nowhere to go.
+
+This fits everything the DLL-mapping experiment did not: presence of an export
+table was never the problem, **resolvability through forwarders is**. It also
+explains why adding 10,316 names changed nothing bit-for-bit — the walk dies at
+the same forwarder either way.
+
+**Next, and testable:** populate `ApiSetMap` (or resolve forwarders inside
+`map_real_dll` so a forwarded export indexes to its real target), then rerun
+`stage4_asks.py`. If the single API call becomes many, that is the gate.
+
+**Treat this as the best-evidenced lead, not a conclusion.** What is established
+is that stage 4 handles the literal `API-`, that forwarders are numerous, and
+that the schema is absent. That the three compose into the gate is inference,
+and this section has already been wrong once today in exactly that way.
 
 #### 0b. If it ever does ask: the fixture rules
 
