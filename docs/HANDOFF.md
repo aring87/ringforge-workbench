@@ -2331,7 +2331,16 @@ detonation of *some* sample will want them:
 | Offsets | `1, 25, 55` | dormancy has been +20s to +60s; `1, 25` risks landing entirely before the unpack |
 | Max processes | `24` | the cap counts dumps, and re-dumps are taken last |
 | Re-dump | `1`s | but see below — the event triggers are what actually caught `RegSvcs` |
-| Profile | `deep` | longer window |
+
+**There is no profile control in the GUI, and this table used to claim one.**
+`run_profile` is an orchestrator config key (`quick`/`standard`/`deep`,
+defaulting to `standard`), reachable only by calling the orchestrator
+programmatically — no widget in `gui/`, nothing in `scripts/` that sets it. It
+changed two things, and neither survives contact with this table: the default
+dump offsets, which an explicit `1, 25, 55` overrides anyway, and
+`autoruns_deep_scan`, which feeds persistence diffing rather than the memory
+path. **Set the offsets and ignore the profile.** The row read `deep — longer
+window`, which is also wrong about what it did.
 
 And the three that are not settings: **`git pull` on the guest after the
 revert** (reverting restores the clone to the baseline's commit, so pulling
@@ -2339,6 +2348,20 @@ first throws it away); **export before the next revert**, because `cases\` is
 destroyed and `C:\werdumps` survives losing `cases\` but not a revert;
 and run `scripts/verify_run.py <run-dir>` afterwards, which checks all twelve
 ledger rows and the pre-registered predictions in one command.
+
+**A `git pull` does not put a new local YARA rule into the scan.** The scanned
+directory is `tools\yara\rules\`; hand-written rules live in `tools\yara\local\`,
+and it is `bootstrap_yara_rules.ps1` that copies them into
+`tools\yara\rules\local\`. Collection is recursive, so once a file is there it is
+picked up — but a pull alone leaves it one directory away from anything that
+reads it, and the run then reports nothing, which is indistinguishable from the
+rule being wrong. Either re-run the bootstrap (needs the guest armed, and it
+only installs local rules on a successful download-and-swap) or copy the one
+file:
+
+    Copy-Item tools\yara\local\<rule>.yar tools\yara\rules\local\ -Force
+
+The preflight strip's rule-file count is the check that it landed.
 
 **The dump watcher can catch `RegSvcs` after all** — this document said for two
 runs that it could not. It did on `bb51babb`, twice, via the `process-spawn` and
