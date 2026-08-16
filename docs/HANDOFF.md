@@ -2727,14 +2727,34 @@ table was never the problem, **resolvability through forwarders is**. It also
 explains why adding 10,316 names changed nothing bit-for-bit — the walk dies at
 the same forwarder either way.
 
-**Next, and testable:** populate `ApiSetMap` (or resolve forwarders inside
-`map_real_dll` so a forwarded export indexes to its real target), then rerun
-`stage4_asks.py`. If the single API call becomes many, that is the gate.
+**Tested before building anything: stage 4 never reads `ApiSetMap`.** A memory
+hook over `PEB+0x30..0x3F` across the whole run fires **zero** times. So
+populating the schema cannot change behaviour, and it was not built.
 
-**Treat this as the best-evidenced lead, not a conclusion.** What is established
-is that stage 4 handles the literal `API-`, that forwarders are numerous, and
-that the schema is absent. That the three compose into the gate is inference,
-and this section has already been wrong once today in exactly that way.
+**That reinterprets the string.** Stage 4 *detects* API-set forwarders rather
+than resolving them — it tests the `API-` prefix and does something else with
+those exports, almost certainly declining to follow them. Which is why neither
+real export tables nor a schema moves it.
+
+#### 0f. Two coherent hypotheses, both falsified, and what that is worth
+
+| hypothesis | test | result |
+|---|---|---|
+| header-only export tables gate the harvesting | mapped 20 real DLLs, 10,316 names | **bit-identical run**, 16,096,220 blocks |
+| unresolvable API-set forwarders gate it | hooked `PEB+0x30..0x3F` | **never read** |
+
+Both explained every observation before they were tested. The first cost a full
+implementation to disprove; the second cost one hook, because the lesson from the
+first was applied. **Probe before building** — the DLL mapping is kept for
+fidelity, but it bought nothing, and the schema would have bought nothing at
+greater expense.
+
+What is now excluded: export *presence*, and API-set resolution. What remains
+open is what stage 4 does after the `API-` test at block 15,695,162, and what
+the CRC-32 loop is hashing given it is not the promoted tables. Note the
+`kernel32.dll` widening at block 14,000,244 comes *first* — the pair is one
+sequence, and reading it forwards from there is the next instrument, not another
+guess at the matcher's arguments.
 
 #### 0b. If it ever does ask: the fixture rules
 
