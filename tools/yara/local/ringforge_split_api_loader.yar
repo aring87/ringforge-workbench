@@ -46,10 +46,26 @@
    of any GUI process will hold plenty of both, so the condition does not let the
    common fragments carry a match: `"kernel "`, `"32.dll"` and `"Virtual "` are all
    mandatory, and those three together are not something a normal process holds
-   as separate UTF-16 literals. **This has not yet been scanned against a real
-   memory dump.** The next run puts it against ten to twelve of them, and that is
-   where a false positive would show; until then treat a hit on a dump as
-   unconfirmed. Both controls in test_specs\ will exercise it too.
+   as separate UTF-16 literals.
+
+   **Scanned against real memory dumps at last, on run 38f27025, 16 Aug 2026.**
+   This read "has not yet been scanned against a real memory dump... until then
+   treat a hit on a dump as unconfirmed" for nine days and seven runs, and the
+   reason was not that nobody got round to it: rules in tools\yara\local\ reach
+   the scan only when bootstrap_yara_rules.ps1 copies them to
+   tools\yara\rules\local\, and that directory had never existed on the guest.
+   Every run this project had done scanned 1542 downloaded rules and none of its
+   own. Found by rescanning the run's dumps with scripts\rescan_memory_yara.py.
+
+   Result over 11 dumps: it matched the launcher at t1, t25 and t34_atspawn and
+   powershell.exe at t34, and did not match conhost, WerFault or either RegSvcs
+   image. The feared false positive -- "Open " and "Close " as ordinary UTF-16 UI
+   text in a large GUI process dump -- did not appear, which is what the
+   mandatory-fragment condition was for. Treat a hit as confirmed.
+
+   RingForge_Loader_422e30ed_Stage2 below fired on the same run, on the
+   t34_atspawn dump, and had never fired before: only the parent-at-spawn
+   trigger reaches the 892 KB image.
 
    Rules in tools\yara\local\ survive bootstrap_yara_rules.ps1, which replaces
    the downloaded rules directory.

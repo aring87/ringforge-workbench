@@ -2317,6 +2317,79 @@ checkpoint holds the *loader's* EIP in ntdll, and reported a clean-looking "no
 strings found" that was measuring the checkpoint rather than stage 4. Seed
 `--eip 0x3e9f89b --esp 0x10080000` off `after_handshake.state`.
 
+### Run `38f27025`, 16 Aug — every local rule fired, and none had ever been scanned
+
+The first detonation since the rule existed. Contained (`level: ok`, one egress
+via `Ethernet 2`, zero internet-facing), offsets `1, 25, 55`, re-dump `1`s, max
+processes `24`, `dynamic_registry_reads.pmc` confirmed. 375 seconds, 6 processes
+observed, 11 of 12 dumps written, 729 MB.
+
+#### The scan was void, and the run was not
+
+The run reported `dumps_scanned: 12, total_matches: 0` against
+`rule_file_count: 1542`. Nothing about the detonation was wrong — `RegSvcs.exe`
+pid 2084 was dumped **six times**, the WER image-timestamp check hit
+(`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), module integrity put
+`regsvcs.exe` at 99.1% differing bytes in `.text`. **Only the ruleset was
+wrong**, and the same 1542-with-zero was reported by run `bb51babb` on 13 Aug.
+
+**No run this project has ever done has scanned one of its own rules.**
+`tools\yara\rules\` holds only the two downloaded rulesets; hand-written rules
+live in `tools\yara\local\` and reach the scan solely via
+`bootstrap_yara_rules.ps1` copying them to `tools\yara\rules\local\`. That
+directory has never existed on the guest. It is why
+`ringforge_split_api_loader.yar` still carried *"this has not yet been scanned
+against a real memory dump"* after seven runs of the sample it was written for.
+
+`scripts/rescan_memory_yara.py` re-runs the pass over a finished run's dumps
+without detonating, and refuses a bare zero: it reports which rule files are
+local, `--expect <rule>` exits 3 when a named rule never compiled, and any
+unreadable dump is VOID with exit 4 rather than a non-match. Both of the latter
+guards exist because testing the script reproduced the failure it was written to
+prevent — the dump records carry the guest's paths, so against a case directory
+copied to the host all eleven scans failed `file not found` while the counts
+still read `dumps_scanned: 11`.
+
+#### The rescan, with the local rules installed — 1544 files
+
+| dump | rule |
+|---|---|
+| `RegSvcs.exe` 2084 at t34, t55, t64, t64_redump; 9044 at t55, t64 | **`RingForge_FormBook_422e30ed_ContextCookie`** — 6/6, memory-only |
+| launcher 1292 at t34_atspawn | **`RingForge_Loader_422e30ed_Stage2`** — memory-only |
+| launcher 1292 at t1, t25, t34_atspawn; `powershell.exe` 9732 at t34 | `RingForge_Split_API_Injection_Loader` |
+| `WerFault.exe` 9992 at t64 | *nothing* |
+
+`memory_rules: 3, memory_only_rules: 2, total_matches: 11`. The exported
+`dynamic_run_summary.json` still records zero — **the rescan is the result, and
+the JSON on disk is not**.
+
+**`RingForge_Loader_422e30ed_Stage2` had never fired.** Written 07 Aug against
+the 892 KB SmartAssembly assembly, and only the parent-at-spawn trigger reaches
+that image — `t34_atspawn` is the dump that carries it. Both open notes about
+these rules being unvalidated against real dumps are now closed by one rescan.
+
+#### It is stage 3, and the crash is not behind us
+
+`abnormal_termination` reports `chain_crashed: true`, pid 2084 crashed, WerFault
+9992 witnessing. So this run died in stage 3 like the nine before it, and the
+six `RegSvcs` matches are **stage 3** — the rule's own
+`caveat = "a match does not establish that stage 4 was reached"`. Six hits is
+confirmation the pipeline sees the chain end to end. It is not progress on the
+crash.
+
+**Two `RegSvcs` both carry the framework**: 9044 is a child of 2084 and matched
+at t55 and t64. This file has long said the second `RegSvcs` is the one most
+likely to hold the payload; both hold it.
+
+**`WerFault` matched nothing**, across all 1,544 rules. On the AgentTesla chain
+WerFault matched, because it reads the crashing process's memory and the payload
+was visible inside it. Not here — so it is not a spare route to this image, and
+a run that loses `RegSvcs` cannot be rescued by the WerFault dump the way that
+one was.
+
+`vm_check_and_bail` returned `no_vm_check` again, with registry reads captured —
+a third data point for gap 4 being context-only by decision.
+
 ### Pick up here — 13 Aug
 
 **Read this first if you are cold.** The dynamic pipeline's build queue is
