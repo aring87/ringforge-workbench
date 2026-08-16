@@ -2794,10 +2794,55 @@ from the other direction — the decoders that produce readable strings are in t
 44 of 67 pages that never execute — and it is now shown at the instruction level
 rather than inferred from an absence.
 
-**The two 4-byte constants, `0xd45cb4b4` and `0x71b69c19`, are the only
-per-pass-varying material** and therefore the most likely key or selector. That
-is where a fourth attempt should start, and it should start by watching what
-reads them, not by theorising about what they mean.
+#### 0h. STAGE 4'S CIPHER IS RC4 — 16 Aug
+
+Watching what reads those two constants found the decryptor. At payload
+**`+0x42d3`** (`0x03e97f47`):
+
+    mov   ecx, [eax+0x34]          ; state base
+    movzx edx, byte [eax+0x90]     ; j
+    movzx edx, byte [edx+ecx]      ; S[j]
+    movzx esi, byte [eax+0x30]     ; i
+    add   dl,  byte [esi+ecx]      ; S[i] + S[j]
+    movzx ecx, byte [edx+ecx]      ; S[(S[i]+S[j]) & 0xff]
+    mov   [eax+0x8c], ecx          ; keystream byte
+
+**Verified rather than pattern-matched.** Dumping the 256 bytes at `[eax+0x34]`
+gives **256 distinct values, a permutation of 0..255**, and three consecutive
+samples show it mutating one byte at a time — the PRGA swap:
+
+    offset 2:  5a -> c3 -> c3
+    offset 3:  4a -> 4a -> ab
+
+Context layout: `i` at `[eax+0x30]`, `j` at `[eax+0x90]`, state pointer at
+`[eax+0x34]`, keystream byte cached at `[eax+0x8c]`. It runs at **block
+1,710,037**, early — not in the 14M/15.7M passes.
+
+**Retracting the line this section previously ended on.** It said the two 4-byte
+constants were "the only per-pass-varying material and therefore the most likely
+key or selector". They are neither: the RC4 state pointer is `0x1007f7ea`, inside
+the very window being watched, so `0xd45cb4b4` and `0x71b69c19` were **S-box
+bytes in a reused stack region**. They vary because the permutation mutates.
+
+**Plaintext is still not located.** Scans of the payload image and the stack
+found no new ASCII: 249 payload bytes change across the whole run (agreeing with
+`--survey`), and none of it is readable. One stack string appeared,
+`wnlsmbcodepagetag`, which reads as NLS codepage machinery rather than an
+indicator.
+
+**And that scan is not trustworthy on timing** — it used chunked `resume()` and
+truncated, reporting 366,833 / 3,388,869 / 6,960,495 instead of the requested
+checkpoints. That is the trap documented in *0c* above, walked into again by the
+person who documented it. **Any probe that calls `resume()` more than once must
+have its block total checked against 16,096,220 before its output means
+anything.**
+
+**Next, and now well-posed:** RC4 is symmetric and keyed, so recovering the key
+turns the ciphertext blobs — and possibly stage 4's whole encrypted remainder —
+into plaintext offline, without needing to reach the 44 unexecuted pages. Find
+the KSA: it is the loop that fills `[eax+0x34]` with `0..255` and then permutes
+it against the key. Hook writes to the state buffer before block 1,710,037 and
+the key is whatever it mixes in.
 
 #### 0b. If it ever does ask: the fixture rules
 
