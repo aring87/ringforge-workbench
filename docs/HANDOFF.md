@@ -2324,6 +2324,47 @@ via `Ethernet 2`, zero internet-facing), offsets `1, 25, 55`, re-dump `1`s, max
 processes `24`, `dynamic_registry_reads.pmc` confirmed. 375 seconds, 6 processes
 observed, 11 of 12 dumps written, 729 MB.
 
+#### The summary is reconstructed, because the file is gone
+
+`dynamic_run_summary.json` and the HTML report were exported, then lost from the
+host while the case directory was being replaced — and the guest's copy went
+with the revert that preceded the baseline rebuild. What follows was read out of
+the summary before it disappeared. **`memory_yara_rescan.json` survives and is
+the authority for the scan; everything else here is transcription.** Treat any
+figure below as reported rather than re-checkable.
+
+| | |
+|---|---|
+| run id | `38f27025-cf25-4d0d-8a8d-552b661a9dc4`, profile `standard` |
+| verdict | score **70**, severity **High**, *Elevated Attention* |
+| window | 375s against a 180s timeout, not timed out, exit 0 |
+| isolation | `ok` — one egress, `192.168.56.20` → `192.168.56.1` via `Ethernet 2`, `reaches: contained` |
+| memory | 6 processes observed, 12 attempted, 11 written, 9 skipped, 729 MB, `missed_descendants: 0` |
+
+Process tree, which is the shape to compare future runs against:
+
+    422e30ed....exe        1292   (parent 4568)
+      powershell.exe       9732
+      RegSvcs.exe          2084   <- crashed, hollowing target
+        RegSvcs.exe        9044   <- child of the first RegSvcs
+      WerFault.exe         9992
+
+- **`WerFault` 9992 could not be dumped** at the +55s scheduled offset: ProcDump
+  reported *"No process matching the specified PID"* — it had already gone.
+- **Three skips, all explained**: the launcher exited with +55s still pending;
+  `powershell` 9732's parent exited before it could be imaged at the spawn of
+  11064; and `conhost` 11064 itself.
+- **Module integrity**: 425 compared — 423 identical, 2 patched, 0 replaced,
+  7 header mismatches. `regsvcs.exe` differed in **25,192 of 25,420 bytes
+  (99.1%)** of `.text`.
+- **ntdll unhooking**: 33,237 file opens in the stream, 11 system-DLL opens by
+  the sample, 3 of them `ntdll`, 2 inside the hollowing target; 507 analyzer
+  opens and 30 Windows-response opens excluded. Collected, not scored.
+- **ATT&CK v15**: `T1562.001` *Impair Defenses: Disable or Modify Tools*, from a
+  PowerShell Defender modification, and `T1059.001`. Two techniques, two tactics.
+- **Crash**: `chain_crashed`, one event crash, `WerFault` 9992 witnessing pid
+  2084 at 2:16:47.98 PM.
+
 #### The scan was void, and the run was not
 
 The run reported `dumps_scanned: 12, total_matches: 0` against
@@ -2403,6 +2444,73 @@ one was.
 
 `vm_check_and_bail` returned `no_vm_check` again, with registry reads captured —
 a third data point for gap 4 being context-only by decision.
+
+#### Confirmed independently on run `3f70058b`, 10 Aug
+
+Rescanned before its dumps were deleted with the baseline's `cases\`. Ten dumps,
+none failed, `disk_rules: 0`, **`memory_only_rules: 3`** — the same three, on a
+run six days earlier with different pids.
+
+| dump | rule |
+|---|---|
+| `RegSvcs.exe` 12080 at t58 | `RingForge_FormBook_422e30ed_ContextCookie` |
+| launcher 12164 at t25 and t31_atspawn | `RingForge_Loader_422e30ed_Stage2` + `Split_API` |
+| `powershell.exe` 6752 ×4 | `RingForge_Split_API_Injection_Loader` |
+| `conhost.exe` 1004 ×3 | *nothing* |
+
+**Six clean `conhost` images across the two runs** is the answer to the false
+positive `ringforge_split_api_loader.yar` was written fearing — `"Open "` and
+`"Close "` as ordinary UTF-16 UI text in a large GUI process dump. It does not
+happen, and the mandatory-fragment condition is why.
+
+**The dump coverage between the two runs is the clearest evidence the spawn and
+exit triggers work.** `3f70058b` got **one** `RegSvcs` image; `38f27025` got
+**six**. Same sample, same crash, six days of trigger work between them.
+
+`scripts/rescan_memory_yara.py` is what made this cheap: both results came from
+dumps that already existed, with no detonation and no revert.
+
+### The baseline had been restoring a dirty one — rebuilt 16 Aug
+
+Replacing `tooling-baseline` to install the local rules turned up three things
+the old one had been restoring on **every revert since roughly 10 Aug**:
+
+- **`cases\`, 1.33 GB across 74 files** — run `3f70058b`'s output, including 11
+  `.dmp` totalling 1,154 MB. `case_metadata.json` and `combined_score.json` sat
+  at the case root, which a new run for the same sample writes into.
+- **`C:\werdumps\RegSvcs.exe.12080.dmp`**, 12.6 MB, 10 Aug. That directory is
+  where `crash_evidence.py` looks at the start of a run, so every run began with
+  an August crash dump in scope. Checked: `38f27025` attributed its timestamp
+  mismatch to pid 2084 correctly, so nothing was contaminated — but that is one
+  run coming out right, not a property of the setup.
+- **The FormBook sample in `samples\`**, since 5 Aug. **Kept, deliberately**, on
+  the same reasoning as `mimikatz.upx.exe`: this chain is the main line and
+  re-acquiring means the MalwareBazaar AES zip and 7-Zip every time. It is
+  recorded here because today it read as an accident — the previous session left
+  no note, and this file said the baseline carried only the mimikatz samples.
+
+`cases\` was exported first — everything but the dumps, 64 files and 116 MB, to
+`Downloads\ringforge\outputs\export_3f70058b`. Run `3f70058b` exists nowhere
+else: it is the run that confirmed the injected image is stage 3 byte for byte
+and produced the first WER timestamp mismatch.
+
+**Order used, and worth reusing:** take the new snapshot, restore it to verify,
+*then* delete the old one and rename the new into place with
+`VBoxManage snapshot <vm> edit <old> --name <new>`. WORKFLOW's
+`-Delete` → `-Take` leaves no restore point between the two commands, on a
+93.9 GB VM. The rename keeps `-Baseline` and the `-BaselineName` default working
+untouched.
+
+Boot to a logged-in session: **115s** from the rebuilt flat baseline, against
+183s while both snapshots existed and 126–135s from the old one. The differencing
+chain is visible at two deep, which is the cost this file records from the old
+5-deep VM.
+
+**A `-List` issued while a restore was still in flight reported "No snapshots".**
+It was a transient misread and nothing was wrong, but it is the cheap version of
+the wedge this file documents: VBoxManage returns when a state change is queued,
+not done. The scripts wait for the state to settle; a manual call running
+alongside one does not.
 
 ### Pick up here — 13 Aug
 
