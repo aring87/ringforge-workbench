@@ -2599,7 +2599,31 @@ remains is one question, and it is an emulator-harness question.
 - **Run `38f27025` happened**, crashed in stage 3 like the ten before it, and
   its summary was lost — the reconstruction above is the record.
 
-#### 0. The one open question: stage 4 has nothing to steal
+#### 0a. Measured, 16 Aug: stage 4 asks for nothing, so bait is not the lever
+
+`scripts/stage4_asks.py` logs stage 4's own requests, with the loader's calls
+subtracted. Across **16,096,220 blocks it makes one API call** —
+`RtlGetProcessHeaps` — opens no file, reads no key, passes no name to anything,
+and never calls `RtlAllocateHeap` afterwards. **Nothing on disk can be found by
+something that never asks for a path**, so the fixture cannot be a credential
+file.
+
+What it does instead: **14M of those 16M blocks are inside two pages**,
+`0x3ec0000` (7.24M) and `0x3ea8000` (6.76M), with 9.58M writes to the stack and
+only 249 of 273,408 payload bytes changed. A tight compute loop that terminates
+on its own — the same shape as stage 3's 512-million-iteration stall.
+
+**Retracted before it misleads anyone:** the call is reached through `call [edi]`
+and `push <const> / push <n> / call 0x3e95214` sits nearby, which was read here
+as hash-based import resolution. It is not. Probed, `0x3e95214` is called three
+times and returns `0xb4e1ae2`, `0xbf0a5e41`, `0x7544791c` — none of them mapped
+addresses, so it derives values rather than resolving imports.
+
+**So the next question is what those two pages compute and what makes the
+payload return**, not what to put on disk. A fixture only becomes meaningful
+once something asks for one.
+
+#### 0b. If it ever does ask: the fixture rules
 
 Stage 4's capability is established and its runtime behaviour is not. It runs to
 completion, touches 23 of 67 pages, drops nothing, opens no socket, and wipes two
