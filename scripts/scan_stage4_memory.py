@@ -157,7 +157,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--eip", type=lambda v: int(v, 0), default=0)
     ap.add_argument("--esp", type=lambda v: int(v, 0), default=0)
-    ap.add_argument("--blocks", type=int, default=200_000_000)
+    # INSTRUCTIONS, not blocks -- `emu_start`'s count is an instruction budget,
+    # and 60M stops this payload mid-scan at 16,096,220 blocks. 400M reaches the
+    # real end at 42,072,701. See the handoff, 0aa.
+    ap.add_argument("--blocks", type=int, default=400_000_000,
+                    metavar="INSTRUCTIONS")
     ap.add_argument("--dump-hits", default=None,
                     help="directory to write each matching region into, so the "
                          "real yara binary can be pointed at them")
@@ -202,7 +206,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             status = emu.resume(count=args.blocks)
         ran = emu.blocks - started
-        print(f"  stopped: {status} at {emu.blocks:,} blocks ({ran:,} executed)")
+        end_eip = emu.mu.reg_read(UC_X86_REG_EIP)
+        print(f"  stopped: {status} at {emu.blocks:,} blocks ({ran:,} executed), "
+              f"eip {end_eip:#010x}")
+        if 0x3E93C74 <= end_eip < 0x3E93C74 + 0x42C00:
+            print("  *** VOID: EIP is still inside the payload, so the budget "
+                  "ran out mid-execution. A sweep that found nothing would mean "
+                  "nothing. Raise the instruction budget.")
+            return 2
         if ran < 1000:
             print("\n*** VOID: the run executed almost nothing, so a sweep now "
                   "measures the checkpoint, not stage 4. Seed --eip/--esp.")

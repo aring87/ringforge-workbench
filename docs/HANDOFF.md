@@ -2698,9 +2698,28 @@ from 1 to 9** (`call ecx` ×3, `call [ebp+0x1f]` ×2, `call edx` ×2, `call eax`
 ×2), and those have no static target, so "nothing reaches them" is weaker than
 stated below.
 
-**Still void pending redo, all measured at 60M:** the 990,570 comparison count,
-the 1,665-byte keystream census, the 322-checkpoint string sweep, and
-`--survey`'s 249 changed bytes / 7,941 payload writes.
+**The 60M measurements, rerun at 400M:**
+
+| measurement | truncated | full run | conclusion |
+|---|---|---|---|
+| matcher calls | 990,570 | **1,127,165** | holds — 1,127,160 of them still the self-location needle |
+| distinct needles | 1 | **4** | the 3 extra are 5 calls total; noise |
+| RC4 keystream | 1,665 B | **4,440 B** | **holds** — still far too little for a string table, so RC4 wraps keys |
+| hot code pages | 23 | **32** | more of the stub runs than was visible |
+| stack writes | 9,579,557 | **14,744,256** | — |
+| payload write spans | 2 × 6 B | **6+ × 6 B** | same shape: small fixed patches, not an unpack |
+| the two 64 KB wipes | 16,384 each | **16,384 each** | unchanged — a fixed-size cleanup, not proportional to runtime |
+| IOC strings found | none | **none by the payload** | **holds**, see below |
+
+**The string sweep needs a caveat I introduced myself.** It now reports 39 hits
+against 9, but every one is inside a DLL image: `ProgramFiles` ×10, `SysWOW64`
+×5, `Program Files` ×5, `windir` ×4, `\explorer.exe`, and a `gzip, deflate, br`
+at `0x216b8faa` — which is **urlmon's own `Accept-Encoding` literal**, not the
+payload's. The rise from 9 to 39 is entirely the 20 real DLLs mapped in *0c*
+putting more Windows strings in the address space. **Mapping real exports made
+this sweep noisier**; judge it by which region a hit lands in, not by the count.
+
+**One number still pending:** `--survey`'s exact changed-byte count (was 249).
 
 #### 0ab. The ntdll-patch hypothesis is DEAD, and the real second half appears
 
