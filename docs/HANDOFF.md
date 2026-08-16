@@ -2295,6 +2295,45 @@ would key it on this build's keystream — a hash wearing a signature's clothes.
 `RingForge_FormBook_422e30ed_ContextCookie` staying stage-agnostic is not a
 temporary compromise; it is the honest ceiling until the payload runs further.
 
+#### And running it further does not reach them — 16 Aug
+
+**The decoders are never called in this environment.** Stage 4 runs to
+completion here, and the strings are not built at any point during it.
+
+`scan_stage4_memory.py --watch` sweeps the stack and the two 64 KB regions the
+payload wipes, from a block hook, every 50,000 blocks — **322 checkpoints across
+the whole run**. Nothing, in ascii or wide, for the user agent, the SQLite URL,
+`IntelliForms`, `Local State`, `Autofill` or the `Accept-Encoding` line.
+
+That completes the picture: the strings are absent from the file (30 candidates,
+not even as `mov` immediate chunks), from all sixteen minidumps, from emulated
+memory *during* the run, and from it *after*.
+
+**The reason is in the survey: 23 of stage 4's 67 pages ever execute.** Two
+thirds of the payload never runs. The credential-harvesting code sits in that
+two thirds, which is what an environment with no browsers, no credential stores
+and no C2 should produce. FLOSS did not find those strings by running the
+payload either — its stack, tight and decoded passes emulate decoder functions
+*in isolation*, which is precisely how they reach code a natural run walks past.
+
+So the IOCs are already as recovered as running can make them, and further
+emulation of the whole payload adds nothing. What the run does confirm:
+
+- **The zeroing is real and precise** — `0x3ee0000` and `0x3ef0000` each take
+  exactly **16,384 writes**, one dword per 4 bytes across 64 KB. A wipe.
+- Only **249 of 273,408** payload bytes change across the entire run.
+- **9.58M writes land on the stack** at `0x10070000`; the payload's own image is
+  barely touched.
+
+**A methodological trap, and it produced a clean-looking false negative first.**
+`--watch` originally ran in chunks, calling `resume()` repeatedly. The run length
+tracked the chunk size — **4,404,334 blocks at 250K chunks, 16,096,220 at 2M
+chunks, against 16,096,220 unchunked** — so every sweep sampled a truncated run
+and "nothing sighted" meant nothing at all. It now sweeps from a `UC_HOOK_BLOCK`
+callback without restarting `emu_start`, and reaching the same block count as an
+uninterrupted run is the check that it is faithful. **Compare the block count
+against an unchunked run before believing any watched result.**
+
 **The premise recorded here is retracted.** This section read: *"The Nokia user
 agent and the SQLite URL are stack-built, so a rule over a file will not see
 them — it needs to match a memory image, which `memory_yara` already scans."*

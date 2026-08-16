@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from unicorn import UC_HOOK_BLOCK
 from unicorn.x86_const import UC_X86_REG_EIP, UC_X86_REG_ESP
 
 import win32_emu_env as winenv  # noqa: F401  (imported for its side effects)
@@ -93,6 +94,64 @@ def sweep(emu: Emulator, dump_dir: Path | None) -> dict[str, list[tuple[str, int
     return found
 
 
+#: Short and distinctive, so a sweep every few million blocks stays cheap.
+WATCH_NEEDLES = ("Nokia5130c-2", "sqlite-dll", "IntelliForms", "Local State",
+                 "Autofill", "gzip, deflate, br")
+
+
+def _run_watching(emu: Emulator, budget: int, every: int) -> str:
+    """Sweep from inside emulation, without interrupting it.
+
+    The end-of-run sweep is structurally blind: `--survey` showed stage 4 zeroing
+    two 64 KB regions on its way out, so anything it built is gone before it
+    returns. Whatever it holds has to be caught while it holds it.
+
+    **Do not do that by chunking `resume()`.** The first version of this did, and
+    the run length tracked the chunk size -- 4.40M blocks at 250K chunks,
+    16.10M at 2M chunks, against 16.10M unchunked. Every sweep was therefore
+    sampling a truncated run, and a clean "nothing sighted" meant nothing. A
+    block hook sweeps the same points without restarting `emu_start`.
+
+    Only the regions a runtime-built string can live in are scanned -- the stack
+    and the two 64 KB regions the payload wipes -- so the sweep is ~1 MB rather
+    than the 134 MB section, and can run often enough to catch something built
+    and destroyed inside one window.
+    """
+    seen: dict[str, int] = {}
+    watched = [(0x10000000, 0x100FFFFF), (0x03EE0000, 0x03EFFFFF)]
+    encoded = [(n, e, s.encode("latin-1") if e == "ascii" else s.encode("utf-16-le"))
+               for n in WATCH_NEEDLES for e, s in (("ascii", n), ("wide", n))]
+    state = {"next": every}
+
+    def on_block(uc, addr, size, user):
+        if emu.blocks < state["next"]:
+            return
+        state["next"] = emu.blocks + every
+        for begin, end in watched:
+            try:
+                blob = bytes(uc.mem_read(begin, end - begin + 1))
+            except Exception:
+                continue
+            for needle, enc, raw in encoded:
+                if needle in seen:
+                    continue
+                at = blob.find(raw)
+                if at >= 0:
+                    seen[needle] = emu.blocks
+                    print(f"  [{emu.blocks:>13,}blk] FIRST SIGHTING "
+                          f"{needle!r} ({enc}) at {begin + at:#010x}")
+
+    handle = emu.mu.hook_add(UC_HOOK_BLOCK, on_block)
+    try:
+        status = emu.resume(count=budget)
+    finally:
+        emu.mu.hook_del(handle)
+    if not seen:
+        print(f"  (nothing sighted in {len(watched)} watched region(s), "
+              f"swept every {every:,} blocks)")
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--state", default=STATE)
@@ -105,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-run", action="store_true",
                     help="sweep the state as restored, without running it -- the "
                          "control that says whether running is what produced a hit")
+    ap.add_argument("--watch", type=int, default=0, metavar="BLOCKS",
+                    help="sweep every BLOCKS during the run instead of only at "
+                         "the end. Stage 4 zeroes two 64 KB regions on its way "
+                         "out, so a string that existed while it ran is gone by "
+                         "the time it returns -- an end-only sweep cannot see it")
     args = ap.parse_args(argv)
 
     print(f"restoring {args.state}")
@@ -133,7 +197,10 @@ def main(argv: list[str] | None = None) -> int:
         started = emu.blocks
         eip = emu.mu.reg_read(UC_X86_REG_EIP)
         print(f"\nrunning up to {args.blocks:,} blocks from eip {eip:#x}")
-        status = emu.resume(count=args.blocks)
+        if args.watch:
+            status = _run_watching(emu, args.blocks, args.watch)
+        else:
+            status = emu.resume(count=args.blocks)
         ran = emu.blocks - started
         print(f"  stopped: {status} at {emu.blocks:,} blocks ({ran:,} executed)")
         if ran < 1000:
