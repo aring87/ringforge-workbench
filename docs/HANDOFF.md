@@ -2749,12 +2749,55 @@ first was applied. **Probe before building** — the DLL mapping is kept for
 fidelity, but it bought nothing, and the schema would have bought nothing at
 greater expense.
 
-What is now excluded: export *presence*, and API-set resolution. What remains
-open is what stage 4 does after the `API-` test at block 15,695,162, and what
-the CRC-32 loop is hashing given it is not the promoted tables. Note the
-`kernel32.dll` widening at block 14,000,244 comes *first* — the pair is one
-sequence, and reading it forwards from there is the next instrument, not another
-guess at the matcher's arguments.
+What is now excluded: export *presence*, and API-set resolution.
+
+#### 0g. Read forwards from the widening: two identical passes, all ciphertext
+
+Reading forwards from the `kernel32.dll` widening rather than guessing at
+arguments — which is the method that has worked every time today — leads
+straight into stack-buffer construction:
+
+    mov  esi, [ebp+8]
+    push 5
+    push esi
+    mov  dword ptr [ebp-8], 0xd45cb4b4    ; a 4-byte obfuscated constant
+    mov  word  ptr [ebp-4], 0             ; NUL
+    call 0x3ec0504                        ; fill
+    ...
+    push 4 / lea eax,[ebp-8] / push eax / push esi
+    call 0x3ec04d4                        ; byte copy
+
+That is the shape FLOSS's stack-strings pass reconstructs. Hooking the copy
+routine `0x3ec04d4` (cdecl `(dst, src, len)`) across the window gives **nine
+copies and not one byte of plaintext**:
+
+| block | dst | len | bytes |
+|---|---|---|---|
+| 14,000,142 | `0x03e9bcd6` **in the payload** | 6 | `77 bd 3f ab c3 d5` |
+| 14,000,151 | `0x03e9bb7f` **in the payload** | 6 | `1c f7 ae 23 a6 67` |
+| 14,000,338 | stack | 4 | `b4 b4 5c d4` |
+| 14,000,368 | stack | 20 | `72 2a b6 6c …` |
+| 15,695,138 | `0x03e9bcd6` | 6 | `77 bd 3f ab c3 d5` — identical |
+| 15,695,147 | `0x03e9bb7f` | 6 | `1c f7 ae 23 a6 67` — identical |
+| 15,695,225 | stack | 4 | `71 b6 9c 19` — the one thing that differs |
+| 15,695,255 | stack | 20 | `72 2a b6 6c …` — identical |
+
+**Two near-identical passes 1.7M blocks apart**, the `kernel32.dll` widening in
+the first and `API-` in the second, moving the same encrypted material both
+times. The two payload destinations at `+0x8062` and `+0x7f0b` are 6-byte writes
+into its own image, which is consistent with `--survey` reporting 7,941 payload
+writes confined to two 6-byte spans.
+
+**So this path produces no plaintext at all.** It shuffles ciphertext and patches
+six bytes of itself, twice. That is the same conclusion the page count reached
+from the other direction — the decoders that produce readable strings are in the
+44 of 67 pages that never execute — and it is now shown at the instruction level
+rather than inferred from an absence.
+
+**The two 4-byte constants, `0xd45cb4b4` and `0x71b69c19`, are the only
+per-pass-varying material** and therefore the most likely key or selector. That
+is where a fourth attempt should start, and it should start by watching what
+reads them, not by theorising about what they mean.
 
 #### 0b. If it ever does ask: the fixture rules
 
