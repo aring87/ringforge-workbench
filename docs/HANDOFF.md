@@ -2897,11 +2897,44 @@ after the page count and the instruction-level trace, the cipher census now says
 the same thing. **No plaintext was produced, and none should have been expected
 from this routine.**
 
-**Next, if this is picked up again:** the keystream is sparse enough to enumerate
-completely. All 1,665 bytes, the three re-keyings and the second key are
-recoverable in one run, so the question worth asking is *what consumes the six
-decrypted bytes* — hook reads of the PRGA output at `[eax+0x8c]` and follow the
-consumer, rather than looking for plaintext that this routine never produces.
+#### 0k. NOTHING calls into the unexecuted pages — they are not code yet
+
+`scripts/stage4_declined.py` records every executed basic block, then asks a
+mechanical question of each: of this branch's two successors, was exactly one
+ever taken, and does the untaken side land in a page that never ran? No
+disassembly intent is inferred, which is the method that has failed repeatedly
+on this payload.
+
+    RUN CHECK: 16,096,220 blocks
+    403 distinct block(s) executed, 22 of 67 pages
+    0 branch(es)/call(s) whose untaken side is in a page that never ran
+    indirect call sites in executed code: 1   (call eax)
+
+**Zero.** Not a declined conditional, not a direct call, and one solitary
+indirect call site in the whole of stage 4's executed code. **There is no gate
+being declined**: the executed code contains no reference to those pages at all.
+
+And **403 distinct basic blocks** across 16 million entries — a very small stub
+running extremely tight loops.
+
+**So the framing this file has used all day is wrong, and is retracted.** "44 of
+67 pages never execute, the credential harvesting is in there" implied unreached
+*code* behind a decision. It is not. Nothing branches there because **those pages
+are not code yet** — they are stage 4's still-packed body, which is exactly what
+the artifact README says of the image: *"plaintext code pages surrounded by data
+that stays packed"*.
+
+**This explains every negative result of the day at once.** No bait could be
+found, no export table helped, no API set schema mattered, and the recovered RC4
+key unlocked nothing, because **stage 4 never unpacked its own body in this
+run**. It executes an initialisation stub, hashes ~990,000 names, wraps a few
+keys, writes 249 bytes, and returns. The stealer was never there to be reached.
+
+**That is the question for whoever picks this up:** not what gates the
+harvesting, but **what would make stage 4 unpack itself**. The 403 blocks are
+few enough to read end to end — that is a tractable afternoon, unlike anything
+attempted today — and the decision to return without unpacking is somewhere in
+them.
 
 **Two probes failed first, both instructive.** Hooking the state address over the
 whole run filled a 4,000-entry cap by block 261,438 with ordinary stack-frame
