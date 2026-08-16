@@ -2719,10 +2719,48 @@ the two probes had simply caught its first and last entries. The mechanism is a
 list, not a random draw, which is a different and more useful fact — the list can
 be signatured.
 
-**And the run is VOID again at 400M instructions** — 111,343,494 blocks with EIP
-still inside the payload. Getting past `CreateProcessInternalW` moved the finish
-line well beyond where it was this morning, so the budget needs raising again.
-Note how this failure now announces itself instead of being adopted as a result.
+**The list is eleven, not nine** — the first count was itself a truncated run.
+Complete, in order, at 3,000,000,000 instructions (122,991,008 blocks, COMPLETE):
+
+    compact.exe   msiexec.exe   AtBroker.exe   runonce.exe
+    cacls.exe     regini.exe    replace.exe    wextract.exe
+    label.exe     netbtugc.exe  SearchFilterHost.exe
+
+#### 0ae. NO INJECTION — it stops at `ProcessBasicInformation`, unimplemented
+
+Stage 4's own calls, with the loader's baseline subtracted:
+
+       36 RtlFreeHeap        13 NtQueryInformationFile   11 NtQueryInformationProcess
+       24 RtlAllocateHeap    13 NtClose                  11 CreateProcessInternalW
+       13 NtCreateFile       12 NtReadFile                1 RtlGetProcessHeaps
+       13 RtlDosPathNameToNtPathName_U
+
+    UNHANDLED: 11 x NtQueryInformationProcess(class 0x0)
+
+**No `NtCreateSection`, no `NtMapViewOfSection`, no `NtWriteVirtualMemory`, no
+`NtOpenProcess`, no thread APIs.** It does not inject.
+
+**A warning about reading this wrong.** The *raw* counters after a run show
+`NtCreateSection` ×3, `NtMapViewOfSection` ×6, `NtOpenProcess` ×3 and the thread
+calls — which looks exactly like injection. Those are **the loader's**, already
+present in `after_handshake.state`, and they are byte-identical to the baseline.
+Anything reading `emu.calls` directly rather than subtracting will conclude stage
+4 hollows a process. It does not. `stage4_asks.py` subtracts; ad-hoc probes must.
+
+**The loop, fully mapped.** For each of the eleven candidates: build the path →
+`NtCreateFile` the host binary → `NtQueryInformationFile` → **`NtReadFile`** it →
+`NtClose` → `CreateProcessInternalW` suspended → **`NtQueryInformationProcess`
+class 0** → nothing comes back → next candidate. All eleven, then it returns.
+
+**Class 0 is `ProcessBasicInformation`, which returns the PEB address** — exactly
+what hollowing needs to locate the target's image base. It is asked once per
+created process and answered with nothing.
+
+**This is the third blocker of the same kind in a row**: `FileNameInformation`,
+then `CreateProcessInternalW`, now `ProcessBasicInformation`. Each stopped the
+payload at the next step, and implementing each revealed the next. That is the
+shape of the remaining work — not a mystery about the sample, but a queue of
+unimplemented APIs, each cheap to find because the harness names it.
 
 **What this establishes regardless:** the quiet return was **ours**, not the
 sample's. A single unimplemented information class stopped a payload that
