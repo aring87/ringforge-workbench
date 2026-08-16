@@ -2837,12 +2837,45 @@ person who documented it. **Any probe that calls `resume()` more than once must
 have its block total checked against 16,096,220 before its output means
 anything.**
 
-**Next, and now well-posed:** RC4 is symmetric and keyed, so recovering the key
-turns the ciphertext blobs — and possibly stage 4's whole encrypted remainder —
-into plaintext offline, without needing to reach the 44 unexecuted pages. Find
-the KSA: it is the loop that fills `[eax+0x34]` with `0..255` and then permutes
-it against the key. Hook writes to the state buffer before block 1,710,037 and
-the key is whatever it mixes in.
+#### 0i. THE KSA AND A 20-BYTE KEY — 16 Aug
+
+**KSA at payload `+0x419b`** (`0x03e97e0f`). Found by the identity fill, which is
+unambiguous and needed no disassembly reading:
+
+    [1,709,519blk] S[  0] = 0x00  by 0x03e97e0f
+    [1,709,520blk] S[  1] = 0x01  by 0x03e97e0f
+    [1,709,521blk] S[  2] = 0x02  by 0x03e97e0f   ... 256 of them
+
+518 blocks before the PRGA at `+0x42d3`.
+
+**The key is 20 bytes at `0x1007fdf0`, read by `0x03e97e23`:**
+
+    48 4d c8 73 10 a6 96 f2 a9 38 f8 2f dd eb 90 15 79 ba 3b a5
+
+Isolated by byte-sized reads only, grouped into consecutive runs — dword loop
+variables are excluded by size and scattered frame access cannot form a run.
+Each of the 20 bytes was read **12–14 times**, and 20 × 13 = 260 ≈ the 256 KSA
+iterations that cycle `key[i mod keylen]`. Two shorter runs also appeared, 6
+bytes at `0x1007fe4c` and 4 at `0x1007fe2d`, read far fewer times.
+
+**What is NOT established: what it decrypts.** RC4-ing the captured ciphertext
+blobs with this key from keystream position 0 produces no plaintext. That is
+unsurprising rather than contradictory — those blobs were copied at blocks
+14,000,142 and later, **12 million blocks after** this instance was keyed, so
+they are near-certainly a different context or a different keystream offset.
+**The key is well-evidenced as what this KSA consumed, and nothing more.**
+
+**Next:** capture what *this* instance processes, around block 1,710,037 — hook
+the PRGA at `0x03e97f47`, record the keystream byte at `[eax+0x8c]` and the
+buffer the caller XORs it into. That gives ciphertext and plaintext together and
+settles the key by demonstration rather than by inference from read counts.
+
+**Two probes failed first, both instructive.** Hooking the state address over the
+whole run filled a 4,000-entry cap by block 261,438 with ordinary stack-frame
+churn — pushed pointers like `0x3ec0005`, not S-box bytes — because that stack
+range is reused. Adding a block window and a `size == 1` filter fixed it. And
+every probe from here carries the `RUN CHECK` line: this one reported
+**16,096,220 blocks**, so it did not truncate.
 
 #### 0b. If it ever does ask: the fixture rules
 
