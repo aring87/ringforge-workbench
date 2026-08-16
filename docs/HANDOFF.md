@@ -3019,7 +3019,7 @@ misread as a length is the delta that makes `[esi+ecx]` index the second string.
 **Nothing in the stub decrypts, allocates a payload region, or transfers control
 into the packed pages.**
 
-#### 0m. The 990,570 comparisons are a self-location scan, not an export walk
+#### 0l. The 990,570 comparisons are a self-location scan, not an export walk
 
 Logging the matcher's arguments — finally possible once its signature was read
 correctly — settles what the loop is for. **One distinct needle, for all
@@ -3059,7 +3059,7 @@ range is reused. Adding a block window and a `size == 1` filter fixed it. And
 every probe from here carries the `RUN CHECK` line: this one reported
 **16,096,220 blocks**, so it did not truncate.
 
-#### 0l. The fixture rules, kept for whenever a fixture is finally warranted
+#### 0m. The fixture rules, kept for whenever a fixture is finally warranted
 
 This began as *"stage 4 has nothing to steal, so give it something"*. **The
 premise is retracted** — it asks the OS for nothing (*0a*) and never unpacks the
