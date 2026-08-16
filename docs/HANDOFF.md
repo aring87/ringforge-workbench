@@ -2996,7 +2996,8 @@ with counts. What the executed stub does, start to finish:
    `mov word [edi+2],bx` / `mov word [edi],dx` — `{Length, MaximumLength}`.
    **This is a manual `GetModuleHandle` against the PEB loader list**, which is
    why the widening appears there.
-5. **Walks export names**, 990,570 case-insensitive 20-character comparisons.
+5. **Scans memory backwards for its own image header** — 990,570 comparisons,
+   see below. **Not** an export walk; that reading is retracted.
 6. **Returns**, without unpacking its body.
 
 **The matcher, read correctly at last.** Three earlier attempts had its arguments
@@ -3016,9 +3017,40 @@ misread as a length is the delta that makes `[esi+ecx]` index the second string.
 **20 characters** is the comparison width throughout.
 
 **Nothing in the stub decrypts, allocates a payload region, or transfers control
-into the packed pages.** The picture is complete and consistent: stage 4's
-executed code is a resolver stub that stalls, finds `kernel32`, hunts export
-names, and leaves.
+into the packed pages.**
+
+#### 0m. The 990,570 comparisons are a self-location scan, not an export walk
+
+Logging the matcher's arguments — finally possible once its signature was read
+correctly — settles what the loop is for. **One distinct needle, for all
+990,570 comparisons:**
+
+    8c 47 f9 0f 5e 7d 3c 70 ed bb 6b 2d fa 8c f4 d1 08 f6 82 76
+
+Those are **the payload's own first 20 bytes**, byte-for-byte the content at
+`0x3e93c74`. The candidates are one-byte-shifted sliding windows —
+`00 58 c3 e8 …`, then `00 00 58 c3 e8 …`, then `00 00 00 58 c3 e8 …` — which is
+the caller's `dec esi` walking *backwards* through memory a byte at a time.
+
+**So stage 4 is scanning memory backwards looking for itself.** Self-locating
+code finding its own mapped base, ~990 KB of scan, and it succeeds: the handful
+of accepted comparisons all report `arg1 = 0x03e93c74`, the payload base.
+
+**Three readings of this loop are now retracted**, all of them inferences from
+disassembly rather than measurements:
+
+1. "990,564 failures, 6 successes" — a guess from block counts.
+2. "~237 walks of kernel32's and ntdll's 4,182 exports" — the arithmetic was a
+   coincidence. This is why mapping 10,316 real export names changed nothing
+   (*0c*): the loop never looked at an export table.
+3. "hash-based import resolution" — `0x3e95214` derives values; this scans bytes.
+
+**What it means for THE QUESTION.** The scan *works*. Stage 4 locates its own
+image and then returns anyway, so self-location is not the blocker either. The
+decision to leave is downstream of a successful scan, which narrows where in the
+403 blocks to look — but note this loop consumes ~14M of the 16M blocks, so
+whatever follows it is a small tail of code, and that tail is where the answer
+is.
 
 **Two probes failed first, both instructive.** Hooking the state address over the
 whole run filled a 4,000-entry cap by block 261,438 with ordinary stack-frame
