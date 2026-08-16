@@ -1018,7 +1018,18 @@ class Emulator:
                         "Esp": self.remote_esp,
                         "Ebp": self.remote_esp,
                         # Parked in ntdll, where a suspended thread waits.
-                        "Eip": winenv.NTDLL_BASE + 0x9FF0,
+                        #
+                        # 0x79FF0, not 0x9FF0. The first version dropped the 7
+                        # and its commit message claimed the value matched the
+                        # observed park address, which it did not -- the loader
+                        # parks at 0x77079ff0. It matters more than a wrong
+                        # constant usually would: the loader patches this into
+                        # the injected trampoline as the resume address, so the
+                        # payload `ret`s straight into it when it finishes. With
+                        # the digit missing that landed in a data table inside
+                        # ntdll's .text and looked exactly like the payload
+                        # crashing, when in fact it had completed.
+                        "Eip": winenv.NTDLL_BASE + 0x79FF0,
                         "Eax": 0,
                         "ContextFlags": 0x10007,        # CONTEXT_FULL
                         "SegCs": 0x23,
