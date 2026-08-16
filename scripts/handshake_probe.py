@@ -56,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="BLOCKS, not instructions -- roughly five times "
                          "as many instructions. Confusing the two turned a "
                          "one-hour estimate into a 24-hour run.")
+    ap.add_argument("--save-state", default=None,
+                    help="snapshot after the loader has answered, so the "
+                         "stub can be resumed with its exit condition met")
     ap.add_argument("--watch-reads", action="store_true",
                     help="also watch reads of the cell; costs a range test "
                          "on every memory read in the emulation")
@@ -129,9 +132,17 @@ def main(argv: list[str] | None = None) -> int:
     for blocks, eip, addr in reads[:8]:
         print(f"    {blocks:>13,}blk  eip {eip:#010x}  [{addr:#x}]")
     print(f"  {len(writes)} write(s) to the cell by the loader:")
-    for blocks, eip, addr, value in writes[:8]:
-        flag = "   <-- the 0x1d the stub waits for" if value == 0x1D else ""
-        print(f"    {blocks:>13,}blk  eip {eip:#010x}  [{addr:#x}] = {value:#x}{flag}")
+    # Flag on address AND value. Flagging on value alone marked a write of
+    # 0x1d to ptr+7 as "the byte the stub waits for", which it is not -- the
+    # stub reads ptr, and only ptr. Show every write, too: truncating hid the
+    # one that actually set ptr[0].
+    for blocks, eip, addr, value in writes:
+        flag = ""
+        if addr == PTR:
+            flag = ("   <-- SETS ptr, the byte the stub waits for"
+                    if value == 0x1D else "   <-- writes ptr, but not 0x1d")
+        print(f"    {blocks:>13,}blk  eip {eip:#010x}  [{addr:#x}] "
+              f"(ptr+{addr - PTR}) = {value:#04x}{flag}")
 
     cell = bytes(emu.mu.mem_read(PTR, 8))
     print(f"\n  cell after the loader ran: {cell.hex()}  (*ptr={cell[0]:#04x})")
@@ -160,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  the loader ran to completion and never WROTE it. That rules out\n"
               "  the loader answering, but not it watching -- re-run with\n"
               "  --watch-reads to separate those, and expect it to be slow.")
+    if args.save_state:
+        emu.snapshot(args.save_state)
+        print(f"\n  state saved to {args.save_state} at {emu.blocks:,} blocks")
     return 0
 
 
