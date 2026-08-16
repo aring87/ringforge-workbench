@@ -52,7 +52,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--stub-blocks", type=int, default=5_000_000)
-    ap.add_argument("--loader-blocks", type=int, default=2_000_000_000)
+    ap.add_argument("--loader-blocks", type=int, default=1_000_000_000,
+                    help="BLOCKS, not instructions -- roughly five times "
+                         "as many instructions. Confusing the two turned a "
+                         "one-hour estimate into a 24-hour run.")
+    ap.add_argument("--watch-reads", action="store_true",
+                    help="also watch reads of the cell; costs a range test "
+                         "on every memory read in the emulation")
     args = ap.parse_args(argv)
 
     emu = Emulator.restore(args.state)
@@ -95,10 +101,17 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     reads, writes = [], []
-    emu.mu.hook_add(UC_HOOK_MEM_READ,
-                    lambda uc, a, addr, sz, v, u: reads.append(
-                        (emu.blocks, uc.reg_read(UC_X86_REG_EIP), addr)),
-                    begin=PTR, end=PTR + 7)
+    # The read watch is off by default because it is expensive out of all
+    # proportion to what it answers. Unicorn range-tests every memory read when
+    # one is installed, and with it the loader covered 1.7B blocks in 27 minutes
+    # and then effectively stopped -- 24 hours of pegged CPU produced no further
+    # output at all. Writes are the question anyway: "does the loader put 0x1d
+    # in the cell". Reads only refine a negative.
+    if args.watch_reads:
+        emu.mu.hook_add(UC_HOOK_MEM_READ,
+                        lambda uc, a, addr, sz, v, u: reads.append(
+                            (emu.blocks, uc.reg_read(UC_X86_REG_EIP), addr)),
+                        begin=PTR, end=PTR + 7)
     emu.mu.hook_add(UC_HOOK_MEM_WRITE,
                     lambda uc, a, addr, sz, v, u: writes.append(
                         (emu.blocks, uc.reg_read(UC_X86_REG_EIP), addr, v)),
@@ -137,12 +150,16 @@ def main(argv: list[str] | None = None) -> int:
     if cell[0] == 0x1D:
         print("  HANDSHAKE CONFIRMED -- the loader answered; the emulation needs "
               "interleaving, not a longer budget.")
-    elif reads or writes:
+    elif writes or reads:
         print("  the loader touches the cell but did not answer with 0x1d -- read "
               "the eip above before concluding either way.")
+    elif args.watch_reads:
+        print("  the loader ran to completion and neither read nor wrote it, so "
+              "the handshake reading is wrong and 0x1d comes from elsewhere.")
     else:
-        print("  the loader ran to completion and never touched it, so the "
-              "handshake reading is wrong and 0x1d comes from somewhere else.")
+        print("  the loader ran to completion and never WROTE it. That rules out\n"
+              "  the loader answering, but not it watching -- re-run with\n"
+              "  --watch-reads to separate those, and expect it to be slow.")
     return 0
 
 
