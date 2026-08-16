@@ -2707,7 +2707,8 @@ stated below.
 | RC4 keystream | 1,665 B | **4,440 B** | **holds** — still far too little for a string table, so RC4 wraps keys |
 | hot code pages | 23 | **32** | more of the stub runs than was visible |
 | stack writes | 9,579,557 | **14,744,256** | — |
-| payload write spans | 2 × 6 B | **6+ × 6 B** | same shape: small fixed patches, not an unpack |
+| payload write spans | 2 × 6 B | **6 × 6 B**, 21,028 writes | small fixed patches, not an unpack |
+| payload bytes changed | 249 | **0 of 273,408** | **stronger than before** — see below |
 | the two 64 KB wipes | 16,384 each | **16,384 each** | unchanged — a fixed-size cleanup, not proportional to runtime |
 | IOC strings found | none | **none by the payload** | **holds**, see below |
 
@@ -2719,7 +2720,16 @@ payload's. The rise from 9 to 39 is entirely the 20 real DLLs mapped in *0c*
 putting more Windows strings in the address space. **Mapping real exports made
 this sweep noisier**; judge it by which region a hit lands in, not by the count.
 
-**One number still pending:** `--survey`'s exact changed-byte count (was 249).
+**Stage 4 leaves its own image byte-for-byte unchanged.** The full run reports
+`bytes changed in the payload: 0 of 273,408`, with entropy, non-zero fraction and
+`MZ`/`PE` counts identical before and after (7.705, 96.09%, 7 and 5). It makes
+**21,028 writes** into six 6-byte spans and every one is back to its original
+value by the end.
+
+That is a *stronger* result than the 249 it replaces, and it settles the
+packed-body question: the 249 was a mid-patch snapshot caught at the truncation
+point, not a residue of partial unpacking. **Stage 4 does not modify itself at
+all.** Whatever those six spans are, they are scratch — written, used, restored.
 
 #### 0ab. The ntdll-patch hypothesis is DEAD, and the real second half appears
 
