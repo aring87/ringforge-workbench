@@ -2241,10 +2241,60 @@ that may have several, since `handshake_probe.py` interleaves exactly once.
 `--survey` showed it zeroing two 64 KB regions on the way out, so it cleans up
 after itself.
 
-**A YARA rule.** The Nokia user agent and the SQLite URL are stack-built, so a
-rule over a *file* will not see them — it needs to match a memory image, which
-`memory_yara` already scans. That is the natural home for the first signature
-this chain has ever offered.
+#### CLOSED — the YARA rule is written, and it is not made of the IOCs — 16 Aug
+
+`tools\yara\local\ringforge_formbook_stage4.yar`,
+`RingForge_FormBook_Stage4_ContextCookie`.
+
+**The premise recorded here is retracted.** This section read: *"The Nokia user
+agent and the SQLite URL are stack-built, so a rule over a file will not see
+them — it needs to match a memory image, which `memory_yara` already scans."*
+The first half is right and the second does not follow. A memory image does not
+contain them either:
+
+- 30 candidate strings, ascii and wide, against the decrypted stage — **zero**.
+  Not even as the 4-byte `mov [ebp-X], imm32` chunks a stack string leaves
+  behind, so they are not stack literals in this image at all; they come out of
+  decoders FLOSS reaches by emulating functions one at a time.
+- Against all sixteen minidumps on hand, **including the six `RegSvcs.exe`
+  images in which this stage was resident** — zero.
+- Emulated from `after_handshake.state` through 42,072,701 blocks of stage 4,
+  then every mapped region swept — zero. The only hits anywhere were `windir`,
+  `ProgramFiles`, `Program Files` and `SysWOW64` inside ntdll's and kernel32's
+  own images: Windows' strings, present in every process, and a false positive
+  in any rule that lists them.
+
+So the IOCs stay documentation. **The rule keys on the context cookie instead** —
+`mov dword ptr [esi+0x6d8], 0x32dfd514`, then the decode/encode/check shapes
+that use it. Compiled in, so it is present wherever the stage is mapped and
+decrypted, whether or not the stealer ever ran.
+
+Measured with the yara engine, not by substring search:
+
+| target | result |
+|---|---|
+| `RegSvcs.exe` dumps, run `bb51babb` | **6/6 match** — scheduled, exit, and two WER crash dumps |
+| decrypted stage artifacts | 2/2 match (`stage4_mapped`, `stage3_alloc540M`) |
+| other dumps from the same run | 0/10 — launcher at t1 and t25, conhost ×3, powershell ×4, one unrelated |
+| encrypted twin and packed stage 3 | 0/2 — it reads decrypted, not stored |
+| `System32` + `SysWOW64` | 0/7,014 PE files |
+
+All four strings fired in every positive. The launcher dumps being clean is
+correct rather than a miss — the payload is section-mapped into `RegSvcs.exe`
+and was never in the launcher's address space.
+
+**And the bare offset is not usable, so do not read the family-marker note as
+saying otherwise.** `[esi+0x6d8]` alone appears in 168 of those 7,014 files and
+3–14 times in every minidump measured, benign ones included. It is good
+corroboration for a human reading a disassembly and a guaranteed false positive
+as a condition.
+
+`scripts/scan_stage4_memory.py` is what produced the emulated-memory half. It
+refuses to sweep when the run executed almost nothing — the first attempt
+resumed `after_decrypt.state` bare, faulted at zero blocks because the
+checkpoint holds the *loader's* EIP in ntdll, and reported a clean-looking "no
+strings found" that was measuring the checkpoint rather than stage 4. Seed
+`--eip 0x3e9f89b --esp 0x10080000` off `after_handshake.state`.
 
 ### Pick up here — 13 Aug
 
