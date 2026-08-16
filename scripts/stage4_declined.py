@@ -36,7 +36,19 @@ from emulate_native_stub import Emulator
 STATE = r"G:\ringforge-artifacts\422e30ed_stage2\after_handshake.state"
 INJECT_EIP, INJECT_ESP = 0x3E9F89B, 0x10080000
 PAY, PLEN = 0x3E93C74, 0x42C00
-EXPECTED_BLOCKS = 16_096_220        # the RUN CHECK -- see the handoff
+
+#: `Emulator.run` returns the string "returned or budget reached" for BOTH a
+#: clean `emu_start` return and an exhausted budget, because it cannot tell them
+#: apart. That ambiguity cost a day: `emu_start`'s `count` is **instructions**,
+#: not blocks, so a 60,000,000-instruction budget stopped this payload at
+#: 16,096,220 blocks *mid-loop*, and that number was then adopted as the
+#: signature of a completed run -- including as a RUN CHECK that "validated"
+#: truncated runs against the truncation itself.
+#:
+#: The reliable test is where EIP finishes. The trampoline returns to
+#: `0x77009ff0` in ntdll, so EIP still inside the payload means the budget ran
+#: out with work left to do.
+RESUME_ADDR = 0x77009FF0
 
 COND = {"je", "jne", "jz", "jnz", "ja", "jae", "jb", "jbe", "jg", "jge", "jl",
         "jle", "js", "jns", "jo", "jno", "jp", "jnp", "jcxz", "jecxz"}
@@ -47,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--top", type=int, default=20)
+    ap.add_argument("--instructions", type=int, default=400_000_000,
+                    help="INSTRUCTION budget for emu_start, not a block count. "
+                         "60M stops this payload mid-scan at 16,096,220 blocks")
     args = ap.parse_args(argv)
 
     md = Cs(CS_ARCH_X86, CS_MODE_32)
@@ -60,13 +75,19 @@ def main(argv: list[str] | None = None) -> int:
     executed: set[int] = set()
     emu.mu.hook_add(UC_HOOK_BLOCK, lambda u, a, s, x: executed.add(a),
                     begin=PAY, end=PAY + PLEN - 1)
-    status = emu.resume(count=60_000_000)
+    status = emu.resume(count=args.instructions)
     ran = emu.blocks - start
-    print(f"RUN CHECK: {ran:,} blocks -- {status}")
-    if ran != EXPECTED_BLOCKS:
-        print(f"*** VOID: expected {EXPECTED_BLOCKS:,}. A truncated run makes "
-              f"every 'never executed' below a lie of omission.")
+    eip = emu.mu.reg_read(UC_X86_REG_EIP)
+    inside = PAY <= eip < PAY + PLEN
+    print(f"RUN CHECK: {ran:,} blocks, {args.instructions:,} instruction budget")
+    print(f"           ended at eip {eip:#010x} -- {status}")
+    if inside:
+        print(f"*** VOID: EIP is still inside the payload (+{eip - PAY:#x}), so "
+              f"the budget ran out mid-execution.\n"
+              f"    Every 'never executed' below would be a lie of omission. "
+              f"Raise --instructions.")
         return 2
+    print(f"           EIP left the payload, so execution finished.\n")
 
     pages = {a >> 12 for a in executed}
     total_pages = (PLEN + 0xFFF) >> 12

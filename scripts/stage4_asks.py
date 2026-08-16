@@ -37,7 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--eip", type=lambda v: int(v, 0), default=INJECT_EIP)
     ap.add_argument("--esp", type=lambda v: int(v, 0), default=INJECT_ESP)
-    ap.add_argument("--blocks", type=int, default=60_000_000)
+    # `emu_start`'s count is INSTRUCTIONS, not blocks. 60M stops this payload
+    # mid-scan at 16,096,220 blocks, and that truncation was mistaken all day
+    # for a completed run. 400M reaches the real end at 42,072,701 blocks.
+    ap.add_argument("--instructions", type=int, default=400_000_000,
+                    dest="blocks")
     args = ap.parse_args(argv)
 
     emu = Emulator.restore(args.state)
@@ -75,10 +79,16 @@ def main(argv: list[str] | None = None) -> int:
         return original_api(name, *a, **kw)
 
     emu.api = traced_api
-    print(f"running stage 4 from {args.eip:#x}, budget {args.blocks:,} blocks")
+    print(f"running stage 4 from {args.eip:#x}, {args.blocks:,} instruction budget")
     status = emu.resume(count=args.blocks)
     ran = emu.blocks - start_blocks
-    print(f"  {status} after {ran:,} blocks\n")
+    eip = emu.mu.reg_read(UC_X86_REG_EIP)
+    print(f"  {status} after {ran:,} blocks, ending at eip {eip:#010x}")
+    if 0x3E93C74 <= eip < 0x3E93C74 + 0x42C00:
+        print("  *** VOID: EIP is still inside the payload, so the budget ran "
+              "out mid-execution and 'asks for nothing' would be unearned.")
+        return 2
+    print()
 
     calls = collections.Counter(emu.calls) - before_calls
     unhandled = collections.Counter(emu.unhandled) - before_unhandled

@@ -2605,42 +2605,109 @@ current state, because several contain framings this section retracts.
 **What stage 4 actually does, when it runs (this is the durable result):**
 
     trampoline -> three do-nothing delay loops -> writes the 0x1d handshake flag
-    -> builds a UNICODE_STRING for "kernel32.dll" and finds the module via the
-    PEB loader list -> walks export names, 990,570 case-insensitive 20-char
-    compares -> RETURNS, without unpacking its body
+    -> builds a UNICODE_STRING for "kernel32.dll" via the PEB loader list
+    -> scans memory backwards for its own 20-byte header, and finds it
+    -> opens ntdll.dll as a FILE and queries it   (the unhooking check)
+    -> RETURNS, without unpacking its body
 
-403 distinct basic blocks, 22 of 67 pages, one API call
-(`RtlGetProcessHeaps`), 249 payload bytes changed, no file opened, no socket.
-**It is a resolver stub.** The other 45 pages are not unreached code behind a
-gate — they are its still-packed body, and *nothing in the executed code
-branches to them at all* (*0j*).
+592 distinct basic blocks, 24 of 67 pages, eight API calls including
+`NtCreateFile` on `\??\ntdll.dll` at block 26,917,406. **See 0aa** — the earlier
+"403 blocks, one API call, no file opened" figures came from a run truncated at
+16,096,220 blocks by an instruction budget mistaken for a completion.
+
+**It is a resolver stub with an anti-hooking check.** The other 43 pages are not
+unreached code behind a gate — they are its still-packed body, and no *direct*
+branch or call in the executed code reaches them (*0j*). That is weaker than
+"nothing reaches them": there are **9 indirect call sites** whose targets are not
+statically known.
 
 #### THE QUESTION: what would make stage 4 unpack itself?
 
-Not "what gates the credential harvesting" — that framing is retracted; there is
-no such gate, because there is no unpacked stealer to gate. The stub decrypts
-nothing and transfers control nowhere. Something in those 403 blocks decides to
-return, and the whole stub is now mapped to find it in.
+Not "what gates the credential harvesting" — there is no unpacked stealer to
+gate. The stub decrypts nothing and transfers control nowhere. Something in
+those **592 blocks** decides to return, and the stub is mapped to find it in.
 
-**Four things that will NOT work, each disproved by measurement today.** They
-are listed because each was a coherent story that explained every observation
-before it was tested:
+**The leading candidate, as of the last measurement of the day:** stage 4 opens
+`\??\ntdll.dll` and queries it — an unhooking check comparing the clean on-disk
+copy against the loaded one. **This harness patches the mapped ntdll**, with a
+syscall gate and `patch_ntdll_copies`. If the comparison sees those patches, the
+quiet return is *ours*, not the sample's. Testable, and **untested** — treat it
+as a hypothesis, because five were falsified today.
+
+**Things that will NOT work, each disproved by measurement.** Listed because
+each was a coherent story that explained every observation before it was tested:
 
 | idea | disproof |
 |---|---|
-| plant bait for it to steal | it asks the OS for nothing — one API call in 16M blocks (*0a*) |
 | give the DLLs real export tables | done, 10,316 names — **bit-identical run** (*0c*) |
 | populate `ApiSetMap` for the forwarders | `PEB+0x30..0x3F` is **never read** (*0d*) |
-| recover the RC4 key and decrypt | key recovered and confirmed — but RC4 emits **1,665 bytes total** and wraps keys, not strings (*0i*) |
+| recover the RC4 key and decrypt | key recovered and confirmed — but RC4 wraps keys, not strings (*0i*) |
+| ~~plant bait for it to steal~~ | **this disproof is itself retracted — see 0aa.** It rested on "asks for nothing", which was a truncated run. Stage 4 does open a file |
 
-**Method note, earned the hard way.** Every reading inferred from disassembly
-today was wrong — the matcher's arguments three times over. Every conclusion
-that held came from counting or hooking something specific and letting the
-number speak. And **any probe calling `resume()` more than once must have its
-block total checked against 16,096,220 first**; chunking silently truncates the
-run, which produced one clean-looking false negative before it was caught.
+**Method note, earned the hard way — and note the last line especially.** Every
+reading inferred from disassembly today was wrong, the matcher's arguments three
+times over; every conclusion that held came from counting or hooking something
+specific. **Do not check a run against a block count.** `emu_start`'s `count` is
+instructions, so a fixed block total is a property of the budget, not the
+program — the RUN CHECK written this morning to catch truncation ended up
+certifying it. Check that **EIP has left the payload** instead.
 
-#### 0a. Measured, 16 Aug: stage 4 asks for nothing, so bait is not the lever
+#### 0aa. CORRECTION — every 16,096,220-block figure below is a truncated run
+
+**`emu_start`'s `count` is INSTRUCTIONS, not blocks.** A 60,000,000-instruction
+budget stops this payload at 16,096,220 blocks *mid-scan*, and `Emulator.run`
+reports that as `"returned or budget reached"` — a string that cannot tell a
+clean return from an exhausted budget. That number was then adopted all day as
+the signature of a completed run, **including as a RUN CHECK that validated
+truncated runs against the truncation itself**. The guard introduced to catch
+this failure encoded it instead.
+
+The real run, at a 400,000,000-instruction budget:
+
+| | truncated (60M) | actual (400M) |
+|---|---|---|
+| blocks | 16,096,220 | **42,072,701** |
+| distinct blocks | 403 | **592** |
+| payload pages | 22 | **24 of 67** |
+| ends at | mid-scan, in the payload | `eip 0x7700a007` — resume address +0x17 |
+
+**The fixed check is EIP-based**: the trampoline returns to `0x77009ff0`, so EIP
+still inside the payload means the budget ran out. `stage4_declined.py` and
+`stage4_asks.py` now test that and exit 2 rather than reporting.
+
+**What this overturns:**
+
+- **"Stage 4 asks the OS for nothing" — RETRACTED.** At full budget it calls
+  `RtlGetProcessHeaps`, `RtlDosPathNameToNtPathName_U`, **`NtCreateFile`**,
+  `NtQueryInformationFile`, `NtClose`, `RtlAllocateHeap` and `RtlFreeHeap` ×2.
+- **It opens `\??\ntdll.dll`** at block 26,917,406, then queries file
+  information at 35,896,179. **That is the ntdll unhooking check** — reading a
+  clean copy from disk to compare against the loaded one, the same move stage 3
+  makes and the exact behaviour `dynamic_analysis/ntdll_unhooking.py` exists to
+  catch.
+- **"Bait is not the lever" — retracted with it.** Stage 4 does open a file. It
+  is not a credential store, but the reasoning that killed the idea was built on
+  a run cut off before the file access.
+
+**What survives the correction:** it still returns without unpacking (the 400M
+run reaches the trampoline's return and faults in ntdll beyond it), and nothing
+still branches into the unexecuted pages — though **indirect call sites went
+from 1 to 9** (`call ecx` ×3, `call [ebp+0x1f]` ×2, `call edx` ×2, `call eax`
+×2), and those have no static target, so "nothing reaches them" is weaker than
+stated below.
+
+**Still void pending redo, all measured at 60M:** the 990,570 comparison count,
+the 1,665-byte keystream census, the 322-checkpoint string sweep, and
+`--survey`'s 249 changed bytes / 7,941 payload writes.
+
+**The lead this opens.** The harness *patches the mapped ntdll* — a syscall gate
+and `patch_ntdll_copies`. If stage 4 compares the clean on-disk copy against the
+loaded one, it sees our patches. **A harness-induced bail is now the leading
+explanation for the quiet return**, and it is testable. Treat it as a hypothesis:
+five were falsified today and this section has already had to retract one that
+looked stronger.
+
+#### 0a. RETRACTED by 0aa: stage 4 asks for nothing, so bait is not the lever
 
 `scripts/stage4_asks.py` logs stage 4's own requests, with the loader's calls
 subtracted. Across **16,096,220 blocks it makes one API call** —
