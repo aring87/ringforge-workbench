@@ -2931,10 +2931,52 @@ run**. It executes an initialisation stub, hashes ~990,000 names, wraps a few
 keys, writes 249 bytes, and returns. The stealer was never there to be reached.
 
 **That is the question for whoever picks this up:** not what gates the
-harvesting, but **what would make stage 4 unpack itself**. The 403 blocks are
-few enough to read end to end — that is a tractable afternoon, unlike anything
-attempted today — and the decision to return without unpacking is somewhere in
-them.
+harvesting, but **what would make stage 4 unpack itself**.
+
+#### 0l. The 403 blocks, read end to end
+
+403 blocks, 57 call targets, 96 executed exactly once. Dumped in first-seen order
+with counts. What the executed stub does, start to finish:
+
+1. **Trampoline** — `push 0x77009ff0 / pushal / call 0x3e9f0c4`. Note the resume
+   address: the run's terminal fault at `0x7700a007` is that value **+0x17**,
+   which independently confirms the payload returned cleanly and then ran off
+   into ntdll data on a fabricated stack. Not a crash in stage 4.
+2. **Three do-nothing accumulator loops** — 1,842, 3,616 and 1,806 iterations
+   against bounds `0x1cc5` and `0x1c3d`, one with an `and eax, 0x80000001`
+   parity test. They compute nothing that is used. Anti-analysis delay, the same
+   family habit as stage 3's 512-million-iteration stall.
+3. **`mov byte ptr [ebp-0x119], 0x1d`** — the handshake flag, matching what this
+   file already records about the loader writing `0x1d`.
+4. **Builds a `UNICODE_STRING` for `kernel32.dll`** at ~block 14,000,164, off the
+   context cookie: `mov ebx,[esi+0x6d8]` / `lea eax,[esi+0x780]`, a `0x104`
+   (MAX_PATH) buffer, the ASCII→UTF-16 widener at `0x3ec0bb4`, then
+   `mov word [edi+2],bx` / `mov word [edi],dx` — `{Length, MaximumLength}`.
+   **This is a manual `GetModuleHandle` against the PEB loader list**, which is
+   why the widening appears there.
+5. **Walks export names**, 990,570 case-insensitive 20-character comparisons.
+6. **Returns**, without unpacking its body.
+
+**The matcher, read correctly at last.** Three earlier attempts had its arguments
+wrong; the call site settles it:
+
+    push 0x14                ; arg3 = 20, the LENGTH
+    push edx                 ; arg2 = second string
+    push esi                 ; arg1 = first string
+    call 0x3ec0714
+    ...
+    mov  esi, [ebp+0xc] ; sub esi, ecx    <- a BASE DELTA, not a length
+    cmp  al, 0x41 / 0x7a                  <- case fold
+    cmp  al, [esi+ecx]                    <- compare
+
+It is `strncasecmp(str1, str2, 20)`. The `sub esi, ecx` that was repeatedly
+misread as a length is the delta that makes `[esi+ecx]` index the second string.
+**20 characters** is the comparison width throughout.
+
+**Nothing in the stub decrypts, allocates a payload region, or transfers control
+into the packed pages.** The picture is complete and consistent: stage 4's
+executed code is a resolver stub that stalls, finds `kernel32`, hunts export
+names, and leaves.
 
 **Two probes failed first, both instructive.** Hooking the state address over the
 whole run filled a 4,000-entry cap by block 261,438 with ordinary stack-frame
