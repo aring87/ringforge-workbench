@@ -21,9 +21,20 @@
    reporting that as stage 4 would answer the open question wrongly while
    looking like evidence.
 
-   Distinguishing the stages needs an anchor in the 6,811 bytes that differ, and
-   whether any of those are stable code rather than relocations or data is not
-   yet established. Until it is, this rule is deliberately stage-agnostic.
+   Distinguishing the stages was investigated and cannot be done from these
+   artifacts. The 6,811 differing bytes are not stage-4 code -- they are stage
+   4's UNDECRYPTED REMAINDER. Across 0x11e0b-0x1215a stage 4 measures entropy
+   7.42/7.47 against stage 3's 5.59/5.72, and at 0x11f89 stage 3 disassembles as
+   ordinary code (`mov [ebp-0x340],eax ... sub ecx,[esi+0x6d8]`) where stage 4
+   decodes as `pop di / outsd / lcall / iretd`. The packed side is stage 4's.
+   No relocation deltas either. This is the loader rewriting ~98.8% of the
+   region and not the rest.
+
+   So a stage-4-only anchor would have to key on ciphertext, which is this
+   build's keystream -- a hash wearing a signature's clothes. Being
+   stage-agnostic is the honest ceiling here, not a temporary compromise. It
+   changes when stage 4 runs its own decoders, which is the same thing the
+   runtime IOC strings are waiting on.
 
    WHY THIS RULE IS NOT MADE OF THE IOCs.
 

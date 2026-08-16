@@ -2262,10 +2262,38 @@ stage is resident it would have answered the project's central open question
 wrongly while looking like evidence. Renamed, and the meta carries
 `caveat = "a match does not establish that stage 4 was reached"`.
 
-Telling the stages apart needs an anchor among the 6,811 bytes that differ, and
-whether any of those are stable code rather than relocations or data is not yet
-established. **That is the next question for anyone who wants a stage 4
-signature specifically.**
+**And there is no stage-4 anchor to be had from these two artifacts — settled
+16 Aug.** This section first said the next question was whether any of the 6,811
+differing bytes are stable code. They are not code at all: they are **stage 4's
+undecrypted remainder**.
+
+34 differing runs. The tell is an entropy asymmetry across `0x11e0b`–`0x1215a`,
+where stage 4 measures **7.42 and 7.47** against stage 3's **5.59 and 5.72** —
+the packed side is the *stage 4* side. Disassembling the same offsets confirms
+it: at `0x11f89` stage 3 is ordinary code —
+
+    mov  [ebp-0x340], eax   /  mov [ebp-0x344], ebx  /  cmp eax, edi
+    je   0x121ab            /  call 0xbc20           /  mov ecx, 2
+    sub  ecx, [esi+0x6d8]   /  add eax, ecx
+
+cookie and all — while stage 4 at the same place decodes as `pop di`, `outsd`,
+`lcall`, `iretd`. Noise. The rest of the differing bytes are the first 4 KB,
+high entropy on both sides, which is the context/header region.
+
+**No relocation deltas either** — checked for a repeated constant across the
+short diffs and there is none, so none of this is a base-address artifact.
+
+This matches what the artifact README already said and nobody connected:
+*"plaintext code pages surrounded by data that stays packed"*, and the loader
+rewriting ~98.8% of the region before it signals. The 2.5% that differs is
+mostly the 1.2% it never rewrote.
+
+**Consequence: a stage-4-specific signature and the runtime IOC strings are the
+same problem.** Both need stage 4 decrypted further than any capture has it, and
+that means stage 4 running its own decoders. Keying a rule on the ciphertext
+would key it on this build's keystream — a hash wearing a signature's clothes.
+`RingForge_FormBook_422e30ed_ContextCookie` staying stage-agnostic is not a
+temporary compromise; it is the honest ceiling until the payload runs further.
 
 **The premise recorded here is retracted.** This section read: *"The Nokia user
 agent and the SQLite URL are stack-built, so a rule over a file will not see
