@@ -2581,23 +2581,64 @@ alongside one does not.
 
 ### Pick up here — 16 Aug
 
-**Read this first if you are cold.** The build queue is empty, the detonation
-queue is empty, and as of today **the signature queue is empty too**. What
-remains is one question, and it is an emulator-harness question.
+**Read this first if you are cold.** Build queue empty, detonation queue empty,
+signature queue empty. **Stage 4 is understood as far as running it can take
+it**, and the one open question is stated in *THE QUESTION* below. The `0a`–`0l`
+subsections are the working record of how today got there, including four
+hypotheses that were built and falsified — read them for method, not for
+current state, because several contain framings this section retracts.
 
-**Done today, so do not re-derive it:**
+**Settled, do not re-derive:**
 
 - **A YARA rule exists and is validated** —
-  `RingForge_FormBook_422e30ed_ContextCookie`, on the `[esi+0x6d8]` context
-  cookie. Two runs, three rules, all memory-only, 0/7,014 clean set. It is
-  **stage-agnostic on purpose**; see the two subsections above for why a
-  stage-4-only rule is not reachable.
-- **The IOC strings cannot be reached by running the payload.** 322 in-run
-  checkpoints found none. 23 of stage 4's 67 pages ever execute.
-- **The baseline was rebuilt** and now carries the local rules. Before today no
-  run had ever scanned one of this project's own rules.
-- **Run `38f27025` happened**, crashed in stage 3 like the ten before it, and
-  its summary was lost — the reconstruction above is the record.
+  `RingForge_FormBook_422e30ed_ContextCookie` on the `[esi+0x6d8]` cookie. Two
+  runs, three rules, all memory-only, 0/7,014 clean set. **Stage-agnostic by
+  necessity**, not as a placeholder: stages 3 and 4 share 97.5% of their bytes
+  and the rest is ciphertext, so no stage-specific anchor exists — see *And
+  there is no stage-4 anchor to be had from these two artifacts* above.
+- **The baseline was rebuilt** and carries the local rules. Before today, **no
+  run this project ever did had scanned one of its own rules.**
+- **Run `38f27025`** crashed in stage 3 like the ten before it. Its summary was
+  lost; the reconstruction above is the record. `memory_yara_rescan.json`
+  survives and is the authority for its scan.
+
+**What stage 4 actually does, when it runs (this is the durable result):**
+
+    trampoline -> three do-nothing delay loops -> writes the 0x1d handshake flag
+    -> builds a UNICODE_STRING for "kernel32.dll" and finds the module via the
+    PEB loader list -> walks export names, 990,570 case-insensitive 20-char
+    compares -> RETURNS, without unpacking its body
+
+403 distinct basic blocks, 22 of 67 pages, one API call
+(`RtlGetProcessHeaps`), 249 payload bytes changed, no file opened, no socket.
+**It is a resolver stub.** The other 45 pages are not unreached code behind a
+gate — they are its still-packed body, and *nothing in the executed code
+branches to them at all* (*0j*).
+
+#### THE QUESTION: what would make stage 4 unpack itself?
+
+Not "what gates the credential harvesting" — that framing is retracted; there is
+no such gate, because there is no unpacked stealer to gate. The stub decrypts
+nothing and transfers control nowhere. Something in those 403 blocks decides to
+return, and the whole stub is now mapped to find it in.
+
+**Four things that will NOT work, each disproved by measurement today.** They
+are listed because each was a coherent story that explained every observation
+before it was tested:
+
+| idea | disproof |
+|---|---|
+| plant bait for it to steal | it asks the OS for nothing — one API call in 16M blocks (*0a*) |
+| give the DLLs real export tables | done, 10,316 names — **bit-identical run** (*0c*) |
+| populate `ApiSetMap` for the forwarders | `PEB+0x30..0x3F` is **never read** (*0d*) |
+| recover the RC4 key and decrypt | key recovered and confirmed — but RC4 emits **1,665 bytes total** and wraps keys, not strings (*0i*) |
+
+**Method note, earned the hard way.** Every reading inferred from disassembly
+today was wrong — the matcher's arguments three times over. Every conclusion
+that held came from counting or hooking something specific and letting the
+number speak. And **any probe calling `resume()` more than once must have its
+block total checked against 16,096,220 first**; chunking silently truncates the
+run, which produced one clean-looking false negative before it was caught.
 
 #### 0a. Measured, 16 Aug: stage 4 asks for nothing, so bait is not the lever
 
@@ -2623,7 +2664,7 @@ addresses, so it derives values rather than resolving imports.
 payload return**, not what to put on disk. A fixture only becomes meaningful
 once something asks for one.
 
-#### 0c. TRACED — stage 4 is resolving imports, and 999,994 in a million fail
+#### 0b. TRACED — stage 4 is resolving imports, and 999,994 in a million fail
 
 `scripts/trace_stage4_loop.py` counts every basic block in the two hot pages.
 92 distinct blocks, 14,007,772 entries, and both routines are recognisable:
@@ -2670,7 +2711,7 @@ about the machine that is not true of every 32-bit Windows process. That is the
 distinction between this and bait, and it is why this one does not need to be
 off by default the way `RINGFORGE_EXPLORER_CHILD` does.
 
-#### 0d. DONE, and the hypothesis is WRONG — 16 Aug
+#### 0c. DONE, and the hypothesis is WRONG — 16 Aug
 
 `winenv.map_extra_module_exports()` now gives all 20 `EXTRA_MODULES` real export
 tables from `SysWOW64` — 24.1 MB, **10,316 exported names** — packed in their own
@@ -2696,7 +2737,7 @@ is a divergence, and a module list whose entries export nothing is the same
 claim in a different place. But **it bought no progress on stage 4**, and the
 next person should not re-run it expecting any.
 
-#### 0e. THE LEAD: stage 4 tests for `API-`, and the PEB has no ApiSetMap
+#### 0d. THE LEAD: stage 4 tests for `API-`, and the PEB has no ApiSetMap
 
 Chasing the matcher's accepted names failed three times — the arguments are not
 the `(begin, end)` pair the disassembly suggests, `0x3ec0005` is not its result
@@ -2736,7 +2777,7 @@ than resolving them — it tests the `API-` prefix and does something else with
 those exports, almost certainly declining to follow them. Which is why neither
 real export tables nor a schema moves it.
 
-#### 0f. Two coherent hypotheses, both falsified, and what that is worth
+#### 0e. Two coherent hypotheses, both falsified, and what that is worth
 
 | hypothesis | test | result |
 |---|---|---|
@@ -2751,7 +2792,7 @@ greater expense.
 
 What is now excluded: export *presence*, and API-set resolution.
 
-#### 0g. Read forwards from the widening: two identical passes, all ciphertext
+#### 0f. Read forwards from the widening: two identical passes, all ciphertext
 
 Reading forwards from the `kernel32.dll` widening rather than guessing at
 arguments — which is the method that has worked every time today — leads
@@ -2794,7 +2835,7 @@ from the other direction — the decoders that produce readable strings are in t
 44 of 67 pages that never execute — and it is now shown at the instruction level
 rather than inferred from an absence.
 
-#### 0h. STAGE 4'S CIPHER IS RC4 — 16 Aug
+#### 0g. STAGE 4'S CIPHER IS RC4 — 16 Aug
 
 Watching what reads those two constants found the decryptor. At payload
 **`+0x42d3`** (`0x03e97f47`):
@@ -2832,12 +2873,13 @@ indicator.
 
 **And that scan is not trustworthy on timing** — it used chunked `resume()` and
 truncated, reporting 366,833 / 3,388,869 / 6,960,495 instead of the requested
-checkpoints. That is the trap documented in *0c* above, walked into again by the
+checkpoints. That is the trap documented under *And running it further does not
+reach them* above, walked into again by the
 person who documented it. **Any probe that calls `resume()` more than once must
 have its block total checked against 16,096,220 before its output means
 anything.**
 
-#### 0i. THE KSA AND A 20-BYTE KEY — 16 Aug
+#### 0h. THE KSA AND A 20-BYTE KEY — 16 Aug
 
 **KSA at payload `+0x419b`** (`0x03e97e0f`). Found by the identity fill, which is
 unambiguous and needed no disassembly reading:
@@ -2865,7 +2907,7 @@ unsurprising rather than contradictory — those blobs were copied at blocks
 they are near-certainly a different context or a different keystream offset.
 **The key is well-evidenced as what this KSA consumed, and nothing more.**
 
-#### 0j. Key confirmed; RC4 wraps keys here, it does not decrypt strings
+#### 0i. Key confirmed; RC4 wraps keys here, it does not decrypt strings
 
 Hooking the PRGA store (`mov [eax+0x8c], ecx` at `0x03e97f5c`) and clustering
 byte writes settles both questions.
@@ -2888,7 +2930,7 @@ string table would need orders of magnitude more keystream.
 `0x1007fdf0` later holds
 `dc 3d 73 b1 84 d6 2d 30 3d 48 43 ed 49 9b 2b d7 ed ca 80 67`, which is
 byte-for-byte the 20-byte blob copied at block 15,452,101. So the copies traced
-in *0g* are keys moving between slots, not encrypted strings — which is why
+in *0f* are keys moving between slots, not encrypted strings — which is why
 decrypting them as ciphertext produced nothing.
 
 **Net:** RC4 here is key wrapping. The string decoders are still in the 44 of 67
@@ -2897,7 +2939,7 @@ after the page count and the instruction-level trace, the cipher census now says
 the same thing. **No plaintext was produced, and none should have been expected
 from this routine.**
 
-#### 0k. NOTHING calls into the unexecuted pages — they are not code yet
+#### 0j. NOTHING calls into the unexecuted pages — they are not code yet
 
 `scripts/stage4_declined.py` records every executed basic block, then asks a
 mechanical question of each: of this branch's two successors, was exactly one
@@ -2933,7 +2975,7 @@ keys, writes 249 bytes, and returns. The stealer was never there to be reached.
 **That is the question for whoever picks this up:** not what gates the
 harvesting, but **what would make stage 4 unpack itself**.
 
-#### 0l. The 403 blocks, read end to end
+#### 0k. The 403 blocks, read end to end
 
 403 blocks, 57 call targets, 96 executed exactly once. Dumped in first-seen order
 with counts. What the executed stub does, start to finish:
@@ -2985,31 +3027,28 @@ range is reused. Adding a block window and a `size == 1` filter fixed it. And
 every probe from here carries the `RUN CHECK` line: this one reported
 **16,096,220 blocks**, so it did not truncate.
 
-#### 0b. If it ever does ask: the fixture rules
+#### 0l. The fixture rules, kept for whenever a fixture is finally warranted
 
-Stage 4's capability is established and its runtime behaviour is not. It runs to
-completion, touches 23 of 67 pages, drops nothing, opens no socket, and wipes two
-64 KB regions on the way out. **The two thirds that never runs is the credential
-harvesting**, and the obvious reason is that this environment holds no browser
-profile, no credential store and no C2.
+This began as *"stage 4 has nothing to steal, so give it something"*. **The
+premise is retracted** — it asks the OS for nothing (*0a*) and never unpacks the
+code that would (*0j*), so no bait is reachable. What survives is the discipline,
+which applies to any future fixture:
 
-The move is to give it something to steal and watch which pages light up. **The
-trap is the same one `RINGFORGE_EXPLORER_CHILD` carries** — serving a target
-manufactures the outcome, and every conclusion from such a run is conditional on
-the fixture. So the order matters:
-
-1. **First find out what it asks for.** Log stage 4's own calls and every path,
-   key and name it queries, separated from the loader's. If it never opens a
-   file, bait cannot help and the branch is decided somewhere earlier.
-2. **Then build bait that answers what was asked**, not what the FLOSS strings
-   suggest. Those strings came from decoders emulated in isolation and do not
-   prove the payload ever asks for those paths on this path.
-3. **Off by default, announced when on**, exactly as the explorer child is.
+1. **First find out what is asked for.** Log the payload's own calls and every
+   path, key and name it queries, with the loader's subtracted. If nothing is
+   asked, a fixture cannot answer.
+2. **Then build one that answers what was asked**, not what the FLOSS strings
+   suggest. Those came from decoders emulated in isolation and do not prove the
+   payload ever requests those paths on any path it actually runs.
+3. **Off by default, announced when on**, exactly as `RINGFORGE_EXPLORER_CHILD`
+   is — serving a target manufactures the outcome, and every conclusion from
+   such a run is conditional on the fixture.
 
 Getting this wrong produces a run that looks like a stealer stealing and is
-really a harness feeding itself.
-
-#### 1. Do not book another detonation for gap 4b — a different sample will not fix it
+really a harness feeding itself. Note the contrast with the real-export mapping
+in *0c*, which needed no opt-in: giving loaded modules their true export tables
+claims nothing about the machine that is not true of every 32-bit process, where
+inventing a browser profile would.
 
 #### 1. Do not book another detonation for gap 4b — a different sample will not fix it
 
