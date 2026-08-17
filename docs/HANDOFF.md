@@ -2890,7 +2890,51 @@ that never reached the signal. Same shape as the RUN CHECK that certified its ow
 truncation (*0aa*). It now reports where the run actually ended and concludes
 nothing.
 
-#### 0au. QUEUED DETONATION — does the real `CreateProcessW` see `C:C:\`?
+#### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
+
+**This is the run to do, and `0au` rides along on the same capture.** The crash
+question is older, it blocks `0au`, and it needs no new collector.
+
+**The measurement.** The gate stores `0x32dfd514` only when a module lookup for
+`0xe11da208` succeeds. 931 guest module names matched nothing, and the guest
+stored it anyway. What has never been checked is **the `Load Image` list for the
+sample's own processes** — which is what the loader list it walks is made of. An
+inventory taken at another moment, or scoped to the machine rather than to
+`RegSvcs.exe`, misses a DLL injected into that process and later unloaded, and
+`sbiedll.dll` is exactly a DLL other software injects.
+
+`scripts/crash_gate_check.py` reads a Procmon CSV and does it:
+
+    ..\.venv\Scripts\python.exe crash_gate_check.py <procmon.csv> --process RegSvcs.exe
+
+It hashes every image loaded into the scoped processes, in load order, in four
+forms each (filename and stem, ascii and UTF-16LE), asserts the CRC against
+`ntdll.dll` and `sbiedll.dll` before reporting anything, and prints **positive
+controls** — a capture where not even `ntdll.dll` hashes correctly is one whose
+negative means nothing.
+
+**Pre-registered predictions:**
+
+| | prediction |
+|---|---|
+| C1 | `Load Image` events exist for `RegSvcs.exe` — the collector was listening |
+| C2 | `ntdll.dll`, `kernel32.dll` and `user32.dll` appear as positive controls |
+| C3 | **Nothing** hashes to `0xe11da208` |
+| C4 | The crash still happens, and WER still records stage 3's `5ff2b99b` |
+
+**C3 is the one worth stating loudly.** If it holds, the gate is not what this
+project thinks it is and both "broken build" and "deliberate bail" survive with
+one more route closed. If it *fails* — something really does hash to it — then
+the gate was right all along, and the next question is what put that module in
+`RegSvcs`, **including this pipeline's own tooling**, which has already
+contaminated two detectors (`WerFault.exe` supplied 30 of 41 opens on one,
+`procdump64.exe` 18 of 60 on another).
+
+**The negative has a bound and the script says so**: an image loaded and
+unloaded outside Procmon's window would not appear. That is not a reason to skip
+the run; it is a reason not to write "proved" afterwards.
+
+#### 0au. QUEUED DETONATION, SECOND — does the real `CreateProcessW` see `C:C:\`?
 
 **Blocked, and queued anyway with the blocker named.** Read the dependency
 before spending a revert cycle on it.
