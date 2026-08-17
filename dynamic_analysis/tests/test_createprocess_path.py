@@ -109,3 +109,62 @@ def test_system32_does_not_fall_back_to_the_64_bit_directory(monkeypatch):
     assert winenv.resolve_dos_path(source + "write.exe") is None
     assert not any(p.lower().startswith(source) for p in seen), \
         f"the 64-bit System32 was consulted: {seen}"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != "win32", reason="measures a Windows API")
+class TestAgainstTheRealCreateProcessW:
+    """The model, checked against the API it models.
+
+    Every test above pins `resolve_dos_path` against its own intent. That is
+    worth having and it is not the same as being right: `0aq`, `0as` and `0at`
+    each rest on the sentence *"a real `CreateProcessW` fails on `C:C:\\...`"*,
+    which eliminated two of three readings and was never measured. It is a Win32
+    question, not a malware one, and this is a Windows machine.
+
+    The same standing rule as the `slow` minidump test -- a fixture contains
+    what its author thought of, so the model gets checked against what the
+    operating system actually does.
+
+    Nothing malicious runs: every call is `CREATE_SUSPENDED`, the rejected rows
+    create nothing at all, and anything that starts is terminated at once.
+    """
+
+    def _agree(self, path):
+        from scripts.real_createprocess_paths import real_create  # noqa: PLC0415
+
+        started, _error = real_create(path)
+        modelled = winenv.resolve_dos_path(path)
+        return started, bool(modelled)
+
+    def test_the_doubled_volume_is_rejected_by_windows_itself(self):
+        """The sentence three HANDOFF sections rest on."""
+        started, modelled = self._agree(r"C:C:\Windows\System32\compact.exe")
+        assert not started, ("Windows accepted the doubled volume -- reading 1 "
+                             "of 0aq is wrong and the stage-4 census needs "
+                             "redoing against a create that succeeds")
+        assert not modelled
+
+    def test_a_real_binary_starts_so_a_table_of_failures_means_something(self):
+        """Without this, a broken call and a rejected path look identical."""
+        control = r"C:\Windows\SysWOW64\where.exe"
+        if not winenv.os.path.isfile(control):
+            pytest.skip(f"{control} is not on this host")
+        started, modelled = self._agree(control)
+        assert started, "the success control did not start; the probe is broken"
+        assert modelled
+
+    @pytest.mark.parametrize("path", [
+        r"C:C:\Windows\System32\compact.exe",
+        r"C:C:\Windows\SysWOW64\compact.exe",
+        r"C:Windows\SysWOW64\compact.exe",
+        r"\??\C:\Windows\SysWOW64\where.exe",
+        r"\Windows\SysWOW64\where.exe",
+        "compact.exe",
+    ])
+    def test_the_model_agrees_with_the_api(self, path):
+        started, modelled = self._agree(path)
+        assert started == modelled, (
+            f"{path!r}: Windows {'starts' if started else 'refuses'} it, "
+            f"resolve_dos_path {'resolves' if modelled else 'refuses'} it -- "
+            f"every stage-4 census is measuring this harness, not a machine")

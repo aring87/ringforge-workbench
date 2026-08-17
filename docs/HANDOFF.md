@@ -2592,8 +2592,11 @@ alongside one does not.
 **Start here if you are cold. This supersedes the 16 Aug entry below**, which
 stays because its subsections are the working record.
 
-**Queues.** Build empty, signature empty. **Detonation: one entry, `0au`**, still
-blocked behind the stage-3 crash. `0av` ran as run `27f81ffc` and is closed.
+**Queues.** Build empty, signature empty. **The detonation queue is now empty
+too.** `0av` ran as run `27f81ffc` and is closed; **`0au` is closed without a
+detonation** — it asked whether the real `CreateProcessW` accepts `C:C:\…`, which
+is a Win32 question answerable on this bench, and the answer is
+`ERROR_INVALID_NAME` for all twelve. See `0be`.
 
 **The three things that changed today, and none is a small edit:**
 
@@ -3508,6 +3511,89 @@ ran would have faulted on the fetch. So the thunks explain what the value
 *means*, not the path the crash took. **The standing question is untouched:**
 the guest had no module hashing to `0xe11da208` and stored the poison anyway.
 
+#### 0be. THE STAGE-4 CENSUS, RE-ESTABLISHED — and `0au` did not need a detonation
+
+`0at` left every stage-4 finding from `0ad` to `0as` carrying *"given a create
+it should not have been granted"*. This removes the qualifier, and it removes it
+by **measuring the sentence the whole chain rests on** rather than by rerunning
+against the same assumption.
+
+**`0aq`, `0as` and `0at` all rest on "a real `CreateProcessW` fails on
+`C:C:\…`".** That sentence eliminated readings 2 and 3 and left reading 1 alone,
+and it had never been measured. It did not need a detonation to measure — whether
+Windows accepts an `lpApplicationName` is a Win32 question, and this bench is a
+Windows machine. `scripts/real_createprocess_paths.py` asks it directly, with
+`CREATE_SUSPENDED` and an immediate terminate:
+
+    fails ERROR_INVALID_NAME    C:C:\Windows\System32\compact.exe    <- the sample's
+    fails ERROR_INVALID_NAME    C:C:\Windows\SysWOW64\compact.exe
+    fails ERROR_PATH_NOT_FOUND  C:Windows\SysWOW64\compact.exe
+    fails ERROR_FILE_NOT_FOUND  compact.exe
+    starts                      C:\Windows\SysWOW64\compact.exe
+    starts                      \Windows\SysWOW64\compact.exe
+    starts                      \??\C:\Windows\SysWOW64\compact.exe
+    starts                      C:\Windows\SysWOW64\where.exe        <- success control
+
+**`ERROR_INVALID_NAME`, for all twelve candidates in the doubled form.** Reading
+1 of `0aq` is now confirmed rather than assumed, and **`0au` comes off the
+detonation queue answered** — it asked exactly this. The success control is not
+decoration: a table where every row fails cannot be told from a probe that is
+broken.
+
+**And the harness's model was checked against the API it models.** Every earlier
+test pinned `resolve_dos_path` against its own intent, which is not the same as
+being right. It agrees with the real `CreateProcessW` on **every input tried**,
+including all twelve doubled paths. Eight `slow` tests in
+`test_createprocess_path.py` hold it there, on the same standing rule as the
+`slow` minidump test.
+
+**The census itself, from `stage4_census.py`:** 120,090,809 blocks, 12 opens, 11
+creates, all refused — reproducing `0at` exactly, now on measured ground.
+
+**Two corrections came out of it.**
+
+**The directory is `System32`, not the `SysWOW64` that `0as` records.** A 32-bit
+process's loader entry carries the *unredirected* path — `winenv` has that
+measured and commented at `LOADER_SYSTEM_DIR`, and `0ar`/`0aq` predate it. The
+builder appends whatever is in `FullDllName`, so what the sample actually hands
+`CreateProcessW` is **`C:C:\Windows\System32\<name>`**. Both forms are rejected
+identically so nothing turned on it, **but the IOC did** and it was wrong in
+this file.
+
+**There is one path construction, not two.** This probe was written to test the
+opposite: that the walk builds a well-formed path for the file it *opens* and a
+doubled one for the process it *creates*, which would have shown the sample can
+produce the right string. It cannot. All twelve opens carry the doubling too:
+
+    \??\C:C:\Windows\System32\compact.exe      C:C:\Windows\System32\compact.exe
+    \??\C:C:\Windows\System32\msiexec.exe      C:C:\Windows\System32\msiexec.exe
+    ...
+    \??\C:\Windows\System32\ntdll.dll          --      (not a candidate, well formed)
+
+So reading 1 covers **the whole walk**, not one call: this routine never
+produces a usable name for any of the twelve, and `prepare_host` returns 0 on a
+real machine for a reason that has nothing to do with which files exist.
+
+**That retires `0at`'s `write.exe` explanation.** `0at` said the twelfth never
+opened because "this host has no `C:\Windows\SysWOW64\write.exe`", and "a
+machine that has it would show twelve". Neither survives: the open path is
+`\??\C:C:\Windows\System32\write.exe`, which names nothing on **any** machine,
+so file presence was never what distinguished it. Why `write.exe` alone skips
+the create is now unexplained rather than explained, and it is a small open
+question sitting on a settled result.
+
+> **The `0aa` shape again, and this time it produced a whole paragraph.** The
+> first version of this probe printed *"the same routine builds a correct path
+> for the file it opens and a doubled one for the process it creates"* — the
+> hypothesis it was written to test, stated as a finding. The detector indexed
+> `path[1]` for the volume colon without stripping `\??\`, so every doubled open
+> read as well formed. **Sixth instance in three days**, and the second in this
+> session where a probe confirmed its author's expectation through a broken
+> check rather than a broken budget. The `0aa` RUN CHECK does not catch this
+> class at all: the run was complete and the numbers were right. What catches it
+> is printing the evidence next to the conclusion — the table above shows
+> `\??\C:C:\` on every row, and it is unreadable as agreement.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
@@ -3552,7 +3638,14 @@ contaminated two detectors (`WerFault.exe` supplied 30 of 41 opens on one,
 unloaded outside Procmon's window would not appear. That is not a reason to skip
 the run; it is a reason not to write "proved" afterwards.
 
-#### 0au. QUEUED DETONATION, SECOND — does the real `CreateProcessW` see `C:C:\`?
+#### 0au. CLOSED — does the real `CreateProcessW` see `C:C:\`? Yes, and it refuses it
+
+> **Answered 17 Aug without a detonation, see `0be`.** `ERROR_INVALID_NAME`, for
+> all twelve candidates, measured against the real API on this bench — whether
+> Windows accepts an `lpApplicationName` was never a malware question. The
+> queued run below is superseded; it is kept because its framing of *what would
+> distinguish the readings* is what made the cheap answer recognisable as
+> sufficient.
 
 **Blocked, and queued anyway with the blocker named.** Read the dependency
 before spending a revert cycle on it.
