@@ -19,7 +19,9 @@ from pathlib import Path
 import pytest
 
 from dynamic_analysis.minidump import (
+    MEMORY_INFO_LIST,
     MODULE_LIST,
+    THREAD_LIST,
     UNLOADED_MODULE_LIST,
     Minidump,
     MinidumpError,
@@ -70,6 +72,24 @@ def _module_entry(base, size, timestamp, name_rva):
 
 def _unloaded_entry(base, size, timestamp, name_rva):
     return struct.pack("<QIIII", base, size, 0, timestamp, name_rva)
+
+
+def _thread_entry(thread_id, teb, stack_base, stack_size):
+    entry = bytearray(48)
+    struct.pack_into("<IIII", entry, 0, thread_id, 0, 0, 0)
+    struct.pack_into("<Q", entry, 16, teb)
+    struct.pack_into("<QII", entry, 24, stack_base, stack_size, 0)
+    return bytes(entry)
+
+
+def _memory_info(base, size, state, protect, mtype, allocation_base=None):
+    entry = bytearray(48)
+    struct.pack_into("<QQ", entry, 0, base,
+                     base if allocation_base is None else allocation_base)
+    struct.pack_into("<I", entry, 16, protect)          # AllocationProtect
+    struct.pack_into("<Q", entry, 24, size)
+    struct.pack_into("<III", entry, 32, state, protect, mtype)
+    return bytes(entry)
 
 
 class Header(unittest.TestCase):
@@ -178,6 +198,114 @@ class UnloadedModuleList(unittest.TestCase):
         self.assertEqual(dump.warnings, [])
 
 
+class ThreadList(unittest.TestCase):
+    """Stack bounds, which is what turns an address into a fact.
+
+    `0az` called the guest's copies of the crash constant "heap" and made the
+    bench having them on the stack the next thread to pull. Six of the seven
+    are inside this stream's `Stack` descriptor. The word was the finding.
+    """
+
+    def test_reads_threads_and_stack_bounds(self):
+        payload = struct.pack("<I", 1) + _thread_entry(
+            thread_id=2180, teb=0xBDD000, stack_base=0xD3D3BC, stack_size=0x2C44)
+        threads = parse(_dump({THREAD_LIST: payload})).threads()
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(threads[0]["thread_id"], 2180)
+        self.assertEqual(threads[0]["stack_base"], 0xD3D3BC)
+        self.assertEqual(threads[0]["stack_end"], 0xD3D3BC + 0x2C44)
+
+    def test_a_lying_count_is_clamped_and_warns(self):
+        payload = struct.pack("<I", 0xFFFFFFFF) + _thread_entry(
+            thread_id=7, teb=0x1000, stack_base=0x2000, stack_size=0x100)
+        dump = parse(_dump({THREAD_LIST: payload}))
+        self.assertEqual(len(dump.threads()), 1)
+        self.assertTrue(any("stream holds" in w for w in dump.warnings))
+
+    def test_absent_stream_is_empty_without_a_warning(self):
+        dump = parse(_dump({MODULE_LIST: struct.pack("<I", 0)}))
+        self.assertEqual(dump.threads(), [])
+        self.assertEqual(dump.warnings, [])
+
+
+class MemoryInfoList(unittest.TestCase):
+    """Region State/Type/Protect -- image vs mapped vs private."""
+
+    def _payload(self, entries, count=None, size_of_entry=48):
+        header = struct.pack("<IIQ", 16, size_of_entry,
+                             len(entries) if count is None else count)
+        return header + b"".join(entries)
+
+    def test_reads_regions_with_state_and_type(self):
+        payload = self._payload([
+            _memory_info(0x1010000, 0x46000, state=0x1000, protect=0x40,
+                         mtype=0x20000),
+            _memory_info(0x990000, 0xE000, state=0x1000, protect=0x02,
+                         mtype=0x1000000),
+        ])
+        regions = parse(_dump({MEMORY_INFO_LIST: payload})).memory_info()
+        self.assertEqual(len(regions), 2)
+        self.assertEqual(regions[0]["type_name"], "private")
+        self.assertEqual(regions[0]["state_name"], "commit")
+        self.assertEqual(regions[0]["end"], 0x1010000 + 0x46000)
+        self.assertEqual(regions[1]["type_name"], "image")
+
+    def test_the_count_is_64_bit(self):
+        """Read as a ULONG32 this happens to work, which is the danger.
+
+        The unloaded module list's count *is* a ULONG32 and this one is not.
+        A 32-bit read of a little-endian 2 gives 2, so the mistake survives
+        every small fixture and only shows up as a shifted stride later.
+        """
+        payload = self._payload([
+            _memory_info(0x1000, 0x1000, state=0x1000, protect=0x04,
+                         mtype=0x20000)])
+        self.assertEqual(struct.unpack_from("<Q", payload, 8)[0], 1)
+        # The four bytes after the count are padding inside the 64-bit field,
+        # so a reader that treats the header as three dwords lands its first
+        # entry four bytes early.
+        self.assertEqual(struct.unpack_from("<I", payload, 12)[0], 0)
+        regions = parse(_dump({MEMORY_INFO_LIST: payload})).memory_info()
+        self.assertEqual(regions[0]["base"], 0x1000)
+
+    def test_a_free_region_is_named_free_rather_than_unknown(self):
+        # MEM_FREE carries Type 0, which is not one of the three MEM_* values.
+        # Reporting that as "unknown(0x0)" would read as a parse fault.
+        payload = self._payload([
+            _memory_info(0xDDB000, 0x5000, state=0x10000, protect=0x01, mtype=0)])
+        region = parse(_dump({MEMORY_INFO_LIST: payload})).memory_info()[0]
+        self.assertEqual(region["state_name"], "free")
+        self.assertEqual(region["type_name"], "free")
+
+    def test_entry_stride_is_taken_from_the_file(self):
+        wide = 64
+        entries = [_memory_info(0x1000, 0x1000, 0x1000, 0x04, 0x20000) + b"\0" * 16,
+                   _memory_info(0x9000, 0x1000, 0x1000, 0x04, 0x20000) + b"\0" * 16]
+        payload = self._payload(entries, size_of_entry=wide)
+        regions = parse(_dump({MEMORY_INFO_LIST: payload})).memory_info()
+        self.assertEqual([r["base"] for r in regions], [0x1000, 0x9000])
+
+    def test_a_count_larger_than_the_stream_is_clamped(self):
+        payload = self._payload(
+            [_memory_info(0x1000, 0x1000, 0x1000, 0x04, 0x20000)], count=1 << 40)
+        dump = parse(_dump({MEMORY_INFO_LIST: payload}))
+        self.assertEqual(len(dump.memory_info()), 1)
+        self.assertTrue(any("stream holds" in w for w in dump.warnings))
+
+    def test_nonsense_header_refuses_rather_than_guessing(self):
+        payload = struct.pack("<IIQ", 0, 0, 5) + b"\0" * 128
+        dump = parse(_dump({MEMORY_INFO_LIST: payload}))
+        self.assertEqual(dump.memory_info(), [])
+        self.assertTrue(any("not believable" in w for w in dump.warnings))
+
+    def test_region_of_finds_the_containing_region(self):
+        payload = self._payload([
+            _memory_info(0x1010000, 0x46000, 0x1000, 0x40, 0x20000)])
+        dump = parse(_dump({MEMORY_INFO_LIST: payload}))
+        self.assertEqual(dump.region_of(0x101D809)["base"], 0x1010000)
+        self.assertIsNone(dump.region_of(0x2000000))
+
+
 @pytest.mark.slow
 class AgainstARealDump(unittest.TestCase):
     """Validated against a dump the operating system wrote.
@@ -224,6 +352,32 @@ class AgainstARealDump(unittest.TestCase):
             self.assertTrue(ranges, "a full-memory dump has ranges")
             for _va, offset, size in ranges[:200]:
                 self.assertLessEqual(offset + size, path.stat().st_size)
+
+            threads = dump.threads()
+            self.assertTrue(threads, "a real process has at least one thread")
+            for thread in threads:
+                self.assertGreater(thread["stack_base"], 0)
+                self.assertGreater(thread["stack_end"], thread["stack_base"])
+                self.assertGreater(thread["teb"], 0)
+
+            # Regions must partition the address space in order, with no
+            # overlaps -- the shape a shifted stride destroys first.
+            regions = dump.memory_info()
+            self.assertTrue(regions, "a real dump carries VirtualQuery data")
+            previous_end = 0
+            for region in regions:
+                self.assertGreaterEqual(region["base"], previous_end)
+                self.assertGreater(region["size"], 0)
+                self.assertIn(region["state_name"],
+                              {"commit", "reserve", "free"})
+                previous_end = region["end"]
+
+            # And every thread stack must fall inside a region this reader can
+            # name, which is the cross-check the two streams give each other.
+            for thread in threads:
+                region = dump.region_of(thread["stack_base"])
+                self.assertIsNotNone(
+                    region, f"stack {thread['stack_base']:#x} in no region")
 
 
 

@@ -60,6 +60,19 @@ _MODULE_ENTRY_SIZE = 108
 #: real stride comes from the stream's own `SizeOfEntry`.
 _UNLOADED_ENTRY_MIN = 24
 
+#: MINIDUMP_THREAD: ThreadId, SuspendCount, PriorityClass, Priority (4 each),
+#: Teb (8), Stack as a MINIDUMP_MEMORY_DESCRIPTOR (8 + 4 + 4), then
+#: ThreadContext as a MINIDUMP_LOCATION_DESCRIPTOR (4 + 4). Fixed, like the
+#: loaded module list and unlike the unloaded one.
+_THREAD_ENTRY_SIZE = 48
+
+#: MINIDUMP_MEMORY_INFO, as documented. A floor, not the stride.
+_MEMORY_INFO_ENTRY_MIN = 48
+
+#: MEMORY_BASIC_INFORMATION State and Type.
+_MEM_STATE = {0x1000: "commit", 0x2000: "reserve", 0x10000: "free"}
+_MEM_TYPE = {0x20000: "private", 0x40000: "mapped", 0x1000000: "image"}
+
 _PROCESSOR_ARCHITECTURES = {
     0: "x86", 5: "arm", 6: "ia64", 9: "x64", 12: "arm64",
 }
@@ -214,6 +227,124 @@ class Minidump:
                 "path": self.string(_u32(self._data, entry + 20)),
             })
         return out
+
+    def threads(self) -> list[dict[str, Any]]:
+        """Each thread, with the bounds of the stack the dump captured.
+
+        Written for one question: an address found in a dump is meaningless
+        until you know what it is *in*. `0az` called the guest's copies of the
+        crash constant "heap" and built a lead on the bench having them on the
+        stack instead -- and the word was never measured. Six of the seven are
+        inside `Stack` below.
+        """
+        location = self.streams.get(THREAD_LIST)
+        if not location:
+            return []
+        rva, stream_size = location
+        if not self._fits(rva, 4):
+            self.warnings.append("thread list header outside the file")
+            return []
+
+        count = _u32(self._data, rva)
+        # MINIDUMP_THREAD is fixed-size, unlike the unloaded-module entry --
+        # there is no SizeOfEntry to read here, so the stride is bounded by the
+        # stream's own declared size instead.
+        room = max(0, stream_size - 4) // _THREAD_ENTRY_SIZE
+        if count > room:
+            self.warnings.append(
+                f"thread list claims {count} threads, stream holds {room}")
+            count = room
+
+        out: list[dict[str, Any]] = []
+        for index in range(count):
+            entry = rva + 4 + index * _THREAD_ENTRY_SIZE
+            if not self._fits(entry, _THREAD_ENTRY_SIZE):
+                self.warnings.append(
+                    f"thread list truncated after {len(out)} of {count}")
+                break
+            stack_base = _u64(self._data, entry + 24)
+            stack_size = _u32(self._data, entry + 32)
+            out.append({
+                "thread_id": _u32(self._data, entry),
+                "suspend_count": _u32(self._data, entry + 4),
+                "teb": _u64(self._data, entry + 16),
+                "stack_base": stack_base,
+                "stack_size": stack_size,
+                "stack_end": stack_base + stack_size,
+            })
+        return out
+
+    def memory_info(self) -> list[dict[str, Any]]:
+        """`VirtualQuery` for every region: State, Type and protection.
+
+        The stream that says whether an address is image, mapped file or
+        private, and whether it was executable. Same
+        `SizeOfHeader / SizeOfEntry / NumberOfEntries` preamble as the unloaded
+        module list, and read the same way -- stride from the file.
+
+        Note the count here is a **ULONG64**, where the unloaded list's is a
+        ULONG32. Reading it as 32 bits happens to work on a little-endian dump
+        with few regions, which is exactly the kind of layout error that lands
+        on a plausible number.
+        """
+        location = self.streams.get(MEMORY_INFO_LIST)
+        if not location:
+            return []
+        rva, stream_size = location
+        if not self._fits(rva, 16):
+            self.warnings.append("memory info list header outside the file")
+            return []
+
+        size_of_header = _u32(self._data, rva)
+        size_of_entry = _u32(self._data, rva + 4)
+        count = _u64(self._data, rva + 8)
+
+        if size_of_header < 16 or size_of_entry < _MEMORY_INFO_ENTRY_MIN:
+            self.warnings.append(
+                f"memory info list header not believable "
+                f"(SizeOfHeader {size_of_header}, SizeOfEntry {size_of_entry})")
+            return []
+        room = max(0, stream_size - size_of_header) // size_of_entry
+        if count > room:
+            self.warnings.append(
+                f"memory info list claims {count} regions, stream holds {room}")
+            count = room
+
+        out: list[dict[str, Any]] = []
+        for index in range(count):
+            entry = rva + size_of_header + index * size_of_entry
+            if not self._fits(entry, _MEMORY_INFO_ENTRY_MIN):
+                self.warnings.append(
+                    f"memory info list truncated after {len(out)} of {count}")
+                break
+            base = _u64(self._data, entry)
+            size = _u64(self._data, entry + 24)
+            state = _u32(self._data, entry + 32)
+            out.append({
+                "base": base,
+                "size": size,
+                "end": base + size,
+                "allocation_base": _u64(self._data, entry + 8),
+                "allocation_protect": _u32(self._data, entry + 16),
+                "state": state,
+                "state_name": _MEM_STATE.get(state, f"unknown({state:#x})"),
+                "protect": _u32(self._data, entry + 36),
+                "type": _u32(self._data, entry + 40),
+                "type_name": _MEM_TYPE.get(
+                    _u32(self._data, entry + 40),
+                    # A free region carries Type 0 rather than one of the three
+                    # MEM_* values, so 0 is a real answer and not a parse fault.
+                    "free" if state == 0x10000 else
+                    f"unknown({_u32(self._data, entry + 40):#x})"),
+            })
+        return out
+
+    def region_of(self, address: int) -> dict[str, Any] | None:
+        """The `memory_info` region containing `address`, or None."""
+        for region in self.memory_info():
+            if region["base"] <= address < region["end"]:
+                return region
+        return None
 
     def system_info(self) -> dict[str, Any]:
         location = self.streams.get(SYSTEM_INFO)

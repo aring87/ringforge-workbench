@@ -2609,15 +2609,34 @@ had **no such module, loaded or unloaded** — checked from Procmon's `Load Imag
 across 17 processes *and* from the crash dump's loaded and unloaded module lists.
 Propagation is ruled out (`0az`), a second store site is ruled out (`0ay`).
 
-**The only structural difference left on that path**: the bench's context sits on
-the **stack**, the guest's copies on the **heap**. Untested, and the obvious next
-thread.
+**The structural difference that was supposed to be the next thread is gone.**
+"The bench's context is on the stack, the guest's copies on the heap" was never
+measured. It is now: **six of the guest's seven are on its own thread stack**,
+one is private committed memory, and the bench's three are on its stack — same
+shape, no divergence. See `0ba`. **There is no candidate route left on that
+path**, which is worth saying plainly rather than letting the next session
+inherit a lead that does not exist.
 
-**Harness changes today, all with tests, 640 passing:** `PostThreadMessageW`
+The census behind it also grew: **23 references to `+0x6d8`, not the 18 `0ax`
+recorded.** The store census is unchanged so `0ay`/`0az` stand, but one of the
+five missed reads is `rva 0x1601b`, which is what decides whether the cookie
+gets initialised at all — and reading the gate block in full shows it
+**overwrites a live cookie rather than filling a blank one**. See `0bb`.
+
+**What that leaves as the one live step.** Hooking all 23 sites over a full
+clean run finds **exactly one context, on the stack, and its first touch is the
+computed store** — so nothing reads the cookie before it is written, and the
+uninitialised-pointer half of `0ax`'s leading model does not happen on this
+bench. It is still possible on the guest, and it is now the only unmeasured step
+in that model. See `0bc`.
+
+**Harness changes today, all with tests, 650 passing:** `PostThreadMessageW`
 implemented; `CreateProcessInternalW` now **validates the path** and that changes
 every stage-4 census (`0at`); loader entries carry real `FullDllName`s in
 `System32` with WOW64 redirection modelled (`0ap`, `0aq`); `restore()` refuses a
-resume that contradicts the state's env toggles.
+resume that contradicts the state's env toggles; and `dynamic_analysis/minidump.py`
+gained `threads()`, `memory_info()` and `region_of()`, which is what made `0ba`
+answerable at all.
 
 > **Method warning, earned four times in two days.** `emu_start`'s `count` is
 > **instructions**, not blocks, and a truncated run reports "nothing happened"
@@ -3255,7 +3274,162 @@ had read `0aa` that morning and fixed the same shape in `stage3_tail.py` and
 the budget" — it is that every probe needs the check built in before its first
 run, because the author is exactly who will forget.**
 
-#### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
+#### 0ba. THE HEAP/STACK LEAD IS DEAD — the guest's copies are on its stack, 17 Aug
+
+The 17 Aug pick-up entry called this "the only structural difference left on
+that path" and "the obvious next thread": the bench's context sits on the stack,
+the guest's copies on the heap. **The word "heap" was never measured, and it is
+wrong.** `scripts/guest_cookie_regions.py` classifies every copy against the
+dump's own `THREAD_LIST` and `MEMORY_INFO_LIST`:
+
+    0x00c3fc2c   PRIVATE COMMIT RW   region 0xc38000+0x8000
+    0x00d3d858   THREAD STACK of tid 2180
+    0x00d3d938   THREAD STACK of tid 2180
+    0x00d3dad8   THREAD STACK of tid 2180
+    0x00d3e198   THREAD STACK of tid 2180
+    0x00d3e19c   THREAD STACK of tid 2180
+    0x00d3e9e8   THREAD STACK of tid 2180
+    0x0101d809 / 0x01026065 / 0x0103dca9   rvas 0xd809 / 0x16065 / 0x2dca9
+
+**Six of the seven are on the single thread's stack** (`0xd3d3bc..0xd40000`),
+and exactly one — `0xc3fc2c` — is private committed memory that could fairly be
+called heap. The bench's three sit on *its* stack at `0x2fe55c`, `0x2fe560`,
+`0x2fedfc`. **Same shape, so there is no divergence to explain and the thread is
+closed.** The addresses `0az` quoted as heap (`0xc3f554`, `0xd3d180`) match no
+copy in the dump at all.
+
+**What survives is the corroboration, and it is stronger now.** `0az` noticed
+that the guest's `0xd3e198`/`0xd3e19c` pair is 4 bytes apart like the bench's
+`0x2fe55c`/`0x2fe560`. Both pairs are now known to be on a stack, which is what
+makes the parallel mean something.
+
+**Two facts the same read produced, neither of them looked for:**
+
+- **The crashed `RegSvcs` had exactly one thread.** Whatever stage 3 did, it did
+  it without spawning one.
+- **Stage 3 ran from `PRIVATE COMMIT RWX`, `0x1010000 + 0x46000`** — a private
+  RWX allocation rather than a mapped section, and the same `0x46000` the
+  emulator allocates. The module list carries `RegSvcs.exe` twice, at `0x400000`
+  with timestamp `0x5ff2b99b` and at `0x990000` with `0x68531ee1`, which is the
+  WER hollowing finding visible a second way.
+
+**The reader grew what this needed, with tests.** `dynamic_analysis/minidump.py`
+gains `threads()`, `memory_info()` and `region_of()`; suite 640 → 650, and the
+`slow` real-dump test now cross-checks the two streams against each other by
+requiring every thread stack to fall inside a named region. One layout note
+worth the same treatment as the unloaded list: **`MINIDUMP_MEMORY_INFO_LIST`'s
+count is a `ULONG64` where the unloaded module list's is a `ULONG32`.** Reading
+it as 32 bits returns the right number on every small dump and shifts the first
+entry four bytes; there is a test that pins it.
+
+> **Instrument bug, and it is the `0aa` shape in a new place.**
+> `memory_ranges()` returns `(virtual_address, file_offset, size)`. The first
+> pass here unpacked it as `(va, size, offset)` and reported **559 copies of the
+> constant**, at plausible addresses, in plausible-looking regions, with a
+> plausible repeating-offset pattern that invited a whole theory about the same
+> blob being mapped many times. Nothing about it looked wrong. It was caught
+> only because the count disagreed with `0ax` — which is exactly why
+> `guest_cookie_regions.py` re-derives the census from the file and prints the
+> comparison rather than trusting the number. **A probe that reproduces a prior
+> measurement is cheap; one that assumes it is not a probe.**
+
+#### 0bb. THE `+0x6d8` CENSUS IS 23 SITES, NOT 18 — and one of the five is the interesting one
+
+`0ax` reported "18 references in stage 3's decrypted image, 16 of them reads
+feeding an XOR recovery, and exactly two stores". Re-derived by anchoring on the
+displacement bytes `d8 06 00 00` and decoding backwards from each: **23 raw
+occurrences, 23 decodable, each with exactly one candidate decoding.** 21 reads
+and the same 2 stores.
+
+**`0ay` and `0az` are untouched by this** — they rest on the store census, which
+is unchanged. The read census was five short, and one of the five is at
+`rva 0x1601b`, seven bytes before the gate block:
+
+    0x16012  jne  0x1601b
+    0x16014  xor  al, al ; pop esi ; mov esp, ebp ; pop ebp ; ret
+    0x1601b  cmp  dword [esi+0x6d8], 0        <-- MISSED BY 0ax
+    0x16022  jne  0x16038                      <-- cookie already set: skip init
+    0x16024  lea  eax, [ebp-0x24] ; push eax ; push esi
+    0x16030  call 0x2b011                      <-- initialise the cookie
+    0x16038  push 0xd3 ; push 0x246e8fe6
+    0x16046  call 0x4181                       <-- the XOR decoder
+    0x1604b  push eax
+    0x1604c  call 0x2dc01                      <-- get_module_base_by_hash
+    0x16054  test eax, eax
+    0x16056  je   0x16069                      <-- not found: skip the store
+    0x16058  mov  byte [esi+0x138], 1
+    0x1605f  mov  dword [esi+0x6d8], 0x32dfd514
+    0x16069  push esi ; call 0x2dd91
+
+**So the gate block's first act is to make sure the cookie is set, and its last
+is to replace it with the constant.** The computed store fires at 9,868,455
+blocks (`0ay`) and this block runs at ~17.3M, so the field is already non-zero
+here and `0x2b011` is skipped — the gate is **overwriting a live cookie**, never
+initialising a blank one. That is the ordering `0ay` inferred from the two store
+sites, now read off the control flow.
+
+**Also: `0xe11da208` is not an immediate here.** It is produced by the decoder at
+`0x4181` from `(0xd3, 0x246e8fe6)`, the same call shape as the twenty blocklist
+constants. Nothing in this section changes what the gate tests; it names where
+the value comes from.
+
+**A correction to *Why it crashes*.** That section annotates `je 0x16014` as
+`<-- retry loop`. `0x16014` is `xor al,al ; pop esi ; mov esp,ebp ; pop ebp ;
+ret` — **a return-0 epilogue**, not a loop. Nothing was built on the annotation,
+but it is wrong wherever it is read.
+
+**And the two `push 0x32dfd514` sites are stubs in a thunk table**, not code
+that touches the context:
+
+    0x0d808  push 0x32dfd514 ; pushad ; call 0xd031  ; popad ; ret
+    0x2dca8  push 0x32dfd514 ; pushad ; call 0x2e111 ; popad ; ret
+
+Both sit immediately after an `e8 00 00 00 00 / 58 / c3` GetPC thunk, in a run
+of them (`rva 0x2f9b0` onward is nothing but such stubs). The constant is
+therefore **an argument the obfuscator's runtime already uses for something**,
+independent of the cookie — which is a lead about what `0x32dfd514` *means* to
+this author, and is not yet followed.
+
+#### 0bc. ONE CONTEXT, ON THE STACK, AND NOTHING READS THE COOKIE BEFORE IT IS WRITTEN
+
+`scripts/cookie_contexts.py` hooks all 23 sites from `0bb` and records the base
+register at every execution. A clean run, no forged module, to the same
+632,962,985 blocks and the same clean exit `0ay` reports:
+
+    SITES THAT EXECUTED: 14 of 23
+    DISTINCT CONTEXT BASES: 1
+       0x002fe724  STACK  first at 9,868,455blk (rva 0x26c91), 229 hits
+
+**There is exactly one context object in the whole run**, it is on the stack,
+and 229 field accesses across 14 sites all name it. So "the guest ran a second
+context path" has no bench-side counterpart to compare against, and together
+with `0ba` — where the guest's copies turn out to be stack too — the whole
+heap/stack line of inquiry is finished.
+
+**The first touch of the field is `rva 0x26c91`, the computed store.** That is
+an ordering fact the per-site counts cannot give and it is worth more than the
+census: **no site reads the cookie before it is written.** `0ax`'s leading model
+needs a recovery of an *uninitialised* pointer, and its own note said "do not
+promote this to a finding without measuring the stored value at the moment of
+the recovery". On this bench that half does not happen at all. It remains
+possible on the guest and is now the only unmeasured step in that model.
+
+`rva 0x1601b` executed **once**, which matches `0bb`'s reading of the gate block
+as a single pass rather than a loop. `rva 0x1605f` never fired, as expected
+without a module hashing to `0xe11da208`. Nine sites never ran, including all
+four `edi`-based ones outside `0x24723`/`0x24737`.
+
+> **And the probe printed a conclusion it had no business printing.** Its
+> `AGAINST THE GUEST` block was written before `0ba` was measured and said
+> *"The guest's heap copies are therefore a real difference"* — over numbers
+> that were entirely correct. **Fourth instance of this exact shape in three
+> days** (the RUN CHECK in `0aa`, `stage3_tail.py`, `stage4_gate.py`, now this),
+> and the first where the author had already written the warning about it into
+> the pick-up entry the same day. The RUN CHECK guards against summarising a
+> *truncated* run; it does nothing about summarising a *complete* run against a
+> stale premise. **A conclusion line must name the observation it rests on and
+> that observation must be in the same run** — this one now cites `0ba` by name
+> and prints the measured guest breakdown rather than a remembered one.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
