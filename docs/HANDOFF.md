@@ -3941,6 +3941,39 @@ means; the `strong` branch is not.
 
 **Revert the VM between runs** — *The 03:22 re-run was void* is that lesson.
 
+**RUN SETTINGS PER SAMPLE.** Defaults are offsets `5, 25`, spawn re-dump `10`,
+max processes `20` (`memory_dump.py`; the GUI has no profile control, so the
+`standard` profile's `[5, 25]` is what a blank field gives you).
+
+| | AgentTesla | VIPKeylogger | Remcos | `422e30ed` |
+|---|---|---|---|---|
+| Offsets | `5, 25` *(do not tune)* | `3, 10, 25, 55` | `5, 25` | `1, 25, 55` |
+| Spawn re-dump | `10` | **`2`** | `10` | `1` |
+| Max processes | `20` | `24` | `20` | `24` |
+
+**AgentTesla is untuned on purpose.** Its recorded expectation includes
+*"scheduled offsets matching 0 rules"* — the finding comes from the spawn and
+exit dumps. Changing the offsets invalidates the prediction that makes it a
+regression test.
+
+**VIPKeylogger's two changes are the ones that matter.** Dormancy is unknown on
+a first run, and `5, 25` is exactly what bracketed FormBook's whole interesting
+window. And the spawn re-dump default is documented as *"an estimate, not a
+measurement"*: hollowing completes in well under a second, hollowed children
+here have lived **2.14s and 3.03s**, and a 10s re-dump lands after they are
+gone. At `2` the before/after pairing that gap 5 exists to exercise actually
+fires. The cap counts **dumps, not processes** — sample, `powershell.exe`,
+`conhost.exe`, a dropped EXE and a hollowed target at three dumps each is ~18
+against 20, and a cap that binds drops the image the run is for.
+
+**Cross-cutting:** launch elevated (ProcDump needs it); confirm the preflight
+strip; verify the Procmon config is `dynamic_registry_reads.pmc` and that
+`config.json` has not pinned the old one — three consecutive runs were lost to
+that; extend-if-dormant **on** for all four, since none of these is resident.
+Export the HTML, `dynamic_run_summary.json` and **`networkeceived\`** before
+reverting. `process cap reached` or `exited before its +Ns re-dump` in the
+skipped list means raise the cap or lower the re-dump and run again.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
