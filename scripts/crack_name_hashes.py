@@ -280,10 +280,18 @@ def build_corpus(verbose: bool = True, exports: bool = False) -> dict[str, list[
                 corpus[v].append(source)
 
     counts = {}
+    missing: list[str] = []
 
-    for rel in ("docs/guestloaded.txt", "guestloaded.txt"):
+    # `docs/guestloaded.txt` is the 931 modules the guest had loaded;
+    # `docs/hostloaded.txt` is the 2,471 from this bench. The second one lived
+    # untracked at the repo root as `guestloaded.txt` until 17 Aug -- a host
+    # list under a guest name, invisible to a fresh clone, and skipped here
+    # without a word. A sweep that quietly runs against 1,675 fewer names and
+    # reports "no match" is the `collection_available` failure in corpus form.
+    for rel in ("docs/guestloaded.txt", "docs/hostloaded.txt"):
         p = REPO / rel
         if not p.exists():
+            missing.append(rel)
             continue
         before = len(corpus)
         lines = p.read_text(encoding="utf-8-sig", errors="replace").splitlines()
@@ -361,6 +369,13 @@ def build_corpus(verbose: bool = True, exports: bool = False) -> dict[str, list[
         for src, (read, added) in counts.items():
             print(f"  {added:>7,} new names from {read:,} entries  {src}")
         print(f"  {len(corpus):>7,} distinct candidate names in the corpus")
+    # Loud, and outside `verbose`: a negative from this sweep is a *result*
+    # elsewhere in HANDOFF.md, and a result that rests on a corpus missing a
+    # whole population must not be readable as a clean one.
+    for rel in missing:
+        print(f"  *** {rel} IS MISSING. Every 'no match' below is against a "
+              f"corpus short one\n      whole population -- that is how "
+              f"sbiedll.dll survived nine sweeps.")
     return corpus
 
 

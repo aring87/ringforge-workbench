@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m unittest *)",
+      "Bash(./.venv/Scripts/python.exe -m unittest *)",
+      "Bash(python -m unittest *)",
+      "Bash(.venv/Scripts/python.exe -m py_compile *)",
+      "Bash(python -m py_compile *)",
+      "Bash(python -m compileall *)",
+      "mcp__ccd_session_mgmt__search_session_transcripts"
+    ]
+  }
+}

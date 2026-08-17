@@ -152,3 +152,11 @@ tools/yara/_broken/
 # Local release packages
 release/
 
+
+# ----------------------------
+# Claude Code
+# ----------------------------
+# `.claude/settings.json` is shared project config and IS tracked. The local
+# file is per-machine -- it accumulates absolute scratchpad paths, including
+# ones from other projects entirely -- so it stays out.
+.claude/settings.local.json

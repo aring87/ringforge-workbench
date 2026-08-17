@@ -866,9 +866,10 @@ small block delta is just the different name length being walked and hashed.
 what happens past the gate is an **observation of the sample's anti-Sandboxie
 path** instead of the behaviour of a machine that cannot exist.
 
-**The contradiction does not resolve. It sharpens.** Neither guest inventory
+**The contradiction does not resolve. It sharpens.** Neither inventory
 contains anything matching `sbie` or `sandbox` — not the 931-name
-`docs/guestloaded.txt`, not the 2,471-name host list. The guest was not running
+`docs/guestloaded.txt`, not the 2,471-name host list now at
+`docs/hostloaded.txt`. The guest was not running
 Sandboxie, the lookup should have returned 0 exactly as it does under emulation,
 and the guest stored the constant anyway. Naming the module removes the
 possibility that this was some obscure module nobody thought to check; it makes
@@ -879,8 +880,8 @@ because we now know which single answer to look for.
 
 **The bare-stem re-sweep itself found nothing, and that is the honest headline.**
 Every corpus name is now expanded into full, one-extension-stripped and
-all-extensions-stripped forms — 13,878 distinct candidates against 931 + 2,471
-guest names, four host system directories and a tool list. Not one of the nine
+all-extensions-stripped forms — 13,878 distinct candidates against 931 guest
+and 2,471 host names, four host system directories and a tool list. Not one of the nine
 open hashes fell to stems. `"wow64"` was a real lesson about sweep *inputs* and
 it did not generalise. **What actually cracked `0xe11da208` was a missing corpus
 *class*, not a missing spelling**: no quantity of System32 filenames, export
@@ -3321,6 +3322,18 @@ worth the same treatment as the unloaded list: **`MINIDUMP_MEMORY_INFO_LIST`'s
 count is a `ULONG64` where the unloaded module list's is a `ULONG32`.** Reading
 it as 32 bits returns the right number on every small dump and shifts the first
 entry four bytes; there is a test that pins it.
+
+**Two repo loose ends closed the same day, and one was a live defect.** The
+2,471-name host inventory sat **untracked at the repo root as
+`guestloaded.txt`** — a host list under a guest name, next to the real
+`docs/guestloaded.txt`. `crack_name_hashes.py` reads it, and skipped it in
+silence when absent, so **every fresh clone ran the hash sweeps against 1,675
+fewer names and reported "no match" exactly like a complete run.** That is the
+`collection_available` failure in corpus form, in the one place this project has
+already been burned by a missing corpus *population* (`sbiedll.dll`). It is now
+`docs/hostloaded.txt`, tracked, and a missing corpus prints a warning outside
+`verbose`. `.claude/settings.json` is tracked; `settings.local.json` is ignored,
+since it accumulates absolute scratchpad paths from other projects.
 
 > **Instrument bug, and it is the `0aa` shape in a new place.**
 > `memory_ranges()` returns `(virtual_address, file_offset, size)`. The first
