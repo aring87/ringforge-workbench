@@ -69,6 +69,17 @@ _THREAD_ENTRY_SIZE = 48
 #: MINIDUMP_MEMORY_INFO, as documented. A floor, not the stride.
 _MEMORY_INFO_ENTRY_MIN = 48
 
+#: x86 `CONTEXT`, by name and offset. `FloatSave` is a fixed 112-byte
+#: `FLOATING_SAVE_AREA` at `+0x1c`, which is what puts the segment registers at
+#: `+0x8c` -- get that wrong and every general register reads as the one beside
+#: it, which is a shift that lands on plausible values.
+_X86_CONTEXT = (
+    ("gs", 0x8C), ("fs", 0x90), ("es", 0x94), ("ds", 0x98),
+    ("edi", 0x9C), ("esi", 0xA0), ("ebx", 0xA4), ("edx", 0xA8),
+    ("ecx", 0xAC), ("eax", 0xB0), ("ebp", 0xB4), ("eip", 0xB8),
+    ("cs", 0xBC), ("eflags", 0xC0), ("esp", 0xC4), ("ss", 0xC8),
+)
+
 #: MEMORY_BASIC_INFORMATION State and Type.
 _MEM_STATE = {0x1000: "commit", 0x2000: "reserve", 0x10000: "free"}
 _MEM_TYPE = {0x20000: "private", 0x40000: "mapped", 0x1000000: "image"}
@@ -345,6 +356,59 @@ class Minidump:
             if region["base"] <= address < region["end"]:
                 return region
         return None
+
+    def exception(self) -> dict[str, Any]:
+        """The fault, and the register file at the moment it happened.
+
+        The stream nothing in this project had read. `0ax` reconstructed the
+        guest's faulting instruction from the eip in the WER report and then
+        reasoned about what `esi` must have held; the actual registers are in
+        the dump, and `esi` is the value the whole cookie-recovery model of the
+        crash is about.
+
+        `context` is present only for an x86 dump -- the `CONTEXT` layout is
+        per-architecture and guessing at a 64-bit one from these offsets would
+        produce plausible garbage, which is this reader's whole reason to exist.
+        """
+        location = self.streams.get(EXCEPTION_STREAM)
+        if not location:
+            return {}
+        rva, _ = location
+        if not self._fits(rva, 168):
+            self.warnings.append("exception stream outside the file")
+            return {}
+
+        count = _u32(self._data, rva + 28)
+        out: dict[str, Any] = {
+            "thread_id": _u32(self._data, rva),
+            "code": _u32(self._data, rva + 8),
+            "flags": _u32(self._data, rva + 12),
+            "address": _u64(self._data, rva + 24 - 8),
+            "parameters": [_u64(self._data, rva + 40 + 8 * i)
+                           for i in range(min(count, 15))],
+        }
+
+        context_size = _u32(self._data, rva + 160)
+        context_rva = _u32(self._data, rva + 164)
+        if not context_size or not self._fits(context_rva, context_size):
+            self.warnings.append("exception thread context outside the file")
+            return out
+        if self.system_info().get("architecture") != "x86":
+            self.warnings.append(
+                "exception context present but this is not an x86 dump; the "
+                "register offsets below are x86-only and were not applied")
+            return out
+        if context_size < 0xCC:
+            self.warnings.append(
+                f"exception context is {context_size} bytes, too short for an "
+                f"x86 CONTEXT")
+            return out
+
+        base = context_rva
+        out["context"] = {
+            name: _u32(self._data, base + offset) for name, offset in _X86_CONTEXT
+        }
+        return out
 
     def system_info(self) -> dict[str, Any]:
         location = self.streams.get(SYSTEM_INFO)

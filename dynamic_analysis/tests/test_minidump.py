@@ -19,8 +19,10 @@ from pathlib import Path
 import pytest
 
 from dynamic_analysis.minidump import (
+    EXCEPTION_STREAM,
     MEMORY_INFO_LIST,
     MODULE_LIST,
+    SYSTEM_INFO,
     THREAD_LIST,
     UNLOADED_MODULE_LIST,
     Minidump,
@@ -304,6 +306,83 @@ class MemoryInfoList(unittest.TestCase):
         dump = parse(_dump({MEMORY_INFO_LIST: payload}))
         self.assertEqual(dump.region_of(0x101D809)["base"], 0x1010000)
         self.assertIsNone(dump.region_of(0x2000000))
+
+
+
+class ExceptionStream(unittest.TestCase):
+    """The fault and its register file -- unread until 17 Aug.
+
+    `0ax` reconstructed the guest's faulting instruction from the eip in the
+    WER report and then reasoned about what `esi` must have held. The registers
+    were in the dump the whole time, and `esi` is the value the entire
+    cookie-recovery model of the crash is about.
+    """
+
+    def _payload(self, context_rva, context_size=0xCC, code=0xC0000005):
+        blob = bytearray(168)
+        struct.pack_into("<I", blob, 0, 2180)            # ThreadId
+        struct.pack_into("<I", blob, 8, code)            # ExceptionCode
+        struct.pack_into("<I", blob, 28, 0)              # NumberParameters
+        struct.pack_into("<II", blob, 160, context_size, context_rva)
+        return bytes(blob)
+
+    def _context(self, **registers):
+        blob = bytearray(0xCC)
+        for name, offset in (("edi", 0x9C), ("esi", 0xA0), ("ebx", 0xA4),
+                             ("edx", 0xA8), ("ecx", 0xAC), ("eax", 0xB0),
+                             ("ebp", 0xB4), ("eip", 0xB8), ("esp", 0xC4)):
+            struct.pack_into("<I", blob, offset, registers.get(name, 0))
+        return bytes(blob)
+
+    def _dump_with(self, context, **kwargs):
+        """Assemble a dump whose exception stream points at `context`."""
+        sysinfo = struct.pack("<HHBBHIIII", 0, 0, 0, 4, 0, 10, 0, 26200, 0)
+        placeholder = self._payload(0)
+        raw = bytearray(_dump({EXCEPTION_STREAM: placeholder,
+                               SYSTEM_INFO: sysinfo}, context))
+        context_rva = len(raw) - len(context)
+        # Patch the real RVA in now that the layout is known.
+        exception_rva = struct.unpack_from("<I", raw, 32 + 8)[0]
+        struct.pack_into("<II", raw, exception_rva + 160,
+                         kwargs.get("context_size", 0xCC), context_rva)
+        return bytes(raw)
+
+    def test_reads_the_code_and_the_registers(self):
+        context = self._context(eip=0x01012C7C, esi=0x320BF2BC, ecx=0x00D3E258,
+                                edx=0x32DFD514, ebp=0x00D3E1A0)
+        exception = parse(self._dump_with(context)).exception()
+        self.assertEqual(exception["code"], 0xC0000005)
+        self.assertEqual(exception["context"]["eip"], 0x01012C7C)
+        self.assertEqual(exception["context"]["esi"], 0x320BF2BC)
+        self.assertEqual(exception["context"]["ecx"], 0x00D3E258)
+
+    def test_the_guest_arithmetic_the_offsets_have_to_support(self):
+        """`cmp al,[esi+ecx]` -- the sum is the faulting address.
+
+        If `FloatSave`'s 112 bytes were mishandled every register would read as
+        its neighbour, and a shift like that lands on plausible values rather
+        than on obvious garbage. This pins the layout against the one
+        arithmetic identity the real dump has to satisfy.
+        """
+        context = self._context(esi=0x320BF2BC, ecx=0x00D3E258)
+        registers = parse(self._dump_with(context)).exception()["context"]
+        self.assertEqual(
+            (registers["esi"] + registers["ecx"]) & 0xFFFFFFFF, 0x32DFD514)
+
+    def test_a_context_pointing_off_the_end_warns_and_keeps_the_code(self):
+        blob = bytearray(_dump({EXCEPTION_STREAM: self._payload(0x7FFFFFFF),
+                                SYSTEM_INFO: struct.pack(
+                                    "<HHBBHIIII", 0, 0, 0, 4, 0, 10, 0, 26200, 0)}))
+        dump = parse(bytes(blob))
+        exception = dump.exception()
+        self.assertEqual(exception["code"], 0xC0000005)
+        self.assertNotIn("context", exception)
+        self.assertTrue(any("thread context" in w for w in dump.warnings))
+
+    def test_absent_stream_is_empty_without_a_warning(self):
+        dump = parse(_dump({MODULE_LIST: struct.pack("<I", 0)}))
+        self.assertEqual(dump.exception(), {})
+        self.assertEqual(dump.warnings, [])
 
 
 @pytest.mark.slow

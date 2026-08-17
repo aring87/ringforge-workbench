@@ -2617,12 +2617,23 @@ is a Win32 question answerable on this bench, and the answer is
    gate writes the poison address into the cookie. **"Broken build" is no longer
    a live reading of the store.** See `0bd`.
 
-**The one open question on the crash, isolated as tightly as it will go without
-a new idea:** the guest's cookie held the constant; **only** `rva 0x1605f` writes
-it; that instruction is gated on a module hashing to `0xe11da208`; and the guest
-had **no such module, loaded or unloaded** — checked from Procmon's `Load Image`
-across 17 processes *and* from the crash dump's loaded and unloaded module lists.
-Propagation is ruled out (`0az`), a second store site is ruled out (`0ay`).
+**The one open question on the crash, and every link in it is now a
+measurement** (see `0bf`, which closed the last two):
+
+    the guest's cookie held 0x32dfd514   <- the fault's register file: edx is
+                                            the poison, eax is poison ^ 0xec
+    -> only rva 0x1605f writes it        <- 0ax; census re-derived in 0bb
+    -> gated on a module hashing to 0xe11da208
+    -> the guest's own PEB->Ldr walk has four entries and none of them does
+                                         <- guest_ldr_walk.py, the list the
+                                            gate itself reads
+
+They cannot all be true. Propagation is ruled out (`0az`), a second store site is
+ruled out (`0ay`), and both ends of the chain are now measured rather than
+inferred — so **the next move is to attack a middle link, not to gather more
+evidence about the ends.** The softest is "only `rva 0x1605f` writes it": that is
+a statement about stage 3's *image*, and the guest ran from a `0x46000` **RWX**
+allocation it could rewrite at will (`0ba`).
 
 **The structural difference that was supposed to be the next thread is gone.**
 "The bench's context is on the stack, the guest's copies on the heap" was never
@@ -3593,6 +3604,92 @@ question sitting on a settled result.
 > class at all: the run was complete and the numbers were right. What catches it
 > is printing the evidence next to the conclusion — the table above shows
 > `\??\C:C:\` on every row, and it is unreadable as agreement.
+
+#### 0bf. THE LAST UNMEASURED STEP IS MEASURED — and the blocker was never real
+
+The plan for this was "decide an instrumentation route for the guest, then book
+a detonation". **Neither was needed.** Both remaining questions were answerable
+from the dump already on disk, and the reason they had not been is that two
+streams had never been read.
+
+**First: the loader list the gate actually walks.** `0aw` hashed Procmon's
+`Load Image` events; `0ax` hashed the dump's `MODULE_LIST` and
+`UNLOADED_MODULE_LIST`. Both are a *writer's* view. `get_module_base_by_hash`
+sees none of that — it walks `PEB->Ldr->InLoadOrderModuleList` in the process's
+own memory. **That list is in the dump as ordinary memory**, and
+`scripts/guest_ldr_walk.py` walks it literally: same list, same offsets, same
+lowercasing, same CRC.
+
+    TEB 0x00bdd000 -> PEB 0x00bda000 -> Ldr 0x77bf7360
+
+    0  0x00400000  0xe2e77daf  RegSvcs.exe
+    1  0x77ac0000  0x0b4e1ae2  ntdll.dll
+    2  0x771d0000  0xadedab08  KERNEL32.DLL
+    3  0x75e30000  0x21094b62  KERNELBASE.dll
+
+**Four entries, walk completed cleanly, nothing hashes to `0xe11da208`.** The
+probe distinguishes "walked the whole list and found nothing" from "the walk
+stopped", because that distinction is the entire question — and it is the former.
+The only difference from the `MODULE_LIST` stream is `wow64cpu.dll`, which
+belongs to the 64-bit list and is a good sign the right list is being read.
+**This is a real negative over the list the gate itself reads**, which is
+strictly stronger than anything `0aw` or `0ax` could offer.
+
+**Second: the register file at the fault.** `0ax` reconstructed the faulting
+instruction from the eip in the WER report and then *reasoned* about what `esi`
+must have held. The registers were in `EXCEPTION_STREAM` the whole time.
+
+    eip  0x01012c7c    rva 0x2c7c
+    esi  0x320bf2bc    edi  0x00000000    ecx  0x00d3e258
+    edx  0x32dfd514    <<<< the poison, exactly
+    eax  0x32dfd5f8    poison + 0xe4
+    ebp  0x00d3e1a0    esp  0x00d3dcf8
+
+**Two independent checks say the parse is real**, which matters because an x86
+`CONTEXT` mis-parse (`FloatSave` is 112 bytes at `+0x1c`) shifts every register
+onto its neighbour and lands on plausible values: `eip` equals the fault offset
+WER recorded separately, and `esi + ecx` equals `0x32dfd514` exactly — the
+arithmetic of the faulting `cmp al, [esi+ecx]` itself.
+
+**The faulting pointer is not in a register.** `esi` is a *bias*
+(`poison - 0xd3e258`) and `ecx` is a live stack address; the walked pointer is
+split across the two. That is why no single register equals the faulting
+address, and it is worth knowing before anyone reads `esi` as a string base
+again.
+
+**And `0ax`'s missing step lands.** `edx` holds the poison outright and `eax`
+holds `poison ^ 0xec`. Two registers carrying `poison ^ small` is what
+`x ^ cookie` produces when **the cookie is the poison**. `0ax` wrote *"do not
+promote this to a finding without measuring the stored value at the moment of
+the recovery"*; this is that measurement, and it confirms the model.
+
+**So every link in the chain is now a measurement, and they cannot all be true:**
+
+    the guest's cookie held 0x32dfd514        (registers, above)
+    -> only rva 0x1605f writes that value      (0ax; census re-derived in 0bb)
+    -> that store is gated on a module hashing to 0xe11da208
+    -> the guest's own PEB->Ldr walk has four entries and none of them does
+
+The contradiction is no longer between a measurement and an inference. **It is
+between two measurements**, which is a much better place to be stuck, and it
+means the next move is to attack one of the two middle links rather than to
+gather more evidence about the ends. The likeliest soft spot is the second:
+"only `rva 0x1605f` writes it" is a statement about *stage 3's image*, and the
+guest had a `0x46000` **RWX** region it could rewrite at will (`0ba`).
+
+> **A wrong turn worth recording, because the probe agreed with me first.**
+> Before reading the registers, `guest_gate_witness.py` tried to find the
+> context by treating each stack copy of the poison as a `ctx+0x6d8` and scoring
+> the structure below it. It "ACCEPTED" six candidates and reported **the gate
+> branch did not run** — a conclusion that would have retracted `0ay` and `0az`.
+> The acceptance test only required the marker offsets to be *readable*, not to
+> look like anything: one accepted candidate had `+0x4d9c = 0x00630069`, which
+> is UTF-16 `"ic"`. Two of the markers were wrong as well — `+0x4d9c` is a field
+> of a *different* object (the one `0x15441` fetches), and `+0x138` is `0` in a
+> healthy context, so it can only ever confirm and never refute. Checked against
+> a real bench context at `0x2fe724` before being believed, and thrown away.
+> **Seventh instance in three days**, and the first that would have produced a
+> retraction rather than an overstatement.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
