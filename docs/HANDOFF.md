@@ -2582,9 +2582,9 @@ alongside one does not.
 ### Pick up here — 16 Aug
 
 **Read this first if you are cold.** Build queue empty, detonation queue empty,
-signature queue empty. **Stage 4 is understood as far as running it can take
-it**, and the one open question is stated in *THE QUESTION* below. The `0a`–`0l`
-subsections are the working record of how today got there, including four
+signature queue empty. **Stage 4 is understood, including why it does not inject
+here** — see *THE QUESTION*, answered, and `0ai`–`0al`. The `0a`–`0l`
+subsections are the working record of how today got there, including six
 hypotheses that were built and falsified — read them for method, not for
 current state, because several contain framings this section retracts.
 
@@ -2602,41 +2602,222 @@ current state, because several contain framings this section retracts.
   lost; the reconstruction above is the record. `memory_yara_rescan.json`
   survives and is the authority for its scan.
 
-**What stage 4 actually does, when it runs (this is the durable result):**
+**What stage 4 actually does, end to end (this is the durable result).** Every
+line below is from a run that reached a clean return at 60,928,346 blocks with
+EIP outside the payload — not from a disassembly reading, which is the method
+that failed repeatedly here:
 
     trampoline -> three do-nothing delay loops -> writes the 0x1d handshake flag
     -> builds a UNICODE_STRING for "kernel32.dll" via the PEB loader list
     -> scans memory backwards for its own 20-byte header, and finds it
-    -> opens ntdll.dll as a FILE and queries it   (the unhooking check)
-    -> RETURNS, without unpacking its body
+    -> opens ntdll.dll as a FILE and queries its name   (the unhooking check)
+    -> resolves 8 imports against ntdll's real export names, 8 for 8
+    -> builds a SysWOW64 path and walks a 12-entry host-candidate list  (+0x192b0)
+    -> for the first candidate that opens: reads the file, creates it
+       CREATE_SUSPENDED|DETACHED_PROCESS|CREATE_NO_WINDOW,
+       ProcessBasicInformation -> PEB, reads PEB+8 = ImageBaseAddress  (+0x190f0)
+    -> ~2M blocks of CRC-32, RC4 and name folding
+    -> waits 6s for an injection request that never comes           (+0x03f8e)
+    -> waits 6s for a resume request that never comes               (+0x040ae)
+    -> marks both slots failed and RETURNS, without unpacking its body
 
-592 distinct basic blocks, 24 of 67 pages, eight API calls including
-`NtCreateFile` on `\??\ntdll.dll` at block 26,917,406. **See 0aa** — the earlier
-"403 blocks, one API call, no file opened" figures came from a run truncated at
-16,096,220 blocks by an instruction budget mistaken for a completion.
+**It is a process-hollowing *server***: it prepares the host and then waits to be
+told to map and resume (*0ai*). The `0aa` figures of "403 blocks, one API call,
+no file opened" came from a run truncated at 16,096,220 blocks by an instruction
+budget mistaken for a completion.
 
-**It is a resolver stub with an anti-hooking check.** The other 43 pages are not
-unreached code behind a gate — they are its still-packed body, and no *direct*
-branch or call in the executed code reaches them (*0j*). That is weaker than
-"nothing reaches them": there are **9 indirect call sites** whose targets are not
-statically known.
+**The candidate list is twelve, not eleven.** `+0x07210` is a switch on index
+`0..0xb` — twelve stack-string constructors — and the walk's bound is
+`cmp [ebp-4], 0xc`. The walk opens each candidate's file *before* creating it and
+skips to the next candidate when that open fails, so `0ad`'s eleven
+`CreateProcessInternalW` calls mean **one of the twelve never opened**; which one,
+and why, is not measured. The eleven *names* in `0ad` still stand as the IOC —
+this only says there is a twelfth, still to be decoded from `+0x08a50`.
 
-#### THE QUESTION — as it stands at the end of 16 Aug
+**The other 43 pages are its still-packed body**, and no *direct* branch or call
+in the executed code reaches them (*0j*). That is weaker than "nothing reaches
+them": there are **9 indirect call sites** whose targets are not statically
+known, and `0ai` shows they matter — the injection server at `+0x03f40` has no
+direct caller anywhere in the image and ran anyway.
 
-**Does stage 4 ever intend to inject in this environment?**
+#### THE QUESTION — ANSWERED, 16 Aug
 
-Not "what is blocking the injection". That framing is retired. Stage 4 creates
-`compact.exe` suspended, takes its `ImageBaseAddress`, waits 12 seconds, and
-returns — **and the 146,255 blocks after the wait call no API at all** (*0ah*).
-Nothing there is gated on this harness, so no further stub or information class
-will change it. A hollowing routine that reads a target's base and then neither
-unmaps nor writes is not being blocked; it is doing something else.
+**Does stage 4 ever intend to inject in this environment? Yes.**
 
-**Start by asking what it did with the host, not what else is missing.**
+The injection routine is at payload `+0x03fb0`, and it is shared-section
+injection with nothing missing from it:
 
-Everything below `0aa` is the working record of how the day got here, including
-five falsified hypotheses and one artifact this harness invented (*0af*). Read it
-for method. The subsections marked ANSWERED or RETRACTED say which parts survived.
+    NtCreateSection(SECTION_ALL_ACCESS 0xf001f, PAGE_EXECUTE_READWRITE, SEC_COMMIT)
+    NtOpenProcess(0x438 = VM_OPERATION|VM_READ|VM_WRITE|QUERY_INFORMATION)
+    NtMapViewOfSection   -> the remote process
+    NtMapViewOfSection   -> this one
+
+**It never ran because it sits six instructions past a poll waiting for a
+peer**, at `+0x03f8e`:
+
+    do { Sleep(1000); if (*state == 1) goto inject; } while (++n < 6);
+    *state = -1; return 0;                       <-- what actually happened
+
+**The twelve sleeps are two of those polls, six each** (*0ai*), and both timed
+out on a word that nothing in this run ever writes. Stage 4 is the **server**
+side of a two-party injection protocol: it prepares the host, then waits to be
+asked. This harness has one thread and one process, so there is nobody to ask.
+
+Answer the poll and the injection runs — `NtCreateSection`, `NtOpenProcess`,
+`NtMapViewOfSection` ×2, `NtResumeThread`, both state words left at 2 (*0aj*).
+
+**So the negative in `0ae` stands and its explanation is now wrong.** Stage 4
+does not inject *here*, and it is not because it decided not to, and not because
+an API is unimplemented. It is because the harness cannot present a second
+participant. That is a different class of gap from the four closed today, and it
+is the first one a longer run or another stub cannot touch.
+
+Everything below is the working record, including six falsified hypotheses and
+one artifact this harness invented (*0af*). Read it for method. The subsections
+marked ANSWERED or RETRACTED say which parts survived — note that `0ag` is now
+retracted in full and `0ah`'s conclusion is qualified.
+
+#### THE NEXT QUESTION — who posts the request?
+
+Not "how do we get the injection to run"; `--force-ready` already does that and
+it proves nothing about the sample. The question is **what, on a real machine,
+sets `[control_block+0x10]` to 1** — and the answer decides whether this is
+worth a harness change at all:
+
+- **A second thread of this same payload.** The requester at `+0x03e70` is
+  called directly from `+0x1654c`, so it is ordinary reachable code; something
+  has to run it concurrently with the server. Check whether `+0x1654c` sits in
+  one of the 43 never-executed pages, and whether anything in the image creates
+  a thread. Stage 4 called no thread API (*0ae*), but the thread could predate
+  `after_handshake.state`.
+- **A second process.** The requester supplies a pid and tid and the server
+  opens *that* process, which is only necessary across a process boundary.
+
+**The cheap first probe is the control block, not the code.** `0x3eee874` sits
+in the stage-3 allocation, `0x18000` past the payload image. Find out what
+mapped it and whether it is a section — if stage 3 created it as a named
+section, this is cross-process and no amount of threading in one emulator will
+serve it. That is a `--dump` and a look at `section_requests` in the *stage 3*
+run, not a new stage-4 run.
+
+**And a warning about the shape of the answer.** Four harness gaps were closed
+today and each moved the payload further, which makes "close the fifth" the
+reflex. This one is not a stub. Serving a request that nothing sent would be
+inventing the peer, and the eleven-host walk (*0af*) is the standing proof that
+an invented answer reads convincingly as the sample's behaviour.
+
+#### 0ai. THE GATE — two six-second rendezvous, and the injection behind one
+
+Measured by `scripts/stage4_gate.py`, which hooks the two `cmp` sites directly
+and watches the words they read. Nothing here is inferred from a disassembly
+reading; the disassembly only says where to put the hooks.
+
+    [60,774,973blk] +0x03f8e  [0x3eee884] = 0   not ready   x6, 1s apart
+    [60,778,210blk] +0x03fa2  wrote -1 to 0x3eee884         <-- timeout
+    [60,778,857blk] +0x040ae  [0x3eee874] = 0   not ready   x6, 1s apart
+    [60,782,094blk] +0x040b9  wrote -1 to 0x3eee874         <-- timeout
+
+**Writes to either word between the first check and the end of the run: two,
+both the timeouts themselves.** Nothing else touches them, so the poll cannot
+succeed here however long it waits. Six seconds is not a stall, it is a
+deadline.
+
+**The protocol, both halves, all in this image.** The words are two slots of one
+control block at `0x3eee874` — outside the payload image, `0x18000` past its end,
+so in the stage-3 allocation that carries it:
+
+    0 = idle    1 = request posted    2 = served    -1 = failed
+
+    requester  +0x03e70   [blk+0x34] = tid; [blk+0x30] = pid; [blk+0x10] = 1
+                          then waits up to 6s for 2 or -1
+    server     +0x03f40   waits up to 6s for 1, then CreateSection /
+                          OpenProcess(pid,tid) / MapViewOfSection x2, sets 2
+    requester  +0x03ee0   [blk] = 1, waits for 2
+    server     +0x04090   waits for 1, then NtResumeThread, sets 2
+
+**Stage 4 ran the server side of both and never the requester side.** That is
+not an inference: all twelve sleeps come from the two server sites, `+0x03f86`
+and `+0x040a6`, six each, and the requester's own sleep sites (`+0x03ea6`,
+`+0x03f06`) never fire. `stage4_backtrace.py` prints the frames.
+
+**The requester is called directly, from `+0x1654c` and `+0x16900`. The server
+is not called from anywhere** — no direct `call` or `jmp` in the image targets
+`+0x03f40` or `+0x04090`, and neither address appears as a literal dword. It is
+dispatched through a computed pointer, which is what the nine indirect call
+sites of `0aa` are for.
+
+#### 0aj. The forced run — what is behind the gate, and what still is not
+
+`stage4_gate.py --force-ready` writes 1 into the first state word at the first
+check. **This is feeding the payload an answer, not fixing the harness**, and it
+is here to show behaviourally what the disassembly says structurally. Nothing
+measured under it is evidence about the sample's environment.
+
+    plain        60,928,346 blocks   no NtCreateSection, no NtOpenProcess
+    --force-ready 67,819,385 blocks   1 NtCreateSection  1 NtOpenProcess
+                                      2 NtMapViewOfSection, state word set to 2
+    --force-all   71,152,676 blocks   the above + 1 NtResumeThread, both words 2
+
+**And here is what the forced run cannot show.** The section is 4,096 bytes and
+**nothing is ever written into the view** — `section_writes` records the mapping
+with zero spans. `NtOpenProcess` is called with **pid 0**. Both follow from the
+same fact: the target's pid/tid and the bytes to inject are what the *requester*
+supplies, and the requester never ran. So this proves the path is injection and
+that it is reached; it says nothing about what would land in `compact.exe`.
+
+**Two harness notes fell out of it.** `NtOpenProcess` reported `opened: True`
+for pid 0, which is not in `served_process_list()` — the refusal that the
+explorer-child work put there does not cover a zero pid. And the section is
+granted at the size asked for, 4 KB, which is far too small for a 273 KB image:
+whatever crosses this channel is a message, not a body.
+
+#### 0ak. RETRACTED — `0ag`'s "the twelve sleeps wait for nothing"
+
+`0ag` concluded the twelve sleeps were "a 12-second delay chunked into twelve
+one-second sleeps, which is the standard shape for defeating sandboxes that
+patch out or skip long waits", on the measurement that "every address read
+during an iteration is its own stack (`0x1007f9xx`) — no read of the spawned
+PEB, none of the mapped host image".
+
+**Every word of the timing measurement holds and the conclusion is wrong.** They
+really are twelve exactly-1,000.0ms non-alertable sleeps returning to `+0x29d46`.
+But they are two loops of six, not one of twelve, and each iteration reads
+`[0x3eee884]` or `[0x3eee874]` — neither of which is the spawned PEB or the host
+image, which is why a probe looking for *those* saw only stack. The read is
+there: the same window shows 88 heap reads alongside the 77,399 stack ones.
+
+**The method note.** `0ag` asked "does the loop touch the target?", got no, and
+answered a larger question — "does it wait for anything?" — with that no. The
+loop waits on a word that has nothing to do with the target it just created.
+Ask what a loop *reads*, not whether it reads a particular thing.
+
+#### 0al. RESOLVED — the malformed `lpApplicationName` is this harness's
+
+`0ac` left this "Unresolved": `lpApplicationName` reads
+`ntdll.dll\Windows\SysWOW64\<target>.exe`, with the payload itself writing
+`ntdll.dll` into the buffer at `+0x2c876`, so it was ruled not to be residue of
+the `FileNameInformation` answer. Correct on both counts, and it is still ours.
+
+`+0x192b0` builds the system directory by looking a module up by hash
+(`0x2c6e6e44`) and taking **`entry + 0x28`, which is `FullDllName.Buffer`**, then
+appending `\Windows\`, `SysWOW64\` and the candidate name. `win32_emu_env.py:890`
+writes the *same* `UNICODE_STRING` to `+0x24` and `+0x2C`:
+
+    us = struct.pack("<HHI", len(nm) * 2, len(wide), nptr)
+    mu.mem_write(e + 0x24, us)                    # FullDllName
+    mu.mem_write(e + 0x2C, us)                    # BaseDllName
+
+On real Windows `FullDllName` is `C:\Windows\SysWOW64\ntdll.dll` and
+`BaseDllName` is `ntdll.dll`. Here both are the leaf, so the payload's derivation
+starts from `ntdll.dll` and the path is malformed from the first character.
+
+**It has not mattered so far, and only by luck**: `Emulator.backing()` resolves a
+file by leaf name, so the harness silently repaired the path it had itself
+broken, and `CreateProcessInternalW` returns 1 without looking at the path at
+all. A real machine fails that call. **Not fixed here** — `restore()` rebuilds
+the syscall gate and the export tables but *not* the loader entries, so the fix
+has to be a restore-time repair or it reaches fresh runs only, which is the trap
+`0c` documents. Queued, not done.
 
 ---
 
@@ -2711,7 +2892,9 @@ reaches **`CreateProcessInternalW`**:
    no NUL between the parts. So `lpApplicationName` reads
    `ntdll.dll\Windows\SysWOW64\<target>.exe`. **Not residue, not caused by the
    value returned**, and therefore not fixable by changing what
-   `FileNameInformation` answers. Unresolved.
+   `FileNameInformation` answers. **RESOLVED — see 0al**: the payload derives the
+   system directory from ntdll's `FullDllName`, and this harness writes the leaf
+   name into that field.
 
 #### 0ad. THE HOST TARGET LIST — nine processes, all CREATE_SUSPENDED
 
@@ -2809,7 +2992,7 @@ doing, not the sample's. In a working environment it takes the first —
 cleanly at 60,928,346 blocks. **Still no injection** — no `NtCreateSection`, no
 `NtMapViewOfSection`, no `NtUnmapViewOfSection`, no `NtWriteVirtualMemory`.
 
-#### 0ag. The twelve sleeps wait for nothing — they are a chunked 12-second delay
+#### 0ag. RETRACTED by 0ak: the twelve sleeps wait for nothing
 
 Measured rather than inferred from the shape. All twelve are **1,000.0 ms
 exactly**, all `alertable=0`, all returning to the same dispatch thunk at payload
@@ -2826,7 +3009,15 @@ the emulator's clock advances, so the delay *completes* rather than hanging.
 
 **That relocates the question** — and the tail has now been traced.
 
-#### 0ah. The tail calls nothing: the decision is not gated on this harness
+#### 0ah. QUALIFIED by 0ai: the tail calls nothing, but the decision was earlier
+
+**The counts below hold; the conclusion drawn from them does not.** "Nothing
+after the delay asks the environment for anything, so no further stub, class or
+fixture can change what happens there" is true of the *tail* and was read as
+true of the run. The decision is taken **before** the tail, at `+0x03f8e` and
+`+0x040ae`, on a word this harness never writes — so it is gated on the harness
+after all, just not on an API. `0ah`'s own last line ("the decision was taken
+earlier, on data already gathered") was right; the data was a state word.
 
 Everything after the twelfth sleep, to the clean return:
 
@@ -2886,6 +3077,16 @@ specific. **Do not check a run against a block count.** `emu_start`'s `count` is
 instructions, so a fixed block total is a property of the budget, not the
 program — the RUN CHECK written this morning to catch truncation ended up
 certifying it. Check that **EIP has left the payload** instead.
+
+**And a second one of the same family, found on 16 Aug.** A hook attached with
+`mu.hook_add` **mid-run does not reach blocks unicorn has already translated**.
+The first version of `stage4_intent.py` armed its block and memory hooks at the
+`CreateProcessInternalW` event and reported **15 block entries and 68 reads
+across the 2,893,593 blocks** that followed — which reads as a payload doing
+almost nothing, and is a hook that only saw newly-translated code. Stopping
+between `emu_start` calls is not enough on its own; `mu.ctl_flush_tb()` after
+attaching is. Same failure mode as `FileNameInformation` and the RUN CHECK: the
+measurement succeeded and reported nothing.
 
 #### 0aa. CORRECTION — every 16,096,220-block figure below is a truncated run
 
