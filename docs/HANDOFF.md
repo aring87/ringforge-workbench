@@ -2809,12 +2809,35 @@ delay chunked into twelve one-second sleeps**, which is the standard shape for
 defeating sandboxes that patch out or skip long waits. `NS100_PER_BLOCK` means
 the emulator's clock advances, so the delay *completes* rather than hanging.
 
-**That relocates the question.** The sleeps are not the blocker — they finish
-normally, and the payload then returns without injecting. Whatever decides that
-happens **after** the delay, in the tail between the last `NtDelayExecution` at
-block 60,782,089 and the clean return at 60,928,346. **That is ~146,000 blocks**,
-a far smaller window than anything examined today, and it is where the next
-session should start.
+**That relocates the question** — and the tail has now been traced.
+
+#### 0ah. The tail calls nothing: the decision is not gated on this harness
+
+Everything after the twelfth sleep, to the clean return:
+
+    146,255 block entries, 66 distinct blocks
+    APIs called after the last sleep: NONE
+
+**Not one API.** 146K entries across 66 blocks is tight looping, and the hottest
+are payload `+0xbb25`, `+0xbb42`, `+0xbb99`, `+0xbbb6`, `+0xbbc5` — all in
+`0x3e9f7xx`–`0x3e9f8xx`, **the injected stub's own wait region**, the same
+neighbourhood as the handshake cell at `0x3e9f8a8` and the 512-million-iteration
+stall. So stage 4 finishes, unwinds into the stub's loop, spins ~23,000
+iterations, and leaves.
+
+**This is the important negative of the whole sequence.** Four harness gaps were
+implemented today and each one moved the payload further. **This one will not
+be**: nothing after the delay asks the environment for anything, so no further
+stub, class or fixture can change what happens there. The decision was taken
+earlier, on data already gathered — or there is no decision and the payload has
+simply done all it intends to do in a process it was never told to inject.
+
+**Which means the next question is not "what else is missing".** It is whether
+stage 4 *ever* intended to inject here, and that is answered by looking at what
+it did with the host it created — it read `ImageBaseAddress` and then waited 12
+seconds without touching it again. A hollowing routine that reads a target's base
+and then neither unmaps nor writes is not being blocked; it is doing something
+else. **Start there, not at another API.**
 
 **A caution on all of the above.** Four harness behaviours were implemented today
 — `FileNameInformation`, `CreateProcessInternalW`, `ProcessBasicInformation`,
