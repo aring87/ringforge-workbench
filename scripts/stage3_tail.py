@@ -20,6 +20,7 @@ The block is **all zero** in the state as saved, so anything seen here is new.
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 
 from unicorn import UC_HOOK_MEM_WRITE
@@ -43,6 +44,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="bytes of the control block to watch")
     args = ap.parse_args(argv)
 
+    # **The state depends on an env var that the resume does not inherit.**
+    # `after_handshake.state` only exists because `RINGFORGE_EXPLORER_CHILD=1`
+    # served `notepad.exe` (pid 5120) for the loader to inject into. Resuming
+    # without it leaves `served_process_list()` denying that process, so
+    # `PostThreadMessageW` to its thread 5124 is refused -- the harness
+    # contradicting a fiction it already committed to, which is the exact
+    # failure the opener of `served_process_list` was written against. The first
+    # run of this probe after the stub landed hit it and read "a thread this
+    # harness never served" for the thread it had hijacked 700M blocks earlier.
+    if os.environ.get("RINGFORGE_EXPLORER_CHILD") != "1":
+        print("*** VOID: RINGFORGE_EXPLORER_CHILD is not 1, but this state was "
+              "made with it.\n    The explorer child is not in "
+              "served_process_list(), so any call naming its pid\n    or its "
+              "thread will be refused and the run will diverge. Set it.")
+        return 2
+
     emu = Emulator.restore(args.state)
     eip = emu.mu.reg_read(UC_X86_REG_EIP)
     start = emu.blocks
@@ -58,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
 
     writes: list[tuple[int, int, int, int]] = []
     stopped: list[int] = []
+    signalled: list[int] = []
 
     def on_write(uc, access, address, size, value, user):
         writes.append((emu.blocks, uc.reg_read(UC_X86_REG_EIP), address, value))
@@ -71,38 +89,53 @@ def main(argv: list[str] | None = None) -> int:
     sleeps = [0]
     original_api = emu.api
 
-    #: `PostThreadMessageW` is UNHANDLED here, which means `nargs` is 0 and its
-    #: four arguments are left on the stack for the caller's own `ret` to return
-    #: into. Everything after it is unsound -- the first run of this probe
-    #: carried on for 132M blocks and died at `0x02014f78`, and any "stage 3
-    #: never wrote the block" claim covering that stretch would be worthless.
-    #: So: capture the arguments and stop, rather than measure noise.
-    STOP_AT = "PostThreadMessageW"
+    #: The loader's wake-up for the thread it hijacked. It was UNHANDLED until
+    #: 16 Aug, which meant `nargs` 0 and its four arguments left for the
+    #: caller's own `ret` to return into -- the first run of this probe carried
+    #: on regardless for 132M blocks and died at `0x02014f78`, and any "stage 3
+    #: never wrote the block" claim covering that stretch would have been
+    #: worthless.
+    #:
+    #: **The guard is now whether the harness actually handled it**, not the
+    #: name. `api()` counts an unhandled name in `emu.unhandled`, so this asks
+    #: after the call rather than assuming either way -- a probe that hardcoded
+    #: "stop at PostThreadMessageW" would keep stopping after the stub landed,
+    #: and one that hardcoded "carry on" would go back to measuring noise the
+    #: day another name goes missing.
+    SIGNAL = "PostThreadMessageW"
 
     def traced_api(name, *a, **kw):
         if name == "NtDelayExecution":
             sleeps[0] += 1
-        if name == STOP_AT:
-            esp = emu.mu.reg_read(UC_X86_REG_ESP)
-            off = kw.get("arg_offset", 4)
-            vals = []
-            for i in range(4):
-                try:
-                    vals.append(struct.unpack(
-                        "<I", emu.mu.mem_read(esp + off + 4 * i, 4))[0])
-                except Exception:
-                    vals.append(0)
-            print(f"\n  [{emu.blocks - start:,}blk] {name}"
-                  f"(idThread={vals[0]:#x}, Msg={vals[1]:#x}, "
-                  f"wParam={vals[2]:#x}, lParam={vals[3]:#x})")
-            print(f"      UNHANDLED by this harness. Stopping here: with nargs 0 "
-                  f"its arguments stay on\n      the stack and the caller returns "
-                  f"into them, so nothing past this point is sound.")
+        if name != SIGNAL:
+            return original_api(name, *a, **kw)
+        esp = emu.mu.reg_read(UC_X86_REG_ESP)
+        off = kw.get("arg_offset", 4)
+        vals = []
+        for i in range(4):
+            try:
+                vals.append(struct.unpack(
+                    "<I", emu.mu.mem_read(esp + off + 4 * i, 4))[0])
+            except Exception:
+                vals.append(0)
+        print(f"\n  [{emu.blocks - start:,}blk] {name}"
+              f"(idThread={vals[0]:#x}, Msg={vals[1]:#x}, "
+              f"wParam={vals[2]:#x}, lParam={vals[3]:#x})", flush=True)
+        before_unhandled = emu.unhandled.get(name, 0)
+        result = original_api(name, *a, **kw)
+        if emu.unhandled.get(name, 0) > before_unhandled:
+            print(f"      UNHANDLED. Stopping here: with nargs 0 its arguments "
+                  f"stay on the stack and\n      the caller returns into them, "
+                  f"so nothing past this point is sound.", flush=True)
             stopped.append(emu.blocks)
-            result = original_api(name, *a, **kw)
             emu.mu.emu_stop()
-            return result
-        return original_api(name, *a, **kw)
+        else:
+            signalled.append(emu.blocks)
+            print(f"      handled, so the loader's own continuation past the "
+                  f"signal is now measurable.\n      The message itself is NOT "
+                  f"delivered -- nothing else runs here to receive it.",
+                  flush=True)
+        return result
 
     emu.api = traced_api
     status = emu.resume(count=args.instructions)
@@ -123,13 +156,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nWRITES INTO THE CONTROL BLOCK ({len(writes)}):")
     if not writes and stopped:
         print(f"   none in the {stopped[0] - start:,} sound blocks before "
-              f"{STOP_AT}.")
+              f"{SIGNAL}.")
         print(f"   **That is a bound, not a result.** Stage 3 polls and then "
               f"signals, and the signal is")
         print(f"   the call this harness does not implement -- so whether it "
               f"posts the request after")
         print(f"   being answered is exactly what has not been measured. "
-              f"Implement {STOP_AT} first.")
+              f"Implement {SIGNAL} first.")
+    elif not writes and signalled:
+        print(f"   NONE, across {ran:,} blocks including "
+              f"{emu.blocks - signalled[0]:,} after the signal was answered.")
+        print(f"   So stage 3 does not post the request either -- it signals "
+              f"the thread and expects")
+        print(f"   the far side to act. **Bounded by one fiction that remains:** "
+              f"the message was not")
+        print(f"   delivered, so a loader that waits for an acknowledgement "
+              f"would stall here anyway.")
     elif not writes:
         print(f"   NONE. Stage 3 holds the same view and never posts a request,")
         print(f"   so it is not the peer the stage-4 server is waiting for.")

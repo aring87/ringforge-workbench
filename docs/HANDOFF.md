@@ -2583,7 +2583,7 @@ alongside one does not.
 
 **Read this first if you are cold.** Build queue empty, detonation queue empty,
 signature queue empty. **Stage 4 is understood, including why it does not inject
-here** — see *THE QUESTION*, answered, and `0ai`–`0an`. The `0a`–`0l`
+here** — see *THE QUESTION*, answered, and `0ai`–`0ao`. The `0a`–`0l`
 subsections are the working record of how today got there, including six
 hypotheses that were built and falsified — read them for method, not for
 current state, because several contain framings this section retracts.
@@ -2806,10 +2806,54 @@ the control block" is therefore a bound, not a result** — it holds up to the
 signal and says nothing past it, which is exactly where it stops being
 uninteresting. The probe now captures the arguments and stops.
 
-**Do not read this as a fifth stub to implement.** Answering
-`PostThreadMessageW` with the right arity would make the stack sound and deliver
-nothing: there is no message queue and no thread to receive it. It is the same
-gap as the rendezvous wearing a different hat.
+**It was implemented, and `0ao` is what it bought.** The caution written here
+first — "answering it would make the stack sound and deliver nothing" — was right
+about the message and wrong about the value. It does deliver nothing. It also
+made the loader's own continuation past the signal measurable for the first
+time, and that is what excluded the loader as the peer.
+
+#### 0ao. The loader is not the peer either — it signals and exits
+
+`PostThreadMessageW` is implemented (`emulate_native_stub.py`, arity 4, answered
+TRUE for a thread of a process `served_process_list()` claims and FALSE
+otherwise, and it **announces at the call that nothing receives it**). 620 tests
+pass. With it, the loader's thread runs to its own end:
+
+    60 x NtDelayExecution(1000ms)        the poll, 11 of them before the snapshot
+    PostThreadMessageW(5124, WM_COMMAND) -> 1, notepad.exe's thread
+    4 x NtDelayExecution(1000ms)
+    NtClose, NtFreeVirtualMemory
+    ExitProcess                          eip 0x7602b010
+
+**No write to the control block, across 144,117,944 blocks, 12,082,493 of them
+after the signal was answered.** So the loader injects three times, waits a
+minute, pokes the child's thread with one message, tidies up and exits. It never
+posts the request.
+
+**Both candidate peers inside this harness are now excluded by measurement.** The
+child has never executed (*0an*) and the loader demonstrably does not write the
+block. So the requester runs in neither — which points at a third context in the
+*child*: the message the loader sends is what would drive it, and our stage-4 run
+is one thread of that child running the server side. That is consistent with the
+requester at `+0x03e70` having ordinary direct callers while the server at
+`+0x03f40` has none and is dispatched through a pointer.
+
+**A wrong answer invented behaviour again, and this time inside one sitting.**
+The first run after the stub landed forgot `RINGFORGE_EXPLORER_CHILD=1`, so
+`served_process_list()` no longer held `notepad.exe` and the harness answered
+FALSE for the thread of the process it had hijacked 700M blocks earlier — the
+contradiction the opener of `served_process_list` was written against, arriving
+by a route it did not cover. The payload's failure path then issued **a second
+`PostThreadMessageW(5124, 0x8003, wParam=0x2fce50)`** — `WM_APP+3` with a pointer
+argument — which **does not exist in the correct run**. An hour spent on that
+message would have been an hour spent on the harness. `stage3_tail.py` now exits
+2 unless the toggle is set.
+
+**The env-var hazard is general and worth stating once.** A stored state is a
+function of the environment that produced it, and `restore()` does not carry that
+environment. `RINGFORGE_EXPLORER_CHILD` is the only one so far, but any toggle
+that changes what the harness *claims exists* has the same shape: the state
+commits to a fiction and the resume forgets it.
 
 #### THE NEXT QUESTION — is emulating the peer worth it, or is this the end?
 
@@ -2819,14 +2863,13 @@ three options, and none is obviously right:
 - **Accept the boundary.** Stage 4's behaviour up to the wait is fully mapped and
   the injection is proven by structure, by stage 3 having run the identical
   sequence, and by `--force-ready`. That may be all the emulator owes.
-- **Model the far side.** Give the harness a second execution context over the
-  shared view, **and a thread-message queue** — the loader's wake-up is
-  `PostThreadMessageW(WM_COMMAND)` to the child's thread (*0an*), so a second
-  context without a queue would still deadlock. Large, and the first change here
-  that would be building an emulator feature rather than closing a stub. Note
-  both sides already exist as saved states: the child's entry is
-  `after_handshake.state` at `0x3E9F89B`, and the loader's own thread is the
-  same state resumed untouched.
+- **Model a second context inside the child**, not the loader. `0ao` rules the
+  loader out: it signals once and exits without touching the block. What is
+  missing is a second thread in the injected process plus a message queue to
+  carry the loader's `WM_COMMAND` — the requester at `+0x03e70` has ordinary
+  direct callers, so it is reachable code waiting on a context to run it. Large,
+  and the first change here that would be building an emulator feature rather
+  than closing a stub.
 - **Go back to detonation.** A real machine has the peer for free. The section
   is RWX and carries the stage-4 image; what crosses the channel is small (the
   forced run's section was 4 KB), so it is a message, not a body.

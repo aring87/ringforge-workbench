@@ -1231,6 +1231,44 @@ class Emulator:
                 print(f"  [{self.blocks:,}blk] snapshot after the injection -> {path}",
                       flush=True)
             val = 0
+        elif name == "PostThreadMessageW":
+            # (idThread, Msg, wParam, lParam) -> BOOL
+            #
+            # The loader's wake-up for the thread it hijacked: after the third
+            # injection it polls for sixty seconds and then posts WM_COMMAND
+            # (0x111) to thread 5124, which is `notepad.exe`'s -- the explorer
+            # child it injected. Left unhandled this took `nargs` 0 and the
+            # caller returned into its own arguments, so everything after the
+            # signal was noise.
+            #
+            # **Answered TRUE and the message goes nowhere.** There is no
+            # message queue in this harness and no second thread to drain one,
+            # so this makes the loader's *own* continuation measurable and
+            # supplies nothing to the far side. Said here rather than only in a
+            # summary, because a run that reads "PostThreadMessageW -> 1" and
+            # then watches the child do nothing would otherwise look like the
+            # child declining rather than the child not existing.
+            nargs = 4
+            tid = a(0)
+            # A tid this harness never claimed exists gets FALSE, for the same
+            # reason `NtOpenProcess` refuses an unknown pid: the process list is
+            # a fiction and it has to be a consistent one. `system_process_info`
+            # gives every served process one thread, CLIENT_ID (pid, pid + 4).
+            known = {p + 4 for _, p, _ in winenv.served_process_list()}
+            owner = next((nm for nm, p, _ in winenv.served_process_list()
+                          if p + 4 == tid), None)
+            self.control_calls.append({"call": name, "blocks": self.blocks,
+                                       "args": [a(i) for i in range(nargs)],
+                                       "thread_of": owner})
+            val = 1 if tid in known else 0
+            if name not in self.calls or self.calls[name] == 1:
+                print(f"  [{self.blocks:,}blk] {name}(tid {tid}, msg {a(1):#x}) "
+                      f"-> {val}"
+                      + (f", the thread of {owner!r}" if owner else
+                         ", a thread this harness never served")
+                      + ". NOT DELIVERED: no message queue and no second "
+                        "thread exists, so the far side hears nothing.",
+                      flush=True)
         elif name == "NtDelayExecution":
             # (Alertable, PLARGE_INTEGER Interval). Negative is a relative
             # interval in 100ns units; positive is an absolute time. The sleep
