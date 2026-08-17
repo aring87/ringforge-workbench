@@ -474,6 +474,19 @@ class Emulator:
         # what stage 4 is actually run from -- would keep resolving into empty
         # headers. Idempotent, so a state that already has them is untouched.
         self.addr2name.update(winenv.map_extra_module_exports(mu))
+        # Same argument once more, and the third fix to need it: `restore()`
+        # does not rebuild the loader entries, so a state captured while every
+        # entry's `FullDllName` was the bare leaf comes back that way. Stage 4
+        # derives the SysWOW64 directory from that field, so leaving it would
+        # keep handing it a malformed path forever. Idempotent -- an entry that
+        # already carries a path is skipped.
+        repaired = winenv.repair_loader_full_names(mu)
+        if repaired:
+            print(f"win32_emu_env: {len(repaired)} loader entry/entries given a "
+                  f"real FullDllName (e.g. {repaired[0][0]!r} -> "
+                  f"{repaired[0][1]!r}). They held the bare leaf, which is what "
+                  f"made stage 4 build 'ntdll.dll\\Windows\\SysWOW64\\...'.",
+                  flush=True)
         # A snapshot taken before the harness supplied the kernel's values holds
         # the zero the payload copied out of the loaded image, in every private
         # ntdll it had already mapped. The payload does that fixup once, so

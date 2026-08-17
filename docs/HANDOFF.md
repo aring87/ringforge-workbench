@@ -3016,10 +3016,63 @@ starts from `ntdll.dll` and the path is malformed from the first character.
 **It has not mattered so far, and only by luck**: `Emulator.backing()` resolves a
 file by leaf name, so the harness silently repaired the path it had itself
 broken, and `CreateProcessInternalW` returns 1 without looking at the path at
-all. A real machine fails that call. **Not fixed here** — `restore()` rebuilds
-the syscall gate and the export tables but *not* the loader entries, so the fix
-has to be a restore-time repair or it reaches fresh runs only, which is the trap
-`0c` documents. Queued, not done.
+all. A real machine fails that call.
+
+**FIXED, and it half-resolved the symptom — read `0ap` before assuming the app
+name is now good.** `winenv.repair_loader_full_names()` walks
+`InLoadOrderModuleList` and gives each entry a real `FullDllName`, leaving
+`BaseDllName` the leaf. It runs from `setup()` *and* from `restore()`, because
+`restore()` rebuilds the syscall gate and the export tables but not the loader
+entries, and a fresh-runs-only fix would never reach the stored states stage 4 is
+actually run from — the trap `0c` documents, dodged for the third time.
+
+#### 0ap. The FullDllName fix lands, and the path is still malformed
+
+All 23 entries now carry the paths a 32-bit process on this host would report --
+`C:\Windows\SysWOW64\<dll>` for the modules, and
+`C:\Windows\Microsoft.NET\Framework\v4.0.30319\RegSvcs.exe` for the image. Both
+directories are **real on this machine**, not invented. Idempotent: a second call
+writes 0. 626 tests pass.
+
+**One thing it fixed outright.** The ntdll open is now well formed:
+
+    before  \??\ntdll.dll\Windows\SysWOW64\c...
+    after   \??\C:\Windows\SysWOW64\ntdll.dll
+
+**And one it did not.** `lpApplicationName` changed and is still wrong:
+
+    before  ntdll.dll\Windows\SysWOW64\compact.exe
+    after   C:C:\Windows\SysWOW64\compact.exe        <-- doubled drive
+
+Everything else is unchanged — 60,928,325 blocks against 60,928,346 (the
+difference is string lengths), same API census, still reaches both rendezvous and
+still times out. So the fix is right and **`0ac` caveat 2 is only half closed**.
+
+**What is measured about the second cause, and what is not.** Hooking the call
+and its return: the wrapper `+0x27ef0` is handed `C:\Windows\SysWOW64\ntdll.dll`
+and returns `C:C:\Windows\SysWOW64\` — so the doubling happens inside, and the
+`SysWOW64\` is appended there rather than by the caller's `[edi+0x784]` branch as
+this file assumed. The real body is `+0x117a0`, and **it does not disassemble**:
+capstone desynchronises a few instructions past the prologue, which is the
+obfuscated-region problem, not a bad address.
+
+Its read census over that one call:
+
+    2,631,240  its own stack
+        3,815  inside ntdll's export directory (0x7711fd78, 0x771260a8+)
+          142  heap
+
+The 3,815 are an export resolution by name, not path work. **A malformed
+`lpApplicationName` with a NULL `lpCommandLine` fails `CreateProcess` on a real
+machine, so this is still almost certainly ours rather than the sample's** — but
+which input is wrong is not established, and `ProcessParameters` at `PEB+0x10` is
+a live suspect precisely because this harness never populates it (only `+0x02`,
+`+0x08` and `+0x0C` are written).
+
+**One negative in that probe is VOID, recorded so nobody trusts it.** It also
+counted "reads carrying 'C' or ':'" and reported zero. That means nothing:
+unicorn does not populate the `value` argument of `UC_HOOK_MEM_READ`, so the test
+was against a constant 0. Only the region counts above survive.
 
 ---
 

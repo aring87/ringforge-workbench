@@ -632,6 +632,95 @@ def syscall_table(path=None):
     return table, transition, pe.OPTIONAL_HEADER.SizeOfImage
 
 
+#: Where each loader entry's `FullDllName` text lives, one `LOADER_PATH_STRIDE`
+#: buffer per module. It needs its own storage because `FullDllName` and
+#: `BaseDllName` are different strings -- which this harness did not model until
+#: 16 Aug, writing the *same* `UNICODE_STRING` to both and so claiming every
+#: module's full path was its bare leaf.
+#:
+#: That is not cosmetic. Stage 4 builds the SysWOW64 directory by looking a
+#: module up by hash and taking `entry + 0x28`, which is `FullDllName.Buffer`,
+#: then appending. Given `ntdll.dll` instead of `C:\Windows\SysWOW64\ntdll.dll`
+#: it produced `ntdll.dll\Windows\SysWOW64\compact.exe` as `lpApplicationName`
+#: -- a path a real machine fails `CreateProcess` on, which this harness then
+#: silently repaired because `Emulator.backing()` resolves files by leaf name.
+#: Broken by us and hidden by us. See HANDOFF `0al`.
+LOADER_PATHS_AT = LDR_ADDR + 0x5000
+LOADER_PATH_STRIDE = 0x100
+
+#: The directories the loader entries claim. **Both are real on this host**, not
+#: invented: the DLLs are read from `SYSWOW64` already, and `RegSvcs.exe` is a
+#: .NET framework tool that lives exactly here. A 32-bit process on this machine
+#: would report these paths.
+LOADER_SYSTEM_DIR = r"C:\Windows\SysWOW64"
+LOADER_IMAGE_DIR = r"C:\Windows\Microsoft.NET\Framework\v4.0.30319"
+
+
+def loader_full_path(name: str) -> str:
+    """The full path a real loader entry would carry for `name`."""
+    folder = LOADER_IMAGE_DIR if name.lower().endswith(".exe") else LOADER_SYSTEM_DIR
+    return f"{folder}\\{name}"
+
+
+def repair_loader_full_names(mu, base=LDR_ADDR):
+    """Point every entry's `FullDllName` at a real path instead of the leaf.
+
+    Walks `InLoadOrderModuleList` rather than taking a module list, because the
+    caller that needs this most is `Emulator.restore()`: it rebuilds the syscall
+    gate and the export tables but **not** the loader entries, so a fix applied
+    only in `setup()` would reach fresh runs and never the stored checkpoints
+    that stage 4 is actually run from. That is the trap HANDOFF `0c` records,
+    and this is the third fix to have to dodge it.
+
+    Idempotent -- an entry whose `FullDllName` already holds a path is left
+    alone, so it is safe to run at `setup()` and again at every restore.
+
+    Returns the list of (name, full path) it wrote.
+    """
+    head = base + 0x0C                       # InLoadOrderModuleList head
+    try:
+        flink = struct.unpack("<I", mu.mem_read(head, 4))[0]
+    except Exception:
+        return []
+    # How many buffers actually fit below the end of the mapped loader region.
+    # Bounding the *walk* by this is what keeps the guard honest: asserting a
+    # fixed worst case instead failed on a list of 23 modules that fits easily.
+    limit = (base & ~0xFFF) + 0x8000
+    capacity = (limit - LOADER_PATHS_AT) // LOADER_PATH_STRIDE
+    assert capacity > 0, "no room below the loader region for FullDllName buffers"
+
+    written = []
+    index = 0
+    while flink and flink != head and index < capacity:
+        entry = flink
+        try:
+            dll_base = struct.unpack("<I", mu.mem_read(entry + 0x18, 4))[0]
+            if not dll_base:
+                break                        # the sentinel the walk relies on
+            length, _, buf = struct.unpack("<HHI", mu.mem_read(entry + 0x2C, 8))
+            name = bytes(mu.mem_read(buf, length)).decode("utf-16-le") if buf else ""
+            full_len, _, full_buf = struct.unpack(
+                "<HHI", mu.mem_read(entry + 0x24, 8))
+            already = (bytes(mu.mem_read(full_buf, full_len)).decode("utf-16-le")
+                       if full_buf and full_len else "")
+            flink = struct.unpack("<I", mu.mem_read(entry, 4))[0]
+        except Exception:
+            break
+        index += 1
+        if not name or "\\" in already:
+            continue
+        path = loader_full_path(name)
+        wide = path.encode("utf-16-le") + b"\0\0"
+        ptr = LOADER_PATHS_AT + (index - 1) * LOADER_PATH_STRIDE
+        assert len(wide) <= LOADER_PATH_STRIDE and ptr + len(wide) <= limit, \
+            f"{path!r} does not fit in the FullDllName buffer at {ptr:#x}"
+        mu.mem_write(ptr, wide)
+        mu.mem_write(entry + 0x24,
+                     struct.pack("<HHI", len(path) * 2, len(wide), ptr))
+        written.append((name, path))
+    return written
+
+
 KUSER_SHARED_DATA = 0x7FFE0000
 
 #: A fixed clock. The host's page is authoritative for *layout* and for the
@@ -887,7 +976,7 @@ def setup(mu, image_base, image_size):
         nptr = names_at + i * 0x80
         mu.mem_write(nptr, wide)
         us = struct.pack("<HHI", len(nm) * 2, len(wide), nptr)
-        mu.mem_write(e + 0x24, us)                    # FullDllName
+        mu.mem_write(e + 0x24, us)                    # FullDllName, for now
         mu.mem_write(e + 0x2C, us)                    # BaseDllName
     last = first + (len(mods) - 1) * entry_size
     for off, head in heads.items():
@@ -898,6 +987,13 @@ def setup(mu, image_base, image_size):
     for head in heads.values():
         assert struct.unpack("<I", mu.mem_read(head + 0x18, 4))[0] == 0, \
             "list head +0x18 is non-zero; module walks will not terminate"
+
+    # Now that the list is linked and walkable, give every entry the full path
+    # its `FullDllName` is supposed to hold. Done by walking the list rather
+    # than inline above so that `setup()` and `Emulator.restore()` share one
+    # implementation -- the restore path is the one that matters, since stage 4
+    # is always run from a stored state.
+    repair_loader_full_names(mu)
 
     # Real export tables for the rest of the list, now that the entries exist.
     real_exports.update(map_extra_module_exports(mu))
