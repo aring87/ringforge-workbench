@@ -20,7 +20,6 @@ The block is **all zero** in the state as saved, so anything seen here is new.
 from __future__ import annotations
 
 import argparse
-import os
 import struct
 
 from unicorn import UC_HOOK_MEM_WRITE
@@ -44,22 +43,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="bytes of the control block to watch")
     args = ap.parse_args(argv)
 
-    # **The state depends on an env var that the resume does not inherit.**
-    # `after_handshake.state` only exists because `RINGFORGE_EXPLORER_CHILD=1`
-    # served `notepad.exe` (pid 5120) for the loader to inject into. Resuming
-    # without it leaves `served_process_list()` denying that process, so
-    # `PostThreadMessageW` to its thread 5124 is refused -- the harness
-    # contradicting a fiction it already committed to, which is the exact
-    # failure the opener of `served_process_list` was written against. The first
-    # run of this probe after the stub landed hit it and read "a thread this
-    # harness never served" for the thread it had hijacked 700M blocks earlier.
-    if os.environ.get("RINGFORGE_EXPLORER_CHILD") != "1":
-        print("*** VOID: RINGFORGE_EXPLORER_CHILD is not 1, but this state was "
-              "made with it.\n    The explorer child is not in "
-              "served_process_list(), so any call naming its pid\n    or its "
-              "thread will be refused and the run will diverge. Set it.")
-        return 2
-
+    # `RINGFORGE_EXPLORER_CHILD=1` is required, and `Emulator.restore` is what
+    # enforces it -- see `ENV_TOGGLES`. This probe had its own copy of that
+    # check for one commit; the guard belongs at the restore, where every script
+    # gets it, rather than in each script that remembers to ask.
     emu = Emulator.restore(args.state)
     eip = emu.mu.reg_read(UC_X86_REG_EIP)
     start = emu.blocks
@@ -173,8 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   delivered, so a loader that waits for an acknowledgement "
               f"would stall here anyway.")
     elif not writes:
-        print(f"   NONE. Stage 3 holds the same view and never posts a request,")
-        print(f"   so it is not the peer the stage-4 server is waiting for.")
+        # Neither stopped at the signal nor got past it, so the run ended before
+        # reaching `PostThreadMessageW` at all. **Say nothing.** This branch
+        # read "stage 3 never posts a request, so it is not the peer" until a
+        # 200-block smoke test printed that conclusion -- the same shape as the
+        # RUN CHECK that certified its own truncation (`0aa`), in the script
+        # written to record that lesson.
+        print(f"   none, but the run ended at {eip:#010x} after {ran:,} blocks "
+              f"without reaching")
+        print(f"   {SIGNAL} -- which is 132,035,451 blocks in. **This concludes "
+              f"nothing.** Raise")
+        print(f"   --instructions until the signal appears above.")
     raw = bytes(emu.mu.mem_read(BLOCK, args.watch))
     print(f"\nCONTROL BLOCK NOW: {'all zero' if not any(raw) else raw.hex(' ')}")
     return 0

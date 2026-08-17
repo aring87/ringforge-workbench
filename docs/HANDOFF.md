@@ -2849,11 +2849,39 @@ argument — which **does not exist in the correct run**. An hour spent on that
 message would have been an hour spent on the harness. `stage3_tail.py` now exits
 2 unless the toggle is set.
 
-**The env-var hazard is general and worth stating once.** A stored state is a
-function of the environment that produced it, and `restore()` does not carry that
-environment. `RINGFORGE_EXPLORER_CHILD` is the only one so far, but any toggle
-that changes what the harness *claims exists* has the same shape: the state
-commits to a fiction and the resume forgets it.
+**The env-var hazard is general, and `restore()` now guards it.** A stored state
+is a function of the environment that produced it and `restore()` does not carry
+that environment, so any toggle changing what the harness *claims exists* has
+this shape: the state commits to a fiction and the resume forgets it.
+
+`Emulator.ENV_TOGGLES` lists them (`RINGFORGE_EXPLORER_CHILD`,
+`RINGFORGE_FORGE_MODULE`), snapshots record them at v4, and `restore()` refuses a
+resume that contradicts one:
+
+    after_handshake.state was written with RINGFORGE_EXPLORER_CHILD='1' and this
+    process has it unset. The state holds pids, handles and memory that name a
+    process the harness would now deny exists ... Set RINGFORGE_EXPLORER_CHILD=1
+
+**Asymmetric, deliberately.** Removing a toggle the state relied on is fatal;
+*adding* one it lacked is allowed and only announced — `after_scan.state`
+predates the toggle and is routinely resumed with it on, and that is the
+documented route to the injection. Breaking it would be breaking the route.
+
+**Every state on the artifact drive predates v4**, so silence in an old snapshot
+proves nothing and is not treated as proof. The fallback is evidence: stage 3's
+poll never leaves its loop unless a child of explorer is served, so a state
+carrying `NtSetContextThread` or `NtMapViewOfSection` was written with the toggle
+on whatever it records. Six tests in
+`dynamic_analysis/tests/test_restore_env_guard.py` pin both directions, the
+pre-v4 inference, and a drift check that fails if a new `RINGFORGE_*` toggle
+appears without a decision about it. 626 pass.
+
+**And one more of the same family, caught in the script written to record it.**
+`stage3_tail.py`'s "no writes" branch read *"stage 3 never posts a request, so it
+is not the peer"* — a conclusion it printed happily for a 200-block smoke run
+that never reached the signal. Same shape as the RUN CHECK that certified its own
+truncation (*0aa*). It now reports where the run actually ended and concludes
+nothing.
 
 #### THE NEXT QUESTION — is emulating the peer worth it, or is this the end?
 

@@ -69,6 +69,7 @@ import argparse
 import collections
 import json
 import math
+import os
 import pickle
 import struct
 import zlib
@@ -321,7 +322,7 @@ class Emulator:
             # v2 adds the syscall counters. The SSN table itself is *not*
             # stored: it is derived from the host's own ntdll and rebuilt on
             # restore, so a snapshot can never carry a stale numbering.
-            "version": 3,
+            "version": 4,
             "base": self.base,
             "regions": regions,
             "regs": {r: self.mu.reg_read(self._reg_id(r)) for r in self._REGS},
@@ -344,19 +345,83 @@ class Emulator:
             # injected code starts, and the entry point has to be passed
             # in by hand from the run that captured it.
             "thread_contexts": self.thread_contexts,
+            # v4. The toggles that were set when this ran. See `ENV_TOGGLES`.
+            "env_toggles": {k: os.environ.get(k) for k in ENV_TOGGLES},
         }
         Path(path).write_bytes(pickle.dumps(state, protocol=4))
+
+    #: Environment toggles that change **what the harness claims exists**, as
+    #: opposed to how faithfully it models what is already there.
+    #:
+    #: A stored state is a function of these and `restore()` does not inherit
+    #: them, so a resume can silently contradict the fiction the state was built
+    #: on. That is not hypothetical: `after_handshake.state` exists only because
+    #: `RINGFORGE_EXPLORER_CHILD=1` served `notepad.exe` for the loader to inject
+    #: into, and resuming it without the toggle made the harness answer FALSE to
+    #: `PostThreadMessageW` for the thread of the process it had hijacked 700
+    #: million blocks earlier. The payload's failure path then issued a second
+    #: message that does not exist in a correct run -- a wrong answer inventing
+    #: behaviour, which is this project's most expensive recurring mistake.
+    ENV_TOGGLES = ("RINGFORGE_EXPLORER_CHILD", "RINGFORGE_FORGE_MODULE")
+
+    #: Calls that only happen once the explorer child is served. Stage 3's poll
+    #: compares each record's parent pid against explorer's and never leaves the
+    #: loop otherwise, so a state carrying these is *evidence* the toggle was on,
+    #: whatever it does or does not record. This is how states written before
+    #: v4 -- which is all of the ones on the artifact drive -- are still checked.
+    _CHILD_EVIDENCE = ("NtSetContextThread", "NtMapViewOfSection")
+
+    @classmethod
+    def _check_env(cls, state: dict, path: str | Path) -> None:
+        """Refuse a resume that denies something the state already claimed.
+
+        **Asymmetric on purpose.** Adding a process the state did not have is
+        how the injection was reached in the first place -- `after_scan.state`
+        predates the toggle and is routinely resumed with it on, and breaking
+        that would be breaking the documented route. Taking one away is the
+        direction that cannot be sound: the state holds pids, handles and
+        written memory that refer to a process the harness would now deny.
+        """
+        stored = state.get("env_toggles")
+        if stored is None:
+            # Pre-v4. Infer from what the state contains rather than trusting
+            # its silence.
+            calls = state.get("calls") or {}
+            if any(calls.get(name) for name in cls._CHILD_EVIDENCE):
+                stored = {"RINGFORGE_EXPLORER_CHILD": "1"}
+            else:
+                return
+        for name, was in stored.items():
+            now = os.environ.get(name)
+            if was and not now:
+                raise EnvironmentError(
+                    f"{Path(path).name} was written with {name}={was!r} and "
+                    f"this process has it unset.\n"
+                    f"The state holds pids, handles and memory that name a "
+                    f"process the harness would now\ndeny exists, so the "
+                    f"resume would diverge from the run that produced it -- "
+                    f"quietly,\nas a FALSE from a call that should succeed. "
+                    f"Set {name}={was} and run again.\n"
+                    f"(Adding a toggle the state lacked is allowed and only "
+                    f"noted; removing one is not.)")
+            if now and not was:
+                print(f"NOTE: {Path(path).name} was written without {name}, and "
+                      f"it is {now!r} now. Allowed --\nadding a process the "
+                      f"state never referred to cannot contradict it, and this "
+                      f"is the\ndocumented route to the injection. Anything the "
+                      f"run does with it is new.", flush=True)
 
     @classmethod
     def restore(cls, path: str | Path) -> "Emulator":
         """Rebuild an emulator from a snapshot, hooks and all."""
         state = pickle.loads(Path(path).read_bytes())
+        cls._check_env(state, path)
         # Every version this class has ever written stays readable. Bumping the
         # writer without widening this guard makes each new snapshot unloadable
         # by the code that wrote it -- which is how a state saved after an
         # eight-billion-instruction run came back "unsupported snapshot version
         # 3" and nearly cost the run twice.
-        if state.get("version") not in (1, 2, 3):
+        if state.get("version") not in (1, 2, 3, 4):
             raise ValueError(f"unsupported snapshot version {state.get('version')}")
         self = cls.__new__(cls)
         self.raw = b""
