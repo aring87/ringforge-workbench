@@ -2606,11 +2606,21 @@ alongside one does not.
 **Start here if you are cold. This supersedes the 16 Aug entry below**, which
 stays because its subsections are the working record.
 
-**Queues.** Build empty, signature empty. **The detonation queue is now empty
-too.** `0av` ran as run `27f81ffc` and is closed; **`0au` is closed without a
-detonation** — it asked whether the real `CreateProcessW` accepts `C:C:\…`, which
-is a Win32 question answerable on this bench, and the answer is
-`ERROR_INVALID_NAME` for all twelve. See `0be`.
+**Queues.** Build empty, signature empty. `0av` ran as run `27f81ffc` and is
+closed; **`0au` is closed without a detonation** — it asked whether the real
+`CreateProcessW` accepts `C:C:\…`, which is a Win32 question answerable on this
+bench, and the answer is `ERROR_INVALID_NAME` for all twelve (`0be`).
+**Detonation: one entry, `0bi`** — VIPKeylogger `8ceb2c53…`, chosen to finish
+the *dynamic module* rather than the crash, with ten predictions recorded before
+it runs.
+
+> **The goal is now finishing the dynamic module, and the crash is not on that
+> path.** Build queue empty, every detector built, 662 tests. What remains is a
+> **proving** debt: the table in *What is proven, and what is not* has a dozen
+> rows reading *Fixed, unproven* or *never fired*, and most of them need one
+> **completed hollow** — which `422e30ed` cannot give, because it bails by
+> design. **Samples are also no longer on this host** (see *Environment facts*);
+> re-acquire by hash before planning anything.
 
 **The three things that changed today, and none is a small edit:**
 
@@ -3830,6 +3840,79 @@ the `PEB->Ldr` list at gate time held something the list at dump time does not.
 idea, it attacked the one link nobody had checked, and killing it is what
 justifies spending a detonation on the temporal question rather than continuing
 to read artifacts. The next measurement has to be taken *while the gate runs*.
+
+#### 0bi. QUEUED DETONATION — VIPKeylogger `8ceb2c53…`, predictions recorded first
+
+**The goal changed on 17 Aug: finish the dynamic module.** The crash is not on
+that path — the handoff has said so since the ranked list was written — and the
+module's remaining debt is *proving*, not building. The build queue is empty,
+every detector exists, and the table in *What is proven, and what is not* is
+where the work is. Most of those rows need **one completed hollow**, which this
+sample family has never delivered because `422e30ed` bails by design.
+
+**The sample.** `8ceb2c538d49fe528d9219f61da05a62a5da83dd212a5ac29356c07e98b582c9`,
+Triage family **VIPKeylogger**, 10/10 Triage, 100/100 Hybrid Analysis. Chosen
+over two rejected candidates, and *why* they were rejected is the reusable part:
+
+- A Snake Keylogger sample tagged `netreactor` / `ip-check` / `evasion` whose
+  report named **no** hollowing target — the family usually hollows `RegAsm`,
+  but "the family usually does" is not a prediction.
+- `c363e567…`, rejected outright: *"anti-virtualization techniques using MAC
+  address detection"*, *"contains a known anti-VM trick"*, and *"creates
+  guarded memory regions (anti-debugging trick to avoid memory dumping)"* —
+  the last aimed squarely at this pipeline's only evidence source. The guest is
+  VirtualBox with the default `08:00:27` OUI, so the MAC check is one compare.
+
+**Selection rule that came out of this, worth keeping:** search the *signature
+text*, not the tags. `Suspicious use of SetThreadContext` is the reliable tell
+for hollowing; `Injects into <name>.exe` names the host outright. Disqualify on
+`MAC address detection`, `known anti-VM trick`, `guarded memory regions`.
+Triage states these in plain text where ANY.RUN's tags and HA's indicator list
+do not.
+
+**Its signatures, and what each is being run for:**
+
+| Signature | The row it is aimed at |
+|---|---|
+| `Suspicious use of SetThreadContext` | gap 5 `strong`; crash-dump `hollowing_target` |
+| `Executes dropped EXE` | dropped-file lineage — *Fixed, unproven* |
+| `SmartAssembly .NET packer` | proxy-aware call graph — *"Unproven on any other protected sample"* |
+| `Command and Scripting Interpreter: PowerShell` | PowerShell lineage filter, second family |
+| `Adds Run key to start application` | persistence, regression |
+| Reads browser / Outlook profiles | received-file collection — *collection path unproven* |
+
+**PREDICTIONS, recorded before the run.** The Remcos run is the precedent: four
+held, three failed, and every failure was a pipeline bug rather than a property
+of the sample. A run described only afterwards reads as a clean success.
+
+1. **`chain_crashed` is false.** This sample has no anti-analysis bail in any
+   report. If it crashes like `422e30ed` did, the selection rule above is
+   wrong and that is the finding.
+2. **`process_injection` fires, at least `present`.** `SetThreadContext` is
+   observed behaviour, not a string match.
+3. **Gap 5 grades `strong` *only if* the hollowed host is in
+   `HOLLOWING_TARGETS`.** Triage did not name the host. **`present` is a pass,
+   not a failure** — it means the sample hollows its own dropped copy, and the
+   `strong` branch stays unproven for a locatable reason rather than a silent
+   one. Record which host it actually used.
+4. **`payload_dropped` fires with lineage `1`**, not the sample's whole write
+   set. The lineage fix has never faced a run that drops.
+5. **PowerShell blocks captured, `other_process_blocks_excluded: 0`.**
+6. **`persistence_installed` strong** — a Run key, same shape as Remcos.
+7. **`registry_read` is non-zero.** The config field is the default now and a
+   pre-flight warns; a zero means the guard, not the sample.
+8. **Local YARA rules scan and match nothing.** They anchor on `422e30ed`'s
+   context cookie and split-API fragments. **A hit would be a false positive on
+   a different family and is the most valuable failure available here.**
+9. **Module integrity: 0 mismatches outside the hollowed process.** The
+   measured benign rate is 0 across 300 modules in 12 programs.
+10. **The WER `app_timestamp` check stays silent** unless the sample crashes.
+    It needs a fault; a clean hollow gives it nothing, and that is correct.
+
+**What would make the run void rather than negative:** the guest a commit
+behind, the wrong Procmon config, or the sample failing to run at all. Check
+`procmon_filter` in the summary before reading any zero — that row is *Built,
+unproven* and this run proves it either way.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
