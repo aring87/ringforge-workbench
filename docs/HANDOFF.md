@@ -827,6 +827,13 @@ abort helper's argument than a buffer address, which would make the fault an
 unhandled error path rather than a poisoned pointer. That is a lead, explicitly
 not a conclusion — this section has four of those already.
 
+> **RETRACTED by `0bd`, and the shape was the answer.** It is not an argument.
+> `pushad`/`popad` balance and neither helper touches the stack above its own
+> frame, so the trailing `ret` transfers to the *immediate*: both stubs are
+> `call <helper> ; jmp 0x32dfd514`, proven by executing one. `0x32dfd514` is
+> the author's **poison address** — the only immediate used that way anywhere
+> in the image.
+
 **The remaining measurement is on the guest, not the bench.** Log what `0x2dc01`
 returns during a live run. Everything answerable from the artifacts here has
 been answered.
@@ -2598,10 +2605,14 @@ blocked behind the stage-3 crash. `0av` ran as run `27f81ffc` and is closed.
    runs `Add-MpPreference -ExclusionPath` **on its own executable**. Attribution
    checked against `bootstrap_tools.ps1`, which uses the same cmdlet on the
    tools directory — the path is what distinguishes them. See `0aw`.
-3. **`[ctx+0x6d8]` is a cookie, and the crash is probably a designed bail.**
+3. **`[ctx+0x6d8]` is a cookie, and the crash is a designed bail.**
    Normally it holds a *runtime self-address*; the Sandboxie branch swaps in the
    hardcoded `0x32dfd514`, which makes every `x ^ cookie` recovery in the context
-   yield garbage. See `0ax`–`0az`.
+   yield garbage. See `0ax`–`0az`. **And `0x32dfd514` is the author's poison
+   address**, not an arbitrary constant: it is the only immediate in the image
+   used as `call <abort helper> ; jmp <it>`, twice, proven by execution. The
+   gate writes the poison address into the cookie. **"Broken build" is no longer
+   a live reading of the store.** See `0bd`.
 
 **The one open question on the crash, isolated as tightly as it will go without
 a new idea:** the guest's cookie held the constant; **only** `rva 0x1605f` writes
@@ -3443,6 +3454,59 @@ four `edi`-based ones outside `0x24723`/`0x24737`.
 > stale premise. **A conclusion line must name the observation it rests on and
 > that observation must be in the same run** — this one now cites `0ba` by name
 > and prints the measured guest breakdown rather than a remembered one.
+
+#### 0bd. `0x32dfd514` IS THE AUTHOR'S POISON ADDRESS — 17 Aug
+
+`0bb` noticed the two non-store occurrences of the constant sit in a thunk table
+as `push 0x32dfd514 ; pushad ; call ; popad ; ret`, and `Why it crashes` had read
+them as "an error or abort helper's argument". **Both readings miss what the
+shape does.** `pushad` and `popad` balance, and neither helper touches the stack
+above its own frame — so at the trailing `ret` the stack top is the *immediate*.
+The stub is:
+
+    call <helper>  ;  jmp 0x32dfd514
+
+`scripts/poison_thunks.py` proves it by **executing** one — assembled from
+scratch, helper replaced by a bare `ret`, registers seeded with markers:
+
+    stopped: Invalid memory fetch (UC_ERR_FETCH_UNMAPPED)
+    EIP 0x32dfd514   (the caller's return address was 0xdeadbee0)
+    registers preserved across pushad/popad: True
+
+**An execute fault, at the constant.** Neither stub returns to its caller.
+Reading it off a disassembly is the method that has been retracted repeatedly
+here, so it is run instead.
+
+**And it is the only immediate used that way.** A sweep for
+`68 imm32 | 60 | e8 rel32 | 61 | c3` over the whole unpacked image returns
+**two stubs, both with `0x32dfd514`** — so this is not one dispatch id among
+many. It is a **single designated poison address**, mapped by nothing on any
+machine, which is why it is not page-aligned and why no allocation ever
+explained it.
+
+**What the helper does first is stamp a reason.** `rva 0x2e111` fetches the
+context through the lazy getter at `0x15441`, writes `0xb1938` into
+`[ctx+0x6a4]`, calls `0x2a011(ctx, &0x789d5f00)` and returns 0 — *then* the stub
+jumps into nothing. Record why, then die. (The getter is the same one whose tail
+does `call 0x2027cd1 ; mov [esi+0x14c], eax`, which is the pair the gate block
+opens with — same object, and it spans at least `0x4da0` bytes.)
+
+**What this settles, and it is the framing rather than the fact.** `0ay` said
+the gate "substitutes a hardcoded constant for a runtime address" and moved the
+balance toward deliberate bail while retiring neither reading. The constant now
+has a *name*: the author keeps one poison address, jumps to it from two abort
+stubs, and **the Sandboxie gate writes that same address into the context
+cookie.** A build that merely broke does not have a designated poison address
+and does not reach for it on one specific branch. **Broken build is no longer a
+live reading of the store**, though nothing here proves it was reached honestly.
+
+**What it does not settle, and the distinction matters.** The guest died on a
+**read** at `0x32dfd514` from `cmp al, [esi+ecx]` — not a fetch. Neither stub
+executed there, and neither executed on the bench either: the clean run reaches
+`ExitProcess` at 632,962,985 blocks **with no fault at all**, and a stub that
+ran would have faulted on the fetch. So the thunks explain what the value
+*means*, not the path the crash took. **The standing question is untouched:**
+the guest had no module hashing to `0xe11da208` and stored the poison anyway.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
