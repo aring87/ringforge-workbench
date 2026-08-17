@@ -2948,8 +2948,81 @@ value arriving in the context from somewhere else entirely.
 
 **`0au` is unanswered and it is not this run's fault.** The seventeen processes
 include no explorer child, no `notepad.exe`, and none of the twelve host
-candidates. Stage 4 never ran, so there was no `CreateProcessW` to observe. It
-stays queued behind the crash.
+candidates. Stage 4 never ran, so there was no `CreateProcessW` to observe.
+`Select-String 'C:C:'` over the capture returns nothing — **unobserved, not
+refuted**, which is what "stage 4 never ran" predicts and says nothing about the
+path. It stays queued behind the crash.
+
+**First look at the gate-reachability question, and it is not finished.** The
+constant `0x32dfd514` appears **three times** in the late allocation dump:
+
+    rva 0x16065   the immediate of  mov dword [esi+0x6d8], 0x32dfd514   (known)
+    rva 0x0d809   unclassified
+    rva 0x2dca9   unclassified
+
+The known one disassembles cleanly and matches this file exactly, down to the
+`push esi ; call +0x2cd91` that follows it. **The other two do not, and neither
+is being called a second store site.** Both sit where a linear sweep
+desynchronises — `0xd808` reads as `push 0x32dfd514 ; pushal` off the back of a
+run of zero bytes, `0x2dca9` does not surface as an operand at all. That is
+precisely the tool failure recorded above, where a desynchronising sweep dropped
+20 of 65 call sites, so **they are unclassified, not data and not code**.
+
+**What would classify them**: whether either address was ever *executed*. A block
+hook over stage 3's range across a full run, checked against `0xd808` and
+`0x2dca9`, answers it by measurement instead of by disassembly — the method that
+has been wrong every time on this chain.
+
+**One durable fact fell out of the scan.** The carved `stage3_native_e84f7824`
+contains **zero** occurrences of the constant *and* zero of the `+0x6d8`
+displacement; the 540M allocation dump has 3 and 23. Anything about this gate
+must be read from `stage3_alloc_at540M_dc038cc7`, because in the carved copy
+those bytes are still encrypted.
+
+**THE RULES FIRED. This is the first time.** The report records three matches on
+process memory and not on disk:
+
+    RingForge_FormBook_422e30ed_ContextCookie
+    RingForge_Loader_422e30ed_Stage2
+    RingForge_Split_API_Injection_Loader
+
+`0aw`'s parent section notes that before the baseline was rebuilt, **no run this
+project ever did had scanned one of its own rules**. This is that run. All three
+are memory-only, which is the property they were written for, and the pipeline
+files them under T1027 and T1140 off its own evidence rather than off a note.
+
+**The crash, recorded exactly, and C4 is direct rather than inferred:**
+
+    RegSvcs.exe  pid 5272  exception c0000005  fault offset 01012c7c
+    image C:\Windows\Microsoft.NET\Framework\v4.0.30319\RegSvcs.exe
+    "Executed From Unmapped Memory", 1 crash dump collected
+
+Twelfth consecutive crash. The fault offset is worth carrying forward: earlier
+entries record the *value read* (`0x32dfd514`) and the emulator's rva
+(`0x2c53`), but not the guest's faulting EIP. `0x01012c7c` is a number to
+compare the next run against.
+
+**New behaviour, and it is not small.** The sample's PowerShell child
+(pid 1988) runs:
+
+    Add-MpPreference -ExclusionPath "C:...
+
+That is a **Defender exclusion**, T1562.001, twelve script blocks recorded and
+one graded high. It has not appeared in this file before. **Attribution caveat**:
+the pipeline credits it to the sample and excluded one analyzer block separately,
+but this project has twice found its own tooling contaminating a detector
+(`WerFault.exe`, `procdump64.exe`), so confirm against `vm_hygiene.ps1` before
+treating the exclusion as the sample's.
+
+**Containment confirmed the way `WORKFLOW` insists** — `network_isolation:
+single egress path (1)`, read from the summary rather than the GUI line.
+
+**One loose end for whoever picks this up.** Sysmon counted
+`CreateRemoteThread: 2` while the injection section reports 0 and
+`Sysmon Highlights: 0`. Both are probably excluded as analyzer or baseline
+events — 45 analyzer events and 2 Windows-baseline events were filtered — but
+"filtered" and "absent" are different claims and this file has been bitten by
+that distinction twice.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
