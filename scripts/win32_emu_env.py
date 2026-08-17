@@ -437,6 +437,54 @@ SPAWNED: list[tuple[str, int, int]] = []
 #: process can never collide with one the harness already claims exists.
 SPAWN_PID_BASE = 7000
 
+#: Where the real host images for spawned processes are actually mapped.
+#:
+#: They cannot go at `SPAWNED_IMAGE_BASE`: this emulator has **one** address
+#: space and `0x400000` already holds the payload's own chain. So each host is
+#: mapped out of the way here and `NtReadVirtualMemory` translates -- a read of
+#: `0x400000` against a spawned process's handle lands on that process's image
+#: instead of on ours. Without the translation the payload would read its own
+#: stage back and be told it was the target, which is the self-confirming answer
+#: a hollowing run must never be given.
+HOST_IMAGE_BASE = 0x30000000
+HOST_IMAGE_STRIDE = 0x1000000
+
+
+def map_host_image(mu, leaf, base):
+    """Map a real SysWOW64 executable to stand in for a spawned process's image.
+
+    Returns (mapped_size, True) on success. The header's `ImageBase` is set back
+    to `SPAWNED_IMAGE_BASE` after mapping, because that is what a real target's
+    header says and a payload doing RVA arithmetic from it must land where the
+    PEB claims the image is -- not where this harness happened to put it.
+    """
+    import pefile
+
+    path = SYSWOW64 + leaf.lower()
+    if not os.path.exists(path):
+        return 0, False
+    try:
+        pe = pefile.PE(path, fast_load=True)
+    except Exception:
+        return 0, False
+    size = (pe.OPTIONAL_HEADER.SizeOfImage + 0xFFF) & ~0xFFF
+    mu.mem_map(base, size)
+    mu.mem_write(base, pe.header)
+    for section in pe.sections:
+        data = section.get_data()
+        if data:
+            mu.mem_write(base + section.VirtualAddress, data)
+    mu.mem_write(base + pe.DOS_HEADER.e_lfanew + 24 + 28,
+                 struct.pack("<I", SPAWNED_IMAGE_BASE))
+    return size, True
+
+
+#: The image base reported in a spawned process's PEB. 0x400000 is the classic
+#: base for the non-ASLR SysWOW64 executables stage 4 picks as hosts, and it is
+#: also what this harness maps its own payload at -- so a payload comparing the
+#: two sees the ordinary case rather than something that only happens here.
+SPAWNED_IMAGE_BASE = 0x400000
+
 #: The pid the harness claims for the process the payload is running inside --
 #: `IMAGE_NAME`'s entry in PROCESS_LIST. A spawned process's parent is this, and
 #: naming it here keeps the two definitions from drifting apart.

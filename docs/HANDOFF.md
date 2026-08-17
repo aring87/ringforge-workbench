@@ -2762,6 +2762,51 @@ payload at the next step, and implementing each revealed the next. That is the
 shape of the remaining work — not a mystery about the sample, but a queue of
 unimplemented APIs, each cheap to find because the harness names it.
 
+#### 0af. THE ELEVEN-HOST WALK WAS OUR ARTIFACT — corrected
+
+`ProcessBasicInformation` and then `NtReadVirtualMemory` are both implemented,
+the latter alongside **per-spawned-process host images**: each created process
+gets the real `SysWOW64` binary mapped at `HOST_IMAGE_BASE + n*stride`, its
+header's `ImageBase` set back to `0x400000`, and reads of `0x400000` against that
+handle translated onto it. Reads of anything else still fail — one address space,
+and serving *our* memory as another process's is the self-confirming answer a
+hollowing run must never get.
+
+**The pre-fix log shows exactly what it wanted:** every read was
+`PebBaseAddress + 8`, four bytes — `ImageBaseAddress` — once per process, all
+refused with `STATUS_ACCESS_VIOLATION`.
+
+**And with the read working, the behaviour collapses from eleven to one:**
+
+    before:  11 CreateProcessInternalW, 11 ProcessBasicInformation, 11 failed reads
+    after:    1 CreateProcessInternalW, 1  ProcessBasicInformation, 1  read, and
+             12 NtDelayExecution
+
+**So the eleven-process walk was a retry loop driven by our failing reads.** It
+tried each candidate because each failed. **`0ad` reported "eleven processes
+created" as an IOC and that is now qualified**: the eleven *names* are real
+candidates embedded in the payload, but creating all eleven was this harness's
+doing, not the sample's. In a working environment it takes the first —
+`compact.exe`.
+
+**Where it now stops.** It creates `compact.exe` suspended, is told
+`ImageBaseAddress 0x400000`, reads it, **sleeps twelve times**, and returns
+cleanly at 60,928,346 blocks. **Still no injection** — no `NtCreateSection`, no
+`NtMapViewOfSection`, no `NtUnmapViewOfSection`, no `NtWriteVirtualMemory`.
+
+**The twelve `NtDelayExecution` calls are the new frontier**, and nothing is
+unimplemented any more, so the next question is semantic rather than a missing
+stub: what is it waiting for, and what would end the wait.
+
+**A caution on all of the above.** Four harness behaviours were implemented today
+— `FileNameInformation`, `CreateProcessInternalW`, `ProcessBasicInformation`,
+`NtReadVirtualMemory` with host images — and **none has been checked against a
+detonation**. Each is a claim about what this environment tells the payload.
+They are deliberately conservative (separate PEBs, real bytes from `SysWOW64`,
+out-of-image reads still failing), but conservative is a judgement, not a
+measurement. The eleven-host artifact is the standing proof that a harness answer
+can invent behaviour that reads convincingly as the sample's.
+
 **What this establishes regardless:** the quiet return was **ours**, not the
 sample's. A single unimplemented information class stopped a payload that
 otherwise proceeds to process creation — and it was invisible for the whole

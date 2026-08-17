@@ -847,9 +847,18 @@ class Emulator:
             pid = winenv.SPAWN_PID_BASE + 4 * (len(winenv.SPAWNED) + 1)
             winenv.SPAWNED.append((leaf, pid, winenv.SELF_PID))
             hproc, hthread = self.new_handle(), self.new_handle()
+            # Give the new process a real image of its own, mapped out of the
+            # way. `NtReadVirtualMemory` translates `SPAWNED_IMAGE_BASE` reads
+            # against this handle onto it, so the payload inspecting "the
+            # target" sees compact.exe rather than this emulator's own 0x400000.
+            host_base = (winenv.HOST_IMAGE_BASE
+                         + winenv.HOST_IMAGE_STRIDE * len(self.spawned))
+            host_size, ok = winenv.map_host_image(mu, leaf, host_base)
             self.spawned.append({"image": image, "leaf": leaf, "pid": pid,
                                  "flags": a(6), "blocks": self.blocks,
-                                 "hprocess": hproc, "hthread": hthread})
+                                 "hprocess": hproc, "hthread": hthread,
+                                 "host_base": host_base if ok else 0,
+                                 "host_size": host_size})
             if a(10):
                 mu.mem_write(a(10), struct.pack("<IIII", hproc, hthread,
                                                 pid, pid + 1))
@@ -883,6 +892,58 @@ class Emulator:
             elif info_class == 0x1F:              # ProcessDebugFlags
                 wr(buf, 1)                        # 1 == *not* being debugged
                 wr(a(4), 4)
+                val = 0
+            elif info_class == 0x00:              # ProcessBasicInformation
+                # PROCESS_BASIC_INFORMATION, 32-bit: ExitStatus, PebBaseAddress,
+                # AffinityMask, BasePriority, UniqueProcessId,
+                # InheritedFromUniqueProcessId.
+                #
+                # Stage 4 asks this once per process it creates -- eleven times,
+                # each right after a CREATE_SUSPENDED launch -- and it is the
+                # PebBaseAddress it is after: the route to the target's
+                # ImageBaseAddress, which is what hollowing overwrites. Left
+                # unhandled, it moved to the next candidate every time and never
+                # injected.
+                #
+                # **A spawned process needs its OWN PEB, not ours.** Pointing at
+                # PEB_ADDR would tell the payload the target is already this
+                # image, which is not a simplification but a wrong answer -- and
+                # the one that would make a hollowing run look successful while
+                # measuring nothing. So each spawned process gets a mapped page
+                # of its own with `ImageBaseAddress` filled, and reads of it
+                # succeed because the page is real.
+                proc = next((s for s in self.spawned
+                             if s["hprocess"] == a(0)), None)
+                if proc is not None:
+                    if not proc.get("peb"):
+                        peb = self.alloc(0x1000)
+                        mu.mem_write(peb + 0x08,
+                                     struct.pack("<I", winenv.SPAWNED_IMAGE_BASE))
+                        proc["peb"] = peb
+                        print(f"win32_emu_env: ProcessBasicInformation for "
+                              f"{proc['leaf']!r} (pid {proc['pid']}) -- PEB "
+                              f"{peb:#x}, ImageBaseAddress "
+                              f"{winenv.SPAWNED_IMAGE_BASE:#x}. Invented, and "
+                              f"its own rather than this process's, so a read "
+                              f"of it cannot be mistaken for the payload "
+                              f"finding itself already mapped.")
+                    wr(buf + 0x00, 0x00000103)     # STATUS_PENDING; suspended
+                    wr(buf + 0x04, proc["peb"])
+                    wr(buf + 0x08, 1)              # AffinityMask
+                    wr(buf + 0x0C, 8)              # BasePriority
+                    wr(buf + 0x10, proc["pid"])
+                    wr(buf + 0x14, winenv.SELF_PID)
+                else:
+                    # The caller's own process. These are the real values this
+                    # harness already claims elsewhere, so nothing new is
+                    # invented here.
+                    wr(buf + 0x00, 0x00000103)
+                    wr(buf + 0x04, winenv.PEB_ADDR)
+                    wr(buf + 0x08, 1)
+                    wr(buf + 0x0C, 8)
+                    wr(buf + 0x10, winenv.SELF_PID)
+                    wr(buf + 0x14, 2448)           # the ppid in PROCESS_LIST
+                wr(a(4), 24)
                 val = 0
             else:
                 self.unhandled[f"{name}(class {info_class:#x})"] += 1
@@ -994,9 +1055,38 @@ class Emulator:
             wr(a(4), len(data))
             val = 0
         elif name == "NtReadVirtualMemory":
+            # (Handle, BaseAddress, Buffer, Size, *BytesRead)
+            #
+            # This refused every read with STATUS_ACCESS_VIOLATION, which was
+            # adequate while nothing had another process to read. Stage 4 does:
+            # it creates a host suspended, takes `PebBaseAddress` from
+            # `ProcessBasicInformation`, and reads it to find the image base --
+            # eleven times, failing every time, then moving on.
+            #
+            # Reads against a spawned process are served from that process's own
+            # mapped image, with `SPAWNED_IMAGE_BASE` translated onto it. Reads
+            # of anything else still fail: this harness has one address space,
+            # and quietly serving *our* memory as another process's is how a
+            # payload gets told it has already found what it is looking for.
             nargs = 5
-            wr(a(4), 0)
-            val = 0xC0000005                              # STATUS_ACCESS_VIOLATION
+            proc = next((s for s in self.spawned if s["hprocess"] == a(0)), None)
+            src, size = a(1), a(3)
+            blob = None
+            if proc is not None:
+                base, extent = proc.get("host_base"), proc.get("host_size", 0)
+                lo = winenv.SPAWNED_IMAGE_BASE
+                if base and lo <= src < lo + extent:
+                    blob = bytes(mu.mem_read(base + (src - lo),
+                                             min(size, extent - (src - lo))))
+                elif proc.get("peb") and proc["peb"] <= src < proc["peb"] + 0x1000:
+                    blob = bytes(mu.mem_read(src, min(size, 0x1000)))
+            if blob:
+                mu.mem_write(a(2), blob)
+                wr(a(4), len(blob))
+                val = 0
+            else:
+                wr(a(4), 0)
+                val = 0xC0000005                          # STATUS_ACCESS_VIOLATION
         elif name == "NtProtectVirtualMemory":
             # (Handle, *BaseAddress, *Size, NewProtect, *OldProtect)
             nargs = 5
