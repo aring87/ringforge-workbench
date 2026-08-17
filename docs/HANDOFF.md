@@ -2890,6 +2890,67 @@ that never reached the signal. Same shape as the RUN CHECK that certified its ow
 truncation (*0aa*). It now reports where the run actually ended and concludes
 nothing.
 
+#### 0aw. RUN `27f81ffc` — nothing on the guest hashes to `0xe11da208`
+
+**`0av` ran, 17 Aug, and C3 holds.** All twelve `verify_run.py` rows passed,
+including two that failed on `d7cc5044`: there *was* a `RegSvcs` image to examine
+(`header_mismatch on regsvcs.exe`, base `0x400000`) and registry collection
+worked (72,587 reads, 0 naming a VM artifact). Dump offsets `1, 25` plus
+re-dump-children-after-1s got the sample dumped this time.
+
+**The measurement, both scopes:**
+
+    scoped to RegSvcs.exe   1,036 Load Image events, 10 in scope, 9 distinct pairs
+    unscoped                1,036 events, 17 processes, 574 distinct pairs,
+                            2,296 hashed forms
+    matching 0xe11da208     NONE, in either scope
+
+**So the "the guest really had it" route is closed by measurement, not by
+inference.** No image loaded into any process during the capture — sample,
+`RegSvcs`, `powershell`, `conhost`, `lsass`, `svchost`, or the pipeline's own
+`procdump64` — has a name hashing to the gate value in any of four forms.
+
+**Predictions, scored honestly:**
+
+| | |
+|---|---|
+| C1 | **PASS** — 10 `Load Image` events for `RegSvcs.exe`; the collector was listening |
+| C2 | **PARTIAL** — `ntdll.dll` and `kernel32.dll` fired for `RegSvcs`, `user32.dll` did **not** |
+| C3 | **PASS** — nothing matches, across 574 pairs |
+| C4 | **PASS** (indirect) — `WerFault.exe` and `wermgr.exe` both ran and were dumped, and the WER row records `5ff2b99b` against `68531ee1` |
+
+**C2's miss is not a failed control, and saying why matters.** `user32.dll` fired
+for eleven other processes, so the check works; it is absent from `RegSvcs`
+because `RegSvcs` never got that far. Which is the incidental finding of the run:
+
+**`RegSvcs.exe` loaded nine images and never the CLR.** A real `RegSvcs.exe` is a
+.NET tool and loads `mscoree`, `clr`, `mscorlib` and dozens more. Nine loads, no
+managed runtime, dead in seconds — that is what a process whose image was
+replaced before it ever ran looks like, and it is a third independent line of
+evidence for the hollowing alongside the WER timestamp and the module-integrity
+header mismatch.
+
+**The bound, stated because the script states it.** `Load Image` covers images
+mapped *by the loader*. A manually mapped DLL produces no event — but it also
+never enters the loader list, so the sample's own lookup could not find it
+either. The two blind spots coincide, which is what makes this negative worth
+something rather than a gap.
+
+**Where that leaves the crash.** Both remaining readings in the older section —
+broken build, deliberate bail — survive, and a third is now the most likely:
+**this project's model of the gate is wrong.** The store was shown conditional on
+the lookup by forging a name that hashes to `0xe11da208` and watching the branch
+be taken; that proves the path *exists*, not that it is the only one. The next
+question is a bench question, not a detonation one: **is
+`mov dword [esi+0x6d8], 0x32dfd514` reachable by any route other than a
+successful lookup** — another store site, another writer of that dword, or the
+value arriving in the context from somewhere else entirely.
+
+**`0au` is unanswered and it is not this run's fault.** The seventeen processes
+include no explorer child, no `notepad.exe`, and none of the twelve host
+candidates. Stage 4 never ran, so there was no `CreateProcessW` to observe. It
+stays queued behind the crash.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
