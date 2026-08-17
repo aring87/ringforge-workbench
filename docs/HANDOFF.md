@@ -3008,11 +3008,29 @@ compare the next run against.
     Add-MpPreference -ExclusionPath "C:...
 
 That is a **Defender exclusion**, T1562.001, twelve script blocks recorded and
-one graded high. It has not appeared in this file before. **Attribution caveat**:
-the pipeline credits it to the sample and excluded one analyzer block separately,
-but this project has twice found its own tooling contaminating a detector
-(`WerFault.exe`, `procdump64.exe`), so confirm against `vm_hygiene.ps1` before
-treating the exclusion as the sample's.
+one graded high. It has not appeared in this file before.
+
+**The attribution caveat is resolved, and it is the sample's.** The concern was
+real — `bootstrap_tools.ps1` calls the *same cmdlet* to keep Defender off the
+tools directory, and this project has twice caught its own tooling contaminating
+a detector. The excluded path settles it, and it is not the tools directory:
+
+    parent 8168 (the sample) -> powershell.exe 1988
+    Add-MpPreference -ExclusionPath
+      "C:\projects\RingForge_Analyzer\ringforge-workbench\samples\422e30ed…\422e30ed….exe"
+
+**The sample excludes its own executable from Defender**, spawning PowerShell to
+do it. New IOC, and the first behaviour this chain has shown that is neither
+loader mechanics nor anti-analysis.
+
+**And it confirms the WOW64 redirector independently.** The command line asks for
+`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`; the image Sysmon
+actually records is `C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`.
+A 32-bit process asked for `System32` and Windows gave it `SysWOW64` — which is
+exactly the behaviour `resolve_dos_path` was taught this session, arrived at from
+a 32-bit `powershell.exe`'s loader list rather than from the sample. **Two
+independent routes to the same fact**, one on the bench and one on the guest, and
+they agree.
 
 **Containment confirmed the way `WORKFLOW` insists** — `network_isolation:
 single egress path (1)`, read from the summary rather than the GUI line.
