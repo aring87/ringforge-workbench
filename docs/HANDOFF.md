@@ -2621,13 +2621,28 @@ branch or call in the executed code reaches them (*0j*). That is weaker than
 "nothing reaches them": there are **9 indirect call sites** whose targets are not
 statically known.
 
-#### THE QUESTION: what would make stage 4 unpack itself?
+#### THE QUESTION — as it stands at the end of 16 Aug
 
-Not "what gates the credential harvesting" — there is no unpacked stealer to
-gate. The stub decrypts nothing and transfers control nowhere. Something in
-those **592 blocks** decides to return, and the stub is mapped to find it in.
+**Does stage 4 ever intend to inject in this environment?**
 
-**ANSWERED — the resolutions succeed, and `LdrLoadDll` is the tell.**
+Not "what is blocking the injection". That framing is retired. Stage 4 creates
+`compact.exe` suspended, takes its `ImageBaseAddress`, waits 12 seconds, and
+returns — **and the 146,255 blocks after the wait call no API at all** (*0ah*).
+Nothing there is gated on this harness, so no further stub or information class
+will change it. A hollowing routine that reads a target's base and then neither
+unmaps nor writes is not being blocked; it is doing something else.
+
+**Start by asking what it did with the host, not what else is missing.**
+
+Everything below `0aa` is the working record of how the day got here, including
+five falsified hypotheses and one artifact this harness invented (*0af*). Read it
+for method. The subsections marked ANSWERED or RETRACTED say which parts survived.
+
+---
+
+**Superseded, kept because the reasoning is sound and the conclusion holds:**
+*what would make stage 4 unpack itself* — answered, the resolutions succeed and
+`LdrLoadDll` is the tell.
 
 Converting a matched export name to an address requires reading
 `AddressOfNameOrdinals` then `AddressOfFunctions`, so those reads are an exact
