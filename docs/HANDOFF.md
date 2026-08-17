@@ -3000,10 +3000,12 @@ Ask what a loop *reads*, not whether it reads a particular thing.
 `ntdll.dll` into the buffer at `+0x2c876`, so it was ruled not to be residue of
 the `FileNameInformation` answer. Correct on both counts, and it is still ours.
 
-`+0x192b0` builds the system directory by looking a module up by hash
-(`0x2c6e6e44`) and taking **`entry + 0x28`, which is `FullDllName.Buffer`**, then
-appending `\Windows\`, `SysWOW64\` and the candidate name. `win32_emu_env.py:890`
-writes the *same* `UNICODE_STRING` to `+0x24` and `+0x2C`:
+`+0x192b0` builds the system directory by looking a module up and taking
+**`entry + 0x28`, which is `FullDllName.Buffer`**. (This entry first said "by
+hash (`0x2c6e6e44`)". Wrong on both halves — **see `0ar`**: the literal is
+decoded by `+0x14350` into a *base address*, and the lookup at `+0x2c130` is by
+base, not by name hash.) `win32_emu_env.py:890` writes the *same*
+`UNICODE_STRING` to `+0x24` and `+0x2C`:
 
     us = struct.pack("<HHI", len(nm) * 2, len(wide), nptr)
     mu.mem_write(e + 0x24, us)                    # FullDllName
@@ -3116,15 +3118,42 @@ every one of the twelve candidates would fail and `prepare_host` would return 0.
 Three readings survive and nothing here chooses between them:
 
 1. the branch is genuinely broken in this sample and never injects by this route;
-2. the hash `0x2c6e6e44` resolves to a different module on a real machine, one
-   whose `FullDllName` has no volume — note row three returns a clean
-   drive-relative `\Windows\SysWOW64\`, which `CreateProcessW` accepts;
+2. ~~the hash `0x2c6e6e44` resolves to a different module on a real machine, one
+   whose `FullDllName` has no volume~~ — **ELIMINATED, see `0ar`**;
 3. the output is consumed somewhere that strips the leading volume, and
    `lpApplicationName` is not built from it as directly as `0ac` assumed.
 
 **The `FullDllName` fix stands either way.** It is right on its own terms — a
 real 32-bit process has full paths there — and it fixed the ntdll open outright.
 It simply was not the cause of the doubled drive.
+
+#### 0ar. It is not a hash and it is not a different module — reading 2 is out
+
+`scripts/which_module.py` reads the value out of EAX at each call boundary
+instead of cracking the literal, and the literal turns out not to be a hash:
+
+    literal pushed  0x2c6e6e44
+    decoded to      0x77000000        <-- NTDLL_BASE, not a name hash
+    lookup returned entry 0x7ffd0200
+       BaseDllName 'ntdll.dll'
+       FullDllName 'C:\Windows\SysWOW64\ntdll.dll'
+
+So `+0x14350` decodes the constant to a **base address**, and `+0x2c130` is a
+find-module-**by-base** lookup, not by name. **Reading 2 is eliminated**: the
+module resolved is ntdll, its `FullDllName` is exactly what a real WOW64 process
+carries, and nothing about this harness's module list or any hash matching is in
+play. Which leaves readings 1 and 3 of `0aq`.
+
+**Cracking `0x2c6e6e44` against filenames would have produced nothing and cost a
+day**, and the only reason it was not attempted is that the probe read the
+decoded value rather than assuming the literal was the input. The same mistake
+in reverse is available everywhere in this image: constants are decoded before
+use, so a constant lifted out of a disassembly is rarely the value.
+
+**The CRC work is untouched and still right** — `crc("ntdll.dll")` is
+`0x0b4e1ae2`, which `which_module.py` asserts before reporting anything, and
+`0a` records `+0x15a0` returning exactly that. There *is* a name-hash function in
+this payload; it is simply not the one on this path.
 
 ---
 
