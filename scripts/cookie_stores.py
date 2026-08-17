@@ -80,8 +80,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {COMPUTED_STORE:#010x}  rva 0x26c91  mov [esi+0x6d8], eax\n", flush=True)
 
     status = emu.run(args.entry, 0xFFFFFFF, count=args.blocks)
-    print(f"\nstopped: {status} after {emu.blocks:,} blocks, "
-          f"eip {emu.mu.reg_read(UC_X86_REG_EIP):#010x}")
+    eip = emu.mu.reg_read(UC_X86_REG_EIP)
+    print(f"\nstopped: {status} after {emu.blocks:,} blocks, eip {eip:#010x}")
+    # `--blocks` is an INSTRUCTION budget, and a run cut short by it reports
+    # "0 gate stores" exactly like a run that finished without one. This run
+    # ends in kernel32 at the clean exit; anything still inside the allocation
+    # is truncated. `cookie_spread.py` shipped without this check and reported
+    # a truncation as a negative.
+    if ALLOC <= eip < ALLOC + 0x46000:
+        print(f"\n*** VOID: EIP is still in the allocation (rva "
+              f"{eip - ALLOC:#x}), so the budget ran out.\n    The clean exit "
+              f"is ~632M blocks, in kernel32. Raise --blocks.")
+        return 2
 
     gate = [h for h in hits if h[0].startswith("GATE")]
     computed = [h for h in hits if h[0] == "computed"]

@@ -3151,12 +3151,61 @@ since the crash was located are no longer equally weighted — **but neither is
 retired**, because the question the guest poses is untouched by any of this:
 **why did it take the branch, with no matching module loaded or unloaded?**
 
-**One scope caveat, and it is a live lead.** "Only one instruction writes the
+**One scope caveat, and it was a live lead.** "Only one instruction writes the
 constant" means only one *in stage 3's image, directly*. The guest's dump holds
-**seven** copies of the cookie in heap contexts (`0ax`), and a `memcpy` of a
-context propagates the field without touching `+0x6d8` by name. So the next place
-to look is not another store site but a **context copy**: find what clones these
-structures, and whether one clone predates the gate.
+**seven** copies of the cookie, and a `memcpy` of a context propagates the field
+without touching `+0x6d8` by name — so a context clone looked like the next place
+to look. **`0az` tested it and it is not the answer.**
+
+#### 0az. THE CRASH REPRODUCES EXACTLY, and the clone lead is dead
+
+`scripts/cookie_spread.py` runs stage 3 with `RINGFORGE_FORGE_MODULE=1`, which
+puts a module hashing to `0xe11da208` in the loader list. **That is a fed answer
+and the run is only worth what that allows**: `0aw` and `0ax` together show the
+guest had no such module, loaded or unloaded. This reproduces the *state* in
+order to watch what follows, which is a much weaker claim than explaining it.
+
+    [17,334,001blk] GATE fired -> [0x002fedfc] = 0x32dfd514
+    stopped: Invalid memory read at eip 0x02003c53
+      after 17,347,692 blocks, rva 0x2c53
+      first fault: read at 0x32dfd514 from eip 0x02003c53
+
+**17,347,692 blocks and rva `0x2c53`** — the same numbers this file recorded
+when the branch was first forced, to the block. The bench reproduction is exact.
+The guest died at rva `0x2c7c` instead, which is the divergence this file already
+predicted from the compare routine reading by several paths.
+
+**And the spread is tiny, which kills the clone hypothesis:**
+
+    inside the allocation : 3   (guest: 3, same rvas)
+    elsewhere             : 3   (guest: 7)
+       0x002fe55c, 0x002fe560, 0x002fedfc  -- all stack, all adjacent to the store
+
+One gate store, and the value reaches only two further stack slots — `0x2fe55c`
+and `0x2fe560` are a **4-byte-apart pair**, the same adjacency the guest shows at
+`0xd3e198`/`0xd3e19c`. There is no `memcpy` fan-out into cloned contexts. **The
+crash needs the single store and nothing else**, so the guest's extra copies are
+downstream of the fault, not a route to it.
+
+**Which returns the question, unchanged and now well isolated:** the guest's
+cookie held the hardcoded constant; only `rva 0x1605f` writes it; that
+instruction is gated on a module the guest did not have. Nothing about
+propagation explains it, and neither does a second store site.
+
+**A structural difference worth carrying, not yet a finding.** The bench's
+context is on the **stack** (`0x2fe724`); the guest's copies are on the **heap**
+(`0xc3f554`, `0xd3d180`, …). That could be this harness's layout or a real
+difference in how stage 3 ran on the guest, and nothing here distinguishes them.
+
+**And the `0aa` trap caught a fourth script — this one.** `cookie_spread.py`
+first shipped with `--blocks 100_000_000`, which is an *instruction* budget: it
+stopped at 11,886,450 blocks, short of the crash, and printed
+**"GATE EXECUTIONS: 0"** as though the gate had declined. Written by someone who
+had read `0aa` that morning and fixed the same shape in `stage3_tail.py` and
+`stage4_gate.py` the same day. It now has the EIP check and so does
+`cookie_stores.py`, which had the same latent hole. **The lesson is not "remember
+the budget" — it is that every probe needs the check built in before its first
+run, because the author is exactly who will forget.**
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
