@@ -3120,8 +3120,8 @@ Three readings survive and nothing here chooses between them:
 1. the branch is genuinely broken in this sample and never injects by this route;
 2. ~~the hash `0x2c6e6e44` resolves to a different module on a real machine, one
    whose `FullDllName` has no volume~~ — **ELIMINATED, see `0ar`**;
-3. the output is consumed somewhere that strips the leading volume, and
-   `lpApplicationName` is not built from it as directly as `0ac` assumed.
+3. ~~the output is consumed somewhere that strips the leading volume~~ —
+   **ELIMINATED, see `0as`**. Only reading 1 survives.
 
 **The `FullDllName` fix stands either way.** It is right on its own terms — a
 real 32-bit process has full paths there — and it fixed the ntdll open outright.
@@ -3154,6 +3154,43 @@ use, so a constant lifted out of a disassembly is rarely the value.
 `0x0b4e1ae2`, which `which_module.py` asserts before reporting anything, and
 `0a` records `+0x15a0` returning exactly that. There *is* a name-hash function in
 this payload; it is simply not the one on this path.
+
+#### 0as. Nothing strips the volume — the path is built once and handed over
+
+`scripts/trace_appname.py` watches the buffer that becomes `lpApplicationName`.
+It is `desc + 0x30` at `0x1007fb0c`, and `+0x192b0`'s second argument is **the
+same buffer**, so the built path is copied straight in rather than staged.
+
+    72 writes, all from +0x2c876, one byte at a time, +0x000 .. +0x047 ascending
+    writes landing at +0x0 (the first character): 1
+
+One pass, strictly ascending, no rewrites, and the leading `C` is written once
+and never touched again. **Reading 3 is out.** The buffer reaches
+`CreateProcessInternalW` exactly as built:
+
+    buffer now = 'C:C:\Windows\SysWOW64\compact.exe'
+
+**So reading 1 is what is left**: with the `FullDllName` a real WOW64 process
+carries, this routine builds a doubled volume, and `CreateProcessW` would reject
+it. On a real machine every one of the twelve candidates fails and
+`prepare_host` returns 0.
+
+**That qualifies `0af`, and the qualification is load-bearing.** `0af` concluded
+"in a working environment it takes the first — `compact.exe`", from the run where
+implementing `NtReadVirtualMemory` collapsed the walk from eleven creations to
+one. That collapse is real, but it rests on this harness's
+`CreateProcessInternalW` returning 1 **without looking at the path** — it is a
+`val = 1` with no validation. A real `CreateProcessW` fails on `C:C:\...`, so a
+real machine would walk all twelve and create nothing. The twelve-candidate walk
+may therefore be closer to real behaviour than `0af` allows, for a reason `0af`
+did not consider: the path is malformed regardless of what the read returns.
+
+**A decision, not taken here.** Validating the path in `CreateProcessInternalW`
+would be the faithful thing and would make the branch fail the way a machine
+would. It would also invalidate the recorded runs in `0ad`–`0af` and change every
+stage-4 census in this file. **Left alone deliberately** — the harness answering
+success for a path a real one rejects is now *documented* rather than silent,
+which is the part that was actually dangerous.
 
 ---
 
@@ -3322,6 +3359,13 @@ created" as an IOC and that is now qualified**: the eleven *names* are real
 candidates embedded in the payload, but creating all eleven was this harness's
 doing, not the sample's. In a working environment it takes the first —
 `compact.exe`.
+
+**That last sentence is qualified by `0as`.** It holds only because this
+harness's `CreateProcessInternalW` returns 1 without inspecting the path, and the
+path is malformed — `C:C:\Windows\SysWOW64\compact.exe`. A real `CreateProcessW`
+rejects it, so a real machine walks all twelve and creates nothing. The collapse
+from eleven to one is a real consequence of fixing the read; "it takes the first"
+is not a claim about a real machine.
 
 **Where it now stops.** It creates `compact.exe` suspended, is told
 `ImageBaseAddress 0x400000`, reads it, **sleeps twelve times**, and returns
