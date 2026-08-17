@@ -2583,7 +2583,7 @@ alongside one does not.
 
 **Read this first if you are cold.** Build queue empty, detonation queue empty,
 signature queue empty. **Stage 4 is understood, including why it does not inject
-here** — see *THE QUESTION*, answered, and `0ai`–`0am`. The `0a`–`0l`
+here** — see *THE QUESTION*, answered, and `0ai`–`0an`. The `0a`–`0l`
 subsections are the working record of how today got there, including six
 hypotheses that were built and falsified — read them for method, not for
 current state, because several contain framings this section retracts.
@@ -2710,9 +2710,14 @@ and that allocation is a **section view**. Stage 3's log, in order:
 injected into** — the explorer child (*Serving one child of explorer reached the
 injection*). This is the same section that entry already describes as
 "deliberately sized at random between 2 MB and 131 MB"; 24,820,736 is inside
-that range. The peer that would write 1 is the copy of FormBook on the far side
-of the mapping. **It is a second process, not a second thread**, and no amount
+that range. **It is a second process, not a second thread**, and no amount
 of threading in one emulator will serve it.
+
+**Which of the two processes does the asking is settled in `0an`, and it is not
+what was written here first.** This section originally said the peer was "the
+copy of FormBook on the far side of the mapping", meaning the injected child.
+It is the **loader**: our stage-4 run *is* the child, and the child holds the
+server side.
 
 **Strong corroboration, unlooked for.** Stage 3's sequence and stage 4's gated
 routine at `+0x03fb0` use the *same constants*: `NtOpenProcess(0x438)`,
@@ -2745,6 +2750,67 @@ numbers are not unique across a resumed chain — the log shows cycle 2 using
 `0x404`/`0x408` after cycle 1 used `0x40c`/`0x410`. Handle identity within one
 cycle is sound; across cycles it is not.
 
+#### 0an. The child has never run anything — and 0am named the wrong peer
+
+**Asked: did the explorer child ever run stage 4's requester side? No, and it has
+never executed an instruction here.**
+
+`NtResumeThread` is bookkeeping (`emulate_native_stub.py:1212`) — recorded,
+answered success, no second execution context created. So no hijacked thread has
+ever run on its own. The only far-side execution this project has ever performed
+is pointing the emulator's single thread at the entry by hand, and
+`NtSetContextThread` recorded that entry as:
+
+    [725,274,879blk] NtSetContextThread  eip=0x03e9f89b  esp=0x10080000
+
+which is `INJECT_EIP` and `INJECT_ESP`, byte for byte, in every `stage4_*.py`.
+**"Stage 4" *is* the child's hijacked thread.** So the side that has run is the
+server, and the requester has never run in any process. Corroborated
+independently: the control block is `0x40` bytes of zero in the state as saved,
+so nobody had posted a request by then either.
+
+**There are three stage-4 instances, not one.** `thread_contexts` is restored
+(unlike the section fields — see `0am`) and holds three hijacks:
+
+    handle 0x414  eip 0x03e9f89b  view 0x028ea000 +0x15b589b   <-- our stage 4
+    handle 0x40c  eip 0x0550b975  view 0x04156000 +0x13b5975
+    handle 0x418  eip 0x089211aa  view 0x07a42000 +0xedf1aa
+
+Same `+0xbc27` entry offset into the body in all three, so it is the one 273,408
+byte image three times, each in its own randomly-sized section — the "2 MB to
+131 MB, filled with keystream" behaviour, once per target. The identical ESP
+across all three is what says three address spaces rather than three threads.
+
+**So `0am` named the wrong peer.** Each section is mapped exactly twice: into the
+loader, and into one target. The other two stage-4 copies hold different views
+and cannot see `0x3eee874`. The only other holder of *this* block is **the
+loader's own process**.
+
+**And the loader is not silent — `stage3_tail.py` resumes its thread rather than
+the injected one.** It sleeps 49 more times, sixty 1-second iterations in all,
+and then:
+
+    [132,035,451blk] PostThreadMessageW(idThread=0x1404, Msg=0x111,
+                                        wParam=0x0, lParam=0x0)
+
+`0x111` is **WM_COMMAND**. `0x1404` is **5124**, and `win32_emu_env.py:550` gives
+every served process one thread with CLIENT_ID `(pid, pid + 4)` — so 5124 is
+`notepad.exe`, pid 5120, **the explorer child it just injected**. The loader
+injects, resumes the thread, waits a minute, and then pokes that thread by
+message.
+
+**`PostThreadMessageW` is UNHANDLED**, so `nargs` is 0 and its four arguments are
+left for the caller's `ret` to return into. The first run of this probe carried
+on regardless for 132M blocks and died at `0x02014f78`. **"Stage 3 never writes
+the control block" is therefore a bound, not a result** — it holds up to the
+signal and says nothing past it, which is exactly where it stops being
+uninteresting. The probe now captures the arguments and stops.
+
+**Do not read this as a fifth stub to implement.** Answering
+`PostThreadMessageW` with the right arity would make the stack sound and deliver
+nothing: there is no message queue and no thread to receive it. It is the same
+gap as the rendezvous wearing a different hat.
+
 #### THE NEXT QUESTION — is emulating the peer worth it, or is this the end?
 
 The rendezvous cannot be satisfied by anything this emulator does to itself. The
@@ -2754,8 +2820,13 @@ three options, and none is obviously right:
   the injection is proven by structure, by stage 3 having run the identical
   sequence, and by `--force-ready`. That may be all the emulator owes.
 - **Model the far side.** Give the harness a second execution context over the
-  shared view. Large, and it is the first change here that would be building an
-  emulator feature rather than closing a stub.
+  shared view, **and a thread-message queue** — the loader's wake-up is
+  `PostThreadMessageW(WM_COMMAND)` to the child's thread (*0an*), so a second
+  context without a queue would still deadlock. Large, and the first change here
+  that would be building an emulator feature rather than closing a stub. Note
+  both sides already exist as saved states: the child's entry is
+  `after_handshake.state` at `0x3E9F89B`, and the loader's own thread is the
+  same state resumed untouched.
 - **Go back to detonation.** A real machine has the peer for free. The section
   is RWX and carries the stage-4 image; what crosses the channel is small (the
   forced run's section was 4 KB), so it is a message, not a body.
