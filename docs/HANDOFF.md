@@ -3970,7 +3970,7 @@ against 20, and a cap that binds drops the image the run is for.
 strip; verify the Procmon config is `dynamic_registry_reads.pmc` and that
 `config.json` has not pinned the old one — three consecutive runs were lost to
 that; extend-if-dormant **on** for all four, since none of these is resident.
-Export the HTML, `dynamic_run_summary.json` and **`networkeceived\`** before
+Export the HTML, `dynamic_run_summary.json` and **`network\received\`** before
 reverting. `process cap reached` or `exited before its +Ns re-dump` in the
 skipped list means raise the cap or lower the re-dump and run again.
 
