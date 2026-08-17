@@ -3042,6 +3042,82 @@ events — 45 analyzer events and 2 Windows-baseline events were filtered — bu
 "filtered" and "absent" are different claims and this file has been bitten by
 that distinction twice.
 
+#### 0ax. THE CRASH DUMP — `[ctx+0x6d8]` is a COOKIE, and the field's census
+
+`RegSvcs.exe.5272.dmp`, 12.6 MB, read with `dynamic_analysis/minidump.py`.
+
+**The blind spot in `0aw` is closed.** That entry bounded its own negative:
+"an image loaded and unloaded outside Procmon's window would not appear".
+
+    loaded modules   : 6
+    unloaded modules : 0
+    hashing to 0xe11da208, loaded or unloaded : NONE
+
+**Zero unloaded modules**, so nothing was injected-and-unloaded and the bound is
+lifted rather than merely acknowledged. Six loaded modules — even fewer than the
+nine images Procmon saw — is another look at the same fact as the missing CLR.
+
+**The injected image is at `0x01010000` on the guest, and it is our image.** The
+constant `0x32dfd514` occurs three times inside it, at rvas `0xd809`, `0x16065`
+and `0x2dca9` — **the same three rvas** the bench found in
+`stage3_alloc_at540M_dc038cc7`. Guest and artifact are the same bytes.
+
+**The reachability question from `0aw` is answered, and the answer is not what
+was proposed.** All 18 references to `+0x6d8` in the guest's image, classified by
+opcode:
+
+    16 reads   mov reg,[r+0x6d8] / cmp / add / xor      most feeding an XOR
+     1 store   mov dword [esi+0x6d8], 0x32dfd514        rva 0x1605f  <- the gate
+     1 store   mov dword [esi+0x6d8], eax               rva 0x26c91  <- computed
+
+**There is exactly one store of that constant**, so the "second hardcoded store"
+idea is dead. The other two occurrences of the constant are `push 0x32dfd514`,
+both preceded by an identical `e8 00 00 00 00 58 c3` — a GetPC thunk — and
+neither writes the field.
+
+**But `[ctx+0x6d8]` is a cookie, not a buffer base**, and that reframes
+everything above it in this file. The reads look like this:
+
+    mov edx, dword ptr [esi + 0x6d8]
+    xor edx, eax
+    mov dword ptr [esi + 0x78c], eax
+    mov dword ptr [esi + 0x6a0], edx
+
+That is **XOR obfuscation of values held elsewhere in the context** — store
+`x ^ cookie`, recover with `^ cookie`. It is also exactly what
+`RingForge_FormBook_422e30ed_ContextCookie` anchors on, which is why that rule
+works.
+
+**And the normal initialiser is the *other* store.** `rva 0x26c91` takes its
+value from a preceding `call`, i.e. a computed cookie. **The gate's store is the
+anomaly**: a *hardcoded* cookie where the sample would normally compute one.
+
+**The fault, read from the guest for the first time:**
+
+    eip 0x01012c7c  =  rva 0x2c7c  =  cmp al, byte ptr [esi + ecx]
+
+surrounded by `cmp al,dl / je / movzx / sub eax,0x20 / cmp eax,edx` — the
+`sub 0x20` is an ASCII case fold, so this is a **case-insensitive string
+compare** walking `[esi+ecx]`. `esi` is a string base. The emulator's rva was
+`0x2c53`; `0x2c7c` is the guest's, and this file already predicted the two would
+differ because the routine reads from several paths depending on the needle.
+
+**The leading model, with the unverified step marked.** A pointer is recovered as
+`stored ^ cookie`; if `stored` were never initialised the recovery yields the
+cookie itself, `0x32dfd514`, and the string compare faults reading it. That
+would need **both** the hardcoded cookie *and* an uninitialised pointer, and it
+explains why forging a module name reproduced the fault exactly. **Not
+verified**: the seven copies of the cookie in heap memory sit in contexts whose
+`+0x6a0` and `+0x78c` read as zero, which is consistent with the model and
+equally consistent with ordinary zeroed heap. Do not promote this to a finding
+without measuring the stored value at the moment of the recovery.
+
+**Where the question now sits.** Only one instruction writes the constant, so the
+gate is the only hardcoded route — but `rva 0x26c91` writes *whatever is in
+eax*, and there are two `push 0x32dfd514` sites in the image. **Can the computed
+store ever write the constant?** That is the sharpened question, and it is a
+bench one: hook both store sites in an emulator run and record what each writes.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
