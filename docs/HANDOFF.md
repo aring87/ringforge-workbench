@@ -2583,7 +2583,7 @@ alongside one does not.
 
 **Read this first if you are cold.** Build queue empty, detonation queue empty,
 signature queue empty. **Stage 4 is understood, including why it does not inject
-here** — see *THE QUESTION*, answered, and `0ai`–`0al`. The `0a`–`0l`
+here** — see *THE QUESTION*, answered, and `0ai`–`0am`. The `0a`–`0l`
 subsections are the working record of how today got there, including six
 hypotheses that were built and falsified — read them for method, not for
 current state, because several contain framings this section retracts.
@@ -2661,7 +2661,12 @@ peer**, at `+0x03f8e`:
 **The twelve sleeps are two of those polls, six each** (*0ai*), and both timed
 out on a word that nothing in this run ever writes. Stage 4 is the **server**
 side of a two-party injection protocol: it prepares the host, then waits to be
-asked. This harness has one thread and one process, so there is nobody to ask.
+asked.
+
+**The asker is another process** (*0am*). The word lives in the anonymous RWX
+section stage 3 mapped into both this process and the explorer child it injected
+— so the peer is the copy of FormBook on the far side of that mapping, and there
+is nothing a single-address-space emulator can do about it.
 
 Answer the poll and the injection runs — `NtCreateSection`, `NtOpenProcess`,
 `NtMapViewOfSection` ×2, `NtResumeThread`, both state words left at 2 (*0aj*).
@@ -2677,31 +2682,86 @@ one artifact this harness invented (*0af*). Read it for method. The subsections
 marked ANSWERED or RETRACTED say which parts survived — note that `0ag` is now
 retracted in full and `0ah`'s conclusion is qualified.
 
-#### THE NEXT QUESTION — who posts the request?
+#### 0am. THE PEER IS ANOTHER PROCESS — the control block is in a shared section
 
-Not "how do we get the injection to run"; `--force-ready` already does that and
-it proves nothing about the sample. The question is **what, on a real machine,
-sets `[control_block+0x10]` to 1** — and the answer decides whether this is
-worth a harness change at all:
+**Checked, from `after_handshake.state` alone, no run needed.** The question
+asked was "did stage 3 create `0x3eee874` as a *named* section". **It is not
+named — and that is the wrong test.** It is anonymous and it is shared anyway,
+because it is handed over by handle rather than found by name.
 
-- **A second thread of this same payload.** The requester at `+0x03e70` is
-  called directly from `+0x1654c`, so it is ordinary reachable code; something
-  has to run it concurrently with the server. Check whether `+0x1654c` sits in
-  one of the 43 never-executed pages, and whether anything in the image creates
-  a thread. Stage 4 called no thread API (*0ae*), but the thread could predate
-  `after_handshake.state`.
-- **A second process.** The requester supplies a pid and tid and the server
-  opens *that* process, which is only necessary across a process boundary.
+The control block sits in allocation #46, `0x028ea000` + 24,820,736 bytes, which
+also carries the stage-4 image:
 
-**The cheap first probe is the control block, not the code.** `0x3eee874` sits
-in the stage-3 allocation, `0x18000` past the payload image. Find out what
-mapped it and whether it is a section — if stage 3 created it as a named
-section, this is cross-process and no amount of threading in one emulator will
-serve it. That is a `--dump` and a look at `section_requests` in the *stage 3*
-run, not a new stage-4 run.
+    stage-4 image  at view +0x15a9c74
+    control block  at view +0x1604874
 
-**And a warning about the shape of the answer.** Four harness gaps were closed
-today and each moved the payload further, which makes "close the fifth" the
+and that allocation is a **section view**. Stage 3's log, in order:
+
+    [537,034,701blk] NtOpenProcess(&h, 0x438, &oa, &cid)          -> handle 0x40c
+    [542,537,463blk] NtCreateSection(&h, 0xf001f, NULL, &max,
+                                     PAGE_EXECUTE_READWRITE, SEC_COMMIT, NULL)
+                                     ^^^^ ObjectAttributes NULL: anonymous
+    [547,430,617blk] NtMapViewOfSection(0x410, 0xffffffff, ...)   <-- this view
+    [549,873,280blk] NtMapViewOfSection(0x410, 0x40c,      ...)   <-- and into
+                                                                      the other
+                                                                      process
+
+**So the word stage 4 polls is in memory shared with the process stage 3
+injected into** — the explorer child (*Serving one child of explorer reached the
+injection*). This is the same section that entry already describes as
+"deliberately sized at random between 2 MB and 131 MB"; 24,820,736 is inside
+that range. The peer that would write 1 is the copy of FormBook on the far side
+of the mapping. **It is a second process, not a second thread**, and no amount
+of threading in one emulator will serve it.
+
+**Strong corroboration, unlooked for.** Stage 3's sequence and stage 4's gated
+routine at `+0x03fb0` use the *same constants*: `NtOpenProcess(0x438)`,
+`NtCreateSection(0xf001f, PAGE_EXECUTE_READWRITE, SEC_COMMIT, ObjectAttributes
+NULL)`, `NtMapViewOfSection` into self then into the remote process, ViewShare 1.
+Stage 4's gated code is the routine the loader has already run once. That is
+independent of the disassembly and of the forced run.
+
+**Two harness traps, and the first one nearly produced the opposite answer.**
+
+1. **`restore()` does not restore `section_requests`, `section_views`,
+   `section_maps`, `sections`, `named_objects` or `remote_targets`.**
+   `_init_observations()` resets them and nothing puts them back, so a restored
+   state reports **zero sections for a loader that made three**. The first pass
+   at this question read those fields and was about to conclude "not a section
+   at all, just heap". `calls`, `allocs` and `log` *are* restored and are the
+   only ones that mean anything on a restored state.
+2. **The allocation-to-call correlation is one-to-one only if every allocating
+   call is counted.** `allocs` is append-ordered and every allocation goes
+   through `Emulator.alloc`, so the n-th allocating log entry is the n-th
+   `allocs` entry — but `RtlDosPathNameToNtPathName_U` allocates too
+   (`emulate_native_stub.py:755`) and is easy to miss. Leaving it out gave 53
+   entries against 55 allocations, and the two-entry shift relabelled #46 from
+   `NtMapViewOfSection` to `NtAllocateVirtualMemory` — the whole answer. **Check
+   the two lists are the same length before reading anything off the pairing**;
+   the script prints the mismatch and refuses rather than lining them up anyway.
+
+Also noted in passing: **`_next_handle` resets to `0x400` on restore**, so handle
+numbers are not unique across a resumed chain — the log shows cycle 2 using
+`0x404`/`0x408` after cycle 1 used `0x40c`/`0x410`. Handle identity within one
+cycle is sound; across cycles it is not.
+
+#### THE NEXT QUESTION — is emulating the peer worth it, or is this the end?
+
+The rendezvous cannot be satisfied by anything this emulator does to itself. The
+three options, and none is obviously right:
+
+- **Accept the boundary.** Stage 4's behaviour up to the wait is fully mapped and
+  the injection is proven by structure, by stage 3 having run the identical
+  sequence, and by `--force-ready`. That may be all the emulator owes.
+- **Model the far side.** Give the harness a second execution context over the
+  shared view. Large, and it is the first change here that would be building an
+  emulator feature rather than closing a stub.
+- **Go back to detonation.** A real machine has the peer for free. The section
+  is RWX and carries the stage-4 image; what crosses the channel is small (the
+  forced run's section was 4 KB), so it is a message, not a body.
+
+**And a warning about the shape of the answer.** Four harness gaps were closed on
+16 Aug and each moved the payload further, which makes "close the fifth" the
 reflex. This one is not a stub. Serving a request that nothing sent would be
 inventing the peer, and the eleven-host walk (*0af*) is the standing proof that
 an invented answer reads convincingly as the sample's behaviour.
