@@ -2794,9 +2794,27 @@ doing, not the sample's. In a working environment it takes the first —
 cleanly at 60,928,346 blocks. **Still no injection** — no `NtCreateSection`, no
 `NtMapViewOfSection`, no `NtUnmapViewOfSection`, no `NtWriteVirtualMemory`.
 
-**The twelve `NtDelayExecution` calls are the new frontier**, and nothing is
-unimplemented any more, so the next question is semantic rather than a missing
-stub: what is it waiting for, and what would end the wait.
+#### 0ag. The twelve sleeps wait for nothing — they are a chunked 12-second delay
+
+Measured rather than inferred from the shape. All twelve are **1,000.0 ms
+exactly**, all `alertable=0`, all returning to the same dispatch thunk at payload
+`+0x29d46`, spaced ~647 blocks apart.
+
+**And the loop body touches nothing external.** Every address read during an
+iteration is its own stack (`0x1007f9xx`) — **no read of the spawned PEB, none of
+the mapped host image** — and the only API it calls is the sleep.
+
+So this is not a poll and not a wait on the target's state: it is a **12-second
+delay chunked into twelve one-second sleeps**, which is the standard shape for
+defeating sandboxes that patch out or skip long waits. `NS100_PER_BLOCK` means
+the emulator's clock advances, so the delay *completes* rather than hanging.
+
+**That relocates the question.** The sleeps are not the blocker — they finish
+normally, and the payload then returns without injecting. Whatever decides that
+happens **after** the delay, in the tail between the last `NtDelayExecution` at
+block 60,782,089 and the clean return at 60,928,346. **That is ~146,000 blocks**,
+a far smaller window than anything examined today, and it is where the next
+session should start.
 
 **A caution on all of the above.** Four harness behaviours were implemented today
 — `FileNameInformation`, `CreateProcessInternalW`, `ProcessBasicInformation`,
