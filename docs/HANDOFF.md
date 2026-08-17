@@ -3914,6 +3914,33 @@ behind, the wrong Procmon config, or the sample failing to run at all. Check
 `procmon_filter` in the summary before reading any zero — that row is *Built,
 unproven* and this run proves it either way.
 
+**RUN ORDER, all four, and the first is deliberately not the interesting one:**
+
+1. **AgentTesla `31a762fd…` — regression first.** This file already nominates
+   it: *"the fully-worked case. Any regression shows up as a change here."* It
+   carries the most complete written expectation of any sample here. That
+   matters more than usual because `minidump.py` gained three stream readers on
+   17 Aug and `pe_carve` delegates to it — 662 tests pass, but tests passing is
+   not proof on live data, and a broken dump path must surface against a sample
+   whose correct output is recorded rather than against the hollowing run.
+   **It is also the only sample that uploads a file**, so it is the sole route
+   to received-file collection.
+2. **VIPKeylogger `8ceb2c53…` — this section.** The only one that can move gap
+   5's `strong` branch.
+3. **Remcos `aa4d6427…`** — the second anchor. Native PE32, a deliberately
+   different shape, and it exercises dropped-file lineage and carve-on-long
+   paths. Redundant with run 1 as a health check, so it goes after the run that
+   matters.
+4. **`422e30ed…` — last, and narrow.** Its value is now a single row: the
+   Split-API rule's *detection*, which nothing else can prove. It will crash
+   like the eleven before it. Worth a slot only if runs 1–3 leave that row as
+   the last gap.
+
+**If only one runs, run 2.** Everything else in the table is reachable by other
+means; the `strong` branch is not.
+
+**Revert the VM between runs** — *The 03:22 re-run was void* is that lesson.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
