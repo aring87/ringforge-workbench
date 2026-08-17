@@ -187,6 +187,20 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
   kept on disk want a password-protected zip rather than an AV exclusion — it
   stops on-access scanning of the contents without opening a hole.
 
+- **The sample binaries are no longer on this host — 17 Aug.** Checked: nothing
+  under `Downloads\ringforge\` or `G:\` holds them, and that `samples\`
+  directory is unrelated API fixtures from another project. **Re-acquire by
+  hash before planning a run.** The four are `31a762fd…` (AgentTesla),
+  `aa4d6427…` (Remcos), `422e30ed…` (the FormBook loader) and `a6a86646…` (the
+  VM-bail sample); full hashes are in the reference-data sections below.
+  `683c76f3…` and `f08ba6d1…` appear in this file and are **not samples** —
+  they are AES keys recovered from inside stage 2.
+
+  **What survives is the derived work, and all of it stands.**
+  `G:\ringforge-artifacts\422e30ed_stage2\` still holds stage 2, stage 3,
+  the recovered stage 4, every emulator checkpoint and the proxy map, so the
+  static and emulator results do not depend on re-acquiring anything.
+
 - **Run everything on the host through `.venv`.** The global Python 3.12 is a
   partial install and silently disables YARA and psutil features. The guest's
   global Python is complete — do not add a venv there, since the GUI launches
