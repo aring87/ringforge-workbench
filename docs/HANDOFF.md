@@ -3250,6 +3250,27 @@ The findings about *what that branch contains* stand, because they are about
 code. The findings about *what stage 4 does* now carry "given a create it should
 not have been granted".
 
+**`stage4_gate.py` re-run, and `--force-ready` is now a no-op by construction:**
+
+    POLL CHECKS (0)
+    THE POLLS WERE NEVER REACHED.
+       Neither +0x03f8e nor +0x040ae executed
+
+`--force-all` produces byte-identical output to the plain run — there is no
+check to answer, because the poll sites never execute. The experiment that
+proved the injection code runs (*0aj*) is itself unreachable once the create is
+faithful, which is the cleanest statement of what `0at` changes.
+
+**And the probe was printing a conclusion about a loop that had not run.** With
+zero checks it still said *"nothing in this run ever moves the state word, so the
+poll cannot succeed here no matter how long it waits — the six seconds are not a
+stall, they are a timeout"*. True of the permissive run, meaningless here. That
+is the third instance of this shape in two days — the RUN CHECK in `0aa`,
+`stage3_tail.py`'s "no writes" branch, and now this — and all three had the same
+cause: a summary line written for the case the author expected, printed
+unconditionally. **The RUN CHECK is not enough on its own; each conclusion needs
+to name the observation it rests on.**
+
 ---
 
 **Superseded, kept because the reasoning is sound and the conclusion holds:**

@@ -134,6 +134,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   [{blocks - start:>13,}blk] {label}  [{ptr:#x}] = "
               f"{val:<12} {meaning}")
 
+    if not checks:
+        # **Say nothing about the polls.** The RUN CHECK above has already
+        # established the run finished, so zero checks means the poll sites were
+        # never executed -- not that the word was never written. This branch
+        # used to print "the six seconds are not a stall, they are a timeout"
+        # regardless, which is a claim about a loop that did not run; the same
+        # shape as the RUN CHECK that certified its own truncation (`0aa`) and
+        # as `stage3_tail.py`'s "no writes" branch before it was fixed.
+        print("\nTHE POLLS WERE NEVER REACHED.")
+        print("   Neither +0x03f8e nor +0x040ae executed, so this run says "
+              "nothing about the rendezvous.")
+        print("   Since `CreateProcessInternalW` began validating the path "
+              "(`0at`) stage 4 fails all")
+        print("   twelve candidates, prepares no host, and never dispatches "
+              "the injection servicer.")
+        print("   `--force-ready` has nothing to answer here; it is a no-op by "
+              "construction.")
+        return 0
+
     print(f"\nWRITES TO THE POLLED WORD after the first check ({len(writes)}):")
     if not writes:
         print("   NONE. Nothing in this run ever moves the state word, so the "
