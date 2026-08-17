@@ -3768,6 +3768,55 @@ progress nor an RC4 S-box. It sits just past `get_module_base_by_hash` and the
 poison thunk, contains no `+0x6d8` reference, and is on none of the four links.
 Most likely a runtime scratch buffer. Not chased.
 
+#### 0bh. THE GATE'S HASH IS A CONSTANT — a good hypothesis, falsified
+
+`0xe11da208` is **not in stage 3's code**. The gate pushes a literal
+`0x246e8fe6` and a length byte, calls the XOR decoder at `+0x4181`, and hands
+the result to the lookup. `0xe11da208` is what that decoder *returned on this
+bench*, once, and all four links of the crash chain had been treating it as a
+constant without anyone establishing that it is one.
+
+**The suspicion was well founded.** `0ar` caught this exact shape: a decoder
+call whose literal `0x2c6e6e44` decoded to `0x77000000` — `NTDLL_BASE`, a
+runtime value — and recorded the lesson *"constants are decoded before use, so a
+constant lifted out of a disassembly is rarely the value."* The bench allocation
+sits at `0x02001000` and the guest's at `0x01010000`; the cookie is a runtime
+self-address. If any of that fed the decoder, the guest's gate hash was never
+`0xe11da208`, and if what it produced instead matched one of the four modules
+the guest did have loaded, the whole contradiction dissolves.
+
+**It does not.** `scripts/gate_hash_source.py` relocates the payload by moving
+`HEAP_BASE` and re-reads EAX at `rva 0x1604b`:
+
+    allocation 0x02001000 -> 0xe11da208   at 17,165,663 blocks
+    allocation 0x28001000 -> 0xe11da208   at 17,165,663 blocks
+    allocation 0x40001000 -> 0xe11da208   at 17,165,663 blocks
+
+Same value, and the *same block count* — the code is position-independent to the
+instruction, which the GetPC thunks already implied.
+
+**And relocation alone would have been a weak test**, since it does not move
+`NTDLL_BASE`, the PEB or the TEB. So the decoder's reads were traced across the
+call window instead:
+
+    7,015 reads, ALL of them 0x002fe29c..0x002fe68c -- its own stack
+    no PEB, no TEB, no loader list, no ntdll, no allocation
+
+**A pure function of its two literals.** The gate's hash is `0xe11da208` on any
+machine, and the chain's third link is now measured rather than assumed.
+
+**So the hypothesis is dead and the chain is fully closed on the guest.** Every
+link measured, all four mutually inconsistent, and every non-temporal
+explanation eliminated: propagation (`0az`), a second store site (`0ay`),
+self-modification (`0bg`), an injected-and-unlinked image (`0bg`), and now a
+run-dependent hash. **What remains is the temporal reading and nothing else** —
+the `PEB->Ldr` list at gate time held something the list at dump time does not.
+
+**That is worth having even though it failed.** It was the cheapest remaining
+idea, it attacked the one link nobody had checked, and killing it is what
+justifies spending a detonation on the temporal question rather than continuing
+to read artifacts. The next measurement has to be taken *while the gate runs*.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
