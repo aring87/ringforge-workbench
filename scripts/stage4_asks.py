@@ -93,15 +93,24 @@ def main(argv: list[str] | None = None) -> int:
     calls = collections.Counter(emu.calls) - before_calls
     unhandled = collections.Counter(emu.unhandled) - before_unhandled
 
+    # Ordered explicitly, count then name. `most_common()` was not wrong here --
+    # it breaks ties on the left operand's key order, which is first-call order
+    # and survives the pickle, so it is stable across processes (checked against
+    # four PYTHONHASHSEEDs). But it is stable by an implicit contract on
+    # `Counter.__sub__`, and `stage3_tail.py` shipped a census that shuffled
+    # between runs because a nearby ordering was left to chance. Say it instead.
+    def _census(counter):
+        return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+
     print("APIs called BY STAGE 4 (loader's excluded):")
     if not calls:
         print("   none -- stage 4 calls no API at all on this path")
-    for name, n in calls.most_common():
+    for name, n in _census(calls):
         print(f"   {n:>6}  {name}")
 
     print("\nUNHANDLED by the harness:")
     print("   none" if not unhandled else "")
-    for name, n in unhandled.most_common():
+    for name, n in _census(unhandled):
         print(f"   {n:>6}  {name}  <-- a stub returning nothing can be the "
               f"reason a branch is skipped")
 
