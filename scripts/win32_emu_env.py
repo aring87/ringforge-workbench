@@ -662,6 +662,45 @@ def loader_full_path(name: str) -> str:
     return f"{folder}\\{name}"
 
 
+#: The only drive this harness claims exists. Named rather than inlined because
+#: `resolve_dos_path` and the environment block have to agree about it.
+SYSTEM_DRIVE = "C:"
+
+
+def resolve_dos_path(path):
+    """A DOS path as this emulated machine would resolve it, or None.
+
+    The emulated machine's `C:` **is** this host's `C:` -- every file the harness
+    serves is read from it, so the honest resolution is the identity one rather
+    than a rewrite. Anything that does not name a file on it does not exist, and
+    a caller that treats "does not exist" as success is inventing a machine.
+
+    Handles the three forms that actually turn up: a full `X:\\...` path, the
+    `\\??\\` NT prefix, and a drive-relative `\\Windows\\...` which a real
+    `CreateProcessW` resolves against the current drive -- `C:` here, the only
+    one this harness claims. Quotes are stripped because `lpCommandLine` carries
+    them and `lpApplicationName` sometimes does too.
+
+    Returns the resolved path, so a caller can log what it actually looked for.
+    """
+    if not path:
+        return None
+    text = path.strip().strip('"')
+    if text.startswith("\\??\\"):
+        text = text[4:]
+    if text.startswith("\\") and not text.startswith("\\\\"):
+        text = SYSTEM_DRIVE + text
+    if len(text) < 3 or text[1] != ":" or text[2] not in "\\/":
+        # Not a rooted path. A relative one would resolve against the current
+        # directory, which this harness does not model -- and `C:C:\...`, the
+        # shape stage 4 builds, lands here too. Both are honestly "no".
+        return None
+    try:
+        return text if os.path.isfile(text) else None
+    except (OSError, ValueError):
+        return None
+
+
 def repair_loader_full_names(mu, base=LDR_ADDR):
     """Point every entry's `FullDllName` at a real path instead of the leaf.
 

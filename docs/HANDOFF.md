@@ -2663,10 +2663,16 @@ out on a word that nothing in this run ever writes. Stage 4 is the **server**
 side of a two-party injection protocol: it prepares the host, then waits to be
 asked.
 
-**The asker is another process** (*0am*). The word lives in the anonymous RWX
-section stage 3 mapped into both this process and the explorer child it injected
-— so the peer is the copy of FormBook on the far side of that mapping, and there
-is nothing a single-address-space emulator can do about it.
+**The asker is another process** (*0am*), and it is the loader (*0an*, *0ao*).
+The word lives in the anonymous RWX section stage 3 mapped into both this process
+and the explorer child it injected, and there is nothing a single-address-space
+emulator can do about it.
+
+**One qualification, added after the fact and load-bearing (*0at*).** Everything
+above is reached only because this harness's `CreateProcessInternalW` accepted a
+malformed path. With the path validated, stage 4 fails all twelve candidates and
+**never reaches the poll at all**. The injection code and the rendezvous are
+real; the route to them, in this build, is not.
 
 Answer the poll and the injection runs — `NtCreateSection`, `NtOpenProcess`,
 `NtMapViewOfSection` ×2, `NtResumeThread`, both state words left at 2 (*0aj*).
@@ -3185,12 +3191,64 @@ real machine would walk all twelve and create nothing. The twelve-candidate walk
 may therefore be closer to real behaviour than `0af` allows, for a reason `0af`
 did not consider: the path is malformed regardless of what the read returns.
 
-**A decision, not taken here.** Validating the path in `CreateProcessInternalW`
-would be the faithful thing and would make the branch fail the way a machine
-would. It would also invalidate the recorded runs in `0ad`–`0af` and change every
-stage-4 census in this file. **Left alone deliberately** — the harness answering
-success for a path a real one rejects is now *documented* rather than silent,
-which is the part that was actually dangerous.
+**A decision, and it was taken — see `0at`.** Validating the path is the
+faithful thing and it does invalidate the recorded runs in `0ad`–`0af`. It was
+done anyway, and what it changed is larger than expected.
+
+#### 0at. With the path checked, stage 4 never reaches the rendezvous at all
+
+`CreateProcessInternalW` now resolves `lpApplicationName` the way a machine
+would (`winenv.resolve_dos_path`: `\??\` and quotes stripped, drive-relative
+resolved against the one drive this harness claims, then the file must exist)
+and returns **0** when it does not. On failure nothing is invented — no pid, no
+handles, no host image — because a failed create that still reports a process is
+the contradiction `served_process_list` exists to prevent. Twelve tests in
+`dynamic_analysis/tests/test_createprocess_path.py`; 638 pass.
+
+**The census, against the permissive run:**
+
+| | permissive | validating |
+|---|---|---|
+| blocks | 60,928,325 | **120,090,809** |
+| CreateProcessInternalW | 1, succeeds | **11, all fail** |
+| NtCreateFile / QueryInfoFile | 2 / 2 | **13 / 13** |
+| NtQueryInformationProcess | 1 | **0** |
+| NtReadVirtualMemory | 1 | **0** |
+| NtDelayExecution | 12 | **0** |
+
+**The whole rendezvous is downstream of a create this harness should never have
+granted.** No process, so no `ProcessBasicInformation`; no PEB, so no
+`ImageBaseAddress` read; no host prepared, so the injection servicer at
+`+0x03f40` is never dispatched and neither six-second poll ever runs. The causal
+chain is one line and every link is now measured.
+
+**This qualifies THE QUESTION rather than reversing it.** The injection code is
+still there, still unambiguous, and still runs when the poll is answered
+(*0aj*) — "does stage 4 intend to inject" is unchanged. What changes is the
+route: on a machine that rejects `C:C:\...`, stage 4 walks its twelve candidates,
+fails every one, and returns without ever reaching the code that waits to be
+asked. **Two independent reasons it does not inject, and the second one gets
+there first.**
+
+**And the IOC is complete at last.** Walking all twelve prints every candidate
+name, including the one no previous run reached:
+
+    compact.exe   msiexec.exe   AtBroker.exe   write.exe   <-- the twelfth
+    runonce.exe   cacls.exe     regini.exe     replace.exe
+    wextract.exe  label.exe     netbtugc.exe   SearchFilterHost.exe
+
+`0ad` listed eleven and `0ap` said "one of the twelve never opened; which one,
+and why, is not measured". It is `write.exe`, and the reason is mundane: this
+host has no `C:\Windows\SysWOW64\write.exe`, so its open fails and the walk skips
+to the next before reaching the create. **A machine that has it would show
+twelve.** The eleven-name list in `0ad` should be read as eleven-of-twelve.
+
+**What is now conditional on this change.** Every stage-4 run recorded before it
+— `0ad` through `0as`, and the `stage4_gate.py` numbers in `0ai`–`0aj` — used the
+permissive stub and therefore explored a branch a real machine does not reach.
+The findings about *what that branch contains* stand, because they are about
+code. The findings about *what stage 4 does* now carry "given a create it should
+not have been granted".
 
 ---
 
@@ -3296,6 +3354,12 @@ Complete, in order, at 3,000,000,000 instructions (122,991,008 blocks, COMPLETE)
     compact.exe   msiexec.exe   AtBroker.exe   runonce.exe
     cacls.exe     regini.exe    replace.exe    wextract.exe
     label.exe     netbtugc.exe  SearchFilterHost.exe
+
+**It is twelve, and the missing one is `write.exe` — see `0at`.** It sits between
+`AtBroker.exe` and `runonce.exe`, and no run reached it because this host has no
+`C:\Windows\SysWOW64\write.exe`: the walk opens each candidate's file before
+creating it, and skips on a failed open. **Read the eleven above as
+eleven-of-twelve**, and expect twelve on a machine that carries `write.exe`.
 
 #### 0ae. NO INJECTION — it stops at `ProcessBasicInformation`, unimplemented
 

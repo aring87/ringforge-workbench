@@ -921,32 +921,57 @@ class Emulator:
             nargs = 12
             image = read_wide(mu, a(1)) if a(1) else (
                     read_wide(mu, a(2)) if a(2) else "")
-            leaf = image.rsplit("\\", 1)[-1] or "spawned.exe"
-            pid = winenv.SPAWN_PID_BASE + 4 * (len(winenv.SPAWNED) + 1)
-            winenv.SPAWNED.append((leaf, pid, winenv.SELF_PID))
-            hproc, hthread = self.new_handle(), self.new_handle()
-            # Give the new process a real image of its own, mapped out of the
-            # way. `NtReadVirtualMemory` translates `SPAWNED_IMAGE_BASE` reads
-            # against this handle onto it, so the payload inspecting "the
-            # target" sees compact.exe rather than this emulator's own 0x400000.
-            host_base = (winenv.HOST_IMAGE_BASE
-                         + winenv.HOST_IMAGE_STRIDE * len(self.spawned))
-            host_size, ok = winenv.map_host_image(mu, leaf, host_base)
-            self.spawned.append({"image": image, "leaf": leaf, "pid": pid,
-                                 "flags": a(6), "blocks": self.blocks,
-                                 "hprocess": hproc, "hthread": hthread,
-                                 "host_base": host_base if ok else 0,
-                                 "host_size": host_size})
-            if a(10):
-                mu.mem_write(a(10), struct.pack("<IIII", hproc, hthread,
-                                                pid, pid + 1))
-            flags = a(6)
-            print(f"win32_emu_env: CreateProcessInternalW -> {leaf!r} "
-                  f"pid {pid}, flags {flags:#010x}"
-                  + ("  CREATE_SUSPENDED" if flags & 0x4 else "")
-                  + f". Invented, and now in the served process list so the "
-                    f"injection that follows finds it consistent.")
-            val = 1
+            # **The path is checked now, and it was not before.** This returned
+            # 1 without looking at it, which mattered: stage 4 builds
+            # `C:C:\Windows\SysWOW64\compact.exe` -- a doubled volume that is
+            # the sample's own (*0aq*, *0as*) -- and a real `CreateProcessW`
+            # rejects it. Succeeding anyway is how `0af` came to say "in a
+            # working environment it takes the first", a claim that was resting
+            # on this line.
+            resolved = winenv.resolve_dos_path(image)
+            if not resolved:
+                self.control_calls.append({"call": name, "blocks": self.blocks,
+                                           "image": image, "resolved": None})
+                if self.calls[name] == 1:
+                    print(f"  [{self.blocks:,}blk] {name} -> 0, {image!r} does "
+                          f"not resolve to a file on this machine. A real "
+                          f"CreateProcessW\n           fails the same way; the "
+                          f"caller should now take its failure path.",
+                          flush=True)
+                # Nothing is invented on this path: no pid, no handles, no host
+                # image. A failed create that still reports a process is the
+                # contradiction `served_process_list` exists to prevent.
+                if a(10):
+                    mu.mem_write(a(10), struct.pack("<IIII", 0, 0, 0, 0))
+                val = 0
+            else:
+                leaf = resolved.rsplit("\\", 1)[-1] or "spawned.exe"
+                pid = winenv.SPAWN_PID_BASE + 4 * (len(winenv.SPAWNED) + 1)
+                winenv.SPAWNED.append((leaf, pid, winenv.SELF_PID))
+                hproc, hthread = self.new_handle(), self.new_handle()
+                # Give the new process a real image of its own, mapped out of
+                # the way. `NtReadVirtualMemory` translates `SPAWNED_IMAGE_BASE`
+                # reads against this handle onto it, so the payload inspecting
+                # "the target" sees compact.exe rather than this emulator's own
+                # 0x400000.
+                host_base = (winenv.HOST_IMAGE_BASE
+                             + winenv.HOST_IMAGE_STRIDE * len(self.spawned))
+                host_size, ok = winenv.map_host_image(mu, leaf, host_base)
+                self.spawned.append({"image": image, "leaf": leaf, "pid": pid,
+                                     "flags": a(6), "blocks": self.blocks,
+                                     "hprocess": hproc, "hthread": hthread,
+                                     "host_base": host_base if ok else 0,
+                                     "host_size": host_size})
+                if a(10):
+                    mu.mem_write(a(10), struct.pack("<IIII", hproc, hthread,
+                                                    pid, pid + 1))
+                flags = a(6)
+                print(f"win32_emu_env: CreateProcessInternalW -> {leaf!r} "
+                      f"pid {pid}, flags {flags:#010x}"
+                      + ("  CREATE_SUSPENDED" if flags & 0x4 else "")
+                      + f". Invented, and now in the served process list so the "
+                        f"injection that follows finds it consistent.")
+                val = 1
         elif name == "NtSetInformationFile":
             if a(1):
                 mu.mem_write(a(1), struct.pack("<II", 0, 0))
