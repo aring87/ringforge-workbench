@@ -4836,6 +4836,12 @@ longer the only route to a `RegSvcs` image.
 
 #### 2. The sample, which is where the actual goal has always been
 
+> **STALE AT THE TOP, still useful below.** "Stage 4 is unrecovered" was true
+> when this was written and false since 16 Aug — see *Stage 4 is recovered*,
+> which has it decrypted, sized, and identified as a credential stealer with
+> IOCs. The bullets under here are still the working list; the framing sentence
+> is not. Read `Pick up here — 17 Aug` for current state.
+
 Stage 4 is unrecovered and the emulator reaches a clean `ExitProcess` without
 crashing, so the crash was never what stood between us and it — the poll loop
 is. **This is the main line now, and it is emulator work rather than VM work.**
