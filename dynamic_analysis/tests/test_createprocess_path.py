@@ -74,3 +74,38 @@ def test_well_formed_but_absent_does_not_resolve(tmp_path):
 def test_malformed_paths_do_not_raise(path):
     """Payload-controlled text reaches this. It has to answer, not throw."""
     assert winenv.resolve_dos_path(path) is None
+
+
+def test_system32_redirects_to_syswow64_for_this_32_bit_process(tmp_path):
+    """A 32-bit process asking for `System32\\x` gets `SysWOW64\\x`.
+
+    The loader entries claim `System32` because that is what a real WOW64
+    process reports (`LOADER_SYSTEM_DIR`), so every path the sample builds from
+    them is a `System32` path -- and this harness runs under 64-bit Python,
+    where `os.path.isfile` gets no redirection at all.
+    """
+    source, target = winenv.WOW64_REDIRECT
+    probe = source + "kernel32.dll"
+    resolved = winenv.resolve_dos_path(probe)
+    assert resolved is not None, f"{probe} should redirect to {target}"
+    assert resolved.lower().startswith(target.lower())
+
+
+def test_system32_does_not_fall_back_to_the_64_bit_directory(monkeypatch):
+    """When redirection misses there is no second chance.
+
+    A 32-bit process cannot reach the real `System32` by that name -- that is
+    what `Sysnative` is for -- so a fallback would let the emulated process open
+    a file it could not open on a real machine.
+    """
+    source, _ = winenv.WOW64_REDIRECT
+    seen: list[str] = []
+
+    def only_the_64_bit_one_exists(path):
+        seen.append(path)
+        return path.lower().startswith(source)
+
+    monkeypatch.setattr(winenv.os.path, "isfile", only_the_64_bit_one_exists)
+    assert winenv.resolve_dos_path(source + "write.exe") is None
+    assert not any(p.lower().startswith(source) for p in seen), \
+        f"the 64-bit System32 was consulted: {seen}"

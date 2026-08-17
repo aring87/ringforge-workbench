@@ -2581,8 +2581,9 @@ alongside one does not.
 
 ### Pick up here — 16 Aug
 
-**Read this first if you are cold.** Build queue empty, detonation queue empty,
-signature queue empty. **Stage 4 is understood, including why it does not inject
+**Read this first if you are cold.** Build queue empty, signature queue empty.
+**The detonation queue has one entry, `0au`**, and it is blocked behind the
+stage-3 crash rather than ready to run. **Stage 4 is understood, including why it does not inject
 here** — see *THE QUESTION*, answered, and `0ai`–`0ao`. The `0a`–`0l`
 subsections are the working record of how today got there, including six
 hypotheses that were built and falsified — read them for method, not for
@@ -2889,6 +2890,54 @@ that never reached the signal. Same shape as the RUN CHECK that certified its ow
 truncation (*0aa*). It now reports where the run actually ended and concludes
 nothing.
 
+#### 0au. QUEUED DETONATION — does the real `CreateProcessW` see `C:C:\`?
+
+**Blocked, and queued anyway with the blocker named.** Read the dependency
+before spending a revert cycle on it.
+
+**The question, one bit.** Under emulation stage 4 builds
+`C:C:\Windows\System32\compact.exe` and every candidate after it. Four
+black-box inputs say that is the routine's own transformation (*0aq*), and
+nothing downstream repairs it (*0as*). A detonation would show the string a real
+`CreateProcessW` is handed, and there are only two answers.
+
+**Pre-registered predictions, before the run:**
+
+| | prediction |
+|---|---|
+| P1 | Procmon logs a `CreateFile` naming a path containing `C:C:\`, from the injected process, with a failing result (`NAME INVALID` or `PATH NOT FOUND`) |
+| P2 | **No** `Process Create` for any of the twelve candidates |
+| P3 | The twelve appear in list order, `compact.exe` first, `write.exe` fourth |
+| P4 | Twelve `CreateFile` attempts, not eleven — the guest's `SysWOW64` decides which open, and that is a property of the machine rather than the sample |
+
+**P1 failing is the interesting outcome**, not P1 holding. A well-formed
+`C:\Windows\System32\compact.exe` on the guest would mean the emulator still
+diverges somewhere this file has not found, and `0aq`–`0at` would need reopening.
+
+**No config change is needed, and that is worth saying out loud.** Both
+`dynamic_default.pmc` and `dynamic_registry_reads.pmc` already include
+`CreateFile` and `Process Create`:
+
+    Process Create, Process Start, Process Exit, Load Image, CreateFile, ...
+
+The registry-read saga cost three consecutive runs to a missing operation in the
+filter. This observable is in both configs, checked with
+`procmon_config.describe_procmon_filter` rather than assumed.
+
+**THE BLOCKER: stage 4 has never run on the guest.** Eleven detonations have
+ended in the stage-3 crash — `RegSvcs` faulting on `0x32dfd514` — and that crash
+fires at ~17.3M blocks under emulation, far before the injection at ~537M. No
+injection means no stage 4 means no `CreateProcessW` to observe. **This run
+cannot answer its question until the crash is resolved**, and the crash already
+has its own one-bit question queued: `0xe11da208` matches nothing among the 931
+modules the guest had loaded, yet the guest took the branch anyway. **Run that
+first. This entry is the one that follows it**, and it costs nothing extra —
+the same capture answers both.
+
+**If the crash is resolved and stage 4 still does not run**, the next thing to
+check is whether stage 3 reached its `NtCreateSection`/`NtMapViewOfSection` pair
+at all, because on the guest it has never been observed doing so either.
+
 #### THE NEXT QUESTION — is emulating the peer worth it, or is this the end?
 
 The rendezvous cannot be satisfied by anything this emulator does to itself. The
@@ -3045,7 +3094,23 @@ writes 0. 626 tests pass.
 **One thing it fixed outright.** The ntdll open is now well formed:
 
     before  \??\ntdll.dll\Windows\SysWOW64\c...
-    after   \??\C:\Windows\SysWOW64\ntdll.dll
+    after   \??\C:\Windows\System32\ntdll.dll
+
+**`System32`, not `SysWOW64`, and the first version of this fix got that wrong.**
+A WOW64 process has two loader lists and the one a 32-bit payload walks records
+the *unredirected* path; the redirector turns it into `SysWOW64` at open time.
+Measured on this host rather than reasoned about — a 32-bit
+`powershell.exe` reports `ntdll.dll -> C:\WINDOWS\SYSTEM32\ntdll.dll`. The
+check only happened because `0au` was about to spend a detonation on the
+question, and **none of the four black-box inputs in `0aq` was the real one**.
+`resolve_dos_path` models the redirector to match, with no fallback to the
+64-bit directory when it misses.
+
+**It changes nothing about the doubling.** Re-run with the faithful input the
+census is identical — 120,090,809 blocks, eleven failing creates, same call
+counts — and the path is `C:C:\Windows\System32\compact.exe`. The transformation
+doubles whatever volume it is given, which is what `0aq`'s `D:\Foo\Bar` row
+already said.
 
 **And one it did not.** `lpApplicationName` changed and is still wrong:
 

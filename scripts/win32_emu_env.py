@@ -648,12 +648,26 @@ def syscall_table(path=None):
 LOADER_PATHS_AT = LDR_ADDR + 0x5000
 LOADER_PATH_STRIDE = 0x100
 
-#: The directories the loader entries claim. **Both are real on this host**, not
-#: invented: the DLLs are read from `SYSWOW64` already, and `RegSvcs.exe` is a
-#: .NET framework tool that lives exactly here. A 32-bit process on this machine
-#: would report these paths.
-LOADER_SYSTEM_DIR = r"C:\Windows\SysWOW64"
+#: The directories the loader entries claim.
+#:
+#: **`System32`, not `SysWOW64`, and that is not a typo.** A WOW64 process has
+#: two loader lists, and the one a 32-bit payload walks records the
+#: *unredirected* path -- the file system redirector is what turns it into
+#: `SysWOW64` at open time. Measured on this host rather than reasoned about,
+#: because the first version of this got it wrong:
+#:
+#:     C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe, 32-bit
+#:       ntdll.dll     -> C:\WINDOWS\SYSTEM32\ntdll.dll
+#:       KERNEL32.DLL  -> C:\WINDOWS\System32\KERNEL32.DLL
+#:
+#: `RegSvcs.exe` keeps its own real path: the main image is not redirected.
+LOADER_SYSTEM_DIR = r"C:\Windows\System32"
 LOADER_IMAGE_DIR = r"C:\Windows\Microsoft.NET\Framework\v4.0.30319"
+
+#: The redirector itself. A 32-bit process opening `System32\x` gets
+#: `SysWOW64\x`, so a path check that does not model this rejects paths a real
+#: WOW64 process opens successfully.
+WOW64_REDIRECT = (r"c:\windows\system32" + "\\", r"C:\Windows\SysWOW64" + "\\")
 
 
 def loader_full_path(name: str) -> str:
@@ -695,6 +709,19 @@ def resolve_dos_path(path):
         # directory, which this harness does not model -- and `C:C:\...`, the
         # shape stage 4 builds, lands here too. Both are honestly "no".
         return None
+    # WOW64 redirection, applied before the existence check. The emulated
+    # process is 32-bit, so `System32\x` is `SysWOW64\x` to it -- and this
+    # harness runs under 64-bit Python, where `os.path.isfile` gets no
+    # redirection at all. Without this, a well-formed path the sample builds
+    # from `System32` would be checked against the 64-bit directory.
+    # **No fallback to the 64-bit directory when redirection misses.** A 32-bit
+    # process cannot reach the real `System32` by that name at all -- that is
+    # what `Sysnative` exists for -- so falling back would let it open a file it
+    # could not open on a real machine. It only failed to matter here because
+    # this host has `write.exe` in neither directory.
+    source, target = WOW64_REDIRECT
+    if text.lower().startswith(source):
+        text = target + text[len(source):]
     try:
         return text if os.path.isfile(text) else None
     except (OSError, ValueError):
