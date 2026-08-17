@@ -3062,17 +3062,69 @@ Its read census over that one call:
         3,815  inside ntdll's export directory (0x7711fd78, 0x771260a8+)
           142  heap
 
-The 3,815 are an export resolution by name, not path work. **A malformed
-`lpApplicationName` with a NULL `lpCommandLine` fails `CreateProcess` on a real
-machine, so this is still almost certainly ours rather than the sample's** — but
-which input is wrong is not established, and `ProcessParameters` at `PEB+0x10` is
-a live suspect precisely because this harness never populates it (only `+0x02`,
-`+0x08` and `+0x0C` are written).
+The 3,815 are an export resolution by name, not path work. This entry guessed
+that the doubling was "still almost certainly ours" and named
+`ProcessParameters` as the suspect — **both settled in `0aq`, and the guess was
+wrong.**
 
 **One negative in that probe is VOID, recorded so nobody trusts it.** It also
 counted "reads carrying 'C' or ':'" and reported zero. That means nothing:
 unicorn does not populate the `value` argument of `UC_HOOK_MEM_READ`, so the test
 was against a constant 0. Only the region counts above survive.
+
+#### 0aq. The doubled drive is the SAMPLE's, not ours — and ProcessParameters is dead
+
+**The suspect first.** `scripts/peb_reads.py` watches the whole PEB page for a
+full run. Stage 4 reads **one field, four times**:
+
+    +0x00c   4 reads   Ldr   by +0x2c057, +0x2bed7
+
+`ProcessParameters` at `+0x10` is **never read**. So the fact that this harness
+leaves it zero cannot be the source of anything, and populating it would be
+answering a question nothing asks — the same disproof shape as `ApiSetMap` in
+`0d`. Suspect dead, for the cost of one narrow hook. (A read hook restricted to
+one page is nearly free: unicorn filters the range in C.)
+
+**Then the builder, identified black-box.** Its body does not disassemble, so
+`scripts/probe_path_builder.py` overrides ntdll's `FullDllName`, runs to the
+call and prints what comes back. Four inputs:
+
+| given | returns |
+|---|---|
+| `C:\Windows\SysWOW64\ntdll.dll` | `C:C:\Windows\SysWOW64\` |
+| `D:\Foo\Bar\ntdll.dll` | `D:D:\Foo\Bar\` |
+| `\Windows\SysWOW64\ntdll.dll` | `\Windows\SysWOW64\` |
+| `ntdll.dll` | `ntdll.dll\Windows\SysWOW64\` |
+
+**All four fit one rule**: take the prefix up to the first backslash, then append
+the module's own directory — falling back to the literal `\Windows\SysWOW64\`
+when the input has no directory at all. The fourth row is what makes it a rule
+rather than a story: it reproduces the pre-fix behaviour exactly, from a
+hypothesis formed on the first three.
+
+**So the doubling is what the routine does with a correct input.** The `D:` row
+is the load-bearing one — the prefix follows the input, so it is not a stray `C:`
+leaking in from this harness. A real WOW64 process has
+`FullDllName = C:\Windows\SysWOW64\ntdll.dll`, and that is precisely the input
+that produces `C:C:\`. **`0ap`'s "still almost certainly ours" is retracted.**
+
+**What that leaves open, stated plainly rather than resolved.** The intended
+construction is obviously `volume + \Windows\SysWOW64\`, and the routine appends
+the *whole* directory instead of the volume-relative part. `CreateProcessW` with
+that name and a NULL `lpCommandLine` fails on a real machine, so on this path
+every one of the twelve candidates would fail and `prepare_host` would return 0.
+Three readings survive and nothing here chooses between them:
+
+1. the branch is genuinely broken in this sample and never injects by this route;
+2. the hash `0x2c6e6e44` resolves to a different module on a real machine, one
+   whose `FullDllName` has no volume — note row three returns a clean
+   drive-relative `\Windows\SysWOW64\`, which `CreateProcessW` accepts;
+3. the output is consumed somewhere that strips the leading volume, and
+   `lpApplicationName` is not built from it as directly as `0ac` assumed.
+
+**The `FullDllName` fix stands either way.** It is right on its own terms — a
+real 32-bit process has full paths there — and it fixed the ntdll open outright.
+It simply was not the cause of the doubled drive.
 
 ---
 
