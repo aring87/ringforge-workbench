@@ -2628,12 +2628,20 @@ measurement** (see `0bf`, which closed the last two):
                                          <- guest_ldr_walk.py, the list the
                                             gate itself reads
 
-They cannot all be true. Propagation is ruled out (`0az`), a second store site is
-ruled out (`0ay`), and both ends of the chain are now measured rather than
-inferred — so **the next move is to attack a middle link, not to gather more
-evidence about the ends.** The softest is "only `rva 0x1605f` writes it": that is
-a statement about stage 3's *image*, and the guest ran from a `0x46000` **RWX**
-allocation it could rewrite at will (`0ba`).
+They cannot all be true, and **all four are now measured on the guest** — `0bg`
+diffed its executing image against the bench artifact and found the gate block,
+the lookup function, the decoder and both stores byte-identical. The 1.62% that
+differs is four regions the guest had not yet decrypted, plus one 260-byte
+scratch buffer. **Self-modification is out; propagation is out (`0az`); a second
+store site is out (`0ay`); no image was injected and unlinked (`0bg`).**
+
+**The only hypothesis left is temporal**: the `PEB->Ldr` list at *gate time* held
+something the list at *dump time* does not — unlinked and its memory freed, so
+it leaves no `MEM_IMAGE` region and no unloaded-module entry. A dump is one
+instant and the gate ran at another, so **no further reading of this artifact
+can settle it.** That is the honest boundary: the next real move is a guest
+measurement taken *while the gate runs*, and the instrumentation route for that
+is still undecided.
 
 **The structural difference that was supposed to be the next thread is gone.**
 "The bench's context is on the stack, the guest's copies on the heap" was never
@@ -3379,9 +3387,16 @@ displacement bytes `d8 06 00 00` and decoding backwards from each: **23 raw
 occurrences, 23 decodable, each with exactly one candidate decoding.** 21 reads
 and the same 2 stores.
 
+> **"Five short" is withdrawn — `0ax` counted a different image, correctly.**
+> `0bg` diffed the guest's executing copy against the bench artifact: `0ax`
+> swept the *guest's*, which has 18 decodable sites, and this swept the bench's
+> at 540M blocks, which has 23. The five below sit inside regions the guest had
+> **not yet decrypted**. Two right answers about two images. What stands is that
+> the sites are real and that `rva 0x1601b` had never been written down.
+
 **`0ay` and `0az` are untouched by this** — they rest on the store census, which
-is unchanged. The read census was five short, and one of the five is at
-`rva 0x1601b`, seven bytes before the gate block:
+is unchanged. The five reads not in the guest's copy include `rva 0x1601b`,
+seven bytes before the gate block:
 
     0x16012  jne  0x1601b
     0x16014  xor  al, al ; pop esi ; mov esp, ebp ; pop ebp ; ret
@@ -3690,6 +3705,68 @@ guest had a `0x46000` **RWX** region it could rewrite at will (`0ba`).
 > a real bench context at `0x2fe724` before being believed, and thrown away.
 > **Seventh instance in three days**, and the first that would have produced a
 > retraction rather than an overstatement.
+
+#### 0bg. THE GUEST RAN THE BENCH'S BYTES — self-modification is out, and `0ax` was right about 18
+
+`0bf` left the chain with both ends measured on the guest and both middle links
+still resting on the bench artifact — while the guest ran from a `0x46000`
+**RWX** allocation it could rewrite at will. `scripts/guest_image_diff.py` pulls
+the whole region out of the dump and compares.
+
+    BYTES THAT DIFFER: 4,612 of 284,641 (1.62%), in 5 runs
+
+    rva 0x139ec..0x13f17   entropy guest 7.85 / bench 5.84   guest ENCRYPTED
+    rva 0x1426d..0x145ee   entropy guest 7.74 / bench 5.98   guest ENCRYPTED
+    rva 0x17f9b..0x1860e   entropy guest 7.87 / bench 6.16   guest ENCRYPTED
+    rva 0x1862a..0x18819   entropy guest 7.52 / bench 5.78   guest ENCRYPTED
+    rva 0x2dd08..0x2de0c   entropy guest 7.18 / bench 7.26   neither -- see below
+
+**Four of the five are the same code at different points in its own
+decryption.** The bench side opens `90 90 90 90 90 90` and continues into valid
+x86; the guest side is entropy 7.5–7.9. The artifact is
+`stage3_alloc_at540M` — 540M blocks in — and the guest crashed far earlier, so
+it simply had less of itself unpacked. This file already records that stage 3
+keeps decrypting as it runs (45 hash call sites at 47M blocks, 65 by 380M).
+
+**And that reconciles the census discrepancy — in `0ax`'s favour.** `0bb` said
+*"`0ax`'s census was five reads short"*. **It was not.** `0ax` swept the
+*guest's* image, which genuinely has **18** decodable references to `+0x6d8`;
+`0bb` swept the bench's, which has **23**. The five that `0bb` treated as
+missed — `0x13b92`, `0x13f04`, `0x18010`, `0x1805d`, `0x180a9` — all sit inside
+the still-encrypted runs above. Two correct counts of two different images, and
+the accusation was mine. `0bb`'s other content stands: the sites are real, and
+`rva 0x1601b` is real and was genuinely never written down.
+
+**Both middle links hold on the guest's own bytes.** Everything the chain
+depends on is byte-identical:
+
+    gate block  0x1601b..0x1606f          identical
+    get_module_base_by_hash 0x2dc01..     identical
+    the XOR decoder at 0x4181             identical
+    stores into +0x6d8                    two, no third: 0x1605f and 0x26c91
+
+**So self-modification is out**, and with it the softest of the four links.
+
+**No ghost module either.** Every `MEM_IMAGE` allocation base in the dump is
+accounted for by the `PEB->Ldr` walk or the module list — the two extras being
+the second `RegSvcs` mapping at `0x990000` and `wow64cpu.dll`, both on the
+64-bit side. Nothing was injected as an image and left behind.
+
+**Where that leaves it, honestly: the diff hardened the contradiction rather
+than resolving it.** All four links are now measured on the guest and they
+remain mutually inconsistent. The only hypothesis still standing is **temporal**
+— the `PEB->Ldr` list at *gate time* held something the list at *dump time* does
+not, unlinked **and** its memory freed before the crash so that it leaves no
+`MEM_IMAGE` region and no unloaded-module entry. That is exactly what a DLL
+that injects, checks, and cleans up after itself would look like, and **this
+dump cannot test it** — a dump is one instant and the gate ran at another.
+
+**One loose end from the diff, kept because it is the only part unexplained.**
+The fifth run, 260 bytes at `rva 0x2dd08`, is high entropy on *both* sides
+(7.18 / 7.26) and is not a permutation of 0–255, so it is neither decryption
+progress nor an RC4 S-box. It sits just past `get_module_base_by_hash` and the
+poison thunk, contains no `+0x6d8` reference, and is on none of the four links.
+Most likely a runtime scratch buffer. Not chased.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
