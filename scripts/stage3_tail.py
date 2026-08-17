@@ -135,7 +135,12 @@ def main(argv: list[str] | None = None) -> int:
              for k in set(emu.calls) | set(before)}
     calls = {k: v for k, v in calls.items() if v}
     print(f"\nAPIs CALLED BY STAGE 3 AFTER THE SNAPSHOT:")
-    for name, n in sorted(calls.items(), key=lambda kv: -kv[1]):
+    # Break ties on the name. `calls` is built from a `set` union, so its
+    # iteration order varies with PYTHONHASHSEED between processes, and sorting
+    # on the count alone let three one-off calls -- NtClose, NtFreeVirtualMemory,
+    # ExitProcess -- come out in a different order each run. A probe whose
+    # output shuffles defeats the diff that a re-run exists to produce.
+    for name, n in sorted(calls.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"   {n:>6}  {name}")
     if not calls:
         print("   none")
