@@ -3115,8 +3115,50 @@ without measuring the stored value at the moment of the recovery.
 **Where the question now sits.** Only one instruction writes the constant, so the
 gate is the only hardcoded route — but `rva 0x26c91` writes *whatever is in
 eax*, and there are two `push 0x32dfd514` sites in the image. **Can the computed
-store ever write the constant?** That is the sharpened question, and it is a
-bench one: hook both store sites in an emulator run and record what each writes.
+store ever write the constant?** Answered in `0ay`: no, and what it writes
+instead is the finding.
+
+#### 0ay. THE COOKIE IS NORMALLY A SELF-ADDRESS — the gate swaps in a constant
+
+`scripts/cookie_stores.py` hooks both store sites in a fresh stage-3 run from the
+entry point. 632,962,985 blocks to a clean exit, which matches the 629M this file
+already records.
+
+    [    9,868,455blk] computed  -> [0x002fedfc] = 0x02002be1
+    STORE EXECUTIONS: 0 gate, 1 computed
+
+**The computed store never writes the constant.** One execution, one value —
+and the value is `0x02002be1`, which is **inside stage 3's own allocation** at
+`0x02001000`. The cookie is not a random number: it is a **runtime self-address**.
+
+**That explains the GetPC thunks.** `0ax` found both extra copies of the constant
+sitting behind an identical `e8 00 00 00 00 / 58 / c3` — call-next, pop, return,
+the standard way position-independent code learns its own address. A self-address
+cookie is exactly what that idiom is for.
+
+**So the gate substitutes a hardcoded constant for a runtime address**, and that
+is a very different act from "poisoning a pointer". Every value in the context is
+stored as `x ^ cookie` and recovered with `^ cookie`. Replace the cookie *after*
+values have been stored under the old one and **every recovery in the context
+yields garbage** — including the string pointer that `rva 0x2c7c` walks with
+`cmp al,[esi+ecx]`, which is where the guest died.
+
+**This moves the balance toward deliberate bail.** A build that merely broke
+would not swap one specific field for one specific constant on one specific
+branch; corrupting a cookie is a designed way to kill a process so that it looks
+like a crash rather than a detection. The two readings this file has carried
+since the crash was located are no longer equally weighted — **but neither is
+retired**, because the question the guest poses is untouched by any of this:
+**why did it take the branch, with no matching module loaded or unloaded?**
+
+**One scope caveat, and it is a live lead.** "Only one instruction writes the
+constant" means only one *in stage 3's image, directly*. The guest's dump holds
+**seven** copies of the cookie in heap contexts (`0ax`), and a `memcpy` of a
+context propagates the field without touching `+0x6d8` by name. So the next place
+to look is not another store site but a **context copy**: find what clones these
+structures, and whether one clone predates the gate.
+
+#### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
