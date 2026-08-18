@@ -4091,6 +4091,103 @@ legitimate, not inflated.
 > match the rule's own encodings**, and the rule states them in the line above
 > the string.
 
+#### 0bk. RUN `e8ab2151`, 18 Aug — VIPKeylogger scores 165, and gap 5 still will not fire
+
+**Run 2 of `0bi`, at the settings that section specified** — offsets
+`[3, 10, 25, 55]`, spawn re-dump `2`, max processes `24`. **165 · Likely
+Malicious / High, six categories, two strong: the highest score this pipeline
+has produced**, against a previous best of 125 on Remcos.
+
+**THE TEN PREDICTIONS: seven held, one was badly specified, two missed — and
+both misses are the author's, not the pipeline's.**
+
+| # | Predicted | Result |
+|---|---|---|
+| 1 | `chain_crashed` false | **held** — 0 event crashes, no bail |
+| 2 | `process_injection` at least `present` | **held** — present |
+| 3 | gap 5 `strong` only if the host is a hollowing target | **held as written** — `present` |
+| 4 | `payload_dropped` with lineage, not the whole write set | **held**, see below |
+| 5 | PowerShell captured, `other_process_blocks_excluded: 0` | **held** — 13 blocks, 12 from the sample, 0 |
+| 6 | `persistence_installed` **strong** | **MISSED** — `present` |
+| 7 | `registry_read` non-zero | **held** — 158,984 |
+| 8 | local rules match nothing | **MISSED** — Split-API matched 10 of 12 |
+| 9 | module integrity 0 mismatches | **held** — 732 compared, 0 |
+| 10 | WER `app_timestamp` silent without a crash | **held** — silent |
+
+**Prediction 6 was wrong about the sample, not the detector.** `strong` is
+`persistence_total >= 2` and this sample writes **one** autoruns entry. The
+prediction assumed Remcos's shape, which wrote a Run key to *both* HKCU and
+`HKLM\Wow6432Node` and so cleared a count threshold. One entry is one entry;
+the detector is right and the prediction was pattern-matching on a different
+sample.
+
+**Prediction 4 was badly specified and should not be scored as a pass.** It said
+"lineage `1`" — a guessed *count* dressed as a prediction. The run dropped two,
+both genuinely the sample's own `file_create` events:
+`%APPDATA%\whcjHybcIRKrlH.exe` and `%TEMP%\wdb0msxfxca.ps1`. What was actually
+worth predicting — that lineage attributes the drops to the sample rather than
+sweeping in a browser's writes — **held**, and `payload_dropped` graded
+**strong**. Retires *dropped-file lineage*, which had read *Fixed, unproven*.
+
+**Prediction 8 was superseded by `0bj` before this run happened.** It was
+written when a local-rule hit would have been a false positive. `0bj` then
+established that `RingForge_Split_API_Injection_Loader` is a *technique* rule
+with its mandatory strings verified. It matched **10 of 12 dumps** here — a
+**third** family — and that is the rule working, not failing.
+
+**And the rule set discriminated exactly as it should.** The technique rule
+fired; the family-specific rules — `ContextCookie` and `Loader_Stage2`, written
+against `422e30ed` — **stayed silent on a different family.** Generalisation
+where it was designed in, and no bleed where it was not. Memory-only rules:
+
+    RingForge_Split_API_Injection_Loader   10 of 12 dumps
+    Windows_Trojan_SnakeKeylogger_af3faa65  3
+    Windows_Trojan_AgentTesla_d3ac2b2f      1
+
+(Both stealer signatures firing on one sample is ordinary for this cluster;
+Triage called it VIPKeylogger.)
+
+**THE HEADLINE, AND IT IS A PROBLEM WITH THE GATE RATHER THAN THE SAMPLE.**
+`unmapped_in_hollowing_target: 0`. The carver found **one** unmapped PE — x86
+.NET, 81,920 bytes, compiled 2026-05-20, at `0x5600000` — and it is in the
+**sample's own process** (pid 4952). The tree is:
+
+    4952  the sample
+    11132   powershell.exe        -> conhost 11996
+    9460    the sample again      <- self-spawn, same image
+
+**No `RegAsm`, no `RegSvcs`, no `MSBuild`, no `vbc`.** Triage's
+`Suspicious use of SetThreadContext` was real, but the thread it redirected was
+in a copy of *itself*, not in a system utility.
+
+**That is now three samples and a pattern.** `422e30ed` bails by design;
+AgentTesla self-spawns; this one self-spawns. **Gap 5's `strong` branch requires
+the host to be in `HOLLOWING_TARGETS`, and this entire family cluster does not
+use that technique.** The branch has been unproven since it was written, and the
+reason is looking less like "we have not found the right sample" and more like
+**the gate is aimed at a technique that modern .NET stealers have moved away
+from**. Self-injection into a process the sample spawned from its own image is
+just as malicious and appears to be commoner.
+
+**That is a design question and it is deliberately not answered here:** should
+`strong` also fire on an unmapped executable PE inside a process the *sample
+itself* spawned, or is the current gate correct and simply rare? Changing a
+scoring gate to make a row go green is exactly the pressure this project's
+score design exists to resist. It wants a decision, not a quiet edit.
+
+**What the run retired anyway:** dropped-file lineage (above); the PE carver's
+`unmapped` classification on live data with **12 dumps analysed, 0 failures, 30
+`resource_only` correctly set aside, 1 carved**; module integrity at 732
+modules; and `vm_check_and_bail` returning `no_vm_check` with 158,984 registry
+reads actually behind it.
+
+**One setting drifted and it cost nothing.** `adaptive_observation: false` and
+`adaptive_available: false` this run, where run 1 had both true. The sample
+acted well inside the base window so nothing was lost, but `0bi` specified
+extend-if-dormant **on** and a run that cannot extend records that it could not
+rather than pretending the window was adequate. Worth confirming which of the
+two — unticked, or no activity probe — before run 3.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
