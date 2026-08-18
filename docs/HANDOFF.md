@@ -3974,6 +3974,96 @@ Export the HTML, `dynamic_run_summary.json` and **`network\received\`** before
 reverting. `process cap reached` or `exited before its +Ns re-dump` in the
 skipped list means raise the cap or lower the re-dump and run again.
 
+#### 0bj. RUN `c175a970`, 18 Aug — AgentTesla re-run, and a rule that generalises
+
+**Run 1 of the four-sample plan (`0bi`), and it did its job twice over:** it
+confirmed the pipeline is healthy after four days of heavy change, and it
+retired three rows of *What is proven, and what is not*.
+
+**Settings, per `0bi`: untuned on purpose.** `standard` profile, offsets
+`[5, 25]`, spawn re-dump `10`, 180s base window. The whole point of run 1 was
+that its expected output is recorded, so tuning it would have destroyed the
+comparison.
+
+**What held:**
+
+    score 85 · Likely Malicious / High     exactly as recorded
+    all 5 dumps Frozen                     suspended at capture
+    ftp.cyberflor.co                       present, from the sample
+    FTP control 192.0.2.123:21             + passive :60009, recorded range 60000-60010
+    chain_crashed false                    no bail
+    network_isolation contained            single egress, Ethernet 2
+    observation: 0 extensions              activity_observed, window_elapsed
+
+The adaptive window behaved exactly as the code says it must: extension fires
+only while *nothing has been observed*, and this sample acts, so it never
+engaged. That is worth stating because a run that never extends looks identical
+to one where extension is broken.
+
+**Three rows retired.**
+
+- **Received-file collection — PROVEN.** `FakeNet.html`, state `overwritten`,
+  sha256 recorded, under the case's `network/received/`. That row read *"the
+  collection path is still unproven — nothing has been uploaded since it was
+  written."* This is why AgentTesla was run first.
+- **`procmon_filter` in the summary — PROVEN.** `dynamic_registry_reads.pmc`,
+  `readable: true`, `captures_registry_reads: true`, 18 operations, read from
+  the file rather than the filename. The setting that voided three runs now
+  reports itself.
+- **Module integrity on a sample outside its fixture** — 297 modules compared,
+  0 replaced, 0 header mismatches. The measured benign rate holds off-fixture.
+
+Also confirmed in passing: `vm_check_and_bail` returned `no_vm_check` **with
+registry reads actually captured**, which is the guard working rather than a
+silent zero; and the parent-at-spawn limit recorded itself honestly again —
+*"parent exited before it could be imaged at the spawn of pid 9016"* — which is
+the named-reason record rather than a missing dump.
+
+**THE FINDING: `RingForge_Split_API_Injection_Loader` matched AgentTesla.**
+
+It matched **all five dumps**, including the parent at t5 and t25 where *no*
+AgentTesla rule matched. That is what moved two of the three recorded
+expectations, and it is the first time one of this project's own rules has
+fired on a family it was not written for.
+
+**Checked rather than believed, because three explanations fitted.** The rule's
+condition requires `$resolve = "GetDelegateForFunctionPointer" ascii wide`,
+so its presence is decisive:
+
+    kernel      26   (wide)        32.dll     331   (wide)
+    Virtual     29   (wide)        Alloc       40   (wide)
+    GetDelegateForFunctionPointer   ascii 6, wide 0
+
+**The mandatory string is present, in ascii.** The first count of it tested only
+UTF-16 and read 0, which looked like the rule matching without a required
+string. It is ascii because **.NET metadata strings are UTF-8**: an ascii
+`GetDelegateForFunctionPointer` is precisely what a metadata reference to
+`Marshal.GetDelegateForFunctionPointer` looks like. And the scanned ruleset was
+**hash-identical** to `tools/yara/local/`
+(`1210b092ac795aeb95c1af95cfc024dff28bcc6239dc7ff422ef15f3bd87ac8b`), so this is
+not ruleset drift — which was the leading hypothesis and was wrong.
+
+So it is a **true positive on the technique**. `"kernel "` ×26 and `"Virtual "`
+×29 as *space-suffixed* UTF-16 literals are not something an ordinary assembly
+holds, and AgentTesla's packer resolves reassembled API names through the same
+`GetDelegateForFunctionPointer` route the rule was written against. The rule's
+own header called this in advance — *"the splitting is a property of the evasion
+rather than of the family"* — and it behaves that way.
+
+**Why that is the more valuable outcome.** Nearly every detector here is proven,
+where proven at all, on one loader family. A rule that fires on two unrelated
+families with its mandatory strings verified is generalisation evidence, which
+is the thing the module actually needs. `packed_payload` citing it is
+legitimate, not inflated.
+
+> **A near-miss in the verification, worth recording.** The first check counted
+> all five strings as UTF-16 only, against a rule that declares one of them
+> `ascii wide`. The 0 it produced was consistent with a serious defect — a rule
+> matching without a mandatory string — and the next step would have been to
+> chase a scanning bug that does not exist. **A verification command has to
+> match the rule's own encodings**, and the rule states them in the line above
+> the string.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
@@ -5687,7 +5777,7 @@ run for a long time without showing.
 | Corroboration scoring | **Proven** across three samples and four bands — 35 / Needs Review, 70 / Elevated Attention, and 125 / Likely Malicious on Remcos with four categories and two strong. The band has moved for the right reason each time |
 | Network attribution | **Proven.** `other_process_requests: 3` against the sample's own four processes, on a run where Windows was busy |
 | PowerShell lineage filter | **Proven.** `blocks_from_sample: 12`, `other_process_blocks_excluded: 0` — the sample's own block survived, so the filter is not too tight |
-| Split-API YARA rule | **No false positives on real dumps; detection still untested.** 0 matches across 13 live dumps totalling 976 MB on 07 Aug 14:53, and 0 of 120 genuine `Microsoft.NET` assemblies. Its subject was not in memory that run — the parent died before its spawn image could be taken — so nothing has yet confirmed it fires on a dump that does contain stage 2 |
+| Split-API YARA rule | **Fires on two unrelated families, verified at the string level — 18 Aug.** It matched all five dumps of AgentTesla `31a762fd…` on run `c175a970`, a family it was not written for, and the match was checked rather than assumed: the mandatory `$resolve` string `GetDelegateForFunctionPointer` is present **ascii ×6** (0 wide — it is declared `ascii wide`, and .NET metadata strings are UTF-8, so ascii is the encoding a metadata reference to `Marshal.GetDelegateForFunctionPointer` actually has), alongside `"kernel "` ×26 and `"Virtual "` ×29 as space-suffixed UTF-16 literals. The scanned ruleset was hash-identical to the source, so this is not ruleset drift. Earlier: 0 matches across 13 live dumps totalling 976 MB and 0 of 120 genuine `Microsoft.NET` assemblies. **The rule was written against the technique rather than the family and it behaves that way** |
 | Windows-response suppression | **Fixed, proven by replay on two real runs.** WER's `:443` leaves `sample_destinations` while a non-standard-port C2 in the same table survives; the 07 Aug 14:53 VM-artifact hits go 9 to 0 with 5 counted as Windows-response. One definition in `utils`, used by both passes, each reporting what it removed. Unproven on a *fresh* run |
 | Sysmon highlight lineage | **Proven on a live run**, 07 Aug 14:53 — `other_process_events_excluded: 14`, `high_severity_count: 0`, no `credential_access_or_tampering`, score 70. The `dwm.exe` false positive that moved a band did not recur |
 | `activity_observed` | **Proven.** `false` before the fix and `true` after, on the identical sample and chain |
@@ -6103,9 +6193,18 @@ The fully-worked case. Any regression shows up as a change here.
 | Report format | `Time:/User Name:/Computer Name:/OSFullName:/CPU:/RAM:` then `Host:/Username:/Password:/Application:` blocks split by `<hr>` |
 | Score | 85 · Likely Malicious / High, replayed from the real summary |
 
-Expected on a clean run: 4 dumps all `Frozen`, scheduled offsets matching 0
-rules, spawn and exit dumps matching 3, `network_events: 2`, and
-`ftp.cyberflor.co` alone in the requested-domains card.
+Expected on a clean run: **5** dumps all `Frozen`, scheduled offsets matching
+**1** rule, spawn and exit dumps matching **4**, and `ftp.cyberflor.co` from the
+sample with FTP control `:21` and passive data in `:60000-60010`.
+
+> **Updated 18 Aug from run `c175a970`, and the old numbers are kept because
+> the change is the finding.** This block used to read *4 dumps, scheduled
+> offsets matching 0 rules, spawn and exit dumps matching 3*. All three moved
+> for reasons that are not regressions: the fifth dump is the `spawn-redump`
+> trigger, which did not exist when the expectation was written, and the extra
+> rule in every dump is **this project's own**
+> `RingForge_Split_API_Injection_Loader`, which could not have matched before
+> the local rules first reached a guest baseline on 16 Aug. See `0bj`.
 
 The report format is itself a durable signature — a YARA rule could be written
 against a captured upload rather than against the binary. The 03 Aug upload was
