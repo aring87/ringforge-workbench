@@ -4270,6 +4270,109 @@ its SHA256 *on the guest after transfer* -- an encoding conversion in transit
 would leave a file that still looks like a script and no longer runs, and this
 session has already lost a path to a stray carriage return.
 
+#### 0bm. RUN `33fe6c3b`, 18 Aug — the control worked, and it refutes `0bk`
+
+**The `.ps1` control from `0bl` ran, and it did what a control is for: it put
+the failure somewhere unambiguous. It is not where this file predicted.**
+
+**The hollowed process is named at last: `SecurityHealthHost.exe`**, a child of
+`powershell.exe` alongside `csc.exe` — the C# compiler, which is `Add-Type`
+doing P/Invoke exactly as `0bl` predicted.
+
+    10920  powershell.exe             <- the sample
+     7708    csc.exe                  <- Add-Type
+     6216    SecurityHealthHost.exe   <- THE HOLLOWED TARGET
+
+It is **not** in `HOLLOWING_TARGETS`, so `strong` could not have fired on it.
+But that turns out not to be why nothing fired.
+
+**BOTH DUMPS OF IT FAILED, and the error is the finding:**
+
+    pid 6216  process-spawn  t143   "Target process no longer running"
+    pid 6216  spawn-redump   t145   "Target process no longer running"
+                                    0x8007012B — only part of a
+                                    ReadProcessMemory request was completed
+
+**The hollowed process lived under two seconds and the event-driven trigger lost
+the race.** `dumps_attempted: 7, succeeded: 5, skipped: 1` — the single failure
+is the only process that mattered.
+
+**That retracts a claim this file makes.** The run-`0aw` note reads: *"The
+standing advice that 'no scheduled offset can catch a 3-second child' was true
+and incomplete — the event-driven triggers are not scheduled offsets, and they
+do not care how short the life is."* **They do care.** The spawn event is
+observed, ProcDump is launched, and the process can be gone before it attaches.
+There is a race between notification and attach, and nothing had measured it.
+Lowering the re-dump to `2` did not help, because the *first* dump — at spawn —
+lost too.
+
+**So `process_injection` never fired at all**, not even `present`. Module
+integrity compared **380 modules, every one from `powershell.exe`, all
+identical**; the carver reported no unmapped images. **No detector was given the
+hollowed process to look at.**
+
+**Which refutes `0bk`'s hypothesis, and that is the value of the run.** After
+three self-injecting stealers this file proposed that gap 5's gate *"is aimed at
+a technique modern .NET stealers have largely abandoned."* The one run built to
+test that shows something else: a real hollow, into a real Windows binary, that
+no detector could see **because the image was never captured**. **This is a
+collection failure, not a scoring one**, and the scoring change `0bk` floated
+would not have helped. **Do not make it on this evidence.**
+
+**Gap 5's `strong` branch is still unexplained rather than explained** — four
+samples, four different reasons: `422e30ed` bails, AgentTesla and `8ceb2c53…`
+self-inject, and this one hollowed a target the watcher could not hold still.
+
+**A false-positive class, and a wide one.** `payload_dropped` graded **strong**
+on two files:
+
+    C:\Users\adam\AppData\Local\Temp\zrudxjpg\zrudxjpg.dll
+    C:\Users\adam\AppData\Local\Temp\hryya5bb\hryya5bb.dll
+
+Both are **`csc.exe` output** — the temporary assemblies `Add-Type` compiles
+inline C# into. Lineage is correct (`source_process_name: powershell.exe`) and
+the classification is defensible in isolation, but **every PowerShell script
+calling `Add-Type` drops these**, and that population includes a great many
+legitimate administrative scripts. A category reaching `strong` on compiler
+scratch files is the volume-driven model the score design exists to avoid.
+`missed_descendants` recording `cvtres.exe` under `csc.exe` is the corroborating
+detail.
+
+**ScriptBlock capture did not get the script**, which cost the run its headline
+deliverable. `blocks_total: 13, blocks_from_sample: 3,
+analyzer_blocks_excluded: 9, blocks_suspicious: 0` — and the three sample blocks
+are **4, 50 and 5 characters long**, against a **1,091,668-byte UTF-16 script**.
+`scripted_execution` did not fire on a PowerShell script.
+
+**The 9-of-13 analyzer exclusion is what to look at**, because run `e8ab2151`
+saw `blocks_total: 13` with `analyzer_blocks_excluded: 1` and 12 from the
+sample. Same total, inverted split. **If the analyzer filter is eating the
+sample's own blocks, that is the fifth instance of the attribution bug class
+this file already records four of** — and it is unproven either way, because a
+1 MB script may simply not be logged whole. It needs the raw
+`Microsoft-Windows-PowerShell/Operational` events, not the summary.
+
+**A performance defect, measured.** Module integrity took roughly 24 of this
+run's 27 minutes: five `powershell.exe` dumps totalling **1,110 MB**, 380
+modules. The cause is `_CACHE_LIMIT = 96` with a wholesale `.clear()` —
+PowerShell carries well over 96 modules, so the reference cache thrashes and
+every relocation is recomputed. Measured on the bench, a full `pefile` parse
+plus relocation averages **1,105 ms** per module (`shell32` 1.9 s,
+`windows.storage` 2.2 s), so ~750 uncached parses is ~14 minutes here and more
+on the guest.
+
+> **The obvious fix was measured and does not work.** `fast_load=True` parsing
+> only `IMAGE_DIRECTORY_ENTRY_BASERELOC` gives **1.1x**, not the 5–10x it looks
+> like it should: `relocate_image` forces the parse regardless, so the resource
+> tree is not the cost. **The fix is the cache — LRU eviction instead of a
+> wholesale clear, or a limit above the observed module count — not the parse
+> mode.** Recorded so nobody spends an afternoon re-deriving it.
+
+**Three build items fall out, none queued yet:** the spawn-dump race, the
+`Add-Type` false-positive class, and the module-integrity cache. **All three are
+pipeline defects found by a control**, which is the argument for having built
+one.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
