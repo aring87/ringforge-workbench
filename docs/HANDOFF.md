@@ -4188,6 +4188,88 @@ extend-if-dormant **on** and a run that cannot extend records that it could not
 rather than pretending the window was adequate. Worth confirming which of the
 two — unticked, or no activity probe — before run 3.
 
+#### 0bl. QUEUED — a PowerShell RunPE as gap 5's first real CONTROL, and a Dridex chaser
+
+**`0bk` left gap 5's `strong` branch unproven for the third time, and the reason
+had stopped being "no sample yet".** Three real stealers in a row self-inject
+rather than hollow a system utility, which made "the gate is aimed at a
+technique this cluster abandoned" a live reading that could not be
+distinguished from "we picked badly". **A control settles that, and gap 5 has
+never had one** -- unlike `memory_canary` and `upx_control`, which exist for
+exactly this reason.
+
+**QUEUED FIRST — `af2d83008fff89591cf33cdbadf50b3d9eaa68d3057eda9b4f04a771121d2abc`**
+(`malware_sample.ps1`, 1,091,668 bytes, UTF-16LE, first seen 2026-02-13, tags
+`powershell` / `process hollowing` / `ps1`, no family signature).
+
+**Why a script beats another sample here, and it is not convenience:**
+
+- **The hollowing code arrives in plaintext.** `build_dynamic_launch_command`
+  runs a `.ps1` through `powershell.exe -NoProfile -ExecutionPolicy Bypass
+  -File`, so ScriptBlock logging captures the script. **The target process name
+  is readable from this run's own collector** rather than from someone else's
+  tags -- which is the criterion that failed twice, on the Snake candidate and
+  again on `8ceb2c53...`.
+- **No family signature and an individual reporter reads as a PoC**, so **no
+  anti-VM**. Every ambiguous result so far has been "did it bail, or is the
+  detector wrong?" A script without evasion deletes that question.
+- **1 MB of UTF-16 means an embedded PE**, carried as base64 or a byte array --
+  ~545 KB of text. Public RunPE scripts overwhelmingly target `svchost.exe`,
+  `notepad.exe` or `explorer.exe`, all three in `HOLLOWING_TARGETS`.
+
+**And the conclusion is clean whichever way it goes.** `strong` fires and gap 5
+closes on a case whose mechanism was read rather than inferred. `strong` does
+**not** fire on a hollow whose source code is in the report, and the gate is
+**proven** mis-aimed rather than suspected -- which is what would justify the
+scoring change `0bk` declined to make unilaterally.
+
+**PREDICTIONS, recorded first:**
+
+1. The root process is **`powershell.exe`**, not the script. Lineage has to
+   reach a hollowed **grandchild**; that is a second thing this run tests.
+2. ScriptBlock capture succeeds on a very large block. `0bk` handled 330,694
+   bytes; this is bigger. `blocks_from_sample > 0`,
+   `other_process_blocks_excluded: 0`, `incomplete_blocks: 0` -- **an
+   incomplete block would void the main deliverable**, since the target name
+   lives in the text.
+3. **The captured text names the hollowed process.** Record it verbatim. This is
+   the artifact the run exists for.
+4. `scripted_execution` fires -- it is a PowerShell script by construction.
+5. If the target is in `HOLLOWING_TARGETS`, `process_injection` grades
+   **`strong`**, and **the route matters more than the grade**: expect
+   `module_header_mismatch_in_target > 0`. A textbook RunPE writes the payload
+   over the host at its own base, which classifies `at_module_base` and is the
+   carver's documented blind spot -- so `unmapped_pe_in_hollowing_target` may
+   well stay 0. **Module integrity has never caught a real hollow either**, so
+   that route firing is its own result.
+6. `chain_crashed` false.
+7. `RingForge_Split_API_Injection_Loader` **does not** match. A PowerShell RunPE
+   typically resolves through `Add-Type` P/Invoke rather than
+   `GetDelegateForFunctionPointer`, and the rule requires that string. **A match
+   here would be a fourth family and would say the technique rule reaches
+   further than the .NET-loader population it was written from.**
+8. Dropped files may be **zero** -- the payload can live entirely in the script.
+   A zero here is a real negative, not a collector failure, and
+   `dropped_files_summary` distinguishes them.
+
+**QUEUED SECOND —
+`e30b76f9454a5fd3d11b5792ff93e56c52bf5dfba6ab375c3b96e17af562f5fc`** (Dridex,
+176,128 bytes, exe, 2021-04-20, tags `Dridex` / `process hollowing` / `RunPE`,
+reporter `struppigel`). **Real malware, native rather than .NET -- a fourth
+distinct shape** -- and from the era when hollowing into system binaries was
+standard. It runs *after* the control, because 2021 Dridex loaders are known
+for anti-analysis and a bail would restore exactly the ambiguity the control
+removes.
+
+**Settings for both:** offsets `3, 10, 25, 55`, spawn re-dump **`2`**, max
+processes `24`. A hollow completes in well under a second and the host is
+short-lived, which is the `0bk` reasoning unchanged.
+
+**One transfer note, earned this session.** The `.ps1` is **UTF-16LE**. Verify
+its SHA256 *on the guest after transfer* -- an encoding conversion in transit
+would leave a file that still looks like a script and no longer runs, and this
+session has already lost a path to a stray carriage return.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
