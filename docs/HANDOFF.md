@@ -4373,6 +4373,80 @@ on the guest.
 pipeline defects found by a control**, which is the argument for having built
 one.
 
+#### 0bn. RUN `677547d9`, 18 Aug — MODULE INTEGRITY CATCHES A REAL HOLLOW, and the carver's blind spot is confirmed live
+
+**Dridex `e30b76f9…`, the `0bl` chaser. 130 · Likely Malicious / High, five
+categories, and — for the first time — the module-integrity route fired on a
+genuine process hollow.**
+
+**No dump race this time: 7 attempted, 7 succeeded.** The `0bm` failure was a
+property of a sub-second PoC target, not a general defect in the trigger. That
+is the second measurement the fix needed, and it narrows the race to processes
+that die within about a second of being spawned.
+
+**It self-spawned rather than hollowing a system binary:**
+
+    8960  e30b76f9….exe      <- the sample
+    7328    e30b76f9….exe    <- a copy of itself, hollowed
+
+So `…_in_hollowing_target` is 0 across every route and **`strong` could not
+fire**. That is now the pattern on four of five samples.
+
+**THE FINDING — `header_mismatch`, ten times, with the identity that proves it:**
+
+    module in memory : timestamp 1448023611, SizeOfImage 102400
+    file on disk     : timestamp 1448192354, SizeOfImage 180224
+    base             : 0x400000
+
+**A 100 KB image running at `0x400000` where the file it was started from is
+180 KB.** Different build, different size, same base — a textbook RunPE, and it
+is detected **by identity rather than by degree**, which is precisely the case
+the `0ax`-era false-negative fix was made for. `modules_compared: 314`,
+`identical: 314`, `header_mismatch: 10`.
+
+**Module integrity has never done this before.** Its benign rate was measured
+(0 across 300 modules in 12 programs) and its one previous live attempt failed
+for a locatable reason — there was no `RegSvcs` image to examine. **It works.**
+
+**AND THE CARVER'S BLIND SPOT IS CONFIRMED ON REAL MALWARE.**
+`unmapped_images: 0`, `carved: 0`, `dumps_analyzed: 7`. Gap 5's own note says
+the classic overwrite-in-place hollow *"classifies as `at_module_base` and is
+invisible: the module list is read from the same memory"*. **That has now been
+observed rather than reasoned about**, on a sample that demonstrably hollowed
+something.
+
+**Which makes the architecture right and the row wrong.** The two detectors are
+complementary exactly as designed: the carver cannot see an overwrite-in-place
+hollow, and module integrity catches it. **Gap 5 — the *carver's* `strong`
+branch — remains unproven, and it is now unproven for a fully understood
+reason** rather than an unknown one. The carver needs a payload mapped at an
+address the module list does not cover; RunPE by construction does not produce
+one.
+
+**That reframes what gap 5 is waiting for.** Not "a sample that hollows" — this
+was one — but specifically **a loader that maps its payload somewhere the host's
+module list does not reach, into a process in `HOLLOWING_TARGETS`.**
+`422e30ed` is exactly that shape (stage 3 at `RegSvcs`'s preferred base with the
+real image relocated away) and it is the sample that bails. **The row may be
+waiting on the crash after all**, which is the opposite of what `0bk` concluded
+and consistent with `0bm` refuting it.
+
+> **A reporting bug, on this run's own card.** `process_injection` reads
+> `detail: "0 injection event(s) …"` and, directly beneath it,
+> `reason: "Sysmon recorded process injection (CreateRemoteThread)."` The reason
+> is chosen by a conditional chain that has no branch for the
+> module-integrity-only case, so it falls through to a claim **the detail line
+> on the same card contradicts**. Nothing is mis-scored; the explanation shown
+> to a reader is simply false. Worth fixing before anyone reads a report and
+> believes Sysmon saw something.
+
+**One loose end.** The sample's own image is `no_reference` in the two parent
+dumps (`t3`, `t10`) and `header_mismatch` in every child dump. Same file, same
+base, two different verdicts. `no_reference: 4` total. Probably the ordinary
+before/after of the hollow, but the reference lookup returning *"no matching
+build"* where it later returns *"different build"* is worth one look — those are
+different claims and only one of them is evidence.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
@@ -6122,7 +6196,7 @@ run for a long time without showing.
 | Syscall-boundary interception | **Proven end to end**, 10 Aug. The gate fires on a payload calling stubs out of its *own* mapped ntdll, where an export hook sees nothing: four syscalls dispatched by service number into the handlers that already existed. Proven on both paths — resumed from `after_scan.state`, and from a cold run whose call sequence matches it exactly, which is what says `setup()` installs the gate and not only `restore()` |
 | SSN table completeness | **Proven structurally.** 509 numbers, `0x0`–`0x1fc`, unique and contiguous. This is the right shape of check: a kernel service table has no gaps, so a gap means an unrecognised stub shape rather than a missing service — and it found one on its first run, the dual-path `NtQueryInformationProcess`. Same reasoning as counting the bytes the IL decoder could not name |
 | Emulator snapshot / restore | **Proven by equivalence**, and now across a format change. `test_emu_snapshot.py` reports `EQUIVALENT` on memory SHA-256, block count and all sixteen registers — reading a **v1 snapshot written by the older code** into the newer emulator, so backward compatibility is demonstrated rather than assumed. A v2 round trip matches on memory, blocks and EIP |
-| Module integrity | **Fired on real malware on its first live run, and the first version would not have.** Run 3f70058b compared 568 modules across 11 dumps: 560 identical, 8 patched, 0 replaced -- and the object that mattered, a second `RegSvcs.exe` at the preferred base `0x400000`, fell into an unnamed `no_reference`. The real image at `0x00ed0000` is byte-identical to its file, so **overwrite-in-place is refuted**. `header_mismatch` and named skips are the fix; re-runnable over existing dumps via the module's own CLI. Negative control proven on an OS-written dump; `replaced` still never seen in the wild |
+| Module integrity | **PROVEN on a real hollow — run `677547d9`, 18 Aug.** Dridex `e30b76f9…` mapped a 102,400-byte image over its own 180,224-byte file at base `0x400000`; `header_mismatch` fired **10 times** across the dumps, on identity (`TimeDateStamp` + `SizeOfImage`) rather than degree — the exact case the false-negative fix was made for. `modules_compared: 314`, `identical: 314`. **This is the route that covers the carver's overwrite-in-place blind spot, and the same run confirmed that blind spot live (`unmapped_images: 0`).** Not `strong`, because the hollowed host was the sample's own copy rather than a member of `HOLLOWING_TARGETS`. Earlier: run `3f70058b` compared 568 modules across 11 dumps — 560 identical, 8 patched, 0 replaced — with the object that mattered, a second `RegSvcs.exe` at `0x400000`, falling into an unnamed `no_reference`; `header_mismatch` and named skips were the fix. **`no_reference` at `0x400000` recurred on `677547d9`'s two parent dumps** while the child dumps graded `header_mismatch`, so that distinction is still worth one look. `replaced` has never been seen in the wild |
 | Test suite runnable at all | **Fixed.** pytest was installed in neither interpreter, and collection died on two CLI tools in `scripts/` named `test_*.py`. 492 pass; `pytest -m "not slow"` is 483 in 1.6s. The handoff's "332 tests" was stale by 160 |
 | Served process list | **Built, and it moved the sample** -- past the enumeration into `NtOpenDirectoryObject`, `NtCreateMutant` and a 20-entry anti-analysis name check. It is the one **invented** input in the harness, declared in `winenv.PROCESS_LIST` and named in every run's output, so anything concluded after it is conditional on those twelve names |
 | Remote-write capture | **Built, never fired.** `NtWriteVirtualMemory`, `NtOpenProcess`, `NtCreateSection`/`NtMapViewOfSection` are instrumented and section views are real allocations so a payload copied in with ordinary instructions is still visible -- but the sample exits before injecting, so none of it has run. Do not read the empty section as evidence the sample does not inject; the decoded capability set says otherwise |
