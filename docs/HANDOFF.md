@@ -4006,6 +4006,33 @@ to one where extension is broken.
   sha256 recorded, under the case's `network/received/`. That row read *"the
   collection path is still unproven — nothing has been uploaded since it was
   written."* This is why AgentTesla was run first.
+
+  **And the content is the sample's own report, not an untouched FakeNet
+  page** -- checked, because "a file arrived" and "the exfil arrived" are
+  different claims. It matches the recorded format exactly:
+
+      Time: / User Name: / Computer Name: / OSFullName: / CPU: / RAM:
+      <hr>
+      Host: / Username: / Password: / Application:   x2, IE/Edge
+
+  **That makes the format a confirmed durable signature across runs** -- 03 Aug
+  and 18 Aug, two captures, same shape. This file has noted that a rule could
+  be written against a captured upload rather than against a binary; there are
+  now two specimens to write it from. Not built, and not queued.
+
+  **Nothing sensitive left the lab, and the reason is worth knowing.** The two
+  harvested "credentials" are Windows' *own* Credential Manager entries --
+  `SnapshotEncryptionKey` and `SnapshotEncryptionIV`, both under a
+  MicrosoftStore-Installs account, attributed to `IE/Edge`. A clean baseline
+  has no saved browser passwords, so what a stealer gets here is the vault
+  Windows populates itself. The values are deliberately not reproduced here.
+
+  **Two baseline properties the exfil measured for free.** It reported
+  `RAM: 7981.7 MB` and the host's real CPU model. Both are *helpful*: 8 GB and
+  a real desktop CPU are what a physical machine looks like, and samples that
+  bail on under-provisioned hardware -- a common cheap sandbox check -- have
+  nothing to catch here. Worth remembering if the baseline is ever rebuilt
+  smaller.
 - **`procmon_filter` in the summary — PROVEN.** `dynamic_registry_reads.pmc`,
   `readable: true`, `captures_registry_reads: true`, 18 operations, read from
   the file rather than the filename. The setting that voided three runs now
