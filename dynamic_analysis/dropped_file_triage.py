@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,56 @@ def path_is_excluded(path_value: str) -> bool:
     return any(marker in p for marker in ANALYZER_NOISE_MARKERS)
 
 
+#: The .NET CodeDom compiler's scratch output. `Add-Type` in PowerShell shells
+#: out to `csc.exe`, which writes its temporary assembly to
+#: `%TEMP%\<random>\<random>.dll` -- directory basename and file stem identical
+#: -- plus `CSC<hex>.TMP` and `RES<hex>.tmp` alongside it.
+#:
+#: Found on run `33fe6c3b`, where a PowerShell RunPE script took
+#: `payload_dropped` to **strong** on exactly two of these:
+#:
+#:     C:\Users\adam\AppData\Local\Temp\zrudxjpg\zrudxjpg.dll
+#:     C:\Users\adam\AppData\Local\Temp\hryya5bb\hryya5bb.dll
+#:
+#: Both are real files the sample's tree really wrote, so the collection is
+#: right and the *claim* is wrong: **every** PowerShell script that calls
+#: `Add-Type` drops these, and that population is mostly legitimate
+#: administration. A category reaching `strong` on a compiler's scratch files is
+#: the volume-driven model the score design exists to avoid.
+#:
+#: Set aside and counted rather than dropped -- the same treatment `pe_carve`
+#: gives `resource_only` images. A signal that fires on every process on the
+#: machine says nothing about any of them, and hiding the count would make this
+#: pass unauditable.
+_CSC_SCRATCH = re.compile(r"^(csc[0-9a-f]+\.tmp|res[0-9a-f]+\.tmp)$", re.I)
+
+
+def path_is_compiler_artifact(path_value: str) -> bool:
+    r"""A `csc.exe` temporary assembly or its scratch files.
+
+    Deliberately narrow. The shape is `<temp>\<name>\<name>.dll|.pdb` with the
+    directory and the stem equal, which is what `Path.GetRandomFileName` plus
+    CodeDom produces and is not a shape ordinary droppers use. A malicious
+    assembly compiled this way is still collected and still reported -- it
+    simply stops carrying a scored category by itself, because the behaviour
+    that matters is the scripted execution around it, and that is scored
+    separately as `scripted_execution`.
+    """
+    norm = normalize_windows_path(path_value)
+    if not path_is_in_suspicious_location(norm):
+        return False
+    parts = [seg for seg in norm.replace("/", "\\").split("\\") if seg]
+    if len(parts) < 2:
+        return False
+    name = parts[-1]
+    if _CSC_SCRATCH.match(name):
+        return True
+    stem, dot, ext = name.rpartition(".")
+    if not dot or ext.lower() not in {"dll", "pdb"}:
+        return False
+    return stem.lower() == parts[-2].lower()
+
+
 def classify_path(path_value: str) -> str:
     ext = Path(path_value).suffix.lower()
     return DROPPED_FILE_EXTENSIONS.get(ext, "unknown")
@@ -241,6 +292,9 @@ def enrich_dropped_files(candidates: list[dict[str, Any]]) -> list[dict[str, Any
             record["sha1"] = None
             record["sha256"] = None
 
+        compiler_artifact = path_is_compiler_artifact(str(record.get("path", "")))
+        record["compiler_artifact"] = compiler_artifact
+
         reasons: list[str] = []
         if record.get("suspicious_path"):
             reasons.append("path_in_suspicious_location")
@@ -260,7 +314,8 @@ def enrich_dropped_files(candidates: list[dict[str, Any]]) -> list[dict[str, Any
             reasons.append(f"classification:{classification}")
 
         record["reasons"] = reasons
-        record["suspicious"] = len(reasons) > 0
+        # Counted, shown, and not scored. See `path_is_compiler_artifact`.
+        record["suspicious"] = len(reasons) > 0 and not compiler_artifact
 
         enriched.append(record)
 
@@ -273,6 +328,7 @@ def summarize_dropped_files(items: list[dict[str, Any]]) -> dict[str, int]:
         "existing_on_disk": 0,
         "missing_on_disk": 0,
         "suspicious": 0,
+        "compiler_artifacts": 0,
     }
 
     for item in items:
@@ -283,5 +339,7 @@ def summarize_dropped_files(items: list[dict[str, Any]]) -> dict[str, int]:
 
         if item.get("suspicious"):
             summary["suspicious"] += 1
+        if item.get("compiler_artifact"):
+            summary["compiler_artifacts"] += 1
 
     return summary

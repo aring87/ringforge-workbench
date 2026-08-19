@@ -1147,6 +1147,80 @@ def _attributed_connections(
     }
 
 
+def _injection_reason(
+    *,
+    image_timestamp_mismatch_in_target: int = 0,
+    module_header_mismatch_in_target: int = 0,
+    unmapped_pe_in_hollowing_target: int = 0,
+    hollowing_target_crashes: int = 0,
+    image_timestamp_mismatches: int = 0,
+    module_header_mismatches: int = 0,
+    unmapped_pe_images: int = 0,
+    unmapped_memory_crashes: int = 0,
+    sysmon_injections: int = 0,
+) -> str:
+    """Why `process_injection` fired, naming the route that actually fired it.
+
+    Extracted from an inline conditional chain that **had no branch for two of
+    the five routes**. `module_header_mismatches` and `image_timestamp_mismatches`
+    outside a hollowing target both fell through to the final `else`, which says
+    *"Sysmon recorded process injection (CreateRemoteThread)."*
+
+    That is not a cosmetic slip. On run `677547d9` Dridex hollowed a copy of
+    itself: 10 `header_mismatch` verdicts, `sysmon_injections` **0**, and the
+    card rendered `detail: "0 injection event(s) ..."` directly above
+    `reason: "Sysmon recorded process injection"`. The score was right and the
+    sentence under it was false, which is worse than saying nothing.
+
+    Ordered strongest first, and the in-target routes lead because they are what
+    `strong` rests on. The final line is reachable only when `sysmon_injections`
+    is the reason, so it can no longer be reached by a run where Sysmon saw
+    nothing.
+    """
+    if image_timestamp_mismatch_in_target:
+        return ("Windows recorded a different image timestamp for a binary "
+                "loaders commonly hollow than the file it was started from -- "
+                "the process was running something other than its own image.")
+    if module_header_mismatch_in_target:
+        return ("A loaded module in a binary loaders commonly hollow disagrees "
+                "with the file on disk it claims to be.")
+    if unmapped_pe_in_hollowing_target:
+        return ("A PE image was found in the memory of a binary loaders "
+                "commonly hollow, at an address that process's own module list "
+                "does not cover -- an executable the loader never mapped.")
+    if hollowing_target_crashes:
+        return ("A binary loaders commonly hollow, started by the sample, "
+                "faulted at an address with no module mapped there -- it was "
+                "executing injected code.")
+    # The two routes the old chain omitted. Both are real evidence of a hollow;
+    # they are only not `strong` because the host is not a binary loaders
+    # commonly hollow -- a sample that hollows a copy of itself, which is what
+    # four of five samples run so far actually do.
+    if image_timestamp_mismatches:
+        return ("A running image does not match the file it was started from. "
+                "The process is not one loaders commonly hollow, so this is "
+                "reported without being treated as decisive on its own.")
+    if module_header_mismatches:
+        return ("A loaded module disagrees with the file on disk it claims to "
+                "be -- a different build at the same base. The process is not "
+                "one loaders commonly hollow, so this is reported without being "
+                "treated as decisive on its own.")
+    if unmapped_pe_images:
+        return ("A PE image is present in process memory at an address "
+                "no loaded module covers.")
+    if unmapped_memory_crashes:
+        return ("A process in the sample's tree faulted at an address with "
+                "no module mapped there. In a managed process that can also "
+                "be JIT-compiled code, so this is reported without being "
+                "treated as decisive on its own.")
+    if sysmon_injections:
+        return "Sysmon recorded process injection (CreateRemoteThread)."
+    # Unreachable while `present` requires one of the five, and stated rather
+    # than defaulted: a category that fired for no nameable reason is a bug in
+    # the caller, not a sentence to invent.
+    return "No injection route reported a finding."
+
+
 def _evidence_categories(
     *,
     memory_only_rules: list[Any],
@@ -1281,39 +1355,16 @@ def _evidence_categories(
                 f"their file ({module_header_mismatch_in_target} in a process "
                 f"loaders hollow)"
             ),
-            "reason": (
-                "Windows recorded a different image timestamp for a binary "
-                "loaders commonly hollow than the file it was started from -- "
-                "the process was running something other than its own image."
-                if image_timestamp_mismatch_in_target
-                else
-                "A loaded module in a binary loaders commonly hollow disagrees "
-                "with the file on disk it claims to be."
-                if module_header_mismatch_in_target
-                else
-                "A PE image was found in the memory of a binary loaders "
-                "commonly hollow, at an address that process's own module list "
-                "does not cover -- an executable the loader never mapped."
-                if unmapped_pe_in_hollowing_target
-                else (
-                    "A binary loaders commonly hollow, started by the sample, "
-                    "faulted at an address with no module mapped there -- it was "
-                    "executing injected code."
-                    if hollowing_target_crashes
-                    else (
-                        "A PE image is present in process memory at an address "
-                        "no loaded module covers."
-                        if unmapped_pe_images
-                        else (
-                            "A process in the sample's tree faulted at an address with "
-                            "no module mapped there. In a managed process that can also "
-                            "be JIT-compiled code, so this is reported without being "
-                            "treated as decisive on its own."
-                            if unmapped_memory_crashes
-                            else "Sysmon recorded process injection (CreateRemoteThread)."
-                        )
-                    )
-                )
+            "reason": _injection_reason(
+                image_timestamp_mismatch_in_target=image_timestamp_mismatch_in_target,
+                module_header_mismatch_in_target=module_header_mismatch_in_target,
+                unmapped_pe_in_hollowing_target=unmapped_pe_in_hollowing_target,
+                hollowing_target_crashes=hollowing_target_crashes,
+                image_timestamp_mismatches=image_timestamp_mismatches,
+                module_header_mismatches=module_header_mismatches,
+                unmapped_pe_images=unmapped_pe_images,
+                unmapped_memory_crashes=unmapped_memory_crashes,
+                sysmon_injections=sysmon_injections,
             ),
         },
         {
@@ -2824,13 +2875,25 @@ def run_dynamic_analysis(
             # because the module list is read from the memory the payload
             # now occupies.
             if memory_dump_enabled and module_integrity_enabled and scannable:
-                _emit(status_cb, "Comparing loaded modules against their files...")
+                # Per-dump progress, because this pass is the slowest thing in
+                # the teardown and a slow one used to be indistinguishable from a
+                # hung one. On run `33fe6c3b` it took 24 of 27 minutes over five
+                # 200 MB `powershell.exe` dumps and emitted exactly one line, at
+                # the start -- the same failure as an empty result from a
+                # disabled collector looking like a sample that did nothing.
+                _emit(status_cb,
+                      f"Comparing loaded modules against their files "
+                      f"({len(scannable)} dump(s))...")
                 try:
-                    for record in scannable:
+                    for index, record in enumerate(scannable, 1):
                         path = record.get("path") if isinstance(record, dict) else None
                         if path:
-                            module_integrity_result.append(
-                                analyze_module_integrity(path))
+                            result = analyze_module_integrity(path)
+                            module_integrity_result.append(result)
+                            _emit(status_cb,
+                                  f"  module integrity: dump {index} of "
+                                  f"{len(scannable)}, "
+                                  f"{len(result.get('modules', []))} module(s)")
                     module_integrity_summary = summarize_module_integrity(
                         module_integrity_result)
                     write_json(module_integrity_json, module_integrity_result)

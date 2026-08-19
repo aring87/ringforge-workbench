@@ -4447,6 +4447,79 @@ before/after of the hollow, but the reference lookup returning *"no matching
 build"* where it later returns *"different build"* is worth one look — those are
 different claims and only one of them is evidence.
 
+#### 0bo. THE THREE DEFECTS THE RUNS FOUND, FIXED — 18 Aug
+
+**Four detonations emptied the proving queue and filled the build one.** All
+three are host-side, none needed a VM, and each is pinned by tests. **687
+passing, up from 662.**
+
+**1. `process_injection`'s reason line contradicted its own detail.** The chain
+had branches for the three in-target routes, `unmapped_pe_images` and
+`unmapped_memory_crashes`, then an unconditional `else` claiming Sysmon —
+**two of the five routes had no branch at all.** On run `677547d9` the card read
+`detail: "0 injection event(s) …"` directly above
+`reason: "Sysmon recorded process injection (CreateRemoteThread)."` The score
+was right and the sentence under it was false, which is worse than silence.
+
+Extracted to `_injection_reason()` so it is testable, with the two missing
+branches added and the Sysmon line now reachable only when Sysmon saw something.
+Seven tests, including one that iterates every counter `present` is computed
+from and **requires a distinct sentence for each** — so a sixth route added
+without a branch fails there rather than silently borrowing another's.
+
+**2. `payload_dropped` reached `strong` on compiler scratch files.** Run
+`33fe6c3b` dropped exactly two files and both were `csc.exe` output:
+
+    C:\Users\adam\AppData\Local\Temp\zrudxjpg\zrudxjpg.dll
+    C:\Users\adam\AppData\Local\Temp\hryya5bb\hryya5bb.dll
+
+Real files, really written by the sample's tree — the collection was right and
+the *claim* was wrong. **Every PowerShell script calling `Add-Type` drops
+these**, and that population is mostly legitimate administration. A category
+reaching `strong` on a compiler's scratch is the volume-driven model the score
+design exists to avoid.
+
+`path_is_compiler_artifact()` recognises the CodeDom shape —
+`<temp>\<name>\<name>.dll|.pdb` with directory and stem equal, plus
+`CSC<hex>.TMP` / `RES<hex>.tmp`. **Set aside and counted, not erased**: the
+record keeps `compiler_artifact`, keeps the reasons that would have made it
+suspicious, and the summary carries `compiler_artifacts` — the same treatment
+`pe_carve` gives `resource_only` images. Twelve tests, and the ones that matter
+are the refusals: the real drop to `%APPDATA%\whcjHybcIRKrlH.exe` still scores,
+a payload at `<temp>\evil\payload.dll` still scores, and a `.exe` in the
+compiler's own shape still scores.
+
+**3. The module-integrity cache thrashed to nothing.** `_CACHE_LIMIT = 96` with
+`_REFERENCE_CACHE.clear()` as its eviction, against a `powershell.exe` sample
+carrying **380 modules**. The access pattern is *for each dump, for each
+module*, so that combination is not a small cache — it is no cache. **24 of run
+`33fe6c3b`'s 27 minutes.**
+
+Replaced with a **byte-bounded LRU** (256 MB, 4096-entry backstop). A count is
+the wrong bound: 96 entries is 2 MB or 200 MB depending which DLLs they are, and
+what needs bounding is memory. Measured after the change: **120 real System32
+modules all retained, 51 MB** — where the old code would have cleared at 96 — so
+`33fe6c3b`'s 380 modules land near 160 MB, inside budget, and dumps 2–5 become
+nearly free instead of repeating dump 1's work.
+
+**And per-dump progress**, because that pass being slow was indistinguishable
+from it being hung: one status line was emitted before the loop and nothing
+until it finished. It now names the dump and its module count as it goes — the
+same principle as *an empty result from a disabled collector looks exactly like
+a sample that did nothing*, applied to the teardown.
+
+> **The obvious optimisation is measured and does not work, recorded so nobody
+> re-derives it.** `fast_load=True` parsing only
+> `IMAGE_DIRECTORY_ENTRY_BASERELOC` is **1.1x**, not the 5–10x it looks like:
+> `relocate_image` forces the parse regardless, so the resource tree was never
+> the cost. The cache was.
+
+**Left deliberately undone:** the spawn-dump race (`0bm`) and gap 5's carver
+branch (`0bn`). The race is now scoped to targets that die within about a
+second — `677547d9` dumped 7 of 7 — so *recording the limitation* may be the
+right answer rather than building suspend-on-sighting into the watcher. That is
+a decision, not a defect, and it wants making rather than assuming.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash

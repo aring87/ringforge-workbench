@@ -67,8 +67,17 @@ def _pe_on_disk(path: Path, timestamp: int, size_of_image: int = 0x2000) -> None
 
 class MismatchSurvivesEviction(unittest.TestCase):
     def setUp(self):
-        mi._REFERENCE_CACHE.clear()
-        self.addCleanup(mi._REFERENCE_CACHE.clear)
+        mi.reset_reference_cache()
+        self.addCleanup(mi.reset_reference_cache)
+        # The cache is bounded by BYTES with LRU eviction now, not by a count
+        # with a wholesale clear -- run `33fe6c3b` put 380 modules past a
+        # 96-entry limit, which meant no cache at all. Shrink the entry backstop
+        # so eviction is reachable without writing thousands of files; the
+        # invariant under test is "a mismatch survives eviction", whatever
+        # triggers the eviction.
+        self._entry_limit = mi._CACHE_ENTRY_LIMIT
+        mi._CACHE_ENTRY_LIMIT = 8
+        self.addCleanup(setattr, mi, "_CACHE_ENTRY_LIMIT", self._entry_limit)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
@@ -87,11 +96,12 @@ class MismatchSurvivesEviction(unittest.TestCase):
         """The regression. Fill the cache to the limit, then mismatch."""
         filler = self.tmp / "filler.dll"
         _pe_on_disk(filler, timestamp=0x22222222)
-        for n in range(mi._CACHE_LIMIT):
+        for n in range(mi._CACHE_ENTRY_LIMIT * 2):
             # Distinct keys, same file: the point is cache pressure, not IO.
             mi._reference_sections(str(filler), timestamp=0x22222222,
                                    size_of_image=0x2000, base=0x140000000 + n * 0x1000)
-        self.assertGreaterEqual(len(mi._REFERENCE_CACHE), mi._CACHE_LIMIT)
+        # Eviction really happened: bounded, not holding all the keys put in.
+        self.assertLessEqual(len(mi._REFERENCE_CACHE), mi._CACHE_ENTRY_LIMIT)
 
         victim = self.tmp / "victim.dll"
         _pe_on_disk(victim, timestamp=0x11111111)
@@ -172,3 +182,69 @@ class KnownMismatchOutranksCouldNotTell(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCacheIsBoundedByBytesNotByCount(unittest.TestCase):
+    """Run `33fe6c3b`: module integrity took 24 of the run's 27 minutes.
+
+    A `powershell.exe` sample carried **380 modules** past a 96-entry limit
+    whose eviction was `_REFERENCE_CACHE.clear()`. The access pattern is *for
+    each dump, for each module*, so a small cache under a wholesale clear
+    degenerates to no cache at all -- every relocation recomputed on every dump,
+    at a measured 1,105 ms mean.
+
+    A count limit is also the wrong bound: what needs bounding is memory, and 96
+    entries is 2 MB or 200 MB depending on which DLLs they are.
+    """
+
+    def setUp(self):
+        mi.reset_reference_cache()
+        self.addCleanup(mi.reset_reference_cache)
+
+    def _store(self, key, nbytes):
+        mi._cache_store(key, ([("s", 0x1000, b"\0" * nbytes)], None))
+
+    def test_a_hit_does_not_evict_the_rest(self):
+        """The regression in one line: the old code cleared everything."""
+        for n in range(50):
+            self._store(("m", n), 1024)
+        self.assertEqual(mi.reference_cache_stats()["entries"], 50)
+
+    def test_eviction_is_lru_and_keeps_what_was_used(self):
+        limit, mi._CACHE_ENTRY_LIMIT = mi._CACHE_ENTRY_LIMIT, 4
+        self.addCleanup(setattr, mi, "_CACHE_ENTRY_LIMIT", limit)
+        for n in range(4):
+            self._store(("m", n), 16)
+        mi._REFERENCE_CACHE.move_to_end(("m", 0))     # what a cache hit does
+        self._store(("m", 99), 16)                    # forces one eviction
+        keys = set(mi._REFERENCE_CACHE)
+        self.assertIn(("m", 0), keys, "the recently used entry was evicted")
+        self.assertNotIn(("m", 1), keys, "the least recently used survived")
+
+    def test_the_byte_budget_bounds_memory(self):
+        budget, mi._CACHE_BYTES_LIMIT = mi._CACHE_BYTES_LIMIT, 1024
+        self.addCleanup(setattr, mi, "_CACHE_BYTES_LIMIT", budget)
+        for n in range(20):
+            self._store(("big", n), 256)
+        self.assertLessEqual(mi.reference_cache_stats()["bytes"], 1024)
+        self.assertGreater(mi.reference_cache_stats()["entries"], 0)
+
+    def test_bytes_are_not_double_counted_when_a_key_is_rewritten(self):
+        self._store(("m", 1), 4096)
+        before = mi.reference_cache_stats()["bytes"]
+        self._store(("m", 1), 4096)
+        self.assertEqual(mi.reference_cache_stats()["bytes"], before)
+        self.assertEqual(mi.reference_cache_stats()["entries"], 1)
+
+    def test_an_entry_with_no_sections_costs_nothing(self):
+        # `no_reference` results are cached too -- they are the answer "this
+        # host has no matching build", and recomputing them is the same waste.
+        mi._cache_store(("none", 1), (None, {"file_timestamp": 1}))
+        self.assertEqual(mi.reference_cache_stats()["bytes"], 0)
+        self.assertEqual(mi.reference_cache_stats()["entries"], 1)
+
+    def test_a_process_with_380_modules_stays_cached(self):
+        """The exact shape of run `33fe6c3b`, which used to thrash to zero."""
+        for n in range(380):
+            self._store(("mod", n), 64 * 1024)
+        self.assertEqual(mi.reference_cache_stats()["entries"], 380)

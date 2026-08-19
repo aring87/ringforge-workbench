@@ -46,6 +46,7 @@ hollow raises one category rather than three.
 from __future__ import annotations
 
 import mmap
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -155,8 +156,73 @@ class _AddressSpace:
 #: of its bytes with the file it impersonates would file as `identical`. Any
 #: process with more than 96 distinct modules could hit it, and a browser or
 #: `explorer.exe` has hundreds. One dict cannot desynchronise from itself.
-_REFERENCE_CACHE: dict[tuple, tuple[Optional[list], Optional[dict]]] = {}
-_CACHE_LIMIT = 96
+#: **Bounded by bytes with LRU eviction, not by a count with a wholesale clear.**
+#: Measured on run `33fe6c3b`: a `powershell.exe` sample carried **380 modules**
+#: past a 96-entry limit whose eviction was `_REFERENCE_CACHE.clear()`. The
+#: access pattern here is *for each dump, for each module*, so a small cache
+#: under a wholesale clear degenerates to no cache at all -- every module's
+#: relocation is recomputed on every dump. Module integrity took **24 of that
+#: run's 27 minutes**.
+#:
+#: The cost being avoided is real and was measured on the bench: a full `pefile`
+#: parse plus `relocate_image` averages **1,105 ms** per module (`shell32`
+#: 1.9 s, `windows.storage` 2.2 s), so ~750 uncached lookups is ~14 minutes here
+#: and more on the guest.
+#:
+#: **A count limit is the wrong bound.** What has to stay bounded is memory --
+#: entries hold relocated executable sections, which are megabytes for a large
+#: DLL and kilobytes for a small one -- so 96 entries can be 200 MB or 2 MB
+#: depending on the process. A byte budget holds the whole working set of an
+#: ordinary process while still refusing to grow without limit.
+#:
+#: **And `fast_load` is not the fix**, measured before this one was written:
+#: parsing only `IMAGE_DIRECTORY_ENTRY_BASERELOC` is **1.1x**, because
+#: `relocate_image` forces the parse regardless. The resource tree is not the
+#: cost. Recorded so nobody spends an afternoon re-deriving it.
+_REFERENCE_CACHE: "OrderedDict[tuple, tuple[Optional[list], Optional[dict]]]" = OrderedDict()
+
+#: Roughly one large process's worth of relocated sections.
+_CACHE_BYTES_LIMIT = 256 * 1024 * 1024
+
+#: A backstop for pathological inputs -- thousands of tiny modules would stay
+#: under the byte budget forever. Far above any observed module count (380 on
+#: run `33fe6c3b`, 732 on `e8ab2151`).
+_CACHE_ENTRY_LIMIT = 4096
+
+_cache_bytes = 0
+
+
+def _entry_bytes(sections: Optional[list]) -> int:
+    if not sections:
+        return 0
+    return sum(len(data) for _name, _rva, data in sections)
+
+
+def _cache_store(key: tuple, value: tuple) -> None:
+    """Insert, then evict least-recently-used until inside both bounds."""
+    global _cache_bytes
+    if key in _REFERENCE_CACHE:
+        _cache_bytes -= _entry_bytes(_REFERENCE_CACHE[key][0])
+        del _REFERENCE_CACHE[key]
+    _REFERENCE_CACHE[key] = value
+    _cache_bytes += _entry_bytes(value[0])
+    while _REFERENCE_CACHE and (
+            _cache_bytes > _CACHE_BYTES_LIMIT
+            or len(_REFERENCE_CACHE) > _CACHE_ENTRY_LIMIT):
+        _oldest, evicted = _REFERENCE_CACHE.popitem(last=False)
+        _cache_bytes -= _entry_bytes(evicted[0])
+
+
+def reset_reference_cache() -> None:
+    """Drop everything. For tests, and for a caller that wants the memory back."""
+    global _cache_bytes
+    _REFERENCE_CACHE.clear()
+    _cache_bytes = 0
+
+
+def reference_cache_stats() -> dict[str, int]:
+    """Entries and bytes held, so a slow pass can be explained rather than guessed."""
+    return {"entries": len(_REFERENCE_CACHE), "bytes": _cache_bytes}
 
 
 def _mapped_header(space: "_AddressSpace", base: int) -> dict[str, Any]:
@@ -222,6 +288,9 @@ def _reference_sections(
         return None
     key = (name, timestamp, size_of_image, base)
     if key in _REFERENCE_CACHE:
+        # Move to the end: this is what makes the eviction LRU rather
+        # than FIFO, and the access pattern here rewards it.
+        _REFERENCE_CACHE.move_to_end(key)
         return _REFERENCE_CACHE[key]
 
     sections: Optional[list] = None
@@ -274,9 +343,7 @@ def _reference_sections(
                                  section.get_data()[:length]))
         break
 
-    if len(_REFERENCE_CACHE) >= _CACHE_LIMIT:
-        _REFERENCE_CACHE.clear()
-    _REFERENCE_CACHE[key] = (sections, mismatch)
+    _cache_store(key, (sections, mismatch))
     return sections, mismatch
 
 
