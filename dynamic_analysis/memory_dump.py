@@ -122,6 +122,19 @@ def _hold_process(pid: int) -> tuple[Optional[int], str]:
     The process can always exit between the check and the attach. Suspending it
     removes the window rather than narrowing it.
 
+    **This is NOT why `SecurityHealthHost.exe` was being missed, and the claim
+    is narrowed rather than removed.** Run `c14cb5b6` held it successfully --
+    `held=True, hold_error=''` -- and ProcDump failed anyway with the identical
+    message, on a process that was demonstrably still alive 36 seconds later.
+    ProcDump renders `0x8007012B` (`ERROR_PARTIAL_COPY`) as *"Target process no
+    longer running"*, which is false and cost three runs before it was caught.
+
+    The memory could not be read because the image was being rewritten
+    mid-hollow -- **and the writer is the parent, not the victim.** Suspending
+    the target freezes the wrong process. What this does prevent is a genuine
+    exit race, which is real, cheap and measured; it is simply not the cause of
+    that sample's misses.
+
     Returns `(handle, reason)`. The handle is None when the hold was refused,
     which is a real answer and not an error -- a process that has already exited
     cannot be held, and the dump path handles that as it did before. **`reason`

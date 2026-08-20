@@ -4945,6 +4945,71 @@ fixes.
 and not in the summary is worse than one that was never added: the reader cannot
 tell it from a stale binary, which is precisely the mistake made here.
 
+#### 0bv. RUN `c14cb5b6` — the hold works and is not the fix; the payload came out anyway
+
+**Two processes were suspended successfully and both dumps still failed
+identically.** That falsifies `0bt`.
+
+    process-spawn  cvtres.exe              pid 4528   held=True  hold_error=''
+    process-spawn  SecurityHealthHost.exe  pid 11096  held=True  hold_error=''
+      -> Dump 1 error: Target process no longer running.
+         0x8007012B  Only part of a ReadProcessMemory request was completed.
+
+**A suspended process cannot exit**, and the same pid `11096` was dumped
+successfully 36 seconds later at `t198`. So **ProcDump's message is false** —
+the process was running throughout.
+
+**The real error is `0x8007012B`, `ERROR_PARTIAL_COPY`**: ProcDump could not
+read parts of the address space. ProcDump renders that as *"Target process no
+longer running"*, and **that misleading string is what sent three runs and one
+whole fix down the wrong path.** The race was never the cause.
+
+**Why the memory could not be read, and the design error in `0bt`.** The process
+is mid-hollow: its image is being unmapped and rewritten. **But the writer is the
+parent, not the victim** — PowerShell is doing the injecting. Suspending the
+target freezes the wrong process and does nothing for read stability. `0bt`
+reasoned about a process exiting under the dump and never asked what was
+*changing* under it.
+
+**The hold is kept, with its claim narrowed.** It does prevent a genuine exit
+race, it is measured to work, it costs nothing, and it leaves nothing suspended
+— but it is not why this sample was missed and must not be recorded as the fix
+for it.
+
+**What actually caught the process was the window.** `timeout_seconds` went
+180 -> 240. `SecurityHealthHost.exe` spawned at ~t160 and exited at **t198** —
+past the old window's close, so the watcher had already stopped. The
+**`process-exit` trigger** got it, 77 MB.
+
+**AND THE PAYLOAD CAME OUT.** The carver recovered **258,048 bytes at
+`0x164b7250000`, not .NET**, from the hollowed process — the same size as the
+one carve on run `33fe6c3b`. **This is the artifact gap 5 has never had.**
+
+**And the score is right for entirely the wrong reason.** `process_injection`
+graded **strong**, on `5 unmapped PE image(s) in a process loaders hollow` —
+**all five are the .NET assemblies in `csc.exe`** from `0bq`. The genuine
+payload is the sixth unmapped image and **contributes nothing**, because
+`SecurityHealthHost.exe` is not in `HOLLOWING_TARGETS`.
+
+    csc.exe                 5 unmapped, all dotnet   -> counted, all false
+    SecurityHealthHost.exe  1 unmapped, not dotnet   -> the real hollow, ignored
+
+**125 · Likely Malicious, earned entirely by compiler scratch, while the actual
+injected payload sat in the same run uncounted.** That is the strongest argument
+yet for `0bq`'s gate question, and it is no longer hypothetical: the two errors
+now cancel into a correct-looking verdict, which is worse than either alone.
+
+**What this leaves:**
+
+- `0bt`'s hold: works, retained, **not** the fix for this sample.
+- **The real blocker on the spawn dump is `ERROR_PARTIAL_COPY` during an active
+  hollow.** Suspending the *parent* for the duration of the child's dump is the
+  untested idea that follows from this; it was not tried and is not queued.
+- **Gap 5 finally has a payload to look at**, from the exit dump rather than the
+  spawn dump.
+- `timeout_seconds: 240` should be the default for this sample. 180 truncated
+  the run before its most interesting process exited.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
