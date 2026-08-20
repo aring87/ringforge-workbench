@@ -474,9 +474,49 @@ def run_sample(
         time.sleep(1)
 
 
+#: Wall-clock of the previous `_emit`, so every status line can carry how long
+#: the step before it took. Module-level because the passes that need timing are
+#: spread across a 900-line teardown and threading a timer through all of them
+#: would be a bigger change than the problem deserves.
+_LAST_EMIT_AT: float | None = None
+
+#: Below this, the elapsed marker is noise -- most lines are instant and a
+#: `+0s` on every one of them makes the slow ones harder to spot, not easier.
+_EMIT_TIMING_FLOOR_SECONDS = 2.0
+
+
+def _reset_emit_clock() -> None:
+    """Start a fresh timing sequence. Called at the top of a run."""
+    global _LAST_EMIT_AT
+    _LAST_EMIT_AT = None
+
+
 def _emit(status_cb: StatusCallback, message: str) -> None:
+    """A status line, tagged with how long the previous step took.
+
+    **Why the timing is here rather than at each call site.** Run `33fe6c3b`
+    spent 24 of 27 minutes somewhere in teardown and the pane could not say
+    where: every pass emits one line when it *starts*, so the slow one is
+    identified only by being the last line printed, and a pass that is slow is
+    indistinguishable from one that is stuck. Run `eb3e1273` then showed the
+    first diagnosis of that -- the module-integrity cache -- was wrong, because
+    `modules_compared: 380` was a total across five dumps and not a per-dump
+    count that would have thrashed a 96-entry cache.
+    
+    Guessing twice is enough. Timing `_emit` itself makes the pane a per-pass
+    profile for every pass at once, including ones nobody has suspected yet,
+    and costs one `perf_counter` call per line.
+
+    The elapsed figure belongs to the step *before* this line, not to this one.
+    """
+    global _LAST_EMIT_AT
+    now = time.perf_counter()
     if status_cb:
+        elapsed = None if _LAST_EMIT_AT is None else now - _LAST_EMIT_AT
+        if elapsed is not None and elapsed >= _EMIT_TIMING_FLOOR_SECONDS:
+            message = f"{message}   [+{elapsed:.0f}s]"
         status_cb(message)
+    _LAST_EMIT_AT = now
 
 
 def _seconds_between(started_at: str, ended_at: str) -> int:
@@ -1745,6 +1785,9 @@ def run_dynamic_analysis(
     status_cb: StatusCallback = None,
     cancel_event: CancelEvent = None,
 ) -> dict[str, Any]:
+    # Fresh timing sequence, so the first line of a run is not tagged with the
+    # gap since whatever ran before it.
+    _reset_emit_clock()
     sample_path = Path(config["sample_path"])
     root_case_dir = Path(config["case_dir"])
     timeout_seconds = int(config.get("timeout_seconds", 180))
@@ -2888,12 +2931,17 @@ def run_dynamic_analysis(
                     for index, record in enumerate(scannable, 1):
                         path = record.get("path") if isinstance(record, dict) else None
                         if path:
-                            result = analyze_module_integrity(path)
-                            module_integrity_result.append(result)
+                            # **Emitted before the work, not after.** The first
+                            # version printed on completion, which left the one
+                            # case it existed for -- grinding through dump 1 --
+                            # producing no output at all. Five minutes of
+                            # silence on run `eb3e1273` looked exactly like a
+                            # hang, which is the failure this was meant to end.
                             _emit(status_cb,
                                   f"  module integrity: dump {index} of "
-                                  f"{len(scannable)}, "
-                                  f"{len(result.get('modules', []))} module(s)")
+                                  f"{len(scannable)}, {Path(path).name}")
+                            result = analyze_module_integrity(path)
+                            module_integrity_result.append(result)
                     module_integrity_summary = summarize_module_integrity(
                         module_integrity_result)
                     write_json(module_integrity_json, module_integrity_result)

@@ -4520,6 +4520,75 @@ second — `677547d9` dumped 7 of 7 — so *recording the limitation* may be the
 right answer rather than building suspend-on-sighting into the watcher. That is
 a decision, not a defect, and it wants making rather than assuming.
 
+#### 0bp. RUN `eb3e1273`, 20 Aug — one fix confirmed, one diagnosis retracted
+
+**The verification run for `0bo`, same sample and same settings as `33fe6c3b` so
+the only variable was the code.**
+
+**Fix 2 lands exactly as predicted:**
+
+    score               105 -> 90
+    suspicious drops      2 -> 0
+    compiler_artifacts         2
+    payload_dropped     gone from the categories
+
+Both drops -- `x1xpbrqg.dll` and `egxuppms.dll` -- flagged `compiler_artifact`.
+**Different random names from the previous run**, so it is matching the CodeDom
+*shape* rather than strings that happened to be in a fixture. The score falling
+is the false positive leaving the tally, which is the intended direction.
+
+**Fix 3's diagnosis was wrong, and the number that misled it is worth naming.**
+Teardown went 1,629s -> 1,554s on a run doing *more* work (6 dumps, 1,392 MB).
+`0bm` blamed the module-integrity cache on `modules_compared: 380` against a
+96-entry limit. **That 380 was a total across five dumps, not a per-dump count.**
+This run breaks it out:
+
+    83, 83, 83, 83, 96, 66  =  494 across six dumps
+
+**83 per dump never approached the old limit**, so the cache never thrashed and
+was never the bottleneck. The LRU change is still right on its own terms -- a
+byte bound beats a count, and the eviction regression stays pinned -- but it
+does not explain 23 minutes and `0bm` should not have claimed it would.
+
+**YARA is ruled out by the same run:** 23 seconds total across all six dumps.
+**Where the ~1,374s of teardown goes is still unidentified**, and it is not
+getting a third guess.
+
+**So the instrument goes in before the next diagnosis.** `_emit` now tags every
+status line with how long the *previous* step took, above a 2-second floor:
+
+    Exporting Procmon CSV...
+    Parsing Procmon events...   [+2s]
+    Comparing loaded modules against their files (6 dump(s))...   [+1374s]
+
+One `perf_counter` per line, and it profiles **every** pass at once -- including
+ones nobody has suspected. Seven tests, and the one that matters pins the
+reading convention: **the elapsed belongs to the step before the line, not to
+it**, because the pane is a list of starts.
+
+> **And `0bo`'s per-dump progress was emitted in the wrong place.** It printed
+> on *completion*, so the single case it existed for -- grinding through dump 1
+> -- produced no output at all. Five minutes of silence on this run looked
+> exactly like the hang it was built to rule out. Now emitted **before** each
+> dump, with the dump's name. A progress indicator that only reports finished
+> work is not one.
+
+**Two results this run produced that are not about the fixes.**
+
+**`SecurityHealthHost.exe` was captured** (pid 7408, `process-exit`, 77 MB)
+where both attempts failed on `33fe6c3b`. **The spawn-dump race is timing, not
+structure** -- which retires the idea that it needs a watcher redesign and makes
+"record the limitation" the likelier answer.
+
+**And the carver recovered a 258,048-byte payload from it**, at
+`0x1b4bcca0000` -- an address no module covers. **That is the shape gap 5's
+`strong` branch needs**, in a process that is not on the list, so it graded
+`0 in a process loaders hollow`. Module integrity saw nothing here (all 494
+`identical`) because this is not an overwrite of the main image but a payload in
+a private allocation. **The two detectors split exactly along the line `0bn`
+predicted**, from opposite sides: Dridex's overwrite-in-place was invisible to
+the carver and caught by module integrity; this one is the reverse.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
