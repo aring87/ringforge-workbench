@@ -2613,10 +2613,10 @@ alongside one does not.
 **Start here if you are cold. This supersedes the 17 Aug entry below**, which
 stays because its subsections are the working record.
 
-**Queues.** Build has **three**: the capa missing-rules abort, the
-`yara.compile` missing-`externals` bug (both below, both found by triaging the
-carve), and the **EtherHiding JSON-RPC responder** — the new gap, and the only
-one that unlocks behaviour rather than fixing a defect. **Detonation empty**,
+**Queues.** Build has **one**: the **EtherHiding JSON-RPC responder**, the new
+gap below — and it is the kind that unlocks behaviour rather than fixing a
+defect. The two triage defects found alongside the carve are **both fixed**
+(`1264b1c`, `4d30e43`). **Detonation empty**,
 and `af2d8300…` has nothing left to give: its contract is dead on-chain, so a
 re-run cannot get further than `c14cb5b6` did. 716 tests.
 
@@ -2715,10 +2715,17 @@ Every one looked like a finding and was an artifact of the bench:
   `[WinError 2]` and **still leaves the empty file behind**. The payload's
   strings are in the clear; PowerShell found them immediately.
 - capa **aborted the entire run** on missing rules while YARA degraded
-  gracefully on the same condition. Queued.
+  gracefully on the same condition. **Fixed, `4d30e43`** — `step_capa` now
+  returns `rc=2` like `step_yara`, clears stale `capa.json`/`capa.txt` so a
+  previous run's output cannot be read as this one's, and the report says
+  *capa did not run* rather than *no techniques detected*.
 - 1593 rule files reported `matched: false` while compiling **zero** —
-  `yara.compile` is called without `externals=`, and one Neo23x0 rule using
-  `filepath` takes down the whole set including the local rules. Queued.
+  `yara.compile` was called without `externals=`, and one Neo23x0 rule using
+  `filepath` took down the whole set including the local rules. **Fixed,
+  `1264b1c`** — externals declared, unbuildable files now named in
+  `rules_skipped` instead of taking everything with them, and the summary
+  prints `N of M` so a corpus that did not build cannot read as a clean scan.
+  Verified at 1594 of 1594 compiling.
 - capa's `Analysis Tool Discovery::Process detection` is a **false positive**:
   `/frida(\.exe)?/i` is unanchored and matched **"Friday"** in a day-name
   table. There is no analysis-tool detection in this payload, and no reason
@@ -2730,6 +2737,15 @@ Every one looked like a finding and was an artifact of the bench:
   absent from every static triage, and the scan reports success without it.
   **Re-run the bootstrap, or copy the file across, after writing a local
   rule** — and confirm by watching `rule_file_count` go up.
+
+**`_run_step` still has no `try`/`except`** (`engine.py`, `res = fn()`). capa
+was not a special case: **any** step that raises outside `run_cmd` kills the
+whole triage the same way, and the resilience that `file` and `strings` have
+comes from `run_cmd` catching internally, per step and ad hoc. A guard in
+`_run_step` converting an unhandled exception to `rc=-1` with the traceback in
+`stderr` would close the class rather than the instance. Not done — it changes
+every step's behaviour, so it wants a deliberate decision rather than being
+folded into a fix for one of them.
 
 > **The method lesson, extended.** The existing note says every wrong turn was
 > a guess about cost or blame, cheaper to measure than argue. This session is
