@@ -240,7 +240,36 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
             "capa_txt": str(capa_txt),
         }
 
-    ensure_capa_paths(cfg)
+    try:
+        ensure_capa_paths(cfg)
+    except Exception as exc:
+        # Missing or unusable rules must not abort the whole triage. step_yara
+        # degrades on exactly this condition; step_capa used to raise, and that
+        # propagated out of run_case and killed the run before any report was
+        # written -- discarding every step that had already succeeded.
+        #
+        # Clear stale artifacts rather than leaving them: the report keys "capa
+        # present" off these files existing, so a capa.json from an earlier run
+        # would be read as this run's result.
+        for stale in (capa_json, capa_txt):
+            try:
+                stale.unlink()
+            except Exception:
+                pass
+
+        reason = f"capa did not run: {exc}"
+        return {
+            "returncode": 2,
+            "capa_run": False,
+            "reason": reason,
+            "stderr": reason,
+            "capa_json": str(capa_json),
+            "capa_txt": str(capa_txt),
+            "sample_size_bytes": sample_size,
+            "sample_size_mb": _format_mb(sample_size),
+            "max_size_mb": int(max_size_mb),
+        }
+
     capa_timeout = max(60, int(capa_timeout))
 
     cmd_json = ["capa", "-r", str(cfg.capa_rules), "-s", str(cfg.capa_sigs), "-j", str(sample)]

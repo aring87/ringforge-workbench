@@ -757,8 +757,15 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
         lines.append("- **Top Rules:** " + ", ".join(f"`{x}`" for x in capa.get("top_rules", [])[:8]))
     if capa.get("techniques"):
         lines.append(f"- **Techniques:** {', '.join(f'`{t}`' for t in capa.get('techniques', [])[:20])}")
-    else:
+    elif capa.get("present", True):
         lines.append("- No technique IDs detected in capa output.")
+    else:
+        # No capa artifacts at all. Saying "none detected" here would read as a
+        # statement about the sample when it is a statement about the toolchain.
+        lines.append(
+            "- **capa did not run** — no capa artifacts present. The absence of "
+            "techniques here is a missing tool, not a property of the sample."
+        )
     for note in capa.get("analyst_notes", [])[:4]:
         lines.append(f"- {note}")
     lines.append("")
