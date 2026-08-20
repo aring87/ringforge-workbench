@@ -4679,6 +4679,75 @@ is the only record there is -- would have logged every line untimed.
 outstanding** — it lives only in the Output pane and the HTML report does not
 carry it.
 
+#### 0br. RUN `ff504255`, 20 Aug — THE TEARDOWN COST IS NAMED: `pefile.relocate_image`
+
+**The status log answered it on its first run.** `metadata\status.log` from
+`0bp`, read straight off:
+
+    [15:43:39]   module integrity: dump 1 of 5, powershell.exe_12576_t3.dmp
+    [16:03:28]   module integrity: dump 2 of 5, ...   [+1266s]
+    [16:04:06]   module integrity: dump 3 of 5, ...   [+32s]
+    [16:04:07]   module integrity: dump 4 of 5, ...
+    [16:04:07]   module integrity: dump 5 of 5, ...
+    [16:05:22] Module integrity: ... 381 identical ...   [+51s]
+
+**1,266 seconds on dump 1, and 83 seconds on the other four combined.** Module
+integrity is 1,349s of a 1,670s run — **81% of the wall clock** — and it is
+almost entirely one dump.
+
+**The LRU cache from `0bo` works.** Dump 2 compares 80 modules in 32s where
+dump 1 compares 43 in 1,266s. The references built during dump 1 are being
+reused. **What `0bo` got wrong was the cause, not the fix.**
+
+**And it is not a flat per-module cost**, which is what makes the numbers
+readable: 29.4s/module on dump 1 against roughly 0.9s for dump 2's new ones. So
+it is not "the first dump is cold" — it is **which modules dump 1 contains**.
+Dump 1 is at **t3**, when PowerShell loads the CLR.
+
+**Measured on the bench, and it is the whole thing:**
+
+    clr.dll            9.5 MB    27,350 fixups     11.5s
+    System.ni.dll     12.1 MB   117,680 fixups     45.5s
+    mscorlib.ni.dll   22.1 MB   271,740 fixups    192.8s
+
+**250 seconds for three files, on hardware faster than the guest.** NGEN native
+images carry hundreds of thousands of base relocations.
+
+**And the cost splits almost entirely onto one call:**
+
+    open (fast_load) :   0.00s
+    parse relocs     :   1.38s
+    APPLY relocs     : 186.14s     <-- pefile.relocate_image
+                       -------
+                       187.52s
+
+**`relocate_image` walks every fixup in a Python loop. That is 99.3% of it.**
+
+**Which makes the fix precise rather than speculative.** The relocation is
+applied only so the on-disk bytes line up with the in-memory bytes; relocated
+dwords are *expected* to differ, and relocating them is one way to stop them
+counting as differences. **Masking them is another, and it needs the parse
+(1.4s) without the apply (186s).** Collect the RVAs the fixup entries name --
+4 bytes for `HIGHLOW`, 8 for `DIR64` -- and skip those positions when counting
+differences.
+
+The verdicts should survive: `identical` stays `identical` because relocated
+dwords were the only expected diffs; a hooked module still differs *outside*
+its fixups; a replaced image differs everywhere. **`header_mismatch` does not
+touch this path at all**, so `0bn`'s Dridex finding -- the only thing this
+detector has ever caught in the wild -- is unaffected either way.
+
+> **Three wrong diagnoses preceded this one**, and all three were guesses at
+> where time went rather than measurements of it: `0bm` blamed the cache from a
+> misread total, `0bp` retracted that, and `0bo`'s progress line was emitted
+> after the work so it could not show the one case that mattered. **The
+> instrument cost less than any of the guesses and answered on its first run.**
+
+**Not implemented.** It changes what `differing_bytes` means on a detector that
+has one live finding to its name, and this file has been wrong three times in a
+row about this pass. It wants a fixture proving a relocated module still grades
+`identical`, before it goes anywhere near a run.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
