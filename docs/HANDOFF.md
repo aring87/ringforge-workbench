@@ -2613,34 +2613,137 @@ alongside one does not.
 **Start here if you are cold. This supersedes the 17 Aug entry below**, which
 stays because its subsections are the working record.
 
-**Queues.** Build empty — four defects found by detonation were fixed and are
-recorded below. **Detonation empty.** 716 tests.
+**Queues.** Build has **three**: the capa missing-rules abort, the
+`yara.compile` missing-`externals` bug (both below, both found by triaging the
+carve), and the **EtherHiding JSON-RPC responder** — the new gap, and the only
+one that unlocks behaviour rather than fixing a defect. **Detonation empty**,
+and `af2d8300…` has nothing left to give: its contract is dead on-chain, so a
+re-run cannot get further than `c14cb5b6` did. 716 tests.
 
 ---
 
-## THE NEXT TASK: carve and identify the payload
+## THE CARVE IS IDENTIFIED — a multi-chain clipper with EtherHiding C2, 20 Aug
 
-**Run `c14cb5b6` recovered 258,048 bytes from a hollowed process.** It is the
-artifact gap 5 has never had, and nothing has yet been said about what it *is*.
+**Run `c14cb5b6`'s 258 KB payload is a cryptocurrency clipper that reads its
+C2 address from a smart contract.** Gap 5's carve branch has its first
+identified payload, and the file is off the guest at
+`G:\ringforge-artifacts\c14cb5b6_carved\` — it survives reverts now.
 
-    cases\af2d83008fff89591cf33cdb\dynamic_analysis\dynamic_runs\
-      af2d83008fff89591cf33cdb_20260820_191842_c14cb5b6\memory\carved\
-        SecurityHealthHost.exe_11096_t198_process-exit_0x164b7250000.bin_
+### What it is
 
-**GET IT OFF THE GUEST BEFORE THE NEXT REVERT.** The case directory does not
-survive one. If it is already gone, re-run `af2d8300…` at
-**`timeout_seconds: 240`** — that setting is what produced it, and 180 does not
-(see below).
+x64 PE, GUI subsystem, 258,048 bytes, **not .NET, not packed** (max section
+entropy 6.50 in `.text`). **Import table is empty** — confirmed by pefile and
+LIEF independently — alongside a non-standard `.fptable` section, which
+together read as dynamic API resolution through a function-pointer table.
+Header is **timestomped**: `0xAB353A80` is epoch 2872392320, roughly 2061,
+past the signed-32-bit boundary, which is why the carve summary's `compiled`
+field came back empty rather than wrong. Preferred base `0x140000000`, mapped
+at `0x164b7250000`, `.reloc` intact. Has a `.tls` section.
 
-What is known about it: **258,048 bytes, not .NET**, at `0x164b7250000`, an
-address no module covers, inside `SecurityHealthHost.exe` — a real Windows
-binary the sample spawned and hollowed. A carve of the same size came out of run
-`33fe6c3b`, so it is reproducible. **It is the only thing that says what this
-control actually delivers**, and ScriptBlock capture never got the script
-(3 blocks of 4, 50 and 5 characters from a 1 MB file — see `0bm`).
+Toolchain is **probably Zig, unconfirmed**: `aborting due to recursive panic`,
+`thread  panic:`, `Cannot print stack trace: stack tracing is disabled`, and
+`NO_COLOR`/`CLICOLOR_FORCE` all fit. Searches for `zig`, `.zig`, and the usual
+Rust markers came back empty — but a release build strips those anyway, so
+that test was weaker than it looked. Do not record this as settled.
 
-`static_triage.py`, `pe_meta.py` and `dotnet_meta.py` are the tools; the `.bin_`
-extension is deliberate so a double-click does not run it.
+### The IOCs
+
+Config block is contiguous at file offsets 148728–150541: wallets, then
+identity, then C2.
+
+    contract   0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff
+    selector   0x3bc5de30   (getData())
+    RPC        data-seed-prebsc-1-s1.binance.org:8545   (BSC testnet)
+    guid       4b817807-2731-459c-bc5d-4bd914c9eb55
+    beacon     POST, application/x-www-form-urlencoded
+               method=refresh&guid=
+               method=send&guid=&address=
+
+Ten hardcoded substitution wallets, chain from Base58 version-byte prefix:
+
+    BTC   19eWJh8J6Mx9DrGXKEv3ojKmqw8Cv9pscK
+    BTC   3BFNGKQZW9FcwxHmBGNfctsCdiSiqT8qZk
+    BTC   bc1qtmvdcp0p5j3jd9a4k8e8qvv5gy9hrg7w28wxkg
+    LTC   LUut5sRxQzEPUM6NobeyanY9Yi748ZztsX
+    LTC   MAkF7mCn3tPqp662daybvERzwsKQYqnzM8
+    DOGE  DJhtvoh4N49pt2yfTQWgjnStBBnD4KdbRy
+    DASH  Xet9CxZ8ihR3Cqu32nbShKABRf2FTUqXxd
+    RVN   RTCqpJfyxBS4J3p2b5e5EKju1cc1FjKiMh
+    TRX   TWXh8n73LuT5MJ23pd8dCjFskRZckveFbP
+    SOL   DcJHrrHSgvFpsYxqb6g97uaQTd2kE31rPUeDZTeDsjVq
+
+Base58, Bech32, Base32 and Base64url alphabets sit directly beside them —
+those are the address parsers, the table above is the substitution targets,
+and `address=` is the report channel. **Clipper is demonstrated, not
+inferred.** No EVM destination address exists in the binary; the only `0x…`
+string is the contract, so the Ethereum replacement address is most likely
+delivered at runtime by `getData()`.
+
+Detection is committed: `tools\yara\local\ringforge_etherhiding.yar`, two
+rules — technique and campaign, kept separate so contract rotation cannot
+stale out the durable one. **Neither carries a PE anchor**, deliberately, so
+they match raw memory dumps where the header is not at offset 0.
+
+### Why it exited at t198, and it is not anti-analysis
+
+The implant resolved `data-seed-prebsc-1-s1.binance.org` and opened TCP to
+`:8545` — **into FakeNet**, which has no idea how to answer `eth_call`. It
+asked for its C2 address, got nothing usable, and exited. Everything
+downstream of the config fetch was gated on an answer containment guaranteed
+it would never get. That is the whole explanation for the short life; the
+`process-exit` trigger at t198 is what produced the carve at all.
+
+**The contract is dead.** `eth_getCode` returns `0x` on BSC testnet *and*
+mainnet as of 20 Aug — no code at that address on either chain. So this
+sample is inert in the wild: it cannot retrieve its C2 from anywhere, for
+anyone. Re-detonating will never show more than this run did.
+
+### NEW GAP: containment blocks EtherHiding at the first request
+
+FakeNet gives this class of malware a TCP peer, not a JSON-RPC response, and
+the real chain now has nothing to give it either. **A minimal responder that
+answers `eth_call` with an operator-controlled `getData()` payload is the only
+remaining path** to the substitution logic, the beacon protocol and the
+clipboard behaviour. It is *safer* than arming the guest, not riskier — you
+choose which C2 the implant is handed, and point it at a local sink.
+
+### Four results that were about the tooling, not the sample
+
+Every one looked like a finding and was an artifact of the bench:
+
+- `strings.txt` empty — `strings.exe` is not installed; the step fails with
+  `[WinError 2]` and **still leaves the empty file behind**. The payload's
+  strings are in the clear; PowerShell found them immediately.
+- capa **aborted the entire run** on missing rules while YARA degraded
+  gracefully on the same condition. Queued.
+- 1593 rule files reported `matched: false` while compiling **zero** —
+  `yara.compile` is called without `externals=`, and one Neo23x0 rule using
+  `filepath` takes down the whole set including the local rules. Queued.
+- capa's `Analysis Tool Discovery::Process detection` is a **false positive**:
+  `/frida(\.exe)?/i` is unanchored and matched **"Friday"** in a day-name
+  table. There is no analysis-tool detection in this payload, and no reason
+  to change run configuration on its account.
+
+> **The method lesson, extended.** The existing note says every wrong turn was
+> a guess about cost or blame, cheaper to measure than argue. This session is
+> the same failure wearing different clothes: **the instrument's output
+> mistaken for the specimen's behaviour.** `analysis.log` answered it on the
+> first read every time — it names which step failed and why, and an empty
+> output file next to a `STEP_FAIL` line is not a result. Read the log before
+> reading the results.
+
+### For open decision 1
+
+This hollow is a **third shape**, and the decision as written does not account
+for it: a **private allocation** at `0x164b7250000` with the host image
+**untouched** (module integrity: `identical 66, patched 0, replaced 0`). Not
+FormBook taking `RegSvcs`'s `0x400000` with the real image relocated away, and
+not benign CLR assemblies inside `csc.exe`. Lineage is
+`powershell.exe` 10940 → `SecurityHealthHost.exe` 11096, a LOLBin not on
+`HOLLOWING_TARGETS`, which is why the genuine payload scored nothing while
+five ordinary .NET images in `csc.exe` graded **strong**. The identification
+confirms the payload was real — which strengthens the case for fixing the
+gate rather than weakening it.
 
 ---
 
