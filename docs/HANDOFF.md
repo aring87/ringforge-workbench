@@ -4790,6 +4790,55 @@ unaffected by construction.
 `IMAGE_REL_BASED_ABSOLUTE` entries are padding that rewrite nothing and are
 deliberately not masked. Masking them would blank real bytes.
 
+#### 0bs. RUN `59a705df`, 20 Aug — the masking fix confirmed on real data, 28 minutes to 7
+
+**Same sample, same settings, one code change.** Run `ff504255` against
+`59a705df`:
+
+    module integrity, dump 1     1,266s  ->     15s
+    module integrity, all five   1,349s  ->     23s        59x
+    whole run                    1,670s  ->    411s         4x
+
+**And the verdicts are identical, which is the half that mattered.**
+
+    ff504255 : 381 identical, 0 patched, 0 replaced, 0 header_mismatch, 0 no_reference
+    59a705df : 385 identical, 0 patched, 0 replaced, 0 header_mismatch, 0 no_reference
+
+The module count differs by four because the process loaded four more; every
+verdict is the same. **Masking the fixups and relocating the image compare the
+same content on live data**, which is what the two fixture tests predicted and
+what a detector with one live finding to its name needed before this shipped.
+
+**The teardown has no dominant cost left.** From `status.log`, everything above
+10 seconds:
+
+    Autoruns snapshot (before)      51s
+    Stopping FakeNet                45s
+    Memory YARA                     34s
+    Scheduled tasks (before)        26s
+    Module integrity                23s
+    PE carve                        10s
+
+Observation is 180s of the 411s, so setup and teardown together are ~231s spread
+across a dozen passes. **Nothing here is pathological** — the two snapshot passes
+and FakeNet's shutdown are the largest, and they are I/O against the guest rather
+than a defect. This is the first run in the record where the profile is flat.
+
+**Fix 2 held for a fourth consecutive run** — `suspicious: 0`,
+`compiler_artifacts: 2`, on a fourth set of random names.
+
+**And `SecurityHealthHost.exe` failed to dump again**, so the spawn-dump race
+now stands at **1 capture in 5 attempts** (`33fe6c3b` miss, `eb3e1273` hit,
+`fa23508d` miss, `ff504255` miss, `59a705df` miss). Intermittent and rare, and
+the only route by which this sample's actual hollow ever reaches a detector.
+
+> **The instrument paid for itself twice over.** Three diagnoses of this pass
+> were wrong -- `0bm` blamed the cache from a misread total, `0bp` retracted it,
+> and `0bo`'s progress line printed after the work so it could not show the one
+> case that mattered. `status.log` answered on its first run and the fix
+> followed from the measurement in a single pass. **Every guess cost more than
+> the instrument did.**
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
