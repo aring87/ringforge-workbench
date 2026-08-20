@@ -164,13 +164,20 @@ same binary, so loaded compiler against loaded compiler.
 | benign `csc.exe` | 33 | **0** |
 | `c14cb5b6` `csc.exe` | 36 | **4** |
 
-**Decision 1's premise is refuted**: an ordinary `Add-Type` does not trip
-`unmapped_pe_in_hollowing_target`. The five images in the sample's `csc.exe` are
-therefore a question about the sample, not a known false positive — all five are
-carved at `G:\ringforge-artifacts\c14cb5b6_carved\` and cost no detonation to
-triage. Caveat: the probe compiles trivial classes with no
-`-ReferencedAssemblies`, so this refutes the specific claim rather than proving
-no benign compile could ever fire.
+**But the five images were then read, and decision 1's premise stands.**
+`dotnet_meta.py` identifies them as `mscorlib` (3356 typedefs, 29257 methods)
+and `System.Management.Automation` (3692 typedefs, 33669 methods) among others
+— framework assemblies, not payloads. So the gate did grade **strong** on the
+CLR's own code. **The benign control simply failed to reproduce the
+conditions**, most likely because the probe compiles trivial classes with no
+`-ReferencedAssemblies`. Zeroes from a control that does not match the case are
+not exoneration; making the probe match is the next step.
+
+**And an unresolved anomaly:** `System.Management.Automation` cannot be in
+`csc.exe`. Either an image is attributed to the wrong dump or a dump is named
+for the wrong process — and if `powershell.exe` images are landing under a
+`csc.exe` label, `hollowing_target` is computed from the wrong name. The source
+dumps died with the revert, so confirming it needs a fresh run that keeps them.
 
 **Dumping a just-spawned process fails benignly.** `csc.exe` and `cvtres.exe`
 both returned `0x8007012B` `ERROR_PARTIAL_COPY` on first attempt and dumped

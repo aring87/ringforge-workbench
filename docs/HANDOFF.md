@@ -2798,14 +2798,13 @@ three wrong diagnoses had been recorded and retracted** (`0bp`).
 
 ## The two decisions this wants, and neither is mine to take
 
-**1. ~~Gap 5's gate scores ordinary .NET.~~ MEASURED AND FALSE — 20 Aug.** The
-claim was that `unmapped_pe_in_hollowing_target` fires on the CLR's own
-assemblies inside `csc.exe`, which `Add-Type` spawns legitimately, and that
-since `HOLLOWING_TARGETS` is mostly managed processes — `regsvcs`, `regasm`,
-`installutil`, `msbuild`, `csc`, `vbc`, `ilasm` — **it did not need a malicious
-sample to fire, only a dump** (`0bq`). **It was never tested.** It has been
-now, and it does not fire. See the measurement below; the half of this decision
-that still stands is only the scoring asymmetry in the next paragraph.
+**1. Gap 5's gate scores ordinary .NET — CONFIRMED 20 Aug, by reading the
+images.** `unmapped_pe_in_hollowing_target` fires on the CLR's own assemblies
+inside `csc.exe`, which `Add-Type` spawns legitimately, and `HOLLOWING_TARGETS`
+is mostly managed processes — `regsvcs`, `regasm`, `installutil`, `msbuild`,
+`csc`, `vbc`, `ilasm`. **It does not need a malicious sample to fire, it needs
+a dump** (`0bq`). The five images it graded **strong** on have now been carved
+and identified as `mscorlib` and friends; see below.
 
 On run `c14cb5b6` this became acute: `process_injection` graded **strong** on
 five .NET images in `csc.exe` while **the genuine 258 KB payload counted for
@@ -2818,34 +2817,51 @@ plausibly *where* the image sits: FormBook took `RegSvcs`'s preferred base
 `0x400000` with the real image relocated away; these sit high in a process doing
 its job.
 
-**MEASURED 20 AUG — and the premise above is false.** A benign `Add-Type`
-compile was run in the guest and `csc.exe` dumped three times while it worked,
-keeping the last at **+1.75 s, 48.2 MB, 33 modules** — against **36 modules** in
-the malware run's `csc.exe_2944_t149_atspawn.dmp`, so a fully-loaded compiler
-compared with a fully-loaded compiler.
+**THE PREMISE STANDS — the five images are framework assemblies, 20 Aug.**
+All five were carved and read with `dotnet_meta.py`. They are not payloads:
 
-    benign  csc.exe   33 modules   unmapped 0
-    sample  csc.exe   36 modules   unmapped 4
+    5,447,680 b  3356 typedefs  29257 methods   mscorlib
+    3,547,136 b  2365 typedefs  18170 methods   (framework, unnamed)
+    6,668,800 b  3692 typedefs  33669 methods   System.Management.Automation
+    1,530,368 b  1176 typedefs   8293 methods   (framework, unnamed)
+    5,447,680 b  identical to the first, mapped at a second address
 
-**A legitimate `Add-Type` does not fire the gate.** Nor does ordinary managed
-code: `--pid` against four unrelated .NET applications gives **570 module
-comparisons, 0 unmapped, 0 `replaced`, 0 `header_mismatch`**. The CLR does not
-inherently produce unmapped images, and "it does not need a malicious sample to
-fire, it needs a dump" is simply wrong.
+Identified from the identifier heap, not guessed: `DaysTo10000`,
+`LOCALE_SMONTHNAME10`, `CERT_QUERY_CONTENT_PKCS10`, `GB18030` for `mscorlib`;
+`<InvokeTopLevelPowerShell>`, `<ToPSObjectForRemoting>`,
+`System_Management_Automation_AliasInfo`, `DscResourceHelpInfo` for the
+PowerShell engine. **Nothing hand-written for injection looks like 33,669
+methods.** So the gate graded **strong** on the CLR's own code, exactly as
+`0bq` claimed. The scoring asymmetry in the paragraph above is real and this is
+the other half of it.
 
-**So the question moves from the detector to the sample.** The five images in
-`c14cb5b6`'s `csc.exe` — 5,447,680 / 3,547,136 / 6,692,864 / 1,556,480 bytes,
-two byte-identical at different addresses — are **not** what an ordinary compile
-produces, and want explaining on their own terms. All five are already carved
-and on the host at `G:\ringforge-artifacts\c14cb5b6_carved\`, so this costs no
-detonation. The obvious reading is that the sample's `Add-Type` was building its
-injector, but that is a guess until someone triages them.
+**A benign control did NOT reproduce it, and that is a fact about the control.**
+`benign_baseline.py --managed` in the guest, `csc.exe` dumped three times during
+a real `Add-Type`, last kept at +1.75 s, 48.2 MB, 33 modules against the
+sample's 36 — and **0 unmapped**. Four unrelated .NET applications give another
+570 module comparisons at 0 unmapped. The probe compiles 2,500 trivial classes
+with **no `-ReferencedAssemblies`**, which is the likeliest reason it stays
+clean. **Do not read those zeroes as exoneration of the gate** — read them as a
+control that has not yet been made to match the conditions.
 
-**One caveat on the control, stated so nobody over-reads it.** The benign probe
-compiles 2,500 trivial classes with no `-ReferencedAssemblies`. If the sample's
-`Add-Type` referenced more, its `csc.exe` would load more. The control refutes
-the specific claim that an *ordinary* `Add-Type` trips the gate; it does not
-prove that no benign compile ever could.
+**NEW, AND UNRESOLVED: `System.Management.Automation` cannot be in `csc.exe`.**
+The process tree is settled — `powershell.exe` 10940 spawned `csc.exe` 2944,
+which spawned `cvtres.exe` 4528 — and `_dump_parent_at_spawn` names its output
+after the parent it dumped (`memory_dump.py:818`), so `csc.exe_2944_…` should
+genuinely be `csc.exe`. A C# compiler does not load the PowerShell engine.
+Either an image is being attributed to the wrong dump, or a dump is named for
+the wrong process. **If images from `powershell.exe` are landing under a
+`csc.exe` label, then `hollowing_target` is being computed from the wrong
+process name** — which would make this the sixth attribution bug in this
+pipeline and would change what the gate's hits mean again.
+
+**The source dumps are gone** — the revert took the case directory, and only
+the carved `.bin_` files survive on `G:\ringforge-artifacts\c14cb5b6_carved\`.
+Confirming this needs a fresh run of `af2d8300…` at `timeout_seconds: 240`,
+keeping the `.dmp` files long enough to check which process each image really
+came from. Note also that the summary records `dump_file:
+csc.exe_2944_t149_atspawn.dmp` beside `carved_file: …_t149_parent-at-spawn_…`
+— two trigger spellings for one dump, which is worth a look while in there.
 
 **Recording the environment fact:** this cannot be measured on the host at all.
 `MiniDumpWriteDump` returns `0x80070005` `ERROR_ACCESS_DENIED` on a `csc.exe`
