@@ -4894,6 +4894,57 @@ sample's 1-in-5 into 5-in-5 is not, and the next detonation of
 gets the image it has never had — and `0bq`'s question about `csc.exe` becomes
 answerable with the hollowed process actually present for comparison.
 
+#### 0bu. RUN `0d469835` — the hold was invisible, and the wrong conclusion was drawn from that
+
+**`0bt`'s fix could not be evaluated, because the field that reports it never
+reached the summary.** Every dump record in this run read `held: None` —
+including two `csc.exe` spawn dumps that **succeeded** — and `held` is set
+*unconditionally* on that path. So the field looked absent in exactly the way a
+guest running older code would look.
+
+**It was concluded from that that the guest had not pulled. It had:
+`git log -1` on the guest read `478fd03`.** The operator was sent to check a
+machine that was already correct.
+
+**The actual cause is one line, and it is this project's most familiar bug
+class.** `summarize_memory_dumps` copies a **fixed field set** into the run
+summary. `held` was set on the record and never added to the projection, so it
+was dropped on the way out. **The collection was right and the reporting lost
+it** — the same shape as the four analyzer-attribution bugs this file already
+records, and the same shape as the local YARA rules that reached the scan only
+after nine days because nothing copied them.
+
+**Both projections now carry it**, and the failure list matters more than the
+success list: **a suspended process cannot report "Target process no longer
+running"**, so a failure carrying `held: true` means something other than the
+race, and one carrying `held: false` says the hold was refused — which is the
+case worth chasing.
+
+**And a refused hold now says why.** `_hold_process` returned a bare `None`,
+which cannot distinguish *"the process had already gone"* from *"`OpenProcess`
+refused it"*. It returns `(handle, reason)` now, the reason carries
+`GetLastError` or the `NtSuspendProcess` status, and it is emitted to the status
+log and stored on the record. **That ambiguity is why this run cannot say
+whether `SecurityHealthHost.exe` was unheld because it had already exited or
+because Windows refused the handle** — and those want completely different
+fixes.
+
+**What the run does establish**, none of it about the fix:
+
+- **Both `csc.exe` processes were captured**, three dumps including a re-dump,
+  where `ff504255` and `59a705df` got none.
+- **`SecurityHealthHost.exe` spawned at ~t175** and failed at t177 and t180,
+  against t143–t162 on earlier runs. The base window is 180s, so **the watcher
+  had about five seconds left** — this run would have been marginal even with
+  the hold working. `timeout_seconds: 240` before the next attempt.
+- **A second `csc.exe` (pid 760) died inside its +2s re-dump**, so the
+  short-lived-child shape is not specific to `SecurityHealthHost`. It is what
+  this script's children do.
+
+**Three tests pin the projection**, because a field that exists on the record
+and not in the summary is worse than one that was never added: the reader cannot
+tell it from a stale binary, which is precisely the mistake made here.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash

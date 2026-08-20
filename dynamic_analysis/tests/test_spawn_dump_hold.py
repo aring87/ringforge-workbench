@@ -52,7 +52,7 @@ class HoldingAProcess(unittest.TestCase):
         self.addCleanup(lambda: proc.kill() if _alive(proc) else None)
         time.sleep(0.15)
 
-        handle = _hold_process(proc.pid)
+        handle, _reason = _hold_process(proc.pid)
         self.assertIsNotNone(handle, "could not suspend a process we just started")
         try:
             time.sleep(2.0)                      # four times its natural life
@@ -66,7 +66,7 @@ class HoldingAProcess(unittest.TestCase):
         proc = _short_lived(0.1)
         self.addCleanup(lambda: proc.kill() if _alive(proc) else None)
         time.sleep(0.15)
-        handle = _hold_process(proc.pid)
+        handle, _reason = _hold_process(proc.pid)
         self.assertIsNotNone(handle)
         _release_process(handle)
         self.assertTrue(_wait_exit(proc),
@@ -79,7 +79,9 @@ class HoldingAProcess(unittest.TestCase):
         """
         proc = _short_lived(0.05)
         proc.wait(timeout=5)
-        self.assertIsNone(_hold_process(proc.pid))
+        handle, reason = _hold_process(proc.pid)
+        self.assertIsNone(handle)
+        self.assertTrue(reason, "a refused hold must say why")
 
     def test_releasing_nothing_is_safe(self):
         # The `finally` runs whether or not the hold succeeded.
@@ -89,7 +91,7 @@ class HoldingAProcess(unittest.TestCase):
         """Called from a `finally`; an exception there would mask the real one."""
         proc = _short_lived(0.05)
         time.sleep(0.15)
-        handle = _hold_process(proc.pid)
+        handle, _reason = _hold_process(proc.pid)
         _release_process(handle)
         _release_process(handle)          # double release, handle now closed
         proc.wait(timeout=5)
@@ -97,3 +99,56 @@ class HoldingAProcess(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSummaryCarriesWhatTheRecordSets(unittest.TestCase):
+    """A field set on a dump record and dropped by the projection is invisible.
+
+    `summarize_memory_dumps` copies a **fixed field set** into the run summary.
+    `held` was set on the record and not added there, so run `0d469835` reported
+    it absent on every row -- which reads exactly like a guest running code that
+    predates the field. The wrong conclusion was drawn from it and the operator
+    was sent to check a guest that was already correct.
+
+    That is the same class as the analyzer-attribution bugs this project keeps
+    finding: the collection was right and the reporting lost it.
+    """
+
+    def _summary(self, record):
+        from dynamic_analysis.memory_dump import summarize_memory_dumps
+        return summarize_memory_dumps({"dumps": [record], "counts": {}})
+
+    def test_a_successful_dump_reports_whether_it_was_held(self):
+        summary = self._summary(
+            {"pid": 1, "name": "child.exe", "success": True, "held": True,
+             "size": 1024, "trigger": "process-spawn"})
+        self.assertIs(summary["dumps"][0]["held"], True)
+
+    def test_a_failed_dump_reports_it_too(self):
+        """This is where it matters most.
+
+        A suspended process cannot report "Target process no longer running",
+        so a failure carrying `held: true` means something other than the race
+        -- and a failure carrying `held: false` says the hold was refused,
+        which is the case worth chasing.
+        """
+        summary = self._summary(
+            {"pid": 2, "name": "child.exe", "success": False, "held": False,
+             "hold_error": "OpenProcess failed, error 5",
+             "error": "Target process no longer running",
+             "trigger": "process-spawn"})
+        failure = summary["failures"][0]
+        self.assertIs(failure["held"], False)
+        self.assertIn("OpenProcess", failure["hold_error"])
+
+    def test_an_unheld_dump_is_distinguishable_from_an_old_record(self):
+        """`None` must mean "this path does not hold", not "field lost".
+
+        Scheduled and re-dump records never hold anything, so None there is
+        correct and readable. What must not happen is a *spawn* record reading
+        None because the projection dropped it.
+        """
+        summary = self._summary(
+            {"pid": 3, "name": "p.exe", "success": True, "size": 1,
+             "trigger": "scheduled"})
+        self.assertIsNone(summary["dumps"][0]["held"])

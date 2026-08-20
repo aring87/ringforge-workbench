@@ -106,7 +106,7 @@ _DUMP_TIMEOUT_SECONDS = 300
 _PROCESS_SUSPEND_RESUME = 0x0800
 
 
-def _hold_process(pid: int) -> Optional[int]:
+def _hold_process(pid: int) -> tuple[Optional[int], str]:
     """Suspend `pid` so it cannot exit before it is dumped.
 
     **The race this closes, measured.** A hollowed `SecurityHealthHost.exe` was
@@ -122,10 +122,13 @@ def _hold_process(pid: int) -> Optional[int]:
     The process can always exit between the check and the attach. Suspending it
     removes the window rather than narrowing it.
 
-    Returns the open handle on success -- the caller must pass it to
-    `_release_process` -- or None, which is a real answer and not an error: a
-    process that has already exited cannot be held, and the dump path handles
-    that as it did before.
+    Returns `(handle, reason)`. The handle is None when the hold was refused,
+    which is a real answer and not an error -- a process that has already exited
+    cannot be held, and the dump path handles that as it did before. **`reason`
+    is why**, because a bare None is indistinguishable from a hold that never
+    ran, and that ambiguity cost a run: `0d469835` could not say whether
+    `SecurityHealthHost.exe` was unheld because it had already gone or because
+    `OpenProcess` refused it.
 
     **This changes what the sample experiences, and that is recorded rather than
     hidden.** ProcDump already freezes a process to image it, so the process
@@ -138,15 +141,16 @@ def _hold_process(pid: int) -> Optional[int]:
         ntdll = ctypes.WinDLL("ntdll.dll")
         handle = kernel32.OpenProcess(_PROCESS_SUSPEND_RESUME, False, int(pid))
         if not handle:
-            return None
-        if ntdll.NtSuspendProcess(ctypes.c_void_p(handle)) != 0:
+            return None, f"OpenProcess failed, error {ctypes.get_last_error()}"
+        status = ntdll.NtSuspendProcess(ctypes.c_void_p(handle))
+        if status != 0:
             kernel32.CloseHandle(ctypes.c_void_p(handle))
-            return None
-        return handle
-    except Exception:
+            return None, f"NtSuspendProcess returned {status & 0xFFFFFFFF:#010x}"
+        return handle, ""
+    except Exception as exc:
         # Never fail a dump because the hold failed; the old behaviour is the
         # fallback and it is merely racier.
-        return None
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 def _release_process(handle: Optional[int]) -> None:
@@ -619,9 +623,12 @@ class MemoryDumpSession:
             # against a process that cannot exit underneath it, including the
             # parent dump, which used to be several seconds of exposure on its
             # own. See `_hold_process`.
-            held = _hold_process(pid)
+            held, hold_error = _hold_process(pid)
+            if hold_error:
+                self._emit(f"  could not hold pid {pid} before dumping: {hold_error}")
             try:
-                if self._dump_spawned_child(target, pid, elapsed, held is not None):
+                if self._dump_spawned_child(target, pid, elapsed,
+                                            held is not None, hold_error):
                     dumped_any = True
             finally:
                 # Every path, without exception. A process left suspended hangs
@@ -631,7 +638,7 @@ class MemoryDumpSession:
         return dumped_any
 
     def _dump_spawned_child(self, target: dict, pid: int, elapsed: float,
-                            held: bool) -> bool:
+                            held: bool, hold_error: str = "") -> bool:
         """One child, with the process already suspended by the caller.
 
         Split out so the hold has a single `finally` covering every exit; this
@@ -690,6 +697,7 @@ class MemoryDumpSession:
         # taken from a process this harness stopped, not one that stopped
         # itself.
         record["held"] = held
+        record["hold_error"] = hold_error
         with self._lock:
             self._dumps.append(record)
             self._total_bytes += int(record.get("size", 0) or 0)
@@ -1375,6 +1383,13 @@ def summarize_memory_dumps(dump_result: dict[str, Any]) -> dict[str, Any]:
                 # A dump taken unsuspended is a smear rather than a snapshot,
                 # so whether the freeze succeeded is part of reading the result.
                 "suspended": bool(d.get("suspended", False)),
+                # Whether *this harness* suspended the process to catch it,
+                # as opposed to ProcDump freezing it to image it. Added to
+                # both projections at once: the field was set on the record
+                # and dropped here, so run `0d469835` reported `held` absent
+                # on every row and read exactly like a guest running old code.
+                "held": d.get("held"),
+                "hold_error": d.get("hold_error", ""),
             }
             for d in successful
         ],
@@ -1388,6 +1403,11 @@ def summarize_memory_dumps(dump_result: dict[str, Any]) -> dict[str, Any]:
                 # render as identical rows.
                 "trigger": d.get("trigger", ""),
                 "error": d.get("error", ""),
+                # A failure is where the hold matters most: a suspended process
+                # cannot report "Target process no longer running", so a
+                # failure with `held: true` means something other than the race.
+                "held": d.get("held"),
+                "hold_error": d.get("hold_error", ""),
             }
             for d in dumps
             if not d.get("success")
