@@ -2798,11 +2798,14 @@ three wrong diagnoses had been recorded and retracted** (`0bp`).
 
 ## The two decisions this wants, and neither is mine to take
 
-**1. Gap 5's gate scores ordinary .NET.** `unmapped_pe_in_hollowing_target`
-fires on the CLR's own assemblies inside `csc.exe`, which `Add-Type` spawns
-legitimately, and `HOLLOWING_TARGETS` is mostly managed processes —
-`regsvcs`, `regasm`, `installutil`, `msbuild`, `csc`, `vbc`, `ilasm`. **It does
-not need a malicious sample to fire, it needs a dump** (`0bq`).
+**1. ~~Gap 5's gate scores ordinary .NET.~~ MEASURED AND FALSE — 20 Aug.** The
+claim was that `unmapped_pe_in_hollowing_target` fires on the CLR's own
+assemblies inside `csc.exe`, which `Add-Type` spawns legitimately, and that
+since `HOLLOWING_TARGETS` is mostly managed processes — `regsvcs`, `regasm`,
+`installutil`, `msbuild`, `csc`, `vbc`, `ilasm` — **it did not need a malicious
+sample to fire, only a dump** (`0bq`). **It was never tested.** It has been
+now, and it does not fire. See the measurement below; the half of this decision
+that still stands is only the scoring asymmetry in the next paragraph.
 
 On run `c14cb5b6` this became acute: `process_injection` graded **strong** on
 five .NET images in `csc.exe` while **the genuine 258 KB payload counted for
@@ -2815,32 +2818,42 @@ plausibly *where* the image sits: FormBook took `RegSvcs`'s preferred base
 `0x400000` with the real image relocated away; these sit high in a process doing
 its job.
 
-**Measured 20 Aug, and it narrows the question.** `benign_baseline.py --pid`
-against four unrelated .NET applications — `AuraWallpaperService`,
-`ArmouryCrate.Service`, `ArmouryCrate.UserSessionHelper`, `CrossDeviceService` —
-gives **570 module comparisons, 0 unmapped PE images, 0 `replaced`, 0
-`header_mismatch`**. So **the CLR does not inherently produce unmapped images**,
-and "exclude .NET" was never the right shape of fix: ordinary managed processes
-are already clean.
+**MEASURED 20 AUG — and the premise above is false.** A benign `Add-Type`
+compile was run in the guest and `csc.exe` dumped three times while it worked,
+keeping the last at **+1.75 s, 48.2 MB, 33 modules** — against **36 modules** in
+the malware run's `csc.exe_2944_t149_atspawn.dmp`, so a fully-loaded compiler
+compared with a fully-loaded compiler.
 
-What that leaves is a sharper hypothesis. The five `c14cb5b6` images were
-5,447,680 / 3,547,136 / 6,692,864 / 1,556,480 bytes, two byte-identical at
-different addresses — large assemblies at addresses no module covers, which is
-what a **compiler loading assemblies dynamically** produces and what a service
-running steady-state code does not. **The false positive plausibly belongs to
-compilation, not to .NET** — a far narrower discriminator, and one that leaves
-`422e30ed` fully detectable.
+    benign  csc.exe   33 modules   unmapped 0
+    sample  csc.exe   36 modules   unmapped 4
 
-**Still unmeasured: a benign `csc.exe` mid-compile**, which is the case that
-decides it. It cannot be measured on this host: `MiniDumpWriteDump` returns
-`0x80070005` `ERROR_ACCESS_DENIED` on a `csc.exe` spawned by our own
-PowerShell, at the same integrity level, on a host where dumping twelve other
-processes works fine. Bitdefender is the leading suspect — `powershell` →
-`csc.exe` → something dumping it is close to a textbook malicious pattern.
-**Measure it in the guest instead**: no Bitdefender, Defender real-time off in
-the baseline, and it is the more representative environment anyway, since the
-gate runs against guest dumps. `benign_baseline.py --managed` spawns the
-`Add-Type` and dumps the compiler; it costs one revert and no sample.
+**A legitimate `Add-Type` does not fire the gate.** Nor does ordinary managed
+code: `--pid` against four unrelated .NET applications gives **570 module
+comparisons, 0 unmapped, 0 `replaced`, 0 `header_mismatch`**. The CLR does not
+inherently produce unmapped images, and "it does not need a malicious sample to
+fire, it needs a dump" is simply wrong.
+
+**So the question moves from the detector to the sample.** The five images in
+`c14cb5b6`'s `csc.exe` — 5,447,680 / 3,547,136 / 6,692,864 / 1,556,480 bytes,
+two byte-identical at different addresses — are **not** what an ordinary compile
+produces, and want explaining on their own terms. All five are already carved
+and on the host at `G:\ringforge-artifacts\c14cb5b6_carved\`, so this costs no
+detonation. The obvious reading is that the sample's `Add-Type` was building its
+injector, but that is a guess until someone triages them.
+
+**One caveat on the control, stated so nobody over-reads it.** The benign probe
+compiles 2,500 trivial classes with no `-ReferencedAssemblies`. If the sample's
+`Add-Type` referenced more, its `csc.exe` would load more. The control refutes
+the specific claim that an *ordinary* `Add-Type` trips the gate; it does not
+prove that no benign compile ever could.
+
+**Recording the environment fact:** this cannot be measured on the host at all.
+`MiniDumpWriteDump` returns `0x80070005` `ERROR_ACCESS_DENIED` on a `csc.exe`
+spawned by our own PowerShell, at the same integrity level, on a host where
+sixteen other processes dump cleanly. Bitdefender is the near-certain cause —
+`powershell` → `csc.exe` → something dumping it is a textbook malicious pattern.
+The identical code dumps it in the guest. **Any measurement involving a spawned
+child belongs in the guest.**
 
 **2. The spawn dump fails with `ERROR_PARTIAL_COPY`, not a race.** `0bt`
 suspended the child to stop it exiting; `0bv` proved that wrong — two processes

@@ -149,11 +149,33 @@ assemblies loaded dynamically rather than mapped — which is narrower and would
 leave `422e30ed` detectable. See the decisions section of `HANDOFF.md`.
 
 **A benign `csc.exe` cannot be dumped on this host.** `MiniDumpWriteDump`
-returns `0x80070005` on a compiler spawned by our own PowerShell, while twelve
-other processes dump fine; Bitdefender is the leading suspect. `--managed`
-spawns and catches the compiler correctly — the poll is not the problem — so
-**this measurement belongs in the guest**, which has no Bitdefender and is
-where the gate actually runs. Until then decision 1 stays open.
+returns `0x80070005` on a compiler spawned by our own PowerShell, while sixteen
+other processes dump fine; Bitdefender is the near-certain cause. The identical
+code dumps it in the guest, so **any measurement involving a spawned child
+belongs there**.
+
+**Run in the guest, 20 Aug — the gate does not fire on a benign compile.**
+`csc.exe` dumped three times during a real `Add-Type`, keeping the last at
++1.75 s, 48.2 MB, **33 modules** — against 36 in the malware run's dump of the
+same binary, so loaded compiler against loaded compiler.
+
+| | modules | unmapped |
+|---|---|---|
+| benign `csc.exe` | 33 | **0** |
+| `c14cb5b6` `csc.exe` | 36 | **4** |
+
+**Decision 1's premise is refuted**: an ordinary `Add-Type` does not trip
+`unmapped_pe_in_hollowing_target`. The five images in the sample's `csc.exe` are
+therefore a question about the sample, not a known false positive — all five are
+carved at `G:\ringforge-artifacts\c14cb5b6_carved\` and cost no detonation to
+triage. Caveat: the probe compiles trivial classes with no
+`-ReferencedAssemblies`, so this refutes the specific claim rather than proving
+no benign compile could ever fire.
+
+**Dumping a just-spawned process fails benignly.** `csc.exe` and `cvtres.exe`
+both returned `0x8007012B` `ERROR_PARTIAL_COPY` on first attempt and dumped
+fine moments later, with no malware present. **That error alone is not evidence
+of an image being rewritten** — which is what decision 2 currently rests on.
 
 **Still owed here:** the same treatment for the two detectors this harness
 cannot reach. The WER timestamp check needs an event log and the ntdll pass

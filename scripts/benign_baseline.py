@@ -176,6 +176,10 @@ _PROBE_CLASSES = 2500
 #: HOLLOWING_TARGETS, which is the whole point -- see `_spawn_managed`.
 _MANAGED_WANTED = {"csc.exe", "cvtres.exe", "msbuild.exe", "vbc.exe"}
 
+#: How often to re-dump a live managed child. Each full-memory dump costs real
+#: time, so this is a floor on the interval rather than a target.
+_MANAGED_REDUMP_SECONDS = 0.4
+
 
 def _probe_source(path: Path, classes: int = _PROBE_CLASSES) -> None:
     """Write C# that is entirely ordinary and takes a moment to compile."""
@@ -213,36 +217,52 @@ def _spawn_managed(scratch: Path, poll_seconds: float = 30.0) -> list[tuple[str,
     )
 
     found: dict[int, tuple[str, Path]] = {}
-    deadline = time.time() + poll_seconds
+    last_dump: dict[int, float] = {}
+    started = time.time()
+    deadline = started + poll_seconds
     try:
         parent = psutil.Process(proc.pid)
     except Exception as exc:
         print(f"  spawn failed: {exc}")
         return []
 
+    # **Keep re-dumping until it exits, and keep the last.** Dumping at the
+    # first success measures a process that has barely started: the first guest
+    # run caught csc.exe about 80 ms in with 23 modules loaded, against 36 in
+    # the malware run's dump of the same binary. `unmapped 0` on that is a
+    # statement about an initialising process, not about compilation. The last
+    # dump before exit is the one that has actually done the work.
     while time.time() < deadline:
         try:
             children = parent.children(recursive=True)
         except Exception:
             children = []
+        wanted = []
         for child in children:
             try:
                 name = (child.name() or "").lower()
-                if name not in _MANAGED_WANTED or child.pid in found:
-                    continue
-                path = scratch / f"benign_{Path(name).stem}_{child.pid}.dmp"
-                ok, why = _dump_process(child.pid, path)
-                if ok:
-                    found[child.pid] = (name, path)
-                    print(f"  caught {name} ({child.pid}) while it compiled")
-                else:
-                    print(f"  miss   {name} ({child.pid}): {why}")
-                    path.unlink(missing_ok=True)
             except Exception:
                 continue
-        if proc.poll() is not None and found:
-            break
-        if proc.poll() is not None and time.time() > deadline - poll_seconds + 5:
+            if name not in _MANAGED_WANTED:
+                continue
+            wanted.append((child, name))
+
+        for child, name in wanted:
+            now = time.time()
+            if now - last_dump.get(child.pid, 0.0) < _MANAGED_REDUMP_SECONDS:
+                continue
+            path = scratch / f"benign_{Path(name).stem}_{child.pid}.dmp"
+            ok, why = _dump_process(child.pid, path)
+            last_dump[child.pid] = now
+            if ok:
+                found[child.pid] = (name, path)
+                print(f"  dumped {name} ({child.pid}) at +{now - started:.2f}s")
+            else:
+                print(f"  miss   {name} ({child.pid}) at +{now - started:.2f}s: {why}")
+                if child.pid not in found:
+                    path.unlink(missing_ok=True)
+
+        if proc.poll() is not None and not wanted:
             break
         time.sleep(0.02)
 
