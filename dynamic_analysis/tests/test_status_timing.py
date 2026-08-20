@@ -18,6 +18,7 @@ Timing `_emit` covers every pass at once -- including the ones nobody has
 suspected yet -- for one `perf_counter` per line.
 """
 import unittest
+from pathlib import Path
 
 from dynamic_analysis import orchestrator
 
@@ -104,3 +105,73 @@ class StatusLinesCarryTheElapsedTime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheStatusLogSurvivesTheWindow(unittest.TestCase):
+    """The run's narrative has to outlive the pane that displayed it.
+
+    The Output pane is a Tk text widget and nothing ever wrote it to disk, so
+    the one artefact saying *which pass ran when* died when the window closed.
+    That cost three runs: `33fe6c3b` stalled with no record of where,
+    `eb3e1273` produced five minutes of silence with no record of what it was
+    doing, and `fa23508d` was closed before its timings could be read. The
+    summary JSON keeps every result and none of the sequence.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.log = Path(self._tmp.name) / "metadata" / "status.log"
+        self.addCleanup(orchestrator._reset_emit_clock)
+
+    def test_lines_are_written_alongside_the_summary(self):
+        orchestrator._reset_emit_clock(self.log)
+        orchestrator._emit(None, "Exporting Procmon CSV...")
+        self.assertIn("Exporting Procmon CSV...",
+                      self.log.read_text(encoding="utf-8"))
+
+    def test_the_parent_directory_is_created(self):
+        # `_reset_emit_clock` may run before the metadata directory exists.
+        self.assertFalse(self.log.parent.exists())
+        orchestrator._reset_emit_clock(self.log)
+        self.assertTrue(self.log.exists())
+
+    def test_the_elapsed_tag_reaches_the_file_not_just_the_screen(self):
+        """The file is the whole point -- a tag only on screen is what failed."""
+        orchestrator._reset_emit_clock(self.log)
+        orchestrator._emit(None, "first")
+        orchestrator._LAST_EMIT_AT -= 1374
+        orchestrator._emit(None, "Comparing loaded modules...")
+        self.assertIn("[+1374s]", self.log.read_text(encoding="utf-8"))
+
+    def test_a_new_run_truncates_rather_than_appending(self):
+        """Two attempts must not read as one continuous sequence."""
+        orchestrator._reset_emit_clock(self.log)
+        orchestrator._emit(None, "attempt one")
+        orchestrator._reset_emit_clock(self.log)
+        orchestrator._emit(None, "attempt two")
+        body = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("attempt one", body)
+        self.assertIn("attempt two", body)
+
+    def test_no_path_means_screen_only(self):
+        orchestrator._reset_emit_clock(None)
+        lines = []
+        orchestrator._emit(lines.append, "nothing on disk")
+        self.assertEqual(lines, ["nothing on disk"])
+        self.assertFalse(self.log.exists())
+
+    def test_an_unwritable_log_does_not_fail_the_run(self):
+        """Losing the log must never lose the detonation."""
+        orchestrator._reset_emit_clock(Path("Z:/no/such/volume/status.log"))
+        lines = []
+        orchestrator._emit(lines.append, "still emitted")
+        self.assertEqual(lines, ["still emitted"])
+
+    def test_it_records_lines_with_no_status_callback(self):
+        # A headless/orchestrator-only run has no pane; the file is then the
+        # only record there is.
+        orchestrator._reset_emit_clock(self.log)
+        orchestrator._emit(None, "headless line")
+        self.assertIn("headless line", self.log.read_text(encoding="utf-8"))

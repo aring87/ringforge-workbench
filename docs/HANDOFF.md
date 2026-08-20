@@ -4660,6 +4660,19 @@ to move a scoring gate on partial evidence, and this is the case that shows why
 the caution was right: the gate was not merely aimed at a rare technique, it was
 **scoring an artifact of the technique's own tooling**.
 
+**The status stream is now written to disk.** `metadata\status.log`, beside
+`dynamic_run_summary.json`, carrying every line with its wall-clock and its
+`[+Ns]` tag. **Nothing ever persisted it before** -- the Output pane is a Tk
+text widget, so the one artefact saying *which pass ran when* died with the
+window. That cost three runs: `33fe6c3b` stalled with no record of where,
+`eb3e1273` gave five minutes of silence with no record of what it was doing,
+and `fa23508d` was closed before its timings could be read. The summary JSON
+keeps every *result* and none of the *sequence*.
+
+Fourteen tests. One of them caught a real bug during writing: the elapsed tag
+was applied inside `if status_cb:`, so a headless run -- the case where the file
+is the only record there is -- would have logged every line untimed.
+
 **Also this run:** fix 2 confirmed again (`suspicious: 0`,
 `compiler_artifacts: 2`) on a third set of random names, and module integrity
 523 modules, all `identical`. Teardown 1,720s. **The timing profile is still

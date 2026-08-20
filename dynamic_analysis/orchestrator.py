@@ -6,7 +6,7 @@ import subprocess
 import uuid
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -485,10 +485,57 @@ _LAST_EMIT_AT: float | None = None
 _EMIT_TIMING_FLOOR_SECONDS = 2.0
 
 
-def _reset_emit_clock() -> None:
-    """Start a fresh timing sequence. Called at the top of a run."""
-    global _LAST_EMIT_AT
+#: Where every status line is also written, so the run's narrative survives the
+#: window that displayed it. `None` disables the file and leaves `_emit`
+#: screen-only, which is what every caller outside a real run wants.
+_STATUS_LOG_PATH: "Path | None" = None
+
+
+def _reset_emit_clock(log_path: "Path | str | None" = None) -> None:
+    """Start a fresh timing sequence, optionally teeing status to a file.
+
+    **Why the file exists.** The Output pane is a Tk text widget and nothing
+    ever wrote it to disk, so the one artefact that says *which pass ran when*
+    died with the window. That cost three runs: `33fe6c3b` stalled with no
+    record of where, `eb3e1273` produced five minutes of silence with no record
+    of what it was doing, and `fa23508d` was closed before its timings could be
+    read. The summary JSON preserves every *result* and none of the *sequence*.
+
+    Written next to `dynamic_run_summary.json` so exporting the case directory
+    keeps it -- the same rule the report and the summary already follow.
+    """
+    global _LAST_EMIT_AT, _STATUS_LOG_PATH
     _LAST_EMIT_AT = None
+    _STATUS_LOG_PATH = Path(log_path) if log_path else None
+    if _STATUS_LOG_PATH is None:
+        return
+    try:
+        _STATUS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Truncate: one file per run, and a run that restarts should not append
+        # to the previous attempt's timings and read as one continuous sequence.
+        with _STATUS_LOG_PATH.open("w", encoding="utf-8") as handle:
+            handle.write(f"# status log, {datetime.now(timezone.utc).isoformat()}\n")
+    except OSError:
+        # A log nobody can write is not worth failing a detonation over, and a
+        # silent screen-only run is the behaviour that existed before this.
+        _STATUS_LOG_PATH = None
+
+
+def _write_status_line(message: str, at: float) -> None:
+    """Append one line to the status log, if a run configured one.
+
+    Timestamped independently of the pane so the file is readable on its own:
+    the `[+Ns]` tag says how long a step took, and the wall-clock says when.
+    Never raises -- losing the log must not lose the run.
+    """
+    if _STATUS_LOG_PATH is None:
+        return
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        with _STATUS_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{stamp}] {message}\n")
+    except OSError:
+        pass
 
 
 def _emit(status_cb: StatusCallback, message: str) -> None:
@@ -511,11 +558,15 @@ def _emit(status_cb: StatusCallback, message: str) -> None:
     """
     global _LAST_EMIT_AT
     now = time.perf_counter()
+    # Tag before the callback check, not inside it. A headless run has no pane
+    # and the file is then the only record there is -- tagging only when
+    # somebody is watching would leave exactly that case untimed.
+    elapsed = None if _LAST_EMIT_AT is None else now - _LAST_EMIT_AT
+    if elapsed is not None and elapsed >= _EMIT_TIMING_FLOOR_SECONDS:
+        message = f"{message}   [+{elapsed:.0f}s]"
     if status_cb:
-        elapsed = None if _LAST_EMIT_AT is None else now - _LAST_EMIT_AT
-        if elapsed is not None and elapsed >= _EMIT_TIMING_FLOOR_SECONDS:
-            message = f"{message}   [+{elapsed:.0f}s]"
         status_cb(message)
+    _write_status_line(message, now)
     _LAST_EMIT_AT = now
 
 
@@ -1840,6 +1891,12 @@ def run_dynamic_analysis(
     run_config_path = paths["metadata"] / "run_config.json"
     sample_info_path = paths["metadata"] / "sample_info.json"
     run_summary_path = paths["metadata"] / "dynamic_run_summary.json"
+
+    # From here on every status line is also written to disk. Done as soon as
+    # the case directory exists rather than at the top of the run, because the
+    # path is what makes the log exportable -- the handful of lines before this
+    # are setup and carry no timings worth keeping.
+    _reset_emit_clock(paths["metadata"] / "status.log")
 
     procmon_enabled = bool(config.get("procmon_enabled", False))
     procmon_path = config.get("procmon_path")
