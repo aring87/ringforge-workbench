@@ -43,6 +43,27 @@ def _collect_rule_files(rules_dir: Path) -> Dict[str, str]:
     return filepaths
 
 
+def _externals_for(sample: Path) -> Dict[str, Any]:
+    """
+    YARA external variables that public rulesets expect to be declared.
+
+    Neo23x0's signature-base and others reference `filepath`, `filename`,
+    `extension`, `filetype` and `owner`. yara-python requires these at compile
+    time; without them every rule that mentions one fails to compile. Since the
+    whole corpus compiles in a single call, one such rule takes down all of it.
+
+    Real values are supplied where they can be derived from the sample, so rules
+    depending on them can actually evaluate rather than merely compile.
+    """
+    return {
+        "filepath": str(sample),
+        "filename": sample.name,
+        "extension": sample.suffix.lstrip("."),
+        "filetype": "",
+        "owner": "",
+    }
+
+
 def _parse_match(match: Any) -> Dict[str, Any]:
     """
     Convert a yara.Match into a JSON-safe dictionary.
@@ -118,6 +139,8 @@ def run_yara_scan(
         "matched": False,
         "match_count": 0,
         "rule_file_count": 0,
+        "rules_compiled": 0,
+        "rules_skipped": [],
         "matches": [],
         "error": None,
     }
@@ -141,8 +164,42 @@ def run_yara_scan(
         result["error"] = f"No YARA rule files found in: {rules_root}"
         return result
 
+    externals = _externals_for(sample)
+    skipped: List[Dict[str, str]] = []
+
     try:
-        compiled_rules = yara.compile(filepaths=filepaths)
+        compiled_rules = yara.compile(filepaths=filepaths, externals=externals)
+    except Exception as bulk_exc:
+        # A single unbuildable rule file must not zero out the whole corpus.
+        # Fall back to identifying the bad ones and compiling the rest.
+        usable: Dict[str, str] = {}
+        for namespace, rule_path in filepaths.items():
+            try:
+                yara.compile(filepath=rule_path, externals=externals)
+            except Exception as file_exc:
+                skipped.append({"file": rule_path, "error": str(file_exc)})
+                continue
+            usable[namespace] = rule_path
+
+        result["rules_skipped"] = skipped
+
+        if not usable:
+            result["error"] = (
+                f"YARA compile failed for all {len(filepaths)} rule files; "
+                f"first error: {bulk_exc}"
+            )
+            return result
+
+        try:
+            compiled_rules = yara.compile(filepaths=usable, externals=externals)
+        except Exception as retry_exc:
+            result["error"] = f"YARA compile failed after skipping bad files: {retry_exc}"
+            return result
+
+    result["rules_compiled"] = len(filepaths) - len(skipped)
+    result["rules_skipped"] = skipped
+
+    try:
         matches = compiled_rules.match(str(sample), timeout=timeout)
     except Exception as exc:
         result["error"] = f"YARA scan failed: {exc}"
@@ -172,12 +229,18 @@ def summarize_yara_results(yara_result: Dict[str, Any], max_rules: int = 10) -> 
     if yara_result.get("error"):
         return f"YARA Results\n- Error: {yara_result['error']}"
 
+    found = yara_result.get("rule_file_count", 0)
+    compiled = yara_result.get("rules_compiled", found)
+    skipped = yara_result.get("rules_skipped", []) or []
+
+    # Report compiled-of-found rather than found alone, so a corpus that failed
+    # to build cannot read as a clean no-match scan.
+    scanned = f"- Rules scanned: {compiled} of {found}"
+    if skipped:
+        scanned += f" ({len(skipped)} skipped, would not compile)"
+
     if not yara_result.get("matched"):
-        return (
-            "YARA Results\n"
-            f"- Matched: No\n"
-            f"- Rules scanned: {yara_result.get('rule_file_count', 0)}"
-        )
+        return "YARA Results\n- Matched: No\n" + scanned
 
     matches = yara_result.get("matches", [])
     rule_names = [m.get("rule", "unknown_rule") for m in matches[:max_rules]]
@@ -186,7 +249,7 @@ def summarize_yara_results(yara_result: Dict[str, Any], max_rules: int = 10) -> 
         "YARA Results",
         "- Matched: Yes",
         f"- Match count: {yara_result.get('match_count', 0)}",
-        f"- Rules scanned: {yara_result.get('rule_file_count', 0)}",
+        scanned,
         "- Top matched rules:",
     ]
     lines.extend([f"  - {name}" for name in rule_names])

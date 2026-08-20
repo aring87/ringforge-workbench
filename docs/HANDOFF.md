@@ -2707,7 +2707,7 @@ remaining path** to the substitution logic, the beacon protocol and the
 clipboard behaviour. It is *safer* than arming the guest, not riskier — you
 choose which C2 the implant is handed, and point it at a local sink.
 
-### Four results that were about the tooling, not the sample
+### Five results that were about the tooling, not the sample
 
 Every one looked like a finding and was an artifact of the bench:
 
@@ -2723,6 +2723,13 @@ Every one looked like a finding and was an artifact of the bench:
   `/frida(\.exe)?/i` is unanchored and matched **"Friday"** in a day-name
   table. There is no analysis-tool detection in this payload, and no reason
   to change run configuration on its account.
+- **`tools\yara\local\` is the source; `tools\yara\rules\` is what static
+  triage actually scans.** Adding a rule to the former does not put it in the
+  latter — `bootstrap_yara_rules.ps1` is what copies `local\` into
+  `rules\local\`. Until it re-runs, a newly written local rule is silently
+  absent from every static triage, and the scan reports success without it.
+  **Re-run the bootstrap, or copy the file across, after writing a local
+  rule** — and confirm by watching `rule_file_count` go up.
 
 > **The method lesson, extended.** The existing note says every wrong turn was
 > a guess about cost or blame, cheaper to measure than argue. This session is
