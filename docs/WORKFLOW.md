@@ -46,7 +46,53 @@ That one command does four things in an order that matters:
 Reverting discards the guest's `cases\` directory. Export anything you still
 want before this step; that is what the prompt is for, and `-Force` skips it.
 
-### Replacing the baseline: revert first
+### If the revert wedges: `restoringsnapshot` with nothing behind it
+
+VBoxManage returns when a state change is **queued**, not done. A manual
+`VBoxManage` command issued while a revert is in flight can leave the VM stuck
+in a transient state with no process running it — and no VBoxManage command
+clears it. `startvm` returns a bare `E_FAIL`.
+
+`vm_snapshot.ps1` waits for the state to settle before each step, so the script
+does not cause this. Clicking in the Manager window while it runs still can.
+
+**Tell a wedge from a slow restore before doing anything**, and use read-only
+queries — issuing another state change is what caused it:
+
+```powershell
+$vbm = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+& $vbm showvminfo "RingForge-Analysis" --machinereadable | Select-String '^VMState='
+& $vbm list runningvms
+Get-Process VirtualBoxVM,VBoxSVC -ErrorAction SilentlyContinue
+```
+
+`VMState="restoringsnapshot"` **with `list runningvms` empty and no
+`VirtualBoxVM` process** is a wedge. A genuine restore has a process burning CPU.
+
+**The way out, and it takes every other VM with it:**
+
+```powershell
+# 1. Save or power off every other running VM first -- `list runningvms` says
+#    which. They will be killed otherwise.
+# 2. Close the Manager. VBoxSVC will not die cleanly while a frontend holds it.
+Stop-Process -Name VirtualBox -Force
+# 3. Then the service. It respawns on the next VBoxManage call.
+Stop-Process -Name VBoxSVC -Force
+```
+
+Verify with the same read-only query — `VMState` should read `poweroff` or
+`aborted` — and check `snapshot <vm> list` still shows the baseline before
+reverting again. **Disk images are untouched by this**; it is the service's
+in-memory state that was stuck.
+
+Done on 20 Aug against a VM wedged since a revert: state cleared to `poweroff`,
+`tooling-baseline` intact. Note `VMStateChangeTime` can keep reporting the stale
+moment afterwards — the live `VMState` is the one to believe.
+
+**A `-List` issued while a restore is genuinely in flight can report "No
+snapshots".** That is a transient misread, not damage. Do not react to it.
+
+### Replacing the baseline: revert first, and take before you delete
 
 `-Delete` **merges** a snapshot into its parent and `-Take` captures the current
 state. Neither reverts anything, so replacing the baseline without reverting
@@ -54,12 +100,33 @@ first bakes in whatever is on the disk right now — including the last
 detonation.
 
 ```
-revert  →  make the change  →  -Delete  →  -Take
+revert  →  make the change  →  TAKE new  →  restore it to verify
+        →  delete old  →  rename new into place
 ```
 
-Missing the revert has produced a post-detonation baseline twice, and both
-times the only symptom was a stray `cases\<hash>` folder that someone happened
-to notice. It is worth checking for explicitly before you take the snapshot:
+```powershell
+.\scripts\vm_snapshot.ps1 -Baseline -Force              # revert
+# ... pull, install, whatever the change is ...
+dir cases ; dir samples                                 # hygiene, see below
+.\scripts\vm_snapshot.ps1 -Take "tooling-baseline-new"
+.\scripts\vm_snapshot.ps1 -Restore "tooling-baseline-new"   # prove it boots
+.\scripts\vm_snapshot.ps1 -Delete "tooling-baseline"
+VBoxManage snapshot RingForge-Analysis edit "tooling-baseline-new" `
+    --name "tooling-baseline"
+```
+
+**Take the new snapshot before deleting the old one.** An earlier version of
+this section said `-Delete` → `-Take`, and that order leaves **no clean restore
+point between the two commands** on a 93.9 GB VM: if the state turns out to be
+dirty after the delete, there is nothing to go back to. Taking first, verifying
+by restoring it, and only then deleting means every step has somewhere to
+retreat to. The rename keeps `-Baseline` and the `-BaselineName` default working
+untouched.
+
+This is the order the 16 Aug rebuild actually used; the `-Delete` → `-Take` form
+was never run against a real replacement.
+
+**Check for a dirty machine before you take anything:**
 
 ```powershell
 dir cases ; dir samples
@@ -67,12 +134,50 @@ dir cases ; dir samples
 
 `samples\` should hold `mimikatz.exe`, `mimikatz.upx.exe` and
 `upx_control.json` and nothing else — a live sample left there is present on
-every future revert. `cases\` should not exist.
+every future revert. `cases\` should not exist. Missing the revert has produced
+a post-detonation baseline twice, and both times the only symptom was a stray
+`cases\<hash>` folder that someone happened to notice.
 
-Note that deleting the old snapshot leaves **no clean restore point** until the
-new one is taken. If the state turns out to be dirty after the delete, there is
-nothing to go back to, which is why the check belongs before the delete rather
-than after.
+**What a stale baseline actually costs**, from the 16 Aug rebuild — the old one
+had been restoring all of this on **every revert since roughly 10 Aug**:
+
+- `cases\`, **1.33 GB across 74 files**, including 11 `.dmp` totalling 1,154 MB.
+  `case_metadata.json` and `combined_score.json` sat at the case root, which a
+  new run for the same sample writes into.
+- **`C:\werdumps\RegSvcs.exe.12080.dmp`**. That directory is where
+  `crash_evidence.py` looks at the *start* of a run, so every run began with an
+  August crash dump in scope.
+
+Export anything in `cases\` before reverting — that run's output exists nowhere
+else once the revert lands.
+
+**A `-List` issued while a restore is still in flight can report "No
+snapshots".** VBoxManage returns when a state change is *queued*, not done. The
+scripts wait for the state to settle; a manual call running alongside one does
+not. Do not react to it.
+
+### A `git pull` on the guest does not survive a revert
+
+The guest clone is inside the VM, so a pull is on the disk the snapshot
+replaces. Pulling and then reverting leaves the guest on whatever commit the
+baseline holds, and the run executes that code with nothing to say so.
+
+This has already cost a run: a detonation done to verify three fixes came back
+with the pre-fix behaviour, and only the absence of a new field in
+`dynamic_run_summary.json` gave it away.
+
+Either pull **after** the revert and accept losing it next time:
+
+```
+revert  →  arm  →  git pull  →  disarm  →  detonate
+```
+
+or make it stick by rebuilding the baseline with the pull in it, using the order
+above. **Check the commit on the guest before detonating**, whichever you chose:
+
+```powershell
+git log -1 --format="%h %s"
+```
 
 ## 2. Getting the sample in
 

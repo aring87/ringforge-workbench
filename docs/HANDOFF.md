@@ -2583,6 +2583,13 @@ the old one had been restoring on **every revert since roughly 10 Aug**:
 else: it is the run that confirmed the injected image is stage 3 byte for byte
 and produced the first WER timestamp mismatch.
 
+> **Now in `docs/WORKFLOW.md` — 20 Aug.** That doc still carried the riskier
+> `-Delete` -> `-Take` order, which this section supersedes and which was never
+> actually run against a real replacement. Reconciled, along with two things
+> WORKFLOW never said: that a `git pull` on the guest does not survive a revert
+> (it cost a verification run on 20 Aug), and how to tell a wedged
+> `restoringsnapshot` from a slow one before touching it.
+
 **Order used, and worth reusing:** take the new snapshot, restore it to verify,
 *then* delete the old one and rename the new into place with
 `VBoxManage snapshot <vm> edit <old> --name <new>`. WORKFLOW's
