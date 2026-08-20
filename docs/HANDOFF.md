@@ -4839,6 +4839,61 @@ the only route by which this sample's actual hollow ever reaches a detector.
 > followed from the measurement in a single pass. **Every guess cost more than
 > the instrument did.**
 
+#### 0bt. THE SPAWN-DUMP RACE, FIXED — the child is suspended before it is dumped
+
+**1 capture in 5.** A hollowed `SecurityHealthHost.exe` was missed on
+`33fe6c3b`, `fa23508d`, `ff504255` and `59a705df`, caught only on `eb3e1273`.
+Every failure read identically:
+
+    Dump 1 error: Target process no longer running.
+    0x8007012B  Only part of a ReadProcessMemory request was completed.
+
+**And it is the only process this control actually hollows**, so missing it is
+why gap 5 keeps coming back empty on the one sample built to answer it.
+
+**Where the latency is, and why the obvious fixes do not work.** The watcher
+polls at 0.5s and the child *passes* the liveness check — the failure is not a
+missed sighting. It dies while ProcDump is still starting up. So:
+
+- **a faster poll** does not help: it was already seen;
+- **writing the dump in-process** rather than shelling out to `procdump.exe`
+  would cut the attach latency and **still race**, because the process can exit
+  between `OpenProcess` and the write;
+- **reordering the parent dump** was the first hypothesis and it is wrong: the
+  parent is imaged once per parent, and on these runs that had already happened
+  more than ten seconds earlier.
+
+**Nothing that shrinks the window closes it.** The only fix is to stop the
+process from exiting: `_hold_process` opens it with `PROCESS_SUSPEND_RESUME` —
+deliberately not `PROCESS_ALL_ACCESS`, since this reaches into a process running
+malware — and calls `NtSuspendProcess`. Everything downstream then runs against
+a process that cannot exit underneath it, the parent dump included.
+
+**Verified against the shape that keeps being missed**, not asserted: a process
+that exits on its own after 1s was held, still alive at 3s, and exited
+immediately on release.
+
+**The failure this introduces is worse than the one it fixes, so it is what the
+tests are about.** A process left suspended hangs the sample's whole chain and
+the run reports a quiet machine. The hold sits in a `try/finally` whose body was
+extracted into `_dump_spawned_child` for exactly that reason — the old body had
+five `continue` paths and a `finally` covers all of them. Five tests, including
+release-after-release on a closed handle, because `_release_process` is called
+from a `finally` and an exception there would mask the real one.
+
+**And it changes what the sample experiences, which is recorded rather than
+hidden.** ProcDump already freezes a process to image it; what is new is the
+freeze starting a second or two earlier. A parent waiting on a child with a
+short timeout could see a difference. **Dumps taken this way carry `held: true`**
+so a reader comparing two images of one pid knows the second came from a process
+this harness stopped rather than one that stopped itself.
+
+**Unproven on a live run.** The mechanism is proven; that it converts this
+sample's 1-in-5 into 5-in-5 is not, and the next detonation of
+`af2d8300…` is the test. If `SecurityHealthHost.exe` is captured, gap 5 finally
+gets the image it has never had — and `0bq`'s question about `csc.exe` becomes
+answerable with the hollowed process actually present for comparison.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash

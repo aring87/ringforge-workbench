@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import ctypes
 import threading
 import time
 from pathlib import Path
@@ -97,6 +98,75 @@ DEFAULT_SPAWN_REDUMP_SECONDS = 10
 #: Per-process ProcDump timeout. Full dumps of a large working set are slow on
 #: a VM's virtual disk, but a hang here would hold up the whole run teardown.
 _DUMP_TIMEOUT_SECONDS = 300
+
+
+#: `OpenProcess` access for suspend/resume, and nothing else. Deliberately not
+#: `PROCESS_ALL_ACCESS`: this reaches into a process running malware, and the
+#: narrowest right that does the job is the one to ask for.
+_PROCESS_SUSPEND_RESUME = 0x0800
+
+
+def _hold_process(pid: int) -> Optional[int]:
+    """Suspend `pid` so it cannot exit before it is dumped.
+
+    **The race this closes, measured.** A hollowed `SecurityHealthHost.exe` was
+    captured on **1 of 5 attempts** across runs `33fe6c3b`, `eb3e1273`,
+    `fa23508d`, `ff504255` and `59a705df`. The failures all read:
+
+        Dump 1 error: Target process no longer running.
+        0x8007012B  Only part of a ReadProcessMemory request was completed.
+
+    The child passes the liveness check and then dies while ProcDump is still
+    starting up. **Nothing that only makes the window smaller can fix that** --
+    not a faster poll, not writing the dump in-process instead of shelling out.
+    The process can always exit between the check and the attach. Suspending it
+    removes the window rather than narrowing it.
+
+    Returns the open handle on success -- the caller must pass it to
+    `_release_process` -- or None, which is a real answer and not an error: a
+    process that has already exited cannot be held, and the dump path handles
+    that as it did before.
+
+    **This changes what the sample experiences, and that is recorded rather than
+    hidden.** ProcDump already freezes a process to image it, so the process
+    being stopped is not new; what is new is that the freeze starts a second or
+    two earlier. A parent waiting on a child with a short timeout could see a
+    difference. Dumps taken this way carry `held: true` so a reader can tell.
+    """
+    try:
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll.dll")
+        handle = kernel32.OpenProcess(_PROCESS_SUSPEND_RESUME, False, int(pid))
+        if not handle:
+            return None
+        if ntdll.NtSuspendProcess(ctypes.c_void_p(handle)) != 0:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+            return None
+        return handle
+    except Exception:
+        # Never fail a dump because the hold failed; the old behaviour is the
+        # fallback and it is merely racier.
+        return None
+
+
+def _release_process(handle: Optional[int]) -> None:
+    """Resume and close. Safe to call with None, and never raises.
+
+    Every caller must reach this on every path. A process left suspended is
+    worse than one that was never held: it hangs the sample's whole chain and
+    the run reports a quiet machine.
+    """
+    if not handle:
+        return
+    try:
+        ntdll = ctypes.WinDLL("ntdll.dll")
+        ntdll.NtResumeProcess(ctypes.c_void_p(handle))
+    except Exception:
+        pass
+    try:
+        ctypes.WinDLL("kernel32.dll").CloseHandle(ctypes.c_void_p(handle))
+    except Exception:
+        pass
 
 
 def _decode_tool_output(raw: bytes) -> str:
@@ -542,68 +612,102 @@ class MemoryDumpSession:
             with self._lock:
                 self._spawn_dumped.add(pid)
 
-            # The parent first, and before the liveness check on the child --
-            # because the parent is the image worth having and it is the one with
-            # a deadline. See `_dump_parent_at_spawn`.
-            self._dump_parent_at_spawn(target, elapsed)
+            # **Held before anything else touches it.** A child seen on this
+            # tick can be gone before ProcDump attaches -- measured at 1 capture
+            # in 5 on a hollowed `SecurityHealthHost.exe` -- and suspending it
+            # removes that window instead of narrowing it. Everything below runs
+            # against a process that cannot exit underneath it, including the
+            # parent dump, which used to be several seconds of exposure on its
+            # own. See `_hold_process`.
+            held = _hold_process(pid)
+            try:
+                if self._dump_spawned_child(target, pid, elapsed, held is not None):
+                    dumped_any = True
+            finally:
+                # Every path, without exception. A process left suspended hangs
+                # the sample's whole chain and the run reports a quiet machine,
+                # which is worse than never having held it.
+                _release_process(held)
+        return dumped_any
 
-            if not self._pid_alive(pid):
-                # Seen and gone inside one poll interval. Recorded rather than
-                # ignored, because "we saw a child we could not capture" is a
-                # finding -- it is exactly the case that produced a clean report
-                # from a sample that had in fact staged a payload.
-                self._record_skip(target, int(elapsed), "child exited before it could be dumped")
-                continue
+    def _dump_spawned_child(self, target: dict, pid: int, elapsed: float,
+                            held: bool) -> bool:
+        """One child, with the process already suspended by the caller.
 
-            with self._lock:
-                total_mb = self._total_bytes / (1024 * 1024)
-                already = len([d for d in self._dumps if d.get("success")])
+        Split out so the hold has a single `finally` covering every exit; this
+        body has several.
+        """
+        dumped_any = False
 
-            if already >= self.max_processes:
-                self._record_skip(target, int(elapsed), "process cap reached")
-                continue
-            if total_mb >= self.max_total_mb:
-                self._record_skip(target, int(elapsed), "total dump size cap reached")
-                continue
+        # The parent first, and before the liveness check on the child --
+        # because the parent is the image worth having and it is the one with
+        # a deadline. See `_dump_parent_at_spawn`.
+        self._dump_parent_at_spawn(target, elapsed)
 
-            working_set = self._working_set_mb(pid)
-            if working_set > self.max_working_set_mb:
-                self._record_skip(
-                    target,
-                    int(elapsed),
-                    f"working set {working_set} MB exceeds the {self.max_working_set_mb} MB limit",
-                )
-                continue
+        if not self._pid_alive(pid):
+            # Seen and gone inside one poll interval. Recorded rather than
+            # ignored, because "we saw a child we could not capture" is a
+            # finding -- it is exactly the case that produced a clean report
+            # from a sample that had in fact staged a payload.
+            self._record_skip(target, int(elapsed), "child exited before it could be dumped")
+            return dumped_any
 
-            # Queued for the delayed second dump only once the spawn dump is
-            # actually going ahead. A child that was already gone, or that a cap
-            # turned away, has been recorded as skipped once already, and the
-            # re-dump could only record the same thing a second time.
-            with self._lock:
-                self._spawn_seen[pid] = elapsed
+        with self._lock:
+            total_mb = self._total_bytes / (1024 * 1024)
+            already = len([d for d in self._dumps if d.get("success")])
 
+        if already >= self.max_processes:
+            self._record_skip(target, int(elapsed), "process cap reached")
+            return dumped_any
+        if total_mb >= self.max_total_mb:
+            self._record_skip(target, int(elapsed), "total dump size cap reached")
+            return dumped_any
+
+        working_set = self._working_set_mb(pid)
+        if working_set > self.max_working_set_mb:
+            self._record_skip(
+                target,
+                int(elapsed),
+                f"working set {working_set} MB exceeds the {self.max_working_set_mb} MB limit",
+            )
+            return dumped_any
+
+        # Queued for the delayed second dump only once the spawn dump is
+        # actually going ahead. A child that was already gone, or that a cap
+        # turned away, has been recorded as skipped once already, and the
+        # re-dump could only record the same thing a second time.
+        with self._lock:
+            self._spawn_seen[pid] = elapsed
+
+        self._emit(
+            f"Memory dump at +{int(elapsed)}s (process-spawn): "
+            f"new process pid {pid} ({target.get('name') or '?'})"
+        )
+
+        record = self._dump_one(target, int(elapsed), "process-spawn")
+        # Whether the watcher suspended this process to catch it. A reader
+        # comparing two images of the same pid needs to know the second one was
+        # taken from a process this harness stopped, not one that stopped
+        # itself.
+        record["held"] = held
+        with self._lock:
+            self._dumps.append(record)
+            self._total_bytes += int(record.get("size", 0) or 0)
+
+        if record.get("success"):
+            dumped_any = True
             self._emit(
-                f"Memory dump at +{int(elapsed)}s (process-spawn): "
-                f"new process pid {pid} ({target.get('name') or '?'})"
+                f"  dumped pid {record['pid']} ({record['name'] or '?'}) "
+                f"-> {Path(record['path']).name} "
+                f"({int(record.get('size', 0)) // (1024 * 1024)} MB)"
+            )
+        else:
+            self._emit(
+                f"  dump failed for pid {record['pid']} "
+                f"({record['name'] or '?'}): {record.get('error', 'unknown error')}"
             )
 
-            record = self._dump_one(target, int(elapsed), "process-spawn")
-            with self._lock:
-                self._dumps.append(record)
-                self._total_bytes += int(record.get("size", 0) or 0)
-
-            if record.get("success"):
-                dumped_any = True
-                self._emit(
-                    f"  dumped pid {record['pid']} ({record['name'] or '?'}) "
-                    f"-> {Path(record['path']).name} "
-                    f"({int(record.get('size', 0)) // (1024 * 1024)} MB)"
-                )
-            else:
-                self._emit(
-                    f"  dump failed for pid {record['pid']} "
-                    f"({record['name'] or '?'}): {record.get('error', 'unknown error')}"
-                )
+        return dumped_any
 
         return dumped_any
 
