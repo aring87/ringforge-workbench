@@ -4589,6 +4589,83 @@ a private allocation. **The two detectors split exactly along the line `0bn`
 predicted**, from opposite sides: Dridex's overwrite-in-place was invisible to
 the carver and caught by module integrity; this one is the reverse.
 
+#### 0bq. RUN `fa23508d`, 20 Aug — GAP 5's `strong` BRANCH FIRES, AND IT IS A FALSE POSITIVE
+
+**The branch that has never fired since it was written fired here, and it is
+wrong.** That is a better outcome than another silent run, and it is the most
+important thing four days of detonations have produced.
+
+    process_injection   present=True  strong=True
+    detail: 8 unmapped PE image(s) in memory (8 in a process loaders hollow)
+    reason: A PE image was found in the memory of a binary loaders commonly
+            hollow, at an address that process's own module list does not cover
+
+**Every one of the eight is a .NET image inside `csc.exe`:**
+
+    8 x ('csc.exe', 'unmapped', dotnet=True)
+
+`csc.exe` is the C# compiler. **The sample spawned it legitimately** — it is
+what `Add-Type` shells out to — and it is in `HOLLOWING_TARGETS`. A managed
+process normally carries assemblies the CLR mapped rather than the loader, at
+addresses the module list does not cover. **That is ordinary .NET, scored as
+injection.**
+
+**And the actually-hollowed process was not captured.** `SecurityHealthHost.exe`
+failed both dumps again (`Target process no longer running`), so the one process
+that *was* hollowed contributed nothing, and the verdict rests entirely on the
+compiler. The race is now 1 capture in 3 attempts across `33fe6c3b`,
+`eb3e1273` and this run — intermittent, not structural.
+
+**This is structural, not a fluke, and the list makes it worse.**
+`HOLLOWING_TARGETS` holds `regsvcs`, `regasm`, `installutil`, `msbuild`,
+`aspnet_compiler`, `addinprocess`, `addinutil`, `ngen`, `jsc`, `csc`, `vbc`,
+`ilasm` — **almost all of them managed processes**. Any of them, running
+legitimately and dumped, will show unmapped .NET images. The gate does not need
+a malicious sample to fire; it needs a dump.
+
+**The reasoning to prevent this is already in the file, applied to the wrong
+route.** `process_injection`'s own comment says:
+
+> In a *managed* process, JIT-compiled code also lives in private allocations
+> with no module mapped, so an ordinary .NET application that faults in its own
+> JITted code produces the same record.
+
+That is why `unmapped_memory_crashes` is only `present` outside a hollowing
+target. **The same argument was never applied to the carver route**, which
+treats "in a hollowing target" as sufficient for `strong`.
+
+**And the discriminator already exists and is not consulted.** `pe_carve`
+computes `dotnet` per image, reports `dotnet_images: 8`, and the scoring path
+reads only the count of unmapped images in a target. The information is
+collected, printed, and ignored.
+
+**The naive fix is wrong, which is why this is a decision and not a patch.**
+Excluding .NET images would blind the detector to **`422e30ed`** — whose payload
+*is* a .NET assembly injected into `RegSvcs.exe`, the primary case this whole
+gap exists for. What separates them is not the language:
+
+- **FormBook:** payload at `RegSvcs`'s **preferred base `0x400000`**, the real
+  image relocated away to `0x00ed0000`.
+- **This run:** framework assemblies at `0x20aa7050000` and similar, in a
+  process doing exactly what it was started to do.
+
+So the distinguisher is plausibly *where* the image sits and whether the host's
+own image was displaced — not whether it is managed. **That wants designing and
+measuring, not guessing**, and a benign baseline of a legitimate `csc.exe`,
+`RegSvcs.exe` and `MSBuild.exe` is the missing input. `benign_baseline.py`
+exists.
+
+**Recorded and deliberately not fixed.** Three times now this file has declined
+to move a scoring gate on partial evidence, and this is the case that shows why
+the caution was right: the gate was not merely aimed at a rare technique, it was
+**scoring an artifact of the technique's own tooling**.
+
+**Also this run:** fix 2 confirmed again (`suspicious: 0`,
+`compiler_artifacts: 2`) on a third set of random names, and module integrity
+523 modules, all `identical`. Teardown 1,720s. **The timing profile is still
+outstanding** — it lives only in the Output pane and the HTML report does not
+carry it.
+
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
 **This is the run to do, and `0au` rides along on the same capture.** The crash
