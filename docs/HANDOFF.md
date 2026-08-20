@@ -2813,8 +2813,34 @@ The naive fix — exclude .NET images — would blind the detector to `422e30ed`
 whose payload *is* a .NET assembly injected into `RegSvcs`. The distinguisher is
 plausibly *where* the image sits: FormBook took `RegSvcs`'s preferred base
 `0x400000` with the real image relocated away; these sit high in a process doing
-its job. **It wants a benign baseline of a legitimate `csc.exe`, `RegSvcs.exe`
-and `MSBuild.exe`** — `benign_baseline.py` exists — not a guess.
+its job.
+
+**Measured 20 Aug, and it narrows the question.** `benign_baseline.py --pid`
+against four unrelated .NET applications — `AuraWallpaperService`,
+`ArmouryCrate.Service`, `ArmouryCrate.UserSessionHelper`, `CrossDeviceService` —
+gives **570 module comparisons, 0 unmapped PE images, 0 `replaced`, 0
+`header_mismatch`**. So **the CLR does not inherently produce unmapped images**,
+and "exclude .NET" was never the right shape of fix: ordinary managed processes
+are already clean.
+
+What that leaves is a sharper hypothesis. The five `c14cb5b6` images were
+5,447,680 / 3,547,136 / 6,692,864 / 1,556,480 bytes, two byte-identical at
+different addresses — large assemblies at addresses no module covers, which is
+what a **compiler loading assemblies dynamically** produces and what a service
+running steady-state code does not. **The false positive plausibly belongs to
+compilation, not to .NET** — a far narrower discriminator, and one that leaves
+`422e30ed` fully detectable.
+
+**Still unmeasured: a benign `csc.exe` mid-compile**, which is the case that
+decides it. It cannot be measured on this host: `MiniDumpWriteDump` returns
+`0x80070005` `ERROR_ACCESS_DENIED` on a `csc.exe` spawned by our own
+PowerShell, at the same integrity level, on a host where dumping twelve other
+processes works fine. Bitdefender is the leading suspect — `powershell` →
+`csc.exe` → something dumping it is close to a textbook malicious pattern.
+**Measure it in the guest instead**: no Bitdefender, Defender real-time off in
+the baseline, and it is the more representative environment anyway, since the
+gate runs against guest dumps. `benign_baseline.py --managed` spawns the
+`Add-Type` and dumps the compiler; it costs one revert and no sample.
 
 **2. The spawn dump fails with `ERROR_PARTIAL_COPY`, not a race.** `0bt`
 suspended the child to stop it exiting; `0bv` proved that wrong — two processes

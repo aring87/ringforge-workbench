@@ -35,6 +35,7 @@ import ctypes.wintypes as wt
 import getpass
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -70,7 +71,11 @@ ALWAYS_SKIP = {"virtualboxvm.exe", "vboxsvc.exe", "vboxheadless.exe"}
 
 def _dump_process(pid: int, path: Path) -> tuple[bool, str]:
     """Full-memory dump of another process. False plus a reason on failure."""
-    dbghelp = ctypes.WinDLL("dbghelp.dll")
+    # use_last_error on **both**. Without it on dbghelp, a MiniDumpWriteDump
+    # failure reports "(0)" -- ctypes never captured dbghelp's error, so the
+    # one number that says why the dump failed was always zero. The OpenProcess
+    # failures below looked fine only because kernel32 already had the flag.
+    dbghelp = ctypes.WinDLL("dbghelp.dll", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
 
     kernel32.OpenProcess.restype = wt.HANDLE
@@ -161,21 +166,139 @@ def _candidates(limit: int, max_virtual: int) -> list[tuple[int, str]]:
     return picked
 
 
+#: Enough classes that the compile lasts long enough to *dump*, which is a much
+#: longer window than merely being seen. At 400 the poll caught csc.exe three
+#: times and every full-memory dump still failed; widening the window is the
+#: cheap half of ruling timing in or out.
+_PROBE_CLASSES = 2500
+
+#: The managed processes an ordinary `Add-Type` produces. All three are in
+#: HOLLOWING_TARGETS, which is the whole point -- see `_spawn_managed`.
+_MANAGED_WANTED = {"csc.exe", "cvtres.exe", "msbuild.exe", "vbc.exe"}
+
+
+def _probe_source(path: Path, classes: int = _PROBE_CLASSES) -> None:
+    """Write C# that is entirely ordinary and takes a moment to compile."""
+    body = "\n".join(
+        f"public class Probe{i} {{ public int F(int x) {{ return x + {i}; }} }}"
+        for i in range(classes)
+    )
+    path.write_text(body, encoding="utf-8")
+
+
+def _spawn_managed(scratch: Path, poll_seconds: float = 30.0) -> list[tuple[str, int, Path]]:
+    """Dump a legitimate `csc.exe` while it is alive.
+
+    `_candidates` cannot reach this case: it iterates running processes, and the
+    compiler is transient. Yet it is exactly the case that matters. On run
+    `c14cb5b6` the gate graded **strong** on five .NET images inside `csc.exe`
+    that the sample's own `Add-Type` had spawned -- and `Add-Type` is something
+    ordinary scripts do constantly. The 13 Aug baseline never contained a
+    managed process, so whether those images appear in a *benign* compile has
+    been assumed rather than measured.
+
+    So: run a real compile, dump the compiler while it works, and put the result
+    through the identical passes.
+    """
+    import psutil
+
+    src = scratch / "probe.cs"
+    _probe_source(src)
+
+    # -NoProfile so a user profile cannot add anything to the picture.
+    proc = subprocess.Popen(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         f"Add-Type -TypeDefinition (Get-Content -Raw '{src}')"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    found: dict[int, tuple[str, Path]] = {}
+    deadline = time.time() + poll_seconds
+    try:
+        parent = psutil.Process(proc.pid)
+    except Exception as exc:
+        print(f"  spawn failed: {exc}")
+        return []
+
+    while time.time() < deadline:
+        try:
+            children = parent.children(recursive=True)
+        except Exception:
+            children = []
+        for child in children:
+            try:
+                name = (child.name() or "").lower()
+                if name not in _MANAGED_WANTED or child.pid in found:
+                    continue
+                path = scratch / f"benign_{Path(name).stem}_{child.pid}.dmp"
+                ok, why = _dump_process(child.pid, path)
+                if ok:
+                    found[child.pid] = (name, path)
+                    print(f"  caught {name} ({child.pid}) while it compiled")
+                else:
+                    print(f"  miss   {name} ({child.pid}): {why}")
+                    path.unlink(missing_ok=True)
+            except Exception:
+                continue
+        if proc.poll() is not None and found:
+            break
+        if proc.poll() is not None and time.time() > deadline - poll_seconds + 5:
+            break
+        time.sleep(0.02)
+
+    try:
+        proc.wait(timeout=30)
+    except Exception:
+        proc.kill()
+    src.unlink(missing_ok=True)
+
+    if not found:
+        print("  no managed child was caught -- the compile may have been too "
+              "fast, or PowerShell reused a cached assembly")
+    return [(name, pid, path) for pid, (name, path) in found.items()]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--count", type=int, default=12)
     ap.add_argument("--max-virtual", type=int, default=DEFAULT_MAX_VIRTUAL)
     ap.add_argument("--keep", action="store_true", help="do not delete the dumps")
     ap.add_argument("--out", default="", help="where to write baseline.json")
+    ap.add_argument("--managed", action="store_true",
+                    help="also spawn a legitimate Add-Type compile and dump "
+                         "csc.exe while it runs")
+    ap.add_argument("--only-managed", action="store_true",
+                    help="skip the running-process corpus; measure only the "
+                         "managed case")
+    ap.add_argument("--pid", type=int, action="append", default=[],
+                    help="dump this pid specifically; repeatable. For reaching "
+                         "a process the size-ranked corpus would not pick, such "
+                         "as a long-lived .NET one")
     args = ap.parse_args()
 
     scratch = Path(os.environ.get("TEMP", ".")) / "ringforge-benign-baseline"
     scratch.mkdir(parents=True, exist_ok=True)
 
-    picked = _candidates(args.count, args.max_virtual)
+    picked = [] if args.only_managed else _candidates(args.count, args.max_virtual)
     print(f"{len(picked)} benign processes selected "
           f"({sum(1 for _p, n in picked if is_hollowing_target(n))} of them "
           f"binaries loaders hollow)\n")
+
+    # (name, pid, already-dumped path or None)
+    jobs: list[tuple[str, int, "Path | None"]] = [(n, p, None) for p, n in picked]
+
+    if args.pid:
+        import psutil
+        for pid in args.pid:
+            try:
+                jobs.append((psutil.Process(pid).name(), pid, None))
+            except Exception as exc:
+                print(f"  skip  pid {pid}: {exc}")
+
+    if args.managed or args.only_managed:
+        print("spawning a legitimate Add-Type compile to reach csc.exe ...")
+        jobs.extend(_spawn_managed(scratch))
+        print()
 
     totals = {
         "processes": 0, "dump_failures": 0, "oversize_skipped": 0,
@@ -186,14 +309,18 @@ def main() -> int:
     }
     rows: list[dict] = []
 
-    for pid, name in picked:
-        path = scratch / f"{Path(name).stem}_{pid}.dmp"
-        ok, why = _dump_process(pid, path)
-        if not ok:
-            print(f"  skip  {name} ({pid}): {why}")
-            totals["dump_failures"] += 1
-            path.unlink(missing_ok=True)
-            continue
+    for name, pid, predumped in jobs:
+        if predumped is None:
+            path = scratch / f"{Path(name).stem}_{pid}.dmp"
+            ok, why = _dump_process(pid, path)
+            if not ok:
+                print(f"  skip  {name} ({pid}): {why}")
+                totals["dump_failures"] += 1
+                path.unlink(missing_ok=True)
+                continue
+        else:
+            # Dumped already, while it was alive -- see `_spawn_managed`.
+            path = predumped
 
         size = path.stat().st_size
         if size > MAX_DUMP_BYTES:

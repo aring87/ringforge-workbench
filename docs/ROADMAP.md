@@ -129,6 +129,32 @@ programs on one machine at one moment* — not a percentage with a confidence
 interval. It is enough to say the dump-based passes do not fire on ordinary
 desktop software, and not enough to characterise a rate.
 
+**Managed processes measured 20 Aug — 570 comparisons, still 0.** The 13 Aug
+corpus contained no .NET process at all, which mattered once run `c14cb5b6`
+graded **strong** on five .NET images inside a legitimately spawned `csc.exe`.
+`--pid` was added to reach processes the size-ranked corpus will not pick.
+
+| metric | benign .NET |
+|---|---|
+| applications | 4 — Aura, ArmouryCrate ×2, CrossDeviceService |
+| modules compared | **570, all `identical`** |
+| unmapped PE images | **0** |
+| `replaced` / `header_mismatch` | **0 / 0** |
+| `no_reference` | 8, counted not skipped |
+| oversize skipped | 2 — Overwolf 985 MB, PhoneExperienceHost 699 MB |
+
+**So the CLR does not inherently produce unmapped images**, and "exclude .NET"
+was never the right shape of fix. The remaining suspect is *compilation* —
+assemblies loaded dynamically rather than mapped — which is narrower and would
+leave `422e30ed` detectable. See the decisions section of `HANDOFF.md`.
+
+**A benign `csc.exe` cannot be dumped on this host.** `MiniDumpWriteDump`
+returns `0x80070005` on a compiler spawned by our own PowerShell, while twelve
+other processes dump fine; Bitdefender is the leading suspect. `--managed`
+spawns and catches the compiler correctly — the poll is not the problem — so
+**this measurement belongs in the guest**, which has no Bitdefender and is
+where the gate actually runs. Until then decision 1 stays open.
+
 **Still owed here:** the same treatment for the two detectors this harness
 cannot reach. The WER timestamp check needs an event log and the ntdll pass
 needs a Procmon capture, so their benign rates come from a benign *detonation*
