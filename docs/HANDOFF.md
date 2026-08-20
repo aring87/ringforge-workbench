@@ -4743,10 +4743,45 @@ detector has ever caught in the wild -- is unaffected either way.
 > after the work so it could not show the one case that mattered. **The
 > instrument cost less than any of the guesses and answered on its first run.**
 
-**Not implemented.** It changes what `differing_bytes` means on a detector that
-has one live finding to its name, and this file has been wrong three times in a
-row about this pass. It wants a fixture proving a relocated module still grades
-`identical`, before it goes anywhere near a run.
+**IMPLEMENTED, 20 Aug.** `_relocation_widths` collects the fixup RVAs and their
+widths from the parsed directory; `_blank_spans` zeroes those positions in the
+reference when it is cached, and in the in-memory copy at each comparison. The
+image is never relocated.
+
+**Measured on the three CLR images that cost run `ff504255` its dump 1:**
+
+    clr.dll           9.5 MB    27,305 fixups   apply   7.5s -> mask 0.00s
+    mscorlib.ni.dll  22.1 MB   271,078 fixups   apply 186.2s -> mask 0.04s
+    System.ni.dll    12.1 MB   117,370 fixups   apply  46.3s -> mask 0.03s
+                                                       240s  ->      0.1s
+
+**The recurring half was checked too, because it is the one that could have made
+this worse.** Blanking the reference happens once and is cached; blanking the
+*in-memory* side happens on every comparison. For `mscorlib.ni.dll`'s 16.5 MB
+`.text`, holding 74,764 spans: **32.7 ms**, so **0.16s across five dumps**
+against the 186s it replaces. No hidden cost.
+
+**The verdicts are what the tests guard, not the speed.** Seven of them, and two
+carry the argument:
+
+- **a relocated copy still grades `identical`** -- otherwise every legitimately
+  relocated module in every dump becomes a finding, which is the regression this
+  change could have caused;
+- **a patch outside the fixups is still caught** -- an inline hook lands on
+  instruction bytes, not on relocation targets, so the mask cannot become a
+  blindfold.
+
+The existing `replaced` and `patched` fixtures pass unchanged, which is the
+independent check that masking and relocating compare the same content.
+`header_mismatch` never touched this path, so `0bn`'s Dridex finding is
+unaffected by construction.
+
+**A side effect worth having:** the suite went from ~62s to **13s**, because the
+`slow` tests that build real PEs were paying the same cost.
+
+**Fixup counts drop slightly** -- 271,740 to 271,078 for `mscorlib` -- because
+`IMAGE_REL_BASED_ABSOLUTE` entries are padding that rewrite nothing and are
+deliberately not masked. Masking them would blank real bytes.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 

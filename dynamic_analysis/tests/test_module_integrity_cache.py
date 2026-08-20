@@ -202,7 +202,8 @@ class TheCacheIsBoundedByBytesNotByCount(unittest.TestCase):
         self.addCleanup(mi.reset_reference_cache)
 
     def _store(self, key, nbytes):
-        mi._cache_store(key, ([("s", 0x1000, b"\0" * nbytes)], None))
+        # 4-tuples now: (name, rva, data, relocation spans). See _blank_spans.
+        mi._cache_store(key, ([("s", 0x1000, bytes(nbytes), [])], None))
 
     def test_a_hit_does_not_evict_the_rest(self):
         """The regression in one line: the old code cleared everything."""
@@ -248,3 +249,86 @@ class TheCacheIsBoundedByBytesNotByCount(unittest.TestCase):
         for n in range(380):
             self._store(("mod", n), 64 * 1024)
         self.assertEqual(mi.reference_cache_stats()["entries"], 380)
+
+
+class RelocationsAreMaskedNotApplied(unittest.TestCase):
+    r"""The image is never relocated; the fixup bytes are blanked on both sides.
+
+    Run `ff504255` measured where 81% of a 28-minute run went:
+    `pefile.relocate_image`, walking every fixup in a Python loop. Split for
+    `mscorlib.ni.dll` (22.1 MB, 271,740 fixups) -- parse 1.38s, **apply
+    186.14s**.
+
+    The relocation only ever existed to make on-disk bytes line up with the copy
+    in memory, and the fixups are exactly the bytes that legitimately differ.
+    Blanking them compares the same content for the parse cost alone.
+
+    **These tests exist because that changes what `differing_bytes` counts**, on
+    a detector whose one live finding -- Dridex, run `677547d9` -- this project
+    depends on. `header_mismatch` never touches this path; the degree verdicts
+    do.
+    """
+
+    def test_widths_come_from_the_relocation_type(self):
+        self.assertEqual(mi._RELOCATION_WIDTHS[3], 4)     # HIGHLOW
+        self.assertEqual(mi._RELOCATION_WIDTHS[10], 8)    # DIR64
+
+    def test_absolute_entries_move_nothing_and_are_not_masked(self):
+        """Type 0 is padding. Masking it would blank real bytes."""
+        self.assertNotIn(0, mi._RELOCATION_WIDTHS)
+
+    def test_blanking_zeroes_exactly_the_named_spans(self):
+        data = bytes(range(32))
+        out = mi._blank_spans(data, [(4, 4), (16, 8)])
+        self.assertEqual(out[0:4], data[0:4])
+        self.assertEqual(out[4:8], bytes(4))
+        self.assertEqual(out[8:16], data[8:16])
+        self.assertEqual(out[16:24], bytes(8))
+        self.assertEqual(out[24:32], data[24:32])
+
+    def test_no_spans_returns_the_buffer_untouched(self):
+        data = bytes(range(16))
+        self.assertIs(mi._blank_spans(data, []), data)
+
+    def test_a_span_past_the_end_is_ignored_rather_than_raising(self):
+        # A section truncated to SizeOfRawData can hold fixup RVAs beyond it.
+        data = bytes(8)
+        self.assertEqual(mi._blank_spans(data, [(6, 8)]), data)
+
+    def test_a_relocated_copy_still_grades_identical(self):
+        """The regression this change could cause, stated directly.
+
+        A module loaded at a different base has every fixup rewritten. Under the
+        old code the reference was relocated to match. Under this one both sides
+        are blanked instead -- and the answer has to stay `identical`, or every
+        legitimately relocated module in every dump becomes a finding.
+        """
+        on_disk = bytearray(b"\xCC" * 64)
+        in_memory = bytearray(on_disk)
+        spans = [(8, 8), (32, 4)]
+        for offset, width in spans:                  # the loader rewrote these
+            in_memory[offset:offset + width] = b"\xAB" * width
+
+        self.assertGreater(
+            mi._count_differences(bytes(on_disk), bytes(in_memory)), 0,
+            "the fixtures must actually differ, or this proves nothing")
+        self.assertEqual(
+            mi._count_differences(mi._blank_spans(bytes(on_disk), spans),
+                                  mi._blank_spans(bytes(in_memory), spans)),
+            0, "a relocated module must still compare as identical")
+
+    def test_a_patch_outside_the_fixups_is_still_caught(self):
+        """Masking must not become a blindfold.
+
+        An inline hook lands on instruction bytes, not on relocation targets, so
+        blanking the fixups cannot hide it.
+        """
+        on_disk = bytearray(b"\xCC" * 64)
+        in_memory = bytearray(on_disk)
+        spans = [(8, 8)]
+        in_memory[8:16] = b"\xAB" * 8                # a legitimate relocation
+        in_memory[40:45] = b"\xE9\x00\x00\x00\x00"   # a jmp patched in
+        self.assertEqual(
+            mi._count_differences(mi._blank_spans(bytes(on_disk), spans),
+                                  mi._blank_spans(bytes(in_memory), spans)),
+            5, "the patched bytes must survive the mask")

@@ -195,7 +195,7 @@ _cache_bytes = 0
 def _entry_bytes(sections: Optional[list]) -> int:
     if not sections:
         return 0
-    return sum(len(data) for _name, _rva, data in sections)
+    return sum(len(data) for _name, _rva, data, _spans in sections)
 
 
 def _cache_store(key: tuple, value: tuple) -> None:
@@ -265,6 +265,65 @@ def _mapped_header(space: "_AddressSpace", base: int) -> dict[str, Any]:
     return out
 
 
+#: Bytes each base-relocation type rewrites. `ABSOLUTE` is padding and moves
+#: nothing, so it is deliberately absent rather than mapped to 0.
+_RELOCATION_WIDTHS = {
+    1: 2,    # HIGH
+    2: 2,    # LOW
+    3: 4,    # HIGHLOW
+    4: 4,    # HIGHADJ
+    10: 8,   # DIR64
+}
+
+
+def _relocation_widths(pe: Any) -> dict[int, int]:
+    """`rva -> bytes rewritten`, for every fixup that rewrites anything.
+
+    **This replaces relocating the image, and the reason is measured.** An image
+    is relocated here only so its on-disk bytes line up with the copy in memory:
+    the fixups are precisely the bytes that legitimately differ. Blanking them
+    on both sides compares exactly the same content.
+
+    `pefile.relocate_image` applies every fixup in a Python loop, and on run
+    `ff504255` that was 81% of a 28-minute run. Split on the bench for
+    `mscorlib.ni.dll`, 22.1 MB and 271,740 fixups:
+
+        open (fast_load) :   0.00s
+        parse relocs     :   1.38s
+        APPLY relocs     : 186.14s     <- what this avoids
+
+    99.3% of the cost is the apply. Dump 1 of that run held the CLR native
+    images -- `clr.dll`, `System.ni.dll`, `mscorlib.ni.dll` -- and took 1,266s
+    against 83s for the other four dumps combined.
+    """
+    widths: dict[int, int] = {}
+    for block in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", None) or []:
+        for entry in block.entries:
+            width = _RELOCATION_WIDTHS.get(entry.type)
+            if width:
+                widths[entry.rva] = width
+    return widths
+
+
+def _blank_spans(data: bytes, spans: Iterable[tuple[int, int]]) -> bytes:
+    """`data` with each `(offset, width)` zeroed.
+
+    Applied to the reference once when it is cached and to the in-memory copy at
+    each comparison. Zeroed rather than skipped so `_count_differences` keeps its
+    C-speed `left == right` fast path, which is what makes an unmodified module
+    free to check.
+    """
+    spans = list(spans)
+    if not spans:
+        return data
+    out = bytearray(data)
+    limit = len(out)
+    for offset, width in spans:
+        if 0 <= offset and offset + width <= limit:
+            out[offset:offset + width] = bytes(width)
+    return bytes(out)
+
+
 def _reference_sections(
     path: str, timestamp: int, size_of_image: int, base: int,
     roots: Iterable[str] = (),
@@ -322,13 +381,16 @@ def _reference_sections(
                     "module_size_of_image": size_of_image,
                     "reference": str(candidate),
                 }
+            fixups: dict[int, int] = {}
             if base != pe.OPTIONAL_HEADER.ImageBase:
                 try:
                     pe.parse_data_directories([5])          # BASERELOC
-                    pe.relocate_image(base)
+                    fixups = _relocation_widths(pe)
                 except Exception:
                     # No reloc table, or a malformed one. Refuse rather than
                     # compare unrelocated bytes and call the fixups tampering.
+                    break
+                if not fixups:
                     break
             sections = []
             for section in pe.sections:
@@ -338,9 +400,20 @@ def _reference_sections(
                              section.Misc_VirtualSize or section.SizeOfRawData)
                 if length < MIN_SECTION_BYTES:
                     continue
-                sections.append((section.Name.rstrip(b"\0").decode("ascii", "replace"),
-                                 section.VirtualAddress,
-                                 section.get_data()[:length]))
+                data = section.get_data()[:length]
+                # Offsets *within this section* that a fixup rewrites. The
+                # image is never relocated; both sides are blanked at these
+                # positions instead, which compares the same bytes for a
+                # fraction of the cost. See `_relocation_widths`.
+                spans = [(rva - section.VirtualAddress, width)
+                         for rva, width in fixups.items()
+                         if section.VirtualAddress <= rva
+                         < section.VirtualAddress + length]
+                sections.append((
+                    section.Name.rstrip(b"\0").decode("ascii", "replace"),
+                    section.VirtualAddress,
+                    _blank_spans(data, spans),
+                    spans))
         break
 
     _cache_store(key, (sections, mismatch))
@@ -395,11 +468,14 @@ def compare_module(space: _AddressSpace, module: dict[str, Any],
     result["relocated"] = True
 
     total = differing = 0
-    for name, rva, on_disk in sections:
+    for name, rva, on_disk, spans in sections:
         in_memory = space.read(base + rva, len(on_disk))
         if in_memory is None:
             continue
-        diff = _count_differences(on_disk, in_memory)
+        # The reference was blanked at its fixups when it was built; blank
+        # the same positions here so both sides omit the bytes the loader
+        # legitimately rewrote. Equivalent to relocating, minus the 186s.
+        diff = _count_differences(on_disk, _blank_spans(in_memory, spans))
         total += len(on_disk)
         differing += diff
         result["sections"].append({
