@@ -199,6 +199,31 @@ $script:TransientStates = @(
   'snapshotting', 'onlinesnapshotting', 'livesnapshotting', 'teleporting'
 )
 
+function Warn-IfManagerOpen {
+  <#
+    .SYNOPSIS
+      Note an open VirtualBox Manager before a state-changing step.
+
+    .DESCRIPTION
+      The Manager is a second thing issuing state changes, and this script's
+      whole defence is that only one of them does. A click in that window while
+      a restore is in flight is the documented way to wedge the session -- the
+      state VBoxManage cannot clear.
+
+      It is also what makes the remedy awkward: VBoxSVC will not die cleanly
+      while a frontend holds a reference to it, so the Manager has to be closed
+      first. Cheaper to say so before the operation than after it wedges.
+
+      A warning rather than a refusal. Having the Manager open is normal, and
+      most runs with it open are fine.
+  #>
+  if (Get-Process VirtualBox -ErrorAction SilentlyContinue) {
+    Write-Info ("VirtualBox Manager is open. It issues state changes too; " +
+                "avoid clicking in it while this runs, and close it first if " +
+                "you ever need to restart VBoxSVC.")
+  }
+}
+
 function Wait-VmSettled {
   <#
     .SYNOPSIS
@@ -231,9 +256,21 @@ function Wait-VmSettled {
 
   $state = Get-VmRunState -Exe $Exe -Name $Name
   if ($script:TransientStates -notcontains $state) { return $state }
+  Warn-IfManagerOpen
 
   $label = if ($Because) { " ($Because)" } else { "" }
   Write-Info "Waiting for VirtualBox to finish '$state'$label..."
+
+  # A wedge and a slow restore look identical from the state alone, and the
+  # remedy for one is wrong for the other: restarting VBoxSVC takes every other
+  # VM on the host down, and doing that to a restore that was merely slow is an
+  # expensive mistake. So report whether anything is actually progressing rather
+  # than asserting a threshold -- VBoxSVC is the process doing the work, and its
+  # CPU is the cheapest evidence there is.
+  $svcBefore = (Get-Process VBoxSVC -ErrorAction SilentlyContinue |
+                Measure-Object -Property CPU -Sum).Sum
+  $svcMark = $svcBefore
+  $nextReport = (Get-Date).AddSeconds(15)
 
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
@@ -243,16 +280,40 @@ function Wait-VmSettled {
       Write-Ok "Settled ($state)."
       return $state
     }
+    if ((Get-Date) -ge $nextReport) {
+      $now = (Get-Process VBoxSVC -ErrorAction SilentlyContinue |
+              Measure-Object -Property CPU -Sum).Sum
+      $delta = [math]::Round(($now - $svcMark), 1)
+      $svcMark = $now
+      $nextReport = (Get-Date).AddSeconds(15)
+      Write-Info ("  still '$state'; VBoxSVC used ${delta}s CPU in the last 15s " +
+                  $(if ($delta -lt 0.5) { "(idle -- likely wedged)" }
+                    else { "(working -- likely just slow)" }))
+    }
   }
+
+  $svcAfter = (Get-Process VBoxSVC -ErrorAction SilentlyContinue |
+               Measure-Object -Property CPU -Sum).Sum
+  $svcUsed = [math]::Round(($svcAfter - $svcBefore), 1)
 
   # Naming the remedy here matters: the failure is opaque otherwise, and the
   # obvious next move -- run the command again -- makes it worse.
-  throw ("VM '$Name' is stuck in '$state' after $Seconds seconds. " +
+  $verdict = if ($svcUsed -lt 1.0) {
+    "VBoxSVC used only ${svcUsed}s of CPU in that time, so nothing was " +
+    "progressing: this is a wedge, not a slow restore."
+  } else {
+    "VBoxSVC used ${svcUsed}s of CPU in that time, so it may genuinely be " +
+    "working -- re-run with a larger -Seconds before assuming a wedge."
+  }
+
+  throw ("VM '$Name' is stuck in '$state' after $Seconds seconds. $verdict " +
          "VirtualBox will not accept another operation until it settles. " +
-         "If it never does, the session is wedged: save or stop any other " +
-         "running VM, close the VirtualBox Manager window, then " +
-         "'Stop-Process -Name VBoxSVC -Force' and retry. VBoxSVC restarts on " +
-         "the next VBoxManage call and disk images are not touched.")
+         "To clear a wedge: save or stop any other running VM ('list " +
+         "runningvms' says which -- they all go down with the service), " +
+         "close the VirtualBox Manager window, then 'Stop-Process -Name " +
+         "VBoxSVC -Force' and retry. VBoxSVC restarts on the next VBoxManage " +
+         "call and disk images are not touched. Verified 20 Aug: state " +
+         "cleared to 'poweroff' and the baseline was intact.")
 }
 
 function Get-Snapshots {

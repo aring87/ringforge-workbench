@@ -56,8 +56,24 @@ clears it. `startvm` returns a bare `E_FAIL`.
 `vm_snapshot.ps1` waits for the state to settle before each step, so the script
 does not cause this. Clicking in the Manager window while it runs still can.
 
-**Tell a wedge from a slow restore before doing anything**, and use read-only
-queries — issuing another state change is what caused it:
+**`vm_snapshot.ps1` now tells you which it is while it waits.** Every 15
+seconds it reports the state and how much CPU VBoxSVC used in that interval:
+
+    still 'restoringsnapshot'; VBoxSVC used 0.0s CPU in the last 15s (idle -- likely wedged)
+    still 'restoringsnapshot'; VBoxSVC used 8.4s CPU in the last 15s (working -- likely just slow)
+
+VBoxSVC is the process that does the restore, so its CPU is the cheapest
+evidence of whether anything is happening. The timeout message carries the same
+figure, because **the remedy for a wedge is wrong for a slow restore** —
+restarting the service takes every other running VM down with it, and doing that
+to a restore that was merely slow is an expensive mistake. If it reports the
+service working, raise `-Seconds` rather than reaching for the remedy.
+
+It also notes when the VirtualBox Manager is open, since that is a second thing
+issuing state changes and is what has to close before VBoxSVC can be restarted.
+
+**To check by hand instead**, use read-only queries — issuing another state
+change is what caused it:
 
 ```powershell
 $vbm = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
@@ -66,8 +82,11 @@ $vbm = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 Get-Process VirtualBoxVM,VBoxSVC -ErrorAction SilentlyContinue
 ```
 
-`VMState="restoringsnapshot"` **with `list runningvms` empty and no
-`VirtualBoxVM` process** is a wedge. A genuine restore has a process burning CPU.
+A transient `VMState` on its own proves nothing: a legitimate restore of a
+powered-off VM also has `list runningvms` empty and no `VirtualBoxVM`
+process, because VBoxSVC does the work. **What separates them is whether
+VBoxSVC is burning CPU** — sample it twice and compare, which is what the
+script now does for you.
 
 **The way out, and it takes every other VM with it:**
 
