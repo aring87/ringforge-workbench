@@ -319,8 +319,15 @@ class RequestRecorder:
         output_dir: str | Path,
         reply: str = "error",
         planner: Any = None,
+        tls_expected: bool = False,
     ):
         self.output_dir = Path(output_dir)
+        # **Changes what `no_connection` means, so it has to be recorded.**
+        # FakeNet wraps the *listening* socket when `UseSSL: Yes`, so a
+        # handshake the client rejects fails in `accept()` and never reaches
+        # this code at all. The run then looks identical to one where the
+        # diverter never routed the port -- and those call for opposite fixes.
+        self.tls_expected = bool(tls_expected)
         # Phase 2. When present, a *target* call is answered with an encoded
         # `getData()` result instead of the refusal; everything else still gets
         # the refusal, because a run that answers questions nobody asked about
@@ -501,7 +508,13 @@ class RequestRecorder:
             "error": error,
             "outcome": outcome,
             "outcome_note": (
-                "TLS was offered, not JSON-RPC. The client sent a ClientHello "
+                "Nothing reached this handler, and TLS termination is on -- so "
+                "a handshake the client refused would look exactly like this, "
+                "because FakeNet wraps the listening socket and a failed "
+                "handshake never reaches the handler. Read fakenet.log and the "
+                "pcap for a TLS alert before blaming the diverter."
+                if outcome == OUTCOME_NO_CONNECTION and self.tls_expected
+                else "TLS was offered, not JSON-RPC. The client sent a ClientHello "
                 "and waited for a ServerHello this listener cannot give it, so "
                 "nothing above the handshake was ever spoken. Terminate TLS "
                 "before expecting a request."
@@ -519,6 +532,7 @@ class RequestRecorder:
             # different protocol. A run with these and no requests needs TLS
             # termination, not a better parser.
             "tls_client_hellos": sum(1 for r in records if r.get("is_tls")),
+            "tls_expected": self.tls_expected,
             "handshake_methods": [m for m in methods if m.lower() in HANDSHAKE_METHODS],
             "handshake_before_target": _handshake_first(records),
             "contract": ETHERHIDING_CONTRACT,

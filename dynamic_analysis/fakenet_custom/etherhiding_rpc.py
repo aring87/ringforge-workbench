@@ -29,6 +29,19 @@ else to pass arguments:
     RINGFORGE_RPC_ADDRESS      the substitution address; defaults to the tracer.
                                **Never a real wallet** -- see `jsonrpc_answer`
     RINGFORGE_RPC_PLAN         pin one candidate shape instead of rotating
+    RINGFORGE_RPC_TLS          `1` when the listener runs `UseSSL: Yes`. Only
+                               changes what a *missing* connection means -- see
+                               below -- because the socket arrives decrypted.
+
+**Under TLS this handler sees plaintext, and sees nothing at all on failure.**
+`UseSSL: Yes` makes FakeNet wrap the *listening* socket, so `accept()` returns
+an already-negotiated connection and `HandleTcp` receives decrypted bytes with
+no work on its part. The cost is at the other end: a handshake the client
+refuses -- an untrusted certificate is the expected reason -- fails before
+`accept()` returns and never reaches this file. The run then records
+`no_connection`, which is also what a diverter that never routed the port
+produces. `RINGFORGE_RPC_TLS` exists so the summary can say so rather than
+leaving the two indistinguishable.
 
 **A broken import must never read as a silent implant.** If the recorder cannot
 be loaded, this file still answers and still writes a record saying why, because
@@ -88,6 +101,7 @@ def _load_recorder():
         _output_dir(),
         os.environ.get("RINGFORGE_RPC_REPLY", "error"),
         planner=planner,
+        tls_expected=os.environ.get("RINGFORGE_RPC_TLS", "").strip() in ("1", "yes", "true"),
     )
 
 

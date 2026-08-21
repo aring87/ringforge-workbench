@@ -101,6 +101,23 @@ class ConfigGenerationTests(unittest.TestCase):
         self.assertIn("InstanceName: EtherHidingRPC", text)
         self.assertIn("TcpDynamic:   etherhiding_rpc.py", text)
 
+    def test_tls_is_terminated_by_default(self) -> None:
+        # Measured on run `b610dea4`: the client opens TLS on 8545 and waits for
+        # a ServerHello. A plain listener cannot be spoken to at all, so the
+        # default has to be the arm that can.
+        result = build(self.base, self.out)
+        written = Path(str(result["config"])).read_text(encoding="utf-8")
+
+        self.assertIn("UseSSL:      Yes", written)
+        self.assertTrue(result["tls"])
+
+    def test_the_plain_arm_is_still_reachable_for_an_ab(self) -> None:
+        result = build(self.base, self.out / "plain", tls=False)
+        written = Path(str(result["config"])).read_text(encoding="utf-8")
+
+        self.assertIn("UseSSL:      No", written)
+        self.assertFalse(result["tls"])
+
     def test_a_clean_config_reports_no_problems(self) -> None:
         findings = inspect(STOCK_CONFIG)
 
@@ -250,3 +267,41 @@ class HandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TlsChangesWhatSilenceMeans(unittest.TestCase):
+    """`no_connection` has two causes once TLS is on, and they need opposite fixes.
+
+    FakeNet wraps the *listening* socket for `UseSSL: Yes`, so a handshake the
+    client refuses fails inside `accept()` and never reaches the handler. The run
+    then records nothing -- exactly as if the diverter had not routed the port.
+    The summary has to say which world it is in, because the reader cannot tell.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_plain_mode_blames_the_diverter(self) -> None:
+        report = RequestRecorder(self.tmp).report()
+
+        self.assertEqual(report["outcome"], "no_connection")
+        self.assertFalse(report["tls_expected"])
+        self.assertIn("diverter", report["outcome_note"])
+
+    def test_tls_mode_names_the_handshake_as_the_other_candidate(self) -> None:
+        report = RequestRecorder(self.tmp, tls_expected=True).report()
+
+        self.assertEqual(report["outcome"], "no_connection")
+        self.assertTrue(report["tls_expected"])
+        self.assertIn("handshake", report["outcome_note"])
+        # And it says where to look, because neither answer is in this file.
+        self.assertIn("pcap", report["outcome_note"])
+
+    def test_the_flag_does_not_leak_into_a_run_that_saw_traffic(self) -> None:
+        # It only reinterprets silence. A run with requests is unaffected.
+        recorder = RequestRecorder(self.tmp, tls_expected=True)
+        recorder.note_request("p:1", _eth_call_request())
+        report = recorder.report()
+
+        self.assertEqual(report["outcome"], OUTCOME_ETH_CALL)
+        self.assertNotIn("handshake", report["outcome_note"])

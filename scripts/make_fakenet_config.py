@@ -57,7 +57,7 @@ Enabled:     True
 Port:        {port}
 Protocol:    TCP
 Listener:    RawListener
-UseSSL:      No
+UseSSL:      {usessl}
 Timeout:     10
 Hidden:      False
 Custom:      {custom}
@@ -126,6 +126,7 @@ def build(
     base_config: Path,
     out_dir: Path,
     port: int = DEFAULT_PORT,
+    tls: bool = True,
 ) -> dict[str, object]:
     """Write the merged config and its two support files into one directory."""
     text = base_config.read_text(encoding="utf-8", errors="replace")
@@ -134,7 +135,8 @@ def build(
     out_dir.mkdir(parents=True, exist_ok=True)
     config_path = out_dir / "fakenet.ini"
 
-    section = _SECTION_TEMPLATE.format(port=port, custom=_SUPPORT_FILES[0])
+    section = _SECTION_TEMPLATE.format(
+        port=port, custom=_SUPPORT_FILES[0], usessl="Yes" if tls else "No")
     # The original text first, byte for byte. Anything this script gets wrong
     # should be visible as an addition at the end rather than as a diff
     # scattered through a file nobody re-reads.
@@ -146,7 +148,8 @@ def build(
         shutil.copyfile(source, out_dir / name)
         copied.append(name)
 
-    return {"config": config_path, "copied": copied, "findings": findings, "port": port}
+    return {"config": config_path, "copied": copied, "findings": findings,
+            "port": port, "tls": tls}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="directory to write fakenet.ini and its support "
                              "files into -- they must share a directory")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--no-tls", dest="tls", action="store_false",
+                        help="serve plain TCP instead of terminating TLS. The "
+                             "measured client speaks TLS, so this is the arm "
+                             "that cannot be spoken to -- keep it for A/B only")
+    parser.set_defaults(tls=True)
     args = parser.parse_args(argv)
 
     base = find_default_config(args.fakenet_config or None)
@@ -165,13 +173,21 @@ def main(argv: list[str] | None = None) -> int:
         print("could not find FakeNet's default.ini -- pass --fakenet-config")
         return 1
 
-    result = build(base, Path(args.out), args.port)
+    result = build(base, Path(args.out), args.port, tls=args.tls)
     findings = result["findings"]
     assert isinstance(findings, dict)
 
     print(f"base config : {base}")
     print(f"written     : {result['config']}")
     print(f"support     : {', '.join(result['copied'])}")
+    print(f"TLS         : {'terminated (UseSSL: Yes)' if args.tls else 'OFF -- plain TCP'}")
+    if args.tls:
+        # Measured on run `b610dea4`: the client offers 0x009c/0x009d,
+        # 0x003c/0x003d and 0x002f/0x0035, so FakeNet's hardcoded
+        # `ciphers='RSA'` has six suites to choose from. What is *not* settled
+        # is whether it accepts FakeNet's certificate.
+        print("              cert is FakeNet's own; if the implant validates it,")
+        print("              the handshake fails before the handler is reached")
 
     problems = []
     if findings.get("port_already_used_by"):
@@ -202,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f'    set RINGFORGE_REPO_ROOT={repo}')
     print(f'    set RINGFORGE_RPC_OUTPUT_DIR=<case>\\network')
     print(f'    set RINGFORGE_RPC_REPLY=error')
+    if args.tls:
+        print(f'    set RINGFORGE_RPC_TLS=1')
     print("\nC1 is the control: if jsonrpc_summary.json reads no_connection, the")
     print("diverter did not route the port and nothing below C1 may be written up.")
     return 0
