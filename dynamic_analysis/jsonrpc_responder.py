@@ -288,8 +288,18 @@ class RequestRecorder:
     that decides what a run *means* lives here, once, and is tested once.
     """
 
-    def __init__(self, output_dir: str | Path, reply: str = "error"):
+    def __init__(
+        self,
+        output_dir: str | Path,
+        reply: str = "error",
+        planner: Any = None,
+    ):
         self.output_dir = Path(output_dir)
+        # Phase 2. When present, a *target* call is answered with an encoded
+        # `getData()` result instead of the refusal; everything else still gets
+        # the refusal, because a run that answers questions nobody asked about
+        # the contract is a run whose log cannot be read straight.
+        self.planner = planner
         # `error` is phase 1's default: a well-formed JSON-RPC error, which is
         # what a node returns when a call cannot be executed. `empty` returns a
         # successful `0x`, which is what a node returns for a contract with no
@@ -380,6 +390,18 @@ class RequestRecorder:
         calls = record.get("calls") or []
         identifier = calls[0].get("id") if calls else None
 
+        if self.planner is not None and record.get("is_target_call"):
+            answer = self.planner.answer()
+            # Stamped onto the record, not just returned. Which hypothesis was
+            # served to which call is the entire result of a phase 2 run, and it
+            # has to survive in the log rather than be reconstructed from the
+            # order of a list afterwards.
+            record["served_plan"] = answer["plan"]
+            record["served_attempt"] = answer["attempt"]
+            record["served_result"] = answer["result"]
+            self._rewrite_last(record)
+            return {"jsonrpc": "2.0", "id": identifier, "result": answer["result"]}
+
         if self.reply == "empty":
             return {"jsonrpc": "2.0", "id": identifier, "result": "0x"}
         return {
@@ -387,6 +409,19 @@ class RequestRecorder:
             "id": identifier,
             "error": {"code": -32000, "message": "execution reverted"},
         }
+
+    def _rewrite_last(self, record: dict[str, Any]) -> None:
+        """Append the record again once the answer is known.
+
+        The request is written the moment it arrives, because a detonation can
+        end by killing the box and a record held for later is a record that may
+        never exist. The answer is only decided afterwards, so it is appended as
+        a second line rather than by rewriting the first -- an append-only log
+        cannot lose the earlier entry if the run dies between the two.
+        """
+        entry = dict(record)
+        entry["kind"] = "request_answered"
+        self._append(entry)
 
     def response_bytes(self, record: dict[str, Any]) -> bytes:
         body = json.dumps(self.response_payload(record)).encode("utf-8")
@@ -451,6 +486,9 @@ class RequestRecorder:
             "first_seen": records[0]["time"] if records else "",
             "last_seen": records[-1]["time"] if records else "",
             "requests_path": str(self.requests_path),
+            # Absent in phase 1, which is the point: a summary carrying no
+            # `answer` block is a run that told the implant nothing.
+            "answer": self.planner.report() if self.planner is not None else {},
         }
 
     def write_summary(self, listening: str = "", error: str = "") -> dict[str, Any]:
@@ -479,13 +517,14 @@ class JsonRpcResponder:
         port: int = DEFAULT_PORT,
         reply: str = "error",
         read_timeout: float = 15.0,
+        planner: Any = None,
     ):
         self.output_dir = Path(output_dir)
         self.host = host
         self.port = int(port)
         self.read_timeout = float(read_timeout)
 
-        self.recorder = RequestRecorder(output_dir, reply)
+        self.recorder = RequestRecorder(output_dir, reply, planner=planner)
         self.requests_path = self.recorder.requests_path
         self.summary_path = self.recorder.summary_path
 
@@ -578,15 +617,43 @@ def main(argv: list[str] | None = None) -> int:
                              "no code -- the truthful answer for this one")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="stop after this long; 0 waits for Ctrl-C")
+    parser.add_argument("--answer", action="store_true",
+                        help="phase 2: answer the getData() call instead of "
+                             "refusing it, rotating through the candidate "
+                             "return shapes as the implant retries")
+    parser.add_argument("--address", default="",
+                        help="the substitution address to serve. Defaults to a "
+                             "synthetic tracer -- NEVER point this at a real "
+                             "wallet; the safety argument for a responder is "
+                             "that the operator picks a sink")
+    parser.add_argument("--plan", default="",
+                        help="pin one candidate shape instead of rotating, for "
+                             "a focused re-run once the answer is known")
     args = parser.parse_args(argv)
 
-    responder = JsonRpcResponder(args.output_dir, args.host, args.port, args.reply)
+    planner = None
+    if args.answer or args.address or args.plan:
+        from dynamic_analysis.jsonrpc_answer import TRACER_ADDRESS, AnswerPlanner
+        try:
+            planner = AnswerPlanner(args.address or TRACER_ADDRESS, args.plan)
+        except Exception as error:
+            print(f"failed: {error}")
+            return 1
+
+    responder = JsonRpcResponder(args.output_dir, args.host, args.port,
+                                 args.reply, planner=planner)
     result = responder.start()
     if not result.get("started"):
         print(f"failed: {result.get('error')}")
         return 1
 
-    print(f"recording on {args.host}:{args.port}, replying {args.reply!r}")
+    if planner is None:
+        print(f"recording on {args.host}:{args.port}, replying {args.reply!r}")
+    else:
+        shape = planner.pinned.name if planner.pinned else "rotating"
+        print(f"ANSWERING on {args.host}:{args.port} with {shape} shape(s)")
+        print(f"  serving address {planner.address}"
+              f"{'  (tracer)' if planner.address == TRACER_ADDRESS else ''}")
     print(f"  -> {responder.requests_path}")
     try:
         if args.seconds > 0:
@@ -604,6 +671,17 @@ def main(argv: list[str] | None = None) -> int:
           f"target calls {summary['target_calls']}")
     if summary["methods"]:
         print(f"  methods: {summary['methods']}")
+
+    answer = summary.get("answer") or {}
+    if answer:
+        served = answer.get("plans_served") or []
+        print(f"  plans served: {served or 'none'}")
+        if answer.get("all_plans_exhausted"):
+            print("  every candidate shape was served and it kept asking -- the "
+                  "list is what is wrong, not the wiring")
+        elif len(served) == 1:
+            print(f"  asked once and stopped: {served[0]} was accepted, or it "
+                  f"gave up. Process lifetime is what tells those apart")
     return 0
 
 

@@ -24,6 +24,11 @@ else to pass arguments:
     RINGFORGE_RPC_OUTPUT_DIR   where the record and summary are written
     RINGFORGE_RPC_REPLY        `error` (default) or `empty`
     RINGFORGE_REPO_ROOT        the clone, so the tested recorder can be imported
+    RINGFORGE_RPC_ANSWER       phase 2: `1` to answer `getData()` rather than
+                               refuse it, rotating candidate return shapes
+    RINGFORGE_RPC_ADDRESS      the substitution address; defaults to the tracer.
+                               **Never a real wallet** -- see `jsonrpc_answer`
+    RINGFORGE_RPC_PLAN         pin one candidate shape instead of rotating
 
 **A broken import must never read as a silent implant.** If the recorder cannot
 be loaded, this file still answers and still writes a record saying why, because
@@ -67,7 +72,23 @@ def _load_recorder():
         from dynamic_analysis.jsonrpc_responder import RequestRecorder
     except Exception:
         return None
-    return RequestRecorder(_output_dir(), os.environ.get("RINGFORGE_RPC_REPLY", "error"))
+
+    planner = None
+    if os.environ.get("RINGFORGE_RPC_ANSWER", "").strip() in ("1", "yes", "true"):
+        # Phase 2. A bad address or plan name must fail here, loudly, rather
+        # than half-arming the run: answering with the wrong thing and refusing
+        # to answer at all look identical from outside the guest.
+        from dynamic_analysis.jsonrpc_answer import TRACER_ADDRESS, AnswerPlanner
+        planner = AnswerPlanner(
+            os.environ.get("RINGFORGE_RPC_ADDRESS") or TRACER_ADDRESS,
+            os.environ.get("RINGFORGE_RPC_PLAN", ""),
+        )
+
+    return RequestRecorder(
+        _output_dir(),
+        os.environ.get("RINGFORGE_RPC_REPLY", "error"),
+        planner=planner,
+    )
 
 
 #: One recorder for the life of the FakeNet process. Every connection is a fresh

@@ -5384,10 +5384,34 @@ while FakeNet owns 8545 would report `started: True`, receive nothing, and
 summarise as `no_connection` -- blaming the diverter for a port collision. A
 taken port is now an error at start.
 
-**Phase 2 — answer it.** With the request known, encode a `getData()` return
-carrying a **sink address the operator controls**, and watch for substitution
-and the beacon. Never a live address, and the guest stays contained: the point
-is to choose the C2, not to reach one.
+**Phase 2 — answer it. BUILT, 21 Aug:** `dynamic_analysis\jsonrpc_answer.py`,
+21 tests. `--answer` on the responder, or `RINGFORGE_RPC_ANSWER=1` under
+FakeNet.
+
+**It does not encode one guess; it enumerates them.** What phase 1 cannot read
+is the *return shape* -- `getData()`'s ABI signature is nowhere in the binary,
+only the implant's parser. The plausible shapes are five and nameable: a bare
+`address`, a `string` holding one, a JSON blob, dynamic `bytes`, and no ABI
+framing at all. **Rotation advances only on retry**, which is the whole trick:
+the first call gets the first shape, and the implant *asking again* is the
+signal that the last one was rejected. Acceptance and rejection therefore land
+in the same log and one run sweeps the list. `--plan` pins one shape for a
+focused re-run once the answer is known.
+
+Reading the summary's `answer` block: **one plan served then silence** means it
+was accepted or the implant gave up, and process lifetime past t198 is what
+separates those. **Every plan served and still asking** means the candidate list
+is what is wrong, not the wiring.
+
+**The served address is a tracer**, `0xC0FFEE…C0FFEE`, synthetic and shaped to
+be unmistakable in a clipboard, a dump or a beacon body -- so finding it is
+proof of substitution rather than something argued from context. `--address`
+points at an operator-controlled sink. **Never a real wallet**: the whole safety
+argument for a responder is that the operator picks the C2.
+
+**The beacon needs nothing built.** `method=refresh&guid=` and
+`method=send&guid=&address=` are ordinary form-encoded POSTs, and FakeNet writes
+those out already under `DumpHTTPPosts`, which is on in the stock config.
 
 **Where it plugs in — BUILT, 21 Aug.** `fakenet_config_path` was threaded
 through (`orchestrator.py:1996` -> `2328`) and unused; this is the repo's first
