@@ -1444,10 +1444,24 @@ def _evidence_categories(
             #
             # What made the proxy necessary was benign unmapped images, and
             # `framework_assembly` now removes them at the source, by the
-            # image's own metadata rather than by the process's name. The
-            # measured benign rate behind this: **16 programs, 870 module
-            # comparisons, zero unmapped PE images** that were not framework or
-            # resource-only.
+            # image's own metadata rather than by the process's name.
+            #
+            # **The benign rate behind this, stated as what it is: 16 ordinary
+            # processes on one host, zero unmapped PE images.** 12 programs on
+            # 13 Aug plus 4 managed applications on 20 Aug. Those sweeps also
+            # produced 870 module comparisons, but that number belongs to the
+            # module-integrity pass above, not to this one --
+            # `benign_baseline.py` reports *this* metric per process, so 16 is
+            # the denominator here and 870 is not.
+            #
+            # **And note what the corpus cannot hold.** Both sweeps are ordinary
+            # *running* processes; the one benign case known to produce unmapped
+            # images is a *compile*, which cannot be dumped on that host at all
+            # (`MiniDumpWriteDump` -> `0x80070005`). Measured in the guest it
+            # gave `unmapped` 2 and 4. So this zero says ordinary desktop
+            # software does not produce unmapped images -- it does not by itself
+            # carry `strong` on any unmapped image anywhere. What answers the
+            # compile is `framework_assembly`, not this count.
             #
             # Note the JIT argument does not apply here, only to the crash
             # route below. JITted code is an anonymous allocation; it is not a

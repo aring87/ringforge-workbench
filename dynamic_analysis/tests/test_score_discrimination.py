@@ -539,8 +539,12 @@ class CorroborationTests(unittest.TestCase):
         #
         # `framework_assembly` now excludes the benign images by their own
         # metadata, so what reaches `unmapped_images` is unexplained wherever it
-        # sits. Benign rate behind that: 16 programs, 870 module comparisons,
-        # zero unmapped PE images that were not framework or resource-only.
+        # sits. Benign rate behind that: **16 ordinary processes on one host,
+        # zero unmapped PE images** -- not the 870 module comparisons the same
+        # sweeps produced, which are the module-integrity pass's denominator
+        # rather than this one's. The corpus holds no benign *compile*, which is
+        # the case that produces unmapped images; `framework_assembly` is what
+        # answers that, not this zero.
         #
         # The JIT argument that justifies the crash route's target test does not
         # apply here: JITted code is an anonymous allocation, not a PE image
