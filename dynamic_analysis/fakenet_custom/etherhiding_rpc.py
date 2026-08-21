@@ -81,9 +81,16 @@ def _load_recorder():
     root = os.environ.get("RINGFORGE_REPO_ROOT") or _DEFAULT_REPO
     if root not in sys.path:
         sys.path.insert(0, root)
+    global _IMPORT_ERROR
     try:
         from dynamic_analysis.jsonrpc_responder import RequestRecorder
     except Exception:
+        # **Captured here, not at module scope.** `traceback.format_exc()` only
+        # has something to say while an exception is being handled; called after
+        # this function returns it yields "NoneType: None", which is what run
+        # `21:10` recorded instead of the ImportError that would have named the
+        # missing module.
+        _IMPORT_ERROR = traceback.format_exc()
         return None
 
     planner = None
@@ -105,11 +112,13 @@ def _load_recorder():
     )
 
 
+#: Set by `_load_recorder` while the exception is still live. Empty on success.
+_IMPORT_ERROR = ""
+
 #: One recorder for the life of the FakeNet process. Every connection is a fresh
 #: `HandleTcp` call on its own thread, so the totals only add up if the state is
 #: shared -- and `RequestRecorder` takes its own lock.
 _RECORDER = _load_recorder()
-_IMPORT_ERROR = "" if _RECORDER is not None else traceback.format_exc()
 
 
 def _fallback_reply() -> bytes:
