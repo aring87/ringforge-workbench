@@ -435,6 +435,13 @@ def main() -> int:
         "processes": 0, "dump_failures": 0, "oversize_skipped": 0,
         "carve_unmapped": 0, "carve_unmapped_in_hollowing_target": 0,
         "carve_resource_only": 0, "carve_known_module": 0,
+        # **The positive control for the managed run.** Without this a benign
+        # compile reports `unmapped 0` and cannot be read: four framework
+        # assemblies seen and suppressed looks identical to a compile that never
+        # reached the mid-30s module count and produced nothing to suppress.
+        # `framework_assembly 4, unmapped 0` is the result that means the fix
+        # worked; `framework_assembly 0, unmapped 0` means the test did not run.
+        "carve_framework_assembly": 0,
         "mi_identical": 0, "mi_patched": 0, "mi_replaced": 0,
         "mi_header_mismatch": 0, "mi_no_reference": 0,
     }
@@ -487,6 +494,7 @@ def main() -> int:
             "unmapped": len(unmapped),
             "resource_only": int(counts.get("resource_only", 0) or 0),
             "known_module": int(counts.get("known_module", 0) or 0),
+            "framework_assembly": int(counts.get("framework_assembly", 0) or 0),
             **{f"mi_{k}": v for k, v in verdicts.items()},
         }
         rows.append(row)
@@ -496,6 +504,7 @@ def main() -> int:
         totals["carve_unmapped_in_hollowing_target"] += len(unmapped) if target else 0
         totals["carve_resource_only"] += row["resource_only"]
         totals["carve_known_module"] += row["known_module"]
+        totals["carve_framework_assembly"] += row["framework_assembly"]
         for k, v in verdicts.items():
             totals[f"mi_{k}"] += v
 
@@ -522,6 +531,9 @@ def main() -> int:
               f"{totals['carve_unmapped'] / totals['processes']:.2f}")
         print(f"  unmapped in a hollowing target               "
               f"{totals['carve_unmapped_in_hollowing_target']}   <-- the emphatic branch")
+        print(f"  framework assemblies suppressed              "
+              f"{totals['carve_framework_assembly']}   <-- positive control: "
+              f"0 here with 0 unmapped means the compile never loaded them")
         print(f"  modules reading 'replaced'                   "
               f"{totals['mi_replaced']}")
         print(f"  modules reading 'header_mismatch'            "
