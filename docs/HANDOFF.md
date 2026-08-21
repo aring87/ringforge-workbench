@@ -2615,7 +2615,9 @@ stays because its subsections are the working record.
 
 **Queues.** Build has **one**: the **EtherHiding JSON-RPC responder**, the new
 gap below — and it is the kind that unlocks behaviour rather than fixing a
-defect. The two triage defects found alongside the carve are **both fixed**
+defect. **Queued as `0bw`, in two phases**: record the request before trying to
+answer it, because a wrongly-encoded answer and a broken responder look
+identical from outside. The two triage defects found alongside the carve are **both fixed**
 (`1264b1c`, `4d30e43`). **Detonation empty**,
 and `af2d8300…` has nothing left to give: its contract is dead on-chain, so a
 re-run cannot get further than `c14cb5b6` did. 716 tests.
@@ -5340,6 +5342,76 @@ now cancel into a correct-looking verdict, which is worse than either alone.
   spawn dump.
 - `timeout_seconds: 240` should be the default for this sample. 180 truncated
   the run before its most interesting process exited.
+
+#### 0bw. QUEUED BUILD, FIRST — answer `eth_call` and watch a clipper do its job
+
+**The only remaining path into this sample's behaviour.** Everything downstream
+of the config fetch — substitution, the beacon protocol, the clipboard hook —
+was gated on an answer that containment guaranteed it would never get, and the
+chain has nothing to give it either (`eth_getCode` -> `0x` on BSC testnet *and*
+mainnet, 20 Aug). Re-detonating `af2d8300…` unchanged cannot beat `c14cb5b6`.
+A responder is the lever, and it is **safer than arming the guest**: the
+operator picks the address the implant is handed.
+
+**Build the instrument first — and here that means two phases, not one.** The
+request shape is not known. `getData()`'s return encoding is nowhere in the
+binary's strings; what exists is the implant's *parser*, and its expectations
+are unread. Guessing the ABI shape and getting it wrong produces **the same
+observable as a responder that does not work at all** — the implant exits at
+t198, exactly as it already does. That is the silence-versus-absence trap this
+file keeps re-learning, so phase 1 is built to be unable to fall into it.
+
+**Phase 1 — record the question. No payload design at all.** Stand up a
+listener on `8545` that answers every request with a well-formed JSON-RPC error
+and writes the exact request bytes to the case directory. One run tells you the
+method, the params, the block tag, whether there is a `eth_chainId` /
+`net_version` handshake in front, and whether the beacon fires before or after
+the config fetch. None of that is guessable and all of it is cheap.
+
+**Phase 2 — answer it.** With the request known, encode a `getData()` return
+carrying a **sink address the operator controls**, and watch for substitution
+and the beacon. Never a live address, and the guest stays contained: the point
+is to choose the C2, not to reach one.
+
+**Where it plugs in.** `fakenet_config_path` is already threaded through
+(`orchestrator.py:1996` -> `2328`) and is **unused — no custom config exists in
+the repo yet**, so this is the first one. Either a FakeNet custom listener bound
+to `8545`, or a standalone responder with a config that routes to it; phase 1
+should pick whichever logs raw bytes with less ceremony.
+
+**What the log must separate, because FakeNet already gives it a TCP peer and a
+connection therefore proves nothing:**
+
+    never resolved  |  resolved, never connected  |  connected, sent nothing
+    sent something we did not recognise  |  sent eth_call, answered
+
+A responder that records only "served a response" is documentation.
+
+**Pre-registered predictions:**
+
+| | prediction |
+|---|---|
+| C1 | `SecurityHealthHost.exe` resolves `data-seed-prebsc-1-s1.binance.org` and connects to `:8545` — **a control, not a finding**; `c14cb5b6` already did this. If it fails the run is void |
+| C2 | The request is an HTTP POST carrying JSON-RPC `eth_call`, naming contract `0x0F14fc3b…` and selector `0x3bc5de30` |
+| C3 | **No** `eth_chainId` / `net_version` handshake precedes it — stated weakly and on purpose, because it is the cheapest thing to be wrong about |
+| C4 | Given the phase-1 error reply, the process still exits at ~t198 — reproducing the baseline and proving the responder changed nothing it should not |
+| C5 | *(phase 2)* Given a well-formed answer, the process **lives past t198**. This is the whole result: t198 is the current ceiling and it exists only because the fetch failed |
+
+**C5 is the one to state loudly.** If it holds, every behaviour this sample has
+never shown becomes reachable and gap 5's first identified payload finally has
+runtime evidence behind its static identification. If it fails *with* C2
+confirmed, the parser rejected the encoding and phase 2 iterates on the ABI
+shape — which is a known, bounded problem rather than a mystery.
+
+**Bounds on the negative.** A responder the implant never talks to says nothing
+about the implant; it says the diverter did not route `8545`. C1 is what makes
+that distinguishable, and without C1 nothing below it may be written up.
+
+**Prerequisites.** `timeout_seconds: 240` — 180 truncates before `t198` and
+there is no result at all below that. **The sample is not on this host**; it is
+re-acquired by hash, see *Environment facts*. Detection for the technique is
+already committed (`tools\yara\local\ringforge_etherhiding.yar`), so a phase-2
+run also exercises those two rules against live memory rather than a carve.
 
 #### 0av. QUEUED DETONATION, FIRST — what did the crash gate actually find?
 
