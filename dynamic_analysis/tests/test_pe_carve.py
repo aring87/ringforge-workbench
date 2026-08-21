@@ -822,6 +822,30 @@ class FrameworkAssemblyTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(self._classification(name), "unmapped")
 
+    def test_every_suppression_class_is_readable_per_dump(self) -> None:
+        # `framework_assembly` reached the run totals but not the per-dump
+        # projection, so run `b610dea4` printed `None` on every row while the
+        # run total said 0. "No framework images in this dump" and "this row
+        # never carried the field" are different statements and looked the same
+        # -- in the count that had just decided whether the gate was sound.
+        from dynamic_analysis.pe_carve import summarize_pe_carve
+
+        summary = summarize_pe_carve({
+            "carved": True,
+            "dumps": [{"file": "x.dmp", "counts": {"framework_assembly": 4, "unmapped": 0}}],
+            "images": [],
+        })
+        row = summary["per_dump"][0]
+
+        self.assertEqual(row["framework_assembly"], 4)
+        # And a dump that genuinely had none reads 0, never None.
+        empty = summarize_pe_carve({
+            "carved": True,
+            "dumps": [{"file": "y.dmp", "counts": {"unmapped": 1}}],
+            "images": [],
+        })
+        self.assertEqual(empty["per_dump"][0]["framework_assembly"], 0)
+
     def test_a_parse_failure_leaves_the_image_as_evidence(self) -> None:
         # Every path that cannot read a name returns "", and "" must never be
         # mistaken for a framework match.

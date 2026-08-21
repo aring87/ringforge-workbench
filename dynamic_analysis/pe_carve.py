@@ -1289,6 +1289,13 @@ def summarize_pe_carve(carve_result: dict[str, Any]) -> dict[str, Any]:
                 # not read. That argument decided whether gap 5's premise was
                 # wrong, so it is worth being able to check instead.
                 "known_module": (dump.get("counts", {}) or {}).get("known_module", 0),
+                # The same argument as the paragraph above, for the newest
+                # suppression class. Run `b610dea4` reported
+                # `framework_assembly_images: 0` for the run and `None` on every
+                # row, so "no framework images anywhere" and "this projection
+                # never carried the field" were indistinguishable -- in the one
+                # count that had just decided whether the gate was sound.
+                "framework_assembly": (dump.get("counts", {}) or {}).get("framework_assembly", 0),
                 "resource_only": (dump.get("counts", {}) or {}).get("resource_only", 0),
                 "inside_module": (dump.get("counts", {}) or {}).get("inside_module", 0),
                 "at_module_base": (dump.get("counts", {}) or {}).get("at_module_base", 0),
