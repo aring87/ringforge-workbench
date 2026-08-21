@@ -46,11 +46,27 @@ STAGE2_RULE = "RingForge_Loader_422e30ed_Stage2"
 
 
 def _requirements():
-    yara = pytest.importorskip("yara", reason="yara-python not installed")
+    """Skip in a way both runners understand.
+
+    This is a `unittest.TestCase` and the suite is run with `unittest discover`,
+    where `pytest.skip` raises an exception the runner does not recognise --
+    reported as an **ERROR**, not a skip. On a guest with no artifact drive that
+    turned four correct skips into four red results, which is the same shape of
+    mistake as a detector that cannot say "I could not tell": the absence gets
+    reported as a finding.
+
+    `unittest.SkipTest` is honoured by both runners. The module still imports
+    pytest for the `slow` marker at the top, so this is a fix to the skip and
+    not to the dependency.
+    """
+    try:
+        import yara
+    except ImportError:
+        raise unittest.SkipTest("yara-python not installed")
     if not RULES.is_file():
-        pytest.skip(f"rule file not present: {RULES}")
+        raise unittest.SkipTest(f"rule file not present: {RULES}")
     if not STAGE2.is_file():
-        pytest.skip(f"stage 2 not on the artifact drive: {STAGE2}")
+        raise unittest.SkipTest(f"stage 2 not on the artifact drive: {STAGE2}")
     return yara
 
 
