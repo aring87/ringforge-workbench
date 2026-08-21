@@ -194,11 +194,16 @@ def _candidates(limit: int, max_virtual: int) -> list[tuple[int, str]]:
     return picked
 
 
-#: Enough classes that the compile lasts long enough to *dump*, which is a much
-#: longer window than merely being seen. At 400 the poll caught csc.exe three
-#: times and every full-memory dump still failed; widening the window is the
-#: cheap half of ruling timing in or out.
-_PROBE_CLASSES = 2500
+#: Enough classes that the compile lasts long enough to *dump repeatedly*, which
+#: is a much longer window than merely being seen.
+#:
+#: **The number that matters is modules loaded, not seconds elapsed.** Unmapped
+#: images appear as the compiler loads its assemblies: 9 modules -> 0 unmapped,
+#: 33 -> 0, 35 -> 2. A compile that ends before the process is fully loaded
+#: measures nothing, and a freshly reverted guest compiles fast enough to do
+#: exactly that -- 2,500 classes gave a single dump at 9 modules. Raise this
+#: until the last dump of a run reaches the mid-30s.
+_PROBE_CLASSES = 12000
 
 #: The managed processes an ordinary `Add-Type` produces. All three are in
 #: HOLLOWING_TARGETS, which is the whole point -- see `_spawn_managed`.
@@ -206,7 +211,7 @@ _MANAGED_WANTED = {"csc.exe", "cvtres.exe", "msbuild.exe", "vbc.exe"}
 
 #: How often to re-dump a live managed child. Each full-memory dump costs real
 #: time, so this is a floor on the interval rather than a target.
-_MANAGED_REDUMP_SECONDS = 0.4
+_MANAGED_REDUMP_SECONDS = 0.2
 
 
 #: Types that force `csc.exe` to load assemblies beyond `mscorlib`. The first
@@ -240,8 +245,9 @@ def _probe_source(path: Path, classes: int = _PROBE_CLASSES,
     path.write_text(head + body, encoding="utf-8")
 
 
-def _spawn_managed(scratch: Path, poll_seconds: float = 30.0,
-                   with_refs: bool = True) -> list[tuple[str, int, Path]]:
+def _spawn_managed(scratch: Path, poll_seconds: float = 120.0,
+                   with_refs: bool = True,
+                   classes: int = _PROBE_CLASSES) -> list[tuple[str, int, Path]]:
     """Dump a legitimate `csc.exe` while it is alive.
 
     `_candidates` cannot reach this case: it iterates running processes, and the
@@ -258,7 +264,7 @@ def _spawn_managed(scratch: Path, poll_seconds: float = 30.0,
     import psutil
 
     src = scratch / "probe.cs"
-    _probe_source(src, with_refs=with_refs)
+    _probe_source(src, classes=classes, with_refs=with_refs)
 
     if with_refs:
         # [psobject].Assembly.Location rather than the bare name: the PowerShell
@@ -387,6 +393,10 @@ def main() -> int:
     ap.add_argument("--only-managed", action="store_true",
                     help="skip the running-process corpus; measure only the "
                          "managed case")
+    ap.add_argument("--probe-classes", type=int, default=_PROBE_CLASSES,
+                    help="C# classes in the probe. Raise until the last dump of "
+                         "a run reaches the mid-30s module count -- that is "
+                         "where unmapped images start appearing")
     ap.add_argument("--no-refs", action="store_true",
                     help="compile the probe with no -ReferencedAssemblies. The "
                          "A of an A/B: run both and compare unmapped counts")
@@ -417,7 +427,8 @@ def main() -> int:
 
     if args.managed or args.only_managed:
         print("spawning a legitimate Add-Type compile to reach csc.exe ...")
-        jobs.extend(_spawn_managed(scratch, with_refs=not args.no_refs))
+        jobs.extend(_spawn_managed(scratch, with_refs=not args.no_refs,
+                                   classes=args.probe_classes))
         print()
 
     totals = {

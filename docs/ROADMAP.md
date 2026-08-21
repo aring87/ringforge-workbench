@@ -175,22 +175,33 @@ trivial classes, nothing malicious: **`unmapped 2`, both in a hollowing target**
 
 | run | refs | dump MB | modules | unmapped |
 |---|---|---|---|---|
-| guest 1st | no | 31.2 | 23 | 0 |
+| guest 1st | no | 31.2 | 9 | 0 |
 | guest2 | no | 48.2 | 33 | 0 |
 | refs | **yes** | 39.8 | 33 | 0 |
-| **norefs** | no | **62.6** | **35** | **2** |
-| `c14cb5b6` | — | — | 36 | 4 |
+| **norefs** | no | 62.6 | 35 | **2** |
+| **norefs2** | no | **116.0** | **36** | **4** |
+| `c14cb5b6` | — | — | **36** | **4** |
 
-**The variable is dump completeness, not references** — monotonic in module
-count, with the sample's 4 on the same curve as benign 2. Every earlier zero
-was a dump taken too early. `unmapped_pe_in_hollowing_target` is unsound as
-written: it needs only a dump taken late enough against a process that is
-mostly managed tooling by definition.
+**Benign and malicious are indistinguishable** — same module count, same
+unmapped count, and the four benign images byte-identical in size to the
+sample's. The variable is dump completeness, monotonic in module count every
+time; references and the sample itself are irrelevant.
 
-**A principled fix is available**: exclude images whose metadata identifies
-them as known framework assemblies. That leaves `422e30ed` detectable, since
-its payload is a custom assembly in `RegSvcs` rather than `mscorlib`. Carve and
-read the benign images first, and reproduce the firing — it is `n=1`.
+**Reproducing needs the compile to reach ~36 modules.** A freshly reverted
+guest compiles 2,500 classes too fast — a single dump at 9 modules.
+`--probe-classes 12000` reaches it. Below the mid-30s the test has not run, so
+check the module count before reading a 0.
+
+**No attribution bug.** `host_image` reads `csc.exe` on the benign dumps. The
+PowerShell engine appears inside a C# compiler because `csc.exe` memory-maps
+its reference assemblies to read metadata, and `Add-Type` passes the calling
+session's loaded assemblies — which is also why the `-ReferencedAssemblies` arm
+changed nothing.
+
+**The fix**: exclude images whose metadata identifies them as known framework
+assemblies. Both sets are the same four framework assemblies, so metadata
+discriminates where an address heuristic would not, and `422e30ed` stays
+detectable because its payload is a custom assembly in `RegSvcs`.
 
 **And an unresolved anomaly:** `System.Management.Automation` cannot be in
 `csc.exe`. Either an image is attributed to the wrong dump or a dump is named

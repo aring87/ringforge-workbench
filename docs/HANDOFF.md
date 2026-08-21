@@ -2840,50 +2840,53 @@ the other half of it.
 malicious anywhere — produced **`unmapped 2`, both in a hollowing target**.
 
     run          refs   dump MB   modules   unmapped
-    guest 1st    no        31.2      23        0
+    guest 1st    no        31.2       9        0
     guest2       no        48.2      33        0
     refs         YES       39.8      33        0
     norefs       no        62.6      35        2      <-- fires
+    norefs2      no       116.0      36        4      <-- reproduces exactly
     c14cb5b6     --          --      36        4
 
-**The variable is how far into its life the process is dumped, not references.**
-The count rises monotonically with module count and the sample's 4 sits on the
-same curve as benign 2. Every earlier zero was a dump taken too early — which
-is why the first pass at this was recorded as "the premise is refuted" and then
-had to be withdrawn twice. `-ReferencedAssemblies` was a wrong guess; the
-`--no-refs` arm, meant as the *control*, is the one that fired.
+**Benign and malicious are indistinguishable: 36 modules, 4 unmapped, both.**
+The four benign images are byte-identical in size to the sample's. **The
+detector cannot tell them apart because there is nothing to tell apart** — the
+sample's hits carried no information at all.
 
-**So `unmapped_pe_in_hollowing_target` is unsound as written.** It does not
-need a malicious sample, only a dump taken late enough — and `HOLLOWING_TARGETS`
-is mostly managed tooling, so any run that catches one of them working will
-score it.
+**The variable is how far into its life the process is dumped**, not
+references, not the sample. Monotonic in module count every time. Every earlier
+zero was a dump taken too early, which is why this was written up as "premise
+refuted" and then withdrawn twice before it reproduced.
 
-**The fix has a principle available.** If the benign images prove to be the
-framework set — and the sample's were `mscorlib` and
-`System.Management.Automation` — then excluding images whose *metadata
-identifies them as known framework assemblies* discriminates properly, and
-leaves `422e30ed` fully detectable because its payload is a custom assembly in
-`RegSvcs`, not `mscorlib`. That wants the benign images carved and read before
-anyone builds it. **Firing is `n=1`; reproduce before committing to a fix.**
+**Reproducing it needs the compile to reach ~36 modules.** A freshly reverted
+guest compiles 2,500 classes too fast to get there — that run gave a single
+dump at **9 modules**. `--probe-classes` exists for this; 12,000 reaches 36 on
+a clean VM. **If a re-run reports 0, check the module count before concluding
+anything** — below the mid-30s the test has not run.
 
-**NEW, AND UNRESOLVED: `System.Management.Automation` cannot be in `csc.exe`.**
-The process tree is settled — `powershell.exe` 10940 spawned `csc.exe` 2944,
-which spawned `cvtres.exe` 4528 — and `_dump_parent_at_spawn` names its output
-after the parent it dumped (`memory_dump.py:818`), so `csc.exe_2944_…` should
-genuinely be `csc.exe`. A C# compiler does not load the PowerShell engine.
-Either an image is being attributed to the wrong dump, or a dump is named for
-the wrong process. **If images from `powershell.exe` are landing under a
-`csc.exe` label, then `hollowing_target` is being computed from the wrong
-process name** — which would make this the sixth attribution bug in this
-pipeline and would change what the gate's hits mean again.
+**So `unmapped_pe_in_hollowing_target` is unsound as written.** It needs no
+malicious sample, only a dump taken late enough, and `HOLLOWING_TARGETS` is
+mostly managed tooling — so any run that catches one of them working scores it.
 
-**The source dumps are gone** — the revert took the case directory, and only
-the carved `.bin_` files survive on `G:\ringforge-artifacts\c14cb5b6_carved\`.
-Confirming this needs a fresh run of `af2d8300…` at `timeout_seconds: 240`,
-keeping the `.dmp` files long enough to check which process each image really
-came from. Note also that the summary records `dump_file:
-csc.exe_2944_t149_atspawn.dmp` beside `carved_file: …_t149_parent-at-spawn_…`
-— two trigger spellings for one dump, which is worth a look while in there.
+**The fix, with a principle behind it:** exclude images whose metadata
+identifies them as **known framework assemblies**. The benign and malicious
+sets are the same four, all framework. This leaves `422e30ed` fully detectable,
+because its payload is a *custom* assembly injected into `RegSvcs` — not
+`mscorlib`. Reading the image's own metadata is what discriminates; an address
+heuristic would not have.
+
+**No attribution bug. `System.Management.Automation` really is in `csc.exe`.**
+This was chased as a suspected mislabel and it is not one: `analyze_dump`
+reports `host_image = …\v4.0.30319\csc.exe` on both benign dumps, and the four
+benign images carry **byte-identical sizes to the sample's** — 3,547,136 /
+6,692,864 / 1,556,480 / 5,447,680.
+
+**The mechanism is ordinary and explains everything.** `csc.exe` memory-maps
+its reference assemblies to read their metadata. Mapped files are not loaded
+modules, so no module entry covers them and the carver calls them `unmapped`.
+`Add-Type` passes the calling session's loaded assemblies as references, which
+is why the **PowerShell engine** turns up inside a C# compiler. It is not
+evidence of anything. It also explains why the `-ReferencedAssemblies` arm
+changed nothing: `Add-Type` was already passing them.
 
 **Recording the environment fact:** this cannot be measured on the host at all.
 `MiniDumpWriteDump` returns `0x80070005` `ERROR_ACCESS_DENIED` on a `csc.exe`
