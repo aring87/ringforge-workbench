@@ -204,6 +204,15 @@ def HandleTcp(sock):  # noqa: N802 -- FakeNet requires this exact name
             break
         buffer = b""
 
+    # **Whatever is still buffered when the loop ends is still what the client
+    # said.** The completeness check above `continue`s on anything that is
+    # neither HTTP nor parseable JSON, waiting for more -- and a client waiting
+    # on *us* never sends more. Run `b610dea4` lost eleven TLS ClientHellos
+    # exactly here and reported `connected_silent` for a client that had spoken
+    # 465 bytes each time.
+    if buffer:
+        _RECORDER.note_request(peer, buffer)
+
     if not spoke:
         _RECORDER.note_silent(peer)
 

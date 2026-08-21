@@ -82,6 +82,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def looks_like_tls(raw: bytes) -> bool:
+    """A TLS record header: handshake type, then a plausible protocol version.
+
+    Worth naming rather than leaving as "unparsed bytes". Run `b610dea4` showed
+    the implant opening **TLS** on 8545 -- ClientHello, SNI
+    `data-seed-prebsc-1-s1.binance.org`, eleven times -- so a plain listener can
+    never be spoken to, and "it sent something we could not parse" and "it tried
+    to negotiate TLS" are very different instructions to whoever reads the run.
+    """
+    return (
+        len(raw) >= 3
+        and raw[0] == 0x16                      # handshake record
+        and raw[1] == 0x03 and raw[2] <= 0x04   # SSL 3.0 .. TLS 1.3
+    )
+
+
 def _printable(raw: bytes, limit: int = _PREVIEW_CHARS) -> str:
     """A lossy preview for reading. `raw_base64` is the lossless copy."""
     text = raw[:limit].decode("utf-8", errors="replace")
@@ -250,6 +266,16 @@ class _Handler(socketserver.BaseRequestHandler):
                 break
             buffer = b""
 
+        # **Whatever is still buffered when the loop ends is still what the
+        # client said.** The completeness check above `continue`s on anything
+        # that is neither HTTP nor parseable JSON, waiting for more -- and a
+        # client waiting on *us* never sends more. Run `b610dea4` lost eleven
+        # TLS ClientHellos exactly here and reported `connected_silent` for a
+        # client that had spoken 465 bytes, which made the `unparsed` outcome
+        # unreachable for the one case that actually occurred.
+        if buffer:
+            responder.recorder.note_request(peer, buffer)
+
         if not spoke:
             responder.recorder.note_silent(peer)
 
@@ -373,6 +399,7 @@ class RequestRecorder:
             "content_type": http["headers"].get("content-type", ""),
             "host_header": http["headers"].get("host", ""),
             "is_jsonrpc": rpc["is_jsonrpc"],
+            "is_tls": looks_like_tls(raw),
             "parse_error": rpc["parse_error"],
             "calls": rpc["calls"],
         }
@@ -455,6 +482,8 @@ class RequestRecorder:
         target = [r for r in records if r.get("is_target_call")]
         jsonrpc = [r for r in records if r.get("is_jsonrpc")]
 
+        tls = [r for r in records if r.get("is_tls")]
+
         if target:
             outcome = OUTCOME_ETH_CALL
         elif jsonrpc:
@@ -471,7 +500,14 @@ class RequestRecorder:
             "reply": self.reply,
             "error": error,
             "outcome": outcome,
-            "outcome_note": OUTCOME_NOTES[outcome],
+            "outcome_note": (
+                "TLS was offered, not JSON-RPC. The client sent a ClientHello "
+                "and waited for a ServerHello this listener cannot give it, so "
+                "nothing above the handshake was ever spoken. Terminate TLS "
+                "before expecting a request."
+                if outcome == OUTCOME_UNPARSED and tls
+                else OUTCOME_NOTES[outcome]
+            ),
             "connections": len(connections),
             "requests": len(records),
             "jsonrpc_requests": len(jsonrpc),
@@ -479,6 +515,10 @@ class RequestRecorder:
             "methods": methods,
             # C3: whether anything oriented itself before asking. An empty list
             # with a target call present is C3 holding.
+            # Counted separately because it is not a parse failure, it is a
+            # different protocol. A run with these and no requests needs TLS
+            # termination, not a better parser.
+            "tls_client_hellos": sum(1 for r in records if r.get("is_tls")),
             "handshake_methods": [m for m in methods if m.lower() in HANDSHAKE_METHODS],
             "handshake_before_target": _handshake_first(records),
             "contract": ETHERHIDING_CONTRACT,

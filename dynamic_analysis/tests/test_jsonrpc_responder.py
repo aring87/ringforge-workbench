@@ -14,6 +14,7 @@ contract `0x0F14fc3b...`, selector `0x3bc5de30` (`getData()`).
 import json
 import socket
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -361,3 +362,94 @@ class BindingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: The first bytes of the ClientHello run `b610dea4` recorded: TLS record type
+#: 0x16, version 0x0301, then handshake type 0x01 and TLS 1.2. Taken from the
+#: capture rather than composed, because the point is to pin the real shape.
+TLS_CLIENT_HELLO = bytes.fromhex("16030101cc010001c80303") + b"\x00" * 64
+
+
+class ClientSpokeButNotOurProtocol(unittest.TestCase):
+    """The case that made `unparsed` unreachable, and cost a detonation's answer.
+
+    On run `b610dea4` the implant opened **TLS** on 8545 -- ClientHello, SNI
+    `data-seed-prebsc-1-s1.binance.org`, eleven times, 465 bytes each. The
+    handler read them, found them neither HTTP nor JSON, `continue`d to wait for
+    more, and the client was waiting for a ServerHello that a plain listener
+    cannot send. Nothing was ever recorded and the summary read
+    `connected_silent` -- for a client that had spoken every time.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.responder = JsonRpcResponder(self.tmp, host="127.0.0.1", port=0)
+        self.assertTrue(self.responder.start()["started"])
+        self.port = self.responder._server.server_address[1]
+
+    def tearDown(self) -> None:
+        self.responder.stop()
+
+    def _speak_then_wait(self, payload: bytes) -> None:
+        """Send, then hold the socket open exactly as a TLS client would."""
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as client:
+            client.sendall(payload)
+            client.settimeout(1.0)
+            try:
+                client.recv(65536)
+            except OSError:
+                pass
+
+    def test_a_client_that_speaks_and_waits_is_not_recorded_as_silent(self) -> None:
+        self.responder.read_timeout = 0.5
+        self._speak_then_wait(TLS_CLIENT_HELLO)
+        summary = self.responder.stop()
+
+        self.assertNotEqual(summary["outcome"], OUTCOME_CONNECTED_SILENT)
+        self.assertEqual(summary["outcome"], OUTCOME_UNPARSED)
+        self.assertEqual(summary["requests"], 1)
+
+    def test_the_bytes_survive_so_the_protocol_can_be_identified(self) -> None:
+        import base64
+
+        self.responder.read_timeout = 0.5
+        self._speak_then_wait(TLS_CLIENT_HELLO)
+        self.responder.stop()
+
+        entries = [json.loads(line) for line in
+                   self.responder.requests_path.read_text(encoding="utf-8").splitlines()]
+        request = next(e for e in entries if e["kind"] == "request")
+
+        self.assertEqual(base64.b64decode(request["raw_base64"]), TLS_CLIENT_HELLO)
+
+    def test_tls_is_named_rather_than_left_as_unparsed(self) -> None:
+        # "It sent something we could not parse" and "it tried to negotiate TLS"
+        # are different instructions to whoever reads the run.
+        self.responder.read_timeout = 0.5
+        self._speak_then_wait(TLS_CLIENT_HELLO)
+        summary = self.responder.stop()
+
+        self.assertEqual(summary["tls_client_hellos"], 1)
+        self.assertIn("TLS", summary["outcome_note"])
+
+    def test_ordinary_binary_is_still_just_unparsed(self) -> None:
+        self.responder.read_timeout = 0.5
+        self._speak_then_wait(b"\x00\x01\x02\x03not tls at all")
+        summary = self.responder.stop()
+
+        self.assertEqual(summary["outcome"], OUTCOME_UNPARSED)
+        self.assertEqual(summary["tls_client_hellos"], 0)
+        self.assertNotIn("TLS", summary["outcome_note"])
+
+    def test_a_truly_silent_client_still_reads_as_silent(self) -> None:
+        # The flush must not turn every connection into a phantom request.
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5):
+            pass
+        for _ in range(50):
+            if self.responder.report()["connections"]:
+                break
+            time.sleep(0.02)
+        summary = self.responder.stop()
+
+        self.assertEqual(summary["outcome"], OUTCOME_CONNECTED_SILENT)
+        self.assertEqual(summary["requests"], 0)
