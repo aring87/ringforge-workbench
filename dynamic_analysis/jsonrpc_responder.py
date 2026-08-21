@@ -205,7 +205,7 @@ class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         responder: JsonRpcResponder = self.server.responder  # type: ignore[attr-defined]
         peer = f"{self.client_address[0]}:{self.client_address[1]}"
-        responder._note_connection(peer)
+        responder.recorder.note_connection(peer)
 
         self.request.settimeout(responder.read_timeout)
         buffer = b""
@@ -224,7 +224,7 @@ class _Handler(socketserver.BaseRequestHandler):
             spoke = True
             buffer += chunk
             if len(buffer) > MAX_REQUEST_BYTES:
-                responder._note_request(peer, buffer[:MAX_REQUEST_BYTES], truncated=True)
+                responder.recorder.note_request(peer, buffer[:MAX_REQUEST_BYTES], truncated=True)
                 break
 
             # A request is complete once the headers are in and the body has
@@ -243,15 +243,15 @@ class _Handler(socketserver.BaseRequestHandler):
             elif not _parse_jsonrpc(buffer)["is_jsonrpc"]:
                 continue
 
-            record = responder._note_request(peer, buffer)
+            record = responder.recorder.note_request(peer, buffer)
             try:
-                self.request.sendall(responder._response_bytes(record))
+                self.request.sendall(responder.recorder.response_bytes(record))
             except OSError:
                 break
             buffer = b""
 
         if not spoke:
-            responder._note_silent(peer)
+            responder.recorder.note_silent(peer)
 
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -278,24 +278,18 @@ class _Server(socketserver.ThreadingTCPServer):
         super().server_bind()
 
 
-class JsonRpcResponder:
-    """Binds a port, records what is asked, answers without answering.
+class RequestRecorder:
+    """Recording, classification and the useless answer -- with no socket.
 
-    Held as an object because the caller keeps it running across the sample
-    detonation, the same shape as `PacketCapture` and `FakeNetSession`.
+    Split out from `JsonRpcResponder` because there are two ways bytes reach
+    this code and only one of them owns a listening port. Under FakeNet the
+    diverter owns the socket and hands it to a `HandleTcp` callback, so the
+    server half is not merely unnecessary there, it is unavailable. Everything
+    that decides what a run *means* lives here, once, and is tested once.
     """
 
-    def __init__(
-        self,
-        output_dir: str | Path,
-        host: str = "0.0.0.0",
-        port: int = DEFAULT_PORT,
-        reply: str = "error",
-        read_timeout: float = 15.0,
-    ):
+    def __init__(self, output_dir: str | Path, reply: str = "error"):
         self.output_dir = Path(output_dir)
-        self.host = host
-        self.port = int(port)
         # `error` is phase 1's default: a well-formed JSON-RPC error, which is
         # what a node returns when a call cannot be executed. `empty` returns a
         # successful `0x`, which is what a node returns for a contract with no
@@ -303,18 +297,11 @@ class JsonRpcResponder:
         # path through the implant's parser. Which one it is matters to C4, so
         # it is a knob rather than a constant.
         self.reply = reply if reply in ("error", "empty") else "error"
-        self.read_timeout = float(read_timeout)
 
         self.requests_path = self.output_dir / "jsonrpc_requests.jsonl"
         self.summary_path = self.output_dir / "jsonrpc_summary.json"
 
-        self.started = False
-        self.error = ""
-        self._server: Optional[_Server] = None
-        self._thread: Optional[threading.Thread] = None
-        self._stopping = threading.Event()
         self._lock = threading.Lock()
-
         self._connections: list[dict[str, Any]] = []
         self._records: list[dict[str, Any]] = []
 
@@ -327,6 +314,7 @@ class JsonRpcResponder:
         only in memory is one that may not survive the run that produced it.
         """
         try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
             with self.requests_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(entry) + "\n")
                 handle.flush()
@@ -334,16 +322,29 @@ class JsonRpcResponder:
             # Losing the file must not cost the in-memory summary as well.
             pass
 
-    def _note_connection(self, peer: str) -> None:
+    def note_connection(self, peer: str) -> None:
         entry = {"kind": "connection", "time": _now(), "peer": peer}
         with self._lock:
             self._connections.append(entry)
         self._append(entry)
 
-    def _note_silent(self, peer: str) -> None:
+    def note_silent(self, peer: str) -> None:
         self._append({"kind": "connection_closed_silent", "time": _now(), "peer": peer})
 
-    def _note_request(self, peer: str, raw: bytes, truncated: bool = False) -> dict[str, Any]:
+    def note_request(
+        self,
+        peer: str,
+        raw: bytes,
+        truncated: bool = False,
+        raw_source: str = "wire",
+    ) -> dict[str, Any]:
+        """Record one request.
+
+        `raw_source` is `wire` when these are the bytes as they arrived, and
+        `reconstructed` when they were rebuilt from an already-parsed request.
+        Phase 2 is written against `raw_base64`, so which one it is has to be
+        on the record rather than inferred from how the run was wired.
+        """
         http = _parse_http(raw)
         rpc = _parse_jsonrpc(http["body"] if http["is_http"] else raw)
 
@@ -353,7 +354,7 @@ class JsonRpcResponder:
             "peer": peer,
             "bytes": len(raw),
             "truncated": truncated,
-            # Lossless, because phase 2 is written against these bytes.
+            "raw_source": raw_source,
             "raw_base64": base64.b64encode(raw).decode("ascii"),
             "preview": _printable(raw),
             "is_http": http["is_http"],
@@ -375,20 +376,20 @@ class JsonRpcResponder:
 
     # -- answering ---------------------------------------------------------
 
-    def _response_bytes(self, record: dict[str, Any]) -> bytes:
+    def response_payload(self, record: dict[str, Any]) -> dict[str, Any]:
         calls = record.get("calls") or []
         identifier = calls[0].get("id") if calls else None
 
         if self.reply == "empty":
-            payload: dict[str, Any] = {"jsonrpc": "2.0", "id": identifier, "result": "0x"}
-        else:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": identifier,
-                "error": {"code": -32000, "message": "execution reverted"},
-            }
+            return {"jsonrpc": "2.0", "id": identifier, "result": "0x"}
+        return {
+            "jsonrpc": "2.0",
+            "id": identifier,
+            "error": {"code": -32000, "message": "execution reverted"},
+        }
 
-        body = json.dumps(payload).encode("utf-8")
+    def response_bytes(self, record: dict[str, Any]) -> bytes:
+        body = json.dumps(self.response_payload(record)).encode("utf-8")
         head = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json\r\n"
@@ -397,6 +398,106 @@ class JsonRpcResponder:
             "\r\n"
         ).encode("ascii")
         return head + body
+
+    # -- reading -----------------------------------------------------------
+
+    def report(self, listening: str = "", error: str = "") -> dict[str, Any]:
+        """The run's classification, and the evidence for it.
+
+        `outcome` is the field to read first, and `no_connection` is a statement
+        about the diverter rather than about the sample -- prediction C1 is what
+        separates those, and nothing below it may be written up without it.
+        """
+        with self._lock:
+            connections = list(self._connections)
+            records = list(self._records)
+
+        methods: dict[str, int] = {}
+        for record in records:
+            for method in record.get("methods", []):
+                methods[method] = methods.get(method, 0) + 1
+
+        target = [r for r in records if r.get("is_target_call")]
+        jsonrpc = [r for r in records if r.get("is_jsonrpc")]
+
+        if target:
+            outcome = OUTCOME_ETH_CALL
+        elif jsonrpc:
+            outcome = OUTCOME_OTHER_RPC
+        elif records:
+            outcome = OUTCOME_UNPARSED
+        elif connections:
+            outcome = OUTCOME_CONNECTED_SILENT
+        else:
+            outcome = OUTCOME_NO_CONNECTION
+
+        return {
+            "listening": listening,
+            "reply": self.reply,
+            "error": error,
+            "outcome": outcome,
+            "outcome_note": OUTCOME_NOTES[outcome],
+            "connections": len(connections),
+            "requests": len(records),
+            "jsonrpc_requests": len(jsonrpc),
+            "target_calls": len(target),
+            "methods": methods,
+            # C3: whether anything oriented itself before asking. An empty list
+            # with a target call present is C3 holding.
+            "handshake_methods": [m for m in methods if m.lower() in HANDSHAKE_METHODS],
+            "handshake_before_target": _handshake_first(records),
+            "contract": ETHERHIDING_CONTRACT,
+            "selector": GETDATA_SELECTOR,
+            "first_seen": records[0]["time"] if records else "",
+            "last_seen": records[-1]["time"] if records else "",
+            "requests_path": str(self.requests_path),
+        }
+
+    def write_summary(self, listening: str = "", error: str = "") -> dict[str, Any]:
+        summary = self.report(listening=listening, error=error)
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return summary
+
+
+class JsonRpcResponder:
+    """Binds a port, records what is asked, answers without answering.
+
+    Held as an object because the caller keeps it running across the sample
+    detonation, the same shape as `PacketCapture` and `FakeNetSession`. Used
+    when nothing else owns the socket; under FakeNet the handler in
+    `fakenet_custom` drives the same `RequestRecorder` instead.
+    """
+
+    def __init__(
+        self,
+        output_dir: str | Path,
+        host: str = "0.0.0.0",
+        port: int = DEFAULT_PORT,
+        reply: str = "error",
+        read_timeout: float = 15.0,
+    ):
+        self.output_dir = Path(output_dir)
+        self.host = host
+        self.port = int(port)
+        self.read_timeout = float(read_timeout)
+
+        self.recorder = RequestRecorder(output_dir, reply)
+        self.requests_path = self.recorder.requests_path
+        self.summary_path = self.recorder.summary_path
+
+        self.started = False
+        self.error = ""
+        self._server: Optional[_Server] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stopping = threading.Event()
+
+    @property
+    def reply(self) -> str:
+        return self.recorder.reply
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -432,66 +533,15 @@ class JsonRpcResponder:
             self._thread.join(timeout=5)
         self.started = False
 
-        summary = self.report()
-        try:
-            self.summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-        return summary
+        return self.recorder.write_summary(listening=self._listening(), error=self.error)
 
     # -- reading -----------------------------------------------------------
 
+    def _listening(self) -> str:
+        return f"{self.host}:{self.port}"
+
     def report(self) -> dict[str, Any]:
-        """The run's classification, and the evidence for it.
-
-        `outcome` is the field to read first, and `no_connection` is a statement
-        about the diverter rather than about the sample -- prediction C1 is what
-        separates those, and nothing below it may be written up without it.
-        """
-        with self._lock:
-            connections = list(self._connections)
-            records = list(self._records)
-
-        methods: dict[str, int] = {}
-        for record in records:
-            for method in record.get("methods", []):
-                methods[method] = methods.get(method, 0) + 1
-
-        target = [r for r in records if r.get("is_target_call")]
-        jsonrpc = [r for r in records if r.get("is_jsonrpc")]
-
-        if target:
-            outcome = OUTCOME_ETH_CALL
-        elif jsonrpc:
-            outcome = OUTCOME_OTHER_RPC
-        elif records:
-            outcome = OUTCOME_UNPARSED
-        elif connections:
-            outcome = OUTCOME_CONNECTED_SILENT
-        else:
-            outcome = OUTCOME_NO_CONNECTION
-
-        return {
-            "listening": f"{self.host}:{self.port}",
-            "reply": self.reply,
-            "error": self.error,
-            "outcome": outcome,
-            "outcome_note": OUTCOME_NOTES[outcome],
-            "connections": len(connections),
-            "requests": len(records),
-            "jsonrpc_requests": len(jsonrpc),
-            "target_calls": len(target),
-            "methods": methods,
-            # C3: whether anything oriented itself before asking. An empty list
-            # with a target call present is C3 holding.
-            "handshake_methods": [m for m in methods if m.lower() in HANDSHAKE_METHODS],
-            "handshake_before_target": _handshake_first(records),
-            "contract": ETHERHIDING_CONTRACT,
-            "selector": GETDATA_SELECTOR,
-            "first_seen": records[0]["time"] if records else "",
-            "last_seen": records[-1]["time"] if records else "",
-            "requests_path": str(self.requests_path),
-        }
+        return self.recorder.report(listening=self._listening(), error=self.error)
 
 
 OUTCOME_NOTES = {

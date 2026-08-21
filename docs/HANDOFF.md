@@ -5389,11 +5389,37 @@ carrying a **sink address the operator controls**, and watch for substitution
 and the beacon. Never a live address, and the guest stays contained: the point
 is to choose the C2, not to reach one.
 
-**Where it plugs in.** `fakenet_config_path` is already threaded through
-(`orchestrator.py:1996` -> `2328`) and is **unused — no custom config exists in
-the repo yet**, so this is the first one. Either a FakeNet custom listener bound
-to `8545`, or a standalone responder with a config that routes to it; phase 1
-should pick whichever logs raw bytes with less ceremony.
+**Where it plugs in — BUILT, 21 Aug.** `fakenet_config_path` was threaded
+through (`orchestrator.py:1996` -> `2328`) and unused; this is the repo's first
+custom config. The route is FakeNet's own **custom-response** mechanism: a
+`RawListener` section on `8545` with `Custom:` naming an ini whose `TcpDynamic:`
+names a Python file, which FakeNet `load_source`s and calls as `HandleTcp(sock)`,
+handing the socket over completely. Read out of `RawListener.py` rather than
+recalled. **Both paths resolve relative to the directory holding the main
+config**, which is why the generator writes all three files into one directory.
+
+    ..\.venv\Scripts\python.exe make_fakenet_config.py --out C:\fakenet-0bw
+
+`scripts\make_fakenet_config.py` **appends text; it does not round-trip the
+config through `configparser`**, which drops every comment and lowercases option
+names. FakeNet's default config is mostly comments explaining containment
+switches, and it is the one file on the bench where a silent reformat could mean
+traffic leaving the guest. It also checks three things and reports rather than
+corrects them: `8545` already having a listener, `8545` sitting in
+`BlackListPortsTCP`, and `RedirectAllTraffic` being off. The first two produce
+`no_connection`, which is indistinguishable from a silent implant unless the
+generator says so before the run.
+
+**Blacklisting `8545` in the diverter was the obvious wiring and it is wrong.**
+An undiverted port follows whatever address DNS returned, which is not
+guaranteed to be local. Routing through a custom response keeps every packet
+inside FakeNet's diversion; containment is not a setting to work around.
+
+**`TcpDynamic` rather than `HttpDynamic`**, because the HTTP hook hands over an
+already-parsed request and phase 2 is encoded against raw bytes. It also catches
+a client that does not speak HTTP, which a hand-rolled implant may not.
+`raw_source` on every record says `wire` or `reconstructed` so this cannot be
+assumed later.
 
 **What the log must separate, because FakeNet already gives it a TCP peer and a
 connection therefore proves nothing:**
