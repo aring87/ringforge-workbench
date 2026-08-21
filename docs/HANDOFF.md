@@ -2835,14 +2835,36 @@ methods.** So the gate graded **strong** on the CLR's own code, exactly as
 `0bq` claimed. The scoring asymmetry in the paragraph above is real and this is
 the other half of it.
 
-**A benign control did NOT reproduce it, and that is a fact about the control.**
-`benign_baseline.py --managed` in the guest, `csc.exe` dumped three times during
-a real `Add-Type`, last kept at +1.75 s, 48.2 MB, 33 modules against the
-sample's 36 — and **0 unmapped**. Four unrelated .NET applications give another
-570 module comparisons at 0 unmapped. The probe compiles 2,500 trivial classes
-with **no `-ReferencedAssemblies`**, which is the likeliest reason it stays
-clean. **Do not read those zeroes as exoneration of the gate** — read them as a
-control that has not yet been made to match the conditions.
+**AND A BENIGN COMPILE REPRODUCES IT.** `benign_baseline.py --only-managed
+--no-refs` in the guest — 2,500 trivial classes, no references, nothing
+malicious anywhere — produced **`unmapped 2`, both in a hollowing target**.
+
+    run          refs   dump MB   modules   unmapped
+    guest 1st    no        31.2      23        0
+    guest2       no        48.2      33        0
+    refs         YES       39.8      33        0
+    norefs       no        62.6      35        2      <-- fires
+    c14cb5b6     --          --      36        4
+
+**The variable is how far into its life the process is dumped, not references.**
+The count rises monotonically with module count and the sample's 4 sits on the
+same curve as benign 2. Every earlier zero was a dump taken too early — which
+is why the first pass at this was recorded as "the premise is refuted" and then
+had to be withdrawn twice. `-ReferencedAssemblies` was a wrong guess; the
+`--no-refs` arm, meant as the *control*, is the one that fired.
+
+**So `unmapped_pe_in_hollowing_target` is unsound as written.** It does not
+need a malicious sample, only a dump taken late enough — and `HOLLOWING_TARGETS`
+is mostly managed tooling, so any run that catches one of them working will
+score it.
+
+**The fix has a principle available.** If the benign images prove to be the
+framework set — and the sample's were `mscorlib` and
+`System.Management.Automation` — then excluding images whose *metadata
+identifies them as known framework assemblies* discriminates properly, and
+leaves `422e30ed` fully detectable because its payload is a custom assembly in
+`RegSvcs`, not `mscorlib`. That wants the benign images carved and read before
+anyone builds it. **Firing is `n=1`; reproduce before committing to a fix.**
 
 **NEW, AND UNRESOLVED: `System.Management.Automation` cannot be in `csc.exe`.**
 The process tree is settled — `powershell.exe` 10940 spawned `csc.exe` 2944,

@@ -168,10 +168,29 @@ same binary, so loaded compiler against loaded compiler.
 `dotnet_meta.py` identifies them as `mscorlib` (3356 typedefs, 29257 methods)
 and `System.Management.Automation` (3692 typedefs, 33669 methods) among others
 — framework assemblies, not payloads. So the gate did grade **strong** on the
-CLR's own code. **The benign control simply failed to reproduce the
-conditions**, most likely because the probe compiles trivial classes with no
-`-ReferencedAssemblies`. Zeroes from a control that does not match the case are
-not exoneration; making the probe match is the next step.
+CLR's own code.
+
+**And a benign compile then reproduced it.** `--only-managed --no-refs`, 2,500
+trivial classes, nothing malicious: **`unmapped 2`, both in a hollowing target**.
+
+| run | refs | dump MB | modules | unmapped |
+|---|---|---|---|---|
+| guest 1st | no | 31.2 | 23 | 0 |
+| guest2 | no | 48.2 | 33 | 0 |
+| refs | **yes** | 39.8 | 33 | 0 |
+| **norefs** | no | **62.6** | **35** | **2** |
+| `c14cb5b6` | — | — | 36 | 4 |
+
+**The variable is dump completeness, not references** — monotonic in module
+count, with the sample's 4 on the same curve as benign 2. Every earlier zero
+was a dump taken too early. `unmapped_pe_in_hollowing_target` is unsound as
+written: it needs only a dump taken late enough against a process that is
+mostly managed tooling by definition.
+
+**A principled fix is available**: exclude images whose metadata identifies
+them as known framework assemblies. That leaves `422e30ed` detectable, since
+its payload is a custom assembly in `RegSvcs` rather than `mscorlib`. Carve and
+read the benign images first, and reproduce the firing — it is `n=1`.
 
 **And an unresolved anomaly:** `System.Management.Automation` cannot be in
 `csc.exe`. Either an image is attributed to the wrong dump or a dump is named

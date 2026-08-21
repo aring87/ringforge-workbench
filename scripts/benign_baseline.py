@@ -181,16 +181,39 @@ _MANAGED_WANTED = {"csc.exe", "cvtres.exe", "msbuild.exe", "vbc.exe"}
 _MANAGED_REDUMP_SECONDS = 0.4
 
 
-def _probe_source(path: Path, classes: int = _PROBE_CLASSES) -> None:
+#: Types that force `csc.exe` to load assemblies beyond `mscorlib`. The first
+#: probe compiled trivial classes referencing nothing, came back with 0 unmapped
+#: images, and that was read -- wrongly -- as the gate not firing on benign
+#: compiles. The five images it *did* fire on in run `c14cb5b6` turned out to be
+#: `mscorlib` and `System.Management.Automation`, so a control that never loads
+#: them is not a control at all. `-ReferencedAssemblies` is the variable.
+_PROBE_USES_REFS = """using System;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Management.Automation;
+
+public class ProbeReferenced {
+    public string R() { return new Regex("a+").Match("aaa").Value; }
+    public int    L() { return Enumerable.Range(0, 10).Sum(); }
+    public object P() { return new PSObject("probe"); }
+    public Uri    U() { return new Uri("http://localhost/"); }
+}
+"""
+
+
+def _probe_source(path: Path, classes: int = _PROBE_CLASSES,
+                  with_refs: bool = True) -> None:
     """Write C# that is entirely ordinary and takes a moment to compile."""
     body = "\n".join(
         f"public class Probe{i} {{ public int F(int x) {{ return x + {i}; }} }}"
         for i in range(classes)
     )
-    path.write_text(body, encoding="utf-8")
+    head = _PROBE_USES_REFS if with_refs else ""
+    path.write_text(head + body, encoding="utf-8")
 
 
-def _spawn_managed(scratch: Path, poll_seconds: float = 30.0) -> list[tuple[str, int, Path]]:
+def _spawn_managed(scratch: Path, poll_seconds: float = 30.0,
+                   with_refs: bool = True) -> list[tuple[str, int, Path]]:
     """Dump a legitimate `csc.exe` while it is alive.
 
     `_candidates` cannot reach this case: it iterates running processes, and the
@@ -207,13 +230,33 @@ def _spawn_managed(scratch: Path, poll_seconds: float = 30.0) -> list[tuple[str,
     import psutil
 
     src = scratch / "probe.cs"
-    _probe_source(src)
+    _probe_source(src, with_refs=with_refs)
+
+    if with_refs:
+        # [psobject].Assembly.Location rather than the bare name: the PowerShell
+        # engine assembly does not resolve by simple name from csc's search path.
+        command = (
+            "$refs = @('System.dll','System.Core.dll',[psobject].Assembly.Location); "
+            f"Add-Type -TypeDefinition (Get-Content -Raw '{src}') "
+            "-ReferencedAssemblies $refs"
+        )
+    else:
+        command = f"Add-Type -TypeDefinition (Get-Content -Raw '{src}')"
+
+    print(f"  probe: {'with' if with_refs else 'without'} -ReferencedAssemblies")
+
+    # **Capture the compile, do not discard it.** With output on DEVNULL a probe
+    # that fails to compile is indistinguishable from one that compiled and
+    # produced no unmapped images -- and the second is the result being claimed.
+    # Redirected to a file rather than a pipe so a full buffer cannot deadlock
+    # the poll loop below.
+    log_path = scratch / "probe_compile.log"
+    log_handle = open(log_path, "wb")
 
     # -NoProfile so a user profile cannot add anything to the picture.
     proc = subprocess.Popen(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         f"Add-Type -TypeDefinition (Get-Content -Raw '{src}')"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        stdout=log_handle, stderr=subprocess.STDOUT,
     )
 
     found: dict[int, tuple[str, Path]] = {}
@@ -270,6 +313,30 @@ def _spawn_managed(scratch: Path, poll_seconds: float = 30.0) -> list[tuple[str,
         proc.wait(timeout=30)
     except Exception:
         proc.kill()
+
+    try:
+        log_handle.close()
+    except Exception:
+        pass
+
+    rc = proc.returncode
+    output = ""
+    try:
+        output = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        pass
+
+    if rc not in (0, None) or output:
+        # A failed compile exits in a fraction of the time a real one takes, and
+        # the dump taken during it measures a compiler that never did any work.
+        print(f"  PROBE COMPILE FAILED (rc={rc}) -- the dumps below are of a "
+              f"compiler that errored out, not one that compiled:")
+        for line in output.splitlines()[:12]:
+            print(f"    | {line}")
+        print(f"    (full output: {log_path})")
+    else:
+        print(f"  probe compiled cleanly (rc={rc})")
+
     src.unlink(missing_ok=True)
 
     if not found:
@@ -290,6 +357,9 @@ def main() -> int:
     ap.add_argument("--only-managed", action="store_true",
                     help="skip the running-process corpus; measure only the "
                          "managed case")
+    ap.add_argument("--no-refs", action="store_true",
+                    help="compile the probe with no -ReferencedAssemblies. The "
+                         "A of an A/B: run both and compare unmapped counts")
     ap.add_argument("--pid", type=int, action="append", default=[],
                     help="dump this pid specifically; repeatable. For reaching "
                          "a process the size-ranked corpus would not pick, such "
@@ -317,7 +387,7 @@ def main() -> int:
 
     if args.managed or args.only_managed:
         print("spawning a legitimate Add-Type compile to reach csc.exe ...")
-        jobs.extend(_spawn_managed(scratch))
+        jobs.extend(_spawn_managed(scratch, with_refs=not args.no_refs))
         print()
 
     totals = {
