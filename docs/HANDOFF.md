@@ -5361,12 +5361,28 @@ observable as a responder that does not work at all** — the implant exits at
 t198, exactly as it already does. That is the silence-versus-absence trap this
 file keeps re-learning, so phase 1 is built to be unable to fall into it.
 
-**Phase 1 — record the question. No payload design at all.** Stand up a
-listener on `8545` that answers every request with a well-formed JSON-RPC error
-and writes the exact request bytes to the case directory. One run tells you the
-method, the params, the block tag, whether there is a `eth_chainId` /
-`net_version` handshake in front, and whether the beacon fires before or after
-the config fetch. None of that is guessable and all of it is cheap.
+**Phase 1 — record the question. No payload design at all. BUILT, 21 Aug:**
+`dynamic_analysis\jsonrpc_responder.py`, 24 tests. It answers every request
+with a well-formed JSON-RPC error and writes the exact request bytes to the case
+directory. One run tells you the method, the params, the block tag, whether
+there is a `eth_chainId` / `net_version` handshake in front, and whether the
+beacon fires before or after the config fetch. None of that is guessable and all
+of it is cheap.
+
+    ..\.venv\Scripts\python.exe -m dynamic_analysis.jsonrpc_responder ^
+        --output-dir <case>\network --port 8545
+
+`--reply empty` is the other arm: a successful `0x`, which is what a real node
+returns for a contract with no code and therefore the *truthful* answer for this
+dead one. It is a different path through the implant's parser than an error, and
+C4 is what tells them apart. Raw bytes are kept base64 alongside every parsed
+field, because phase 2 is written against them.
+
+**Its own bind is exclusive on purpose.** `SO_REUSEADDR` on Windows lets a
+second socket take a port another process already holds, so a responder started
+while FakeNet owns 8545 would report `started: True`, receive nothing, and
+summarise as `no_connection` -- blaming the diverter for a port collision. A
+taken port is now an error at start.
 
 **Phase 2 — answer it.** With the request known, encode a `getData()` return
 carrying a **sink address the operator controls**, and watch for substitution

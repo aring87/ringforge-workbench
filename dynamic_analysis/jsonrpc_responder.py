@@ -1,0 +1,561 @@
+"""A recording JSON-RPC responder -- phase 1 of the EtherHiding lever (`0bw`).
+
+Run `c14cb5b6`'s payload reads its C2 address from a smart contract, and
+containment is what stopped it: FakeNet hands this class of malware a TCP peer,
+not a JSON-RPC response, so the implant asked `getData()`, got nothing usable,
+and exited at t198. Everything downstream of that fetch -- the substitution
+logic, the beacon protocol, the clipboard hook -- has never run.
+
+**This module does not answer the question. It records it.** That split is the
+whole design, and the reason is a failure mode rather than caution:
+`getData()`'s return encoding is nowhere in the binary. What exists is the
+implant's *parser*, and nothing has read its expectations. An answer encoded
+against a guess and a responder that never received a byte produce **the same
+observable** -- the implant exits at t198, which is what it already does. One of
+those is a result and the other is a broken bench, and a run that cannot tell
+them apart is not worth the guest time.
+
+So phase 1 replies with a well-formed JSON-RPC error and writes down exactly
+what was asked: the method, the params, the block tag, whether a handshake came
+first, and the raw bytes underneath all of it. Phase 2 encodes an answer against
+a request that has been read rather than assumed.
+
+**What this must never do is hand the implant a live address.** The point of a
+responder is that the operator chooses the C2; phase 2 serves a sink under the
+operator's control, and phase 1 serves no address at all.
+
+**Routing is the one thing this module cannot verify about itself.** It binds a
+port and records what arrives. Whether the guest's diverter actually delivers
+`data-seed-prebsc-1-s1.binance.org:8545` here is an operational question that
+prediction C1 exists to answer, and a summary reading `no_connection` is a
+statement about the wiring, not about the sample. See `report()`.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import socket
+import socketserver
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+#: The contract `c14cb5b6`'s payload reads, lowercased for comparison because
+#: JSON-RPC callers mix EIP-55 checksum case with plain hex freely.
+ETHERHIDING_CONTRACT = "0x0f14fc3bfac3726172acd08fe4bfb79b633e76ff"
+
+#: `getData()`. The first four bytes of the `eth_call` data field.
+GETDATA_SELECTOR = "0x3bc5de30"
+
+#: BSC testnet's JSON-RPC port, and what the implant connects to.
+DEFAULT_PORT = 8545
+
+#: Methods a client sends to orient itself before doing anything interesting.
+#: Tracked separately so prediction C3 -- that no handshake precedes the
+#: `eth_call` -- is answered by the log rather than by reading it back.
+HANDSHAKE_METHODS = {
+    "eth_chainid", "net_version", "web3_clientversion", "eth_blocknumber",
+    "eth_gasprice", "net_listening",
+}
+
+#: How the run is classified. **Silence must be distinguishable from absence**:
+#: four of these five are ways of receiving nothing useful, and they have
+#: entirely different causes. Collapsing them into "no result" is what makes a
+#: negative unreadable.
+OUTCOME_NO_CONNECTION = "no_connection"          # wiring, not the sample
+OUTCOME_CONNECTED_SILENT = "connected_silent"    # TCP accepted, no bytes sent
+OUTCOME_UNPARSED = "unparsed"                    # bytes arrived, not JSON-RPC
+OUTCOME_OTHER_RPC = "other_rpc"                  # JSON-RPC, but not the call
+OUTCOME_ETH_CALL = "eth_call"                    # the request we came for
+
+#: Cap on a single recorded request. A responder is not a place to buffer
+#: something unbounded, and nothing this implant sends is large.
+MAX_REQUEST_BYTES = 256 * 1024
+
+#: Enough of the body to read at a glance without decoding the base64.
+_PREVIEW_CHARS = 512
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _printable(raw: bytes, limit: int = _PREVIEW_CHARS) -> str:
+    """A lossy preview for reading. `raw_base64` is the lossless copy."""
+    text = raw[:limit].decode("utf-8", errors="replace")
+    return "".join(char if char.isprintable() or char in "\r\n\t" else "." for char in text)
+
+
+def _parse_http(raw: bytes) -> dict[str, Any]:
+    """Split an HTTP request into a start line, headers and a body.
+
+    Best-effort by design: a request that is not HTTP at all still has to be
+    recorded, because "the implant spoke raw JSON over the socket" is itself an
+    answer to phase 1's question.
+    """
+    result: dict[str, Any] = {"is_http": False, "method": "", "path": "",
+                              "headers": {}, "body": b""}
+    separator = raw.find(b"\r\n\r\n")
+    gap = 4
+    if separator < 0:
+        separator = raw.find(b"\n\n")
+        gap = 2
+    if separator < 0:
+        result["body"] = raw
+        return result
+
+    head = raw[:separator].decode("latin-1", errors="replace")
+    result["body"] = raw[separator + gap:]
+
+    lines = head.replace("\r\n", "\n").split("\n")
+    if not lines:
+        return result
+
+    parts = lines[0].split()
+    if len(parts) >= 3 and parts[2].upper().startswith("HTTP/"):
+        result["is_http"] = True
+        result["method"] = parts[0]
+        result["path"] = parts[1]
+
+    for line in lines[1:]:
+        if ":" in line:
+            key, _, value = line.partition(":")
+            result["headers"][key.strip().lower()] = value.strip()
+    return result
+
+
+def _parse_jsonrpc(body: bytes) -> dict[str, Any]:
+    """Pull the fields phase 1 exists to learn.
+
+    A batch request is a JSON array, which is legal and which this implant may
+    or may not use; both shapes are flattened into a list of calls so the caller
+    does not have to care which arrived.
+    """
+    result: dict[str, Any] = {"is_jsonrpc": False, "calls": [], "parse_error": ""}
+    if not body.strip():
+        return result
+    try:
+        document = json.loads(body.decode("utf-8", errors="strict"))
+    except Exception as error:
+        result["parse_error"] = str(error)
+        return result
+
+    entries = document if isinstance(document, list) else [document]
+    for entry in entries:
+        if not isinstance(entry, dict) or "method" not in entry:
+            continue
+        call: dict[str, Any] = {
+            "method": str(entry.get("method", "")),
+            "id": entry.get("id"),
+            "params": entry.get("params"),
+            "to": "",
+            "data": "",
+            "selector": "",
+            "block": "",
+        }
+        params = entry.get("params")
+        if isinstance(params, list) and params:
+            # `eth_call` is [{to, data, ...}, blockTag]. Read defensively: the
+            # shape is a convention of the caller's library, not a guarantee.
+            first = params[0]
+            if isinstance(first, dict):
+                call["to"] = str(first.get("to", "") or "")
+                call["data"] = str(first.get("data", first.get("input", "")) or "")
+                if call["data"].startswith("0x") and len(call["data"]) >= 10:
+                    call["selector"] = call["data"][:10].lower()
+            if len(params) > 1 and isinstance(params[1], str):
+                call["block"] = params[1]
+        result["calls"].append(call)
+
+    result["is_jsonrpc"] = bool(result["calls"])
+    return result
+
+
+def _is_target_call(call: dict[str, Any]) -> bool:
+    """An `eth_call` naming the contract, the selector, or both.
+
+    Deliberately an OR rather than an AND. A campaign that rotates its contract
+    still calls `getData()`, and a variant that renames the getter still reads
+    the same address; requiring both would miss the case this is most likely to
+    be re-run against.
+    """
+    if str(call.get("method", "")).lower() != "eth_call":
+        return False
+    to = str(call.get("to", "") or "").lower()
+    selector = str(call.get("selector", "") or "").lower()
+    return to == ETHERHIDING_CONTRACT or selector == GETDATA_SELECTOR
+
+
+def _handshake_first(records: list[dict[str, Any]]) -> bool:
+    """True when a handshake method was seen before the first target call."""
+    for record in records:
+        if record.get("is_target_call"):
+            return False
+        for method in record.get("methods", []):
+            if method.lower() in HANDSHAKE_METHODS:
+                return True
+    return False
+
+
+class _Handler(socketserver.BaseRequestHandler):
+    """One connection. Records it even if it never says anything."""
+
+    def handle(self) -> None:
+        responder: JsonRpcResponder = self.server.responder  # type: ignore[attr-defined]
+        peer = f"{self.client_address[0]}:{self.client_address[1]}"
+        responder._note_connection(peer)
+
+        self.request.settimeout(responder.read_timeout)
+        buffer = b""
+        spoke = False
+
+        while not responder._stopping.is_set():
+            try:
+                chunk = self.request.recv(65536)
+            except socket.timeout:
+                break
+            except OSError:
+                break
+            if not chunk:
+                break
+
+            spoke = True
+            buffer += chunk
+            if len(buffer) > MAX_REQUEST_BYTES:
+                responder._note_request(peer, buffer[:MAX_REQUEST_BYTES], truncated=True)
+                break
+
+            # A request is complete once the headers are in and the body has
+            # reached Content-Length. Anything that is not HTTP is treated as
+            # complete as soon as it parses -- waiting for a header that will
+            # never come is how a recorder loses the one message it exists for.
+            parsed = _parse_http(buffer)
+            if parsed["is_http"]:
+                declared = parsed["headers"].get("content-length")
+                try:
+                    expected = int(declared) if declared is not None else 0
+                except ValueError:
+                    expected = 0
+                if len(parsed["body"]) < expected:
+                    continue
+            elif not _parse_jsonrpc(buffer)["is_jsonrpc"]:
+                continue
+
+            record = responder._note_request(peer, buffer)
+            try:
+                self.request.sendall(responder._response_bytes(record))
+            except OSError:
+                break
+            buffer = b""
+
+        if not spoke:
+            responder._note_silent(peer)
+
+
+class _Server(socketserver.ThreadingTCPServer):
+    #: **Never `SO_REUSEADDR` here**, which is what `allow_reuse_address` sets
+    #: and what almost every socketserver example turns on. On Windows that flag
+    #: does not mean what it means on Unix: it lets a second socket bind a port
+    #: another process is already using. A responder started while FakeNet holds
+    #: 8545 would report `started: True`, receive nothing, and the summary would
+    #: read `no_connection` -- blaming the diverter for a port collision. That is
+    #: exactly the ambiguous result this phase exists to make impossible, so the
+    #: bind is made exclusive instead and a taken port is an error at start.
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+            except OSError:
+                # Not fatal: without it the bind is merely non-exclusive, and
+                # the caller still learns the port was taken in the common case.
+                pass
+        super().server_bind()
+
+
+class JsonRpcResponder:
+    """Binds a port, records what is asked, answers without answering.
+
+    Held as an object because the caller keeps it running across the sample
+    detonation, the same shape as `PacketCapture` and `FakeNetSession`.
+    """
+
+    def __init__(
+        self,
+        output_dir: str | Path,
+        host: str = "0.0.0.0",
+        port: int = DEFAULT_PORT,
+        reply: str = "error",
+        read_timeout: float = 15.0,
+    ):
+        self.output_dir = Path(output_dir)
+        self.host = host
+        self.port = int(port)
+        # `error` is phase 1's default: a well-formed JSON-RPC error, which is
+        # what a node returns when a call cannot be executed. `empty` returns a
+        # successful `0x`, which is what a node returns for a contract with no
+        # code -- the truthful answer for this dead contract, and a different
+        # path through the implant's parser. Which one it is matters to C4, so
+        # it is a knob rather than a constant.
+        self.reply = reply if reply in ("error", "empty") else "error"
+        self.read_timeout = float(read_timeout)
+
+        self.requests_path = self.output_dir / "jsonrpc_requests.jsonl"
+        self.summary_path = self.output_dir / "jsonrpc_summary.json"
+
+        self.started = False
+        self.error = ""
+        self._server: Optional[_Server] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stopping = threading.Event()
+        self._lock = threading.Lock()
+
+        self._connections: list[dict[str, Any]] = []
+        self._records: list[dict[str, Any]] = []
+
+    # -- recording ---------------------------------------------------------
+
+    def _append(self, entry: dict[str, Any]) -> None:
+        """Write through immediately.
+
+        A detonation can end by killing the whole box, so a record that exists
+        only in memory is one that may not survive the run that produced it.
+        """
+        try:
+            with self.requests_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
+                handle.flush()
+        except Exception:
+            # Losing the file must not cost the in-memory summary as well.
+            pass
+
+    def _note_connection(self, peer: str) -> None:
+        entry = {"kind": "connection", "time": _now(), "peer": peer}
+        with self._lock:
+            self._connections.append(entry)
+        self._append(entry)
+
+    def _note_silent(self, peer: str) -> None:
+        self._append({"kind": "connection_closed_silent", "time": _now(), "peer": peer})
+
+    def _note_request(self, peer: str, raw: bytes, truncated: bool = False) -> dict[str, Any]:
+        http = _parse_http(raw)
+        rpc = _parse_jsonrpc(http["body"] if http["is_http"] else raw)
+
+        entry: dict[str, Any] = {
+            "kind": "request",
+            "time": _now(),
+            "peer": peer,
+            "bytes": len(raw),
+            "truncated": truncated,
+            # Lossless, because phase 2 is written against these bytes.
+            "raw_base64": base64.b64encode(raw).decode("ascii"),
+            "preview": _printable(raw),
+            "is_http": http["is_http"],
+            "http_method": http["method"],
+            "http_path": http["path"],
+            "content_type": http["headers"].get("content-type", ""),
+            "host_header": http["headers"].get("host", ""),
+            "is_jsonrpc": rpc["is_jsonrpc"],
+            "parse_error": rpc["parse_error"],
+            "calls": rpc["calls"],
+        }
+        entry["methods"] = [call["method"] for call in rpc["calls"]]
+        entry["is_target_call"] = any(_is_target_call(call) for call in rpc["calls"])
+
+        with self._lock:
+            self._records.append(entry)
+        self._append(entry)
+        return entry
+
+    # -- answering ---------------------------------------------------------
+
+    def _response_bytes(self, record: dict[str, Any]) -> bytes:
+        calls = record.get("calls") or []
+        identifier = calls[0].get("id") if calls else None
+
+        if self.reply == "empty":
+            payload: dict[str, Any] = {"jsonrpc": "2.0", "id": identifier, "result": "0x"}
+        else:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": identifier,
+                "error": {"code": -32000, "message": "execution reverted"},
+            }
+
+        body = json.dumps(payload).encode("utf-8")
+        head = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n"
+        ).encode("ascii")
+        return head + body
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self) -> dict[str, Any]:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._server = _Server((self.host, self.port), _Handler)
+        except OSError as error:
+            # The commonest cause is FakeNet already holding the port, and that
+            # is worth saying plainly rather than as an errno.
+            self.error = f"could not bind {self.host}:{self.port}: {error}"
+            return {"started": False, "error": self.error,
+                    "host": self.host, "port": self.port}
+
+        self._server.responder = self  # type: ignore[attr-defined]
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, name="jsonrpc-responder", daemon=True
+        )
+        self._thread.start()
+        self.started = True
+        return {"started": True, "host": self.host, "port": self.port,
+                "reply": self.reply, "requests_path": str(self.requests_path)}
+
+    def stop(self) -> dict[str, Any]:
+        self._stopping.set()
+        if self._server is not None:
+            try:
+                self._server.shutdown()
+                self._server.server_close()
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self.started = False
+
+        summary = self.report()
+        try:
+            self.summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return summary
+
+    # -- reading -----------------------------------------------------------
+
+    def report(self) -> dict[str, Any]:
+        """The run's classification, and the evidence for it.
+
+        `outcome` is the field to read first, and `no_connection` is a statement
+        about the diverter rather than about the sample -- prediction C1 is what
+        separates those, and nothing below it may be written up without it.
+        """
+        with self._lock:
+            connections = list(self._connections)
+            records = list(self._records)
+
+        methods: dict[str, int] = {}
+        for record in records:
+            for method in record.get("methods", []):
+                methods[method] = methods.get(method, 0) + 1
+
+        target = [r for r in records if r.get("is_target_call")]
+        jsonrpc = [r for r in records if r.get("is_jsonrpc")]
+
+        if target:
+            outcome = OUTCOME_ETH_CALL
+        elif jsonrpc:
+            outcome = OUTCOME_OTHER_RPC
+        elif records:
+            outcome = OUTCOME_UNPARSED
+        elif connections:
+            outcome = OUTCOME_CONNECTED_SILENT
+        else:
+            outcome = OUTCOME_NO_CONNECTION
+
+        return {
+            "listening": f"{self.host}:{self.port}",
+            "reply": self.reply,
+            "error": self.error,
+            "outcome": outcome,
+            "outcome_note": OUTCOME_NOTES[outcome],
+            "connections": len(connections),
+            "requests": len(records),
+            "jsonrpc_requests": len(jsonrpc),
+            "target_calls": len(target),
+            "methods": methods,
+            # C3: whether anything oriented itself before asking. An empty list
+            # with a target call present is C3 holding.
+            "handshake_methods": [m for m in methods if m.lower() in HANDSHAKE_METHODS],
+            "handshake_before_target": _handshake_first(records),
+            "contract": ETHERHIDING_CONTRACT,
+            "selector": GETDATA_SELECTOR,
+            "first_seen": records[0]["time"] if records else "",
+            "last_seen": records[-1]["time"] if records else "",
+            "requests_path": str(self.requests_path),
+        }
+
+
+OUTCOME_NOTES = {
+    OUTCOME_NO_CONNECTION:
+        "Nothing connected. This is a statement about the diverter, not the "
+        "sample -- check C1 before concluding anything about the implant.",
+    OUTCOME_CONNECTED_SILENT:
+        "TCP was accepted and no bytes followed. The implant reached the port "
+        "and said nothing, which is different from never arriving.",
+    OUTCOME_UNPARSED:
+        "Bytes arrived that are not JSON-RPC. Read raw_base64 -- this is still "
+        "an answer to phase 1's question.",
+    OUTCOME_OTHER_RPC:
+        "JSON-RPC arrived, but no eth_call naming the contract. Read the "
+        "methods list; a handshake alone lands here.",
+    OUTCOME_ETH_CALL:
+        "The request phase 1 was built to capture. Phase 2 encodes its answer "
+        "against these bytes.",
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Standalone entry point, because phase 1 may run without the orchestrator."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--output-dir", default=".",
+                        help="where jsonrpc_requests.jsonl and the summary are written")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--reply", choices=("error", "empty"), default="error",
+                        help="error: a JSON-RPC error. empty: a successful '0x', "
+                             "which is what a node returns for a contract with "
+                             "no code -- the truthful answer for this one")
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="stop after this long; 0 waits for Ctrl-C")
+    args = parser.parse_args(argv)
+
+    responder = JsonRpcResponder(args.output_dir, args.host, args.port, args.reply)
+    result = responder.start()
+    if not result.get("started"):
+        print(f"failed: {result.get('error')}")
+        return 1
+
+    print(f"recording on {args.host}:{args.port}, replying {args.reply!r}")
+    print(f"  -> {responder.requests_path}")
+    try:
+        if args.seconds > 0:
+            threading.Event().wait(args.seconds)
+        else:
+            while True:
+                threading.Event().wait(3600)
+    except KeyboardInterrupt:
+        pass
+
+    summary = responder.stop()
+    print(f"\noutcome: {summary['outcome']}")
+    print(f"  {summary['outcome_note']}")
+    print(f"  connections {summary['connections']}  requests {summary['requests']}  "
+          f"target calls {summary['target_calls']}")
+    if summary["methods"]:
+        print(f"  methods: {summary['methods']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
