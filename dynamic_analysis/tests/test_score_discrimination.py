@@ -524,10 +524,27 @@ class CorroborationTests(unittest.TestCase):
         self.assertTrue(injection["strong"])
         self.assertEqual(result["severity"], "High")
 
-    def test_an_unmapped_pe_anywhere_else_is_present_but_not_strong(self) -> None:
-        # Same reasoning as the JIT case above: a foreign image in an ordinary
-        # process might be injection and might be an executable a program had
-        # legitimate reason to hold in memory.
+    def test_an_unmapped_pe_anywhere_is_strong(self) -> None:
+        # **Reversed 20 Aug, and the measurement is why.** This used to assert
+        # `not strong` outside a hollowing target, on the reasoning that a
+        # foreign image in an ordinary process might be something a program had
+        # legitimate reason to hold.
+        #
+        # The proxy failed in both directions on run `c14cb5b6`: four framework
+        # assemblies inside a legitimately spawned `csc.exe` graded strong --
+        # reproduced exactly by a benign `Add-Type`, same four images -- while
+        # the genuine 258 KB payload in `SecurityHealthHost.exe` scored nothing,
+        # because that LOLBin is not on the list. Samples choose hosts that are
+        # not on lists.
+        #
+        # `framework_assembly` now excludes the benign images by their own
+        # metadata, so what reaches `unmapped_images` is unexplained wherever it
+        # sits. Benign rate behind that: 16 programs, 870 module comparisons,
+        # zero unmapped PE images that were not framework or resource-only.
+        #
+        # The JIT argument that justifies the crash route's target test does not
+        # apply here: JITted code is an anonymous allocation, not a PE image
+        # with a parseable header, so it cannot reach this count.
         result = _score(
             pe_carve_summary={
                 "carved": True,
@@ -539,7 +556,7 @@ class CorroborationTests(unittest.TestCase):
         )
 
         self.assertTrue(injection["present"])
-        self.assertFalse(injection["strong"])
+        self.assertTrue(injection["strong"])
         self.assertEqual(result["severity"], "Medium")
 
     def test_a_hollow_seen_twice_still_counts_once(self) -> None:

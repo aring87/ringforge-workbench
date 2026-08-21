@@ -1283,6 +1283,15 @@ def _injection_reason(
         return ("A binary loaders commonly hollow, started by the sample, "
                 "faulted at an address with no module mapped there -- it was "
                 "executing injected code.")
+    # Decisive wherever it sits, and no longer conditioned on the process's
+    # name: framework assemblies are excluded by their own metadata now, so
+    # what reaches this count is an image nothing explains. This is the route
+    # that was missing the payload in `SecurityHealthHost.exe`.
+    if unmapped_pe_images:
+        return ("A PE image is present in process memory at an address no "
+                "loaded module covers, and it is not a framework assembly the "
+                "process mapped to read -- an executable the loader never "
+                "mapped.")
     # The two routes the old chain omitted. Both are real evidence of a hollow;
     # they are only not `strong` because the host is not a binary loaders
     # commonly hollow -- a sample that hollows a copy of itself, which is what
@@ -1296,9 +1305,6 @@ def _injection_reason(
                 "be -- a different build at the same base. The process is not "
                 "one loaders commonly hollow, so this is reported without being "
                 "treated as decisive on its own.")
-    if unmapped_pe_images:
-        return ("A PE image is present in process memory at an address "
-                "no loaded module covers.")
     if unmapped_memory_crashes:
         return ("A process in the sample's tree faulted at an address with "
                 "no module mapped there. In a managed process that can also "
@@ -1426,10 +1432,30 @@ def _evidence_categories(
                 or image_timestamp_mismatches > 0
                 or module_header_mismatches > 0
             ),
+            # **The carve route no longer asks whose process it is.** The
+            # `hollowing_target` test was a proxy for "this image is
+            # unexplained", and it was the wrong proxy twice over. It let run
+            # `c14cb5b6` grade **strong** on four framework assemblies inside a
+            # legitimately spawned `csc.exe` -- reproduced exactly by a benign
+            # `Add-Type`, same four images, same counts -- while the genuine
+            # 258 KB payload in `SecurityHealthHost.exe` scored **nothing**,
+            # because that LOLBin is not on the list. A sample picks a host
+            # precisely because it is not on anyone's list.
+            #
+            # What made the proxy necessary was benign unmapped images, and
+            # `framework_assembly` now removes them at the source, by the
+            # image's own metadata rather than by the process's name. The
+            # measured benign rate behind this: **16 programs, 870 module
+            # comparisons, zero unmapped PE images** that were not framework or
+            # resource-only.
+            #
+            # Note the JIT argument does not apply here, only to the crash
+            # route below. JITted code is an anonymous allocation; it is not a
+            # PE image with a parseable header, so it cannot reach this count.
             "strong": (
                 sysmon_injections >= 2
                 or hollowing_target_crashes > 0
-                or unmapped_pe_in_hollowing_target > 0
+                or unmapped_pe_images > 0
                 or image_timestamp_mismatch_in_target > 0
                 or module_header_mismatch_in_target > 0
             ),

@@ -29,6 +29,10 @@ Four classifications come out of it, and only the first is treated as evidence:
   resource files as data into every process, so this fires constantly and means
   nothing; see ``_RESOURCE_ONLY_NOTE``, which is the reason the test is "a PE
   that could execute" rather than "a PE".
+- ``framework_assembly`` -- unmapped, carries code, and its own Module name
+  says it ships with .NET. A process that maps ``mscorlib`` to read its metadata
+  is not hollowed; see ``_FRAMEWORK_EXACT``, where a benign ``Add-Type`` and a
+  live sample were measured producing the identical four.
 - ``inside_module`` -- a second PE within a module's range but not at its base.
   Real loaders produce this occasionally (a DLL stored in a resource section),
   so it is reported and not scored.
@@ -358,10 +362,16 @@ def parse_pe_header(data: Any, offset: int, limit: int) -> Optional[dict[str, An
     # part of the optional header.
     directory = optional + (112 if magic == 0x20B else 96)
     dotnet = False
+    dotnet_name = ""
     try:
         clr_entry = directory + _CLR_DIRECTORY_INDEX * 8
         if clr_entry + 8 <= limit and clr_entry + 8 <= pe + 24 + optional_size:
-            dotnet = _u32(data, clr_entry) != 0
+            clr_rva = _u32(data, clr_entry)
+            dotnet = clr_rva != 0
+            if dotnet:
+                dotnet_name = _dotnet_module_name(
+                    data, offset, limit, section_table, sections, clr_rva
+                )
     except struct.error:
         dotnet = False
 
@@ -376,6 +386,9 @@ def parse_pe_header(data: Any, offset: int, limit: int) -> Optional[dict[str, An
         # the two applies is decided per image in _resolve_layout.
         "file_size": file_size,
         "dotnet": dotnet,
+        # The image's own Module name, when it is managed and readable. Empty
+        # for native images and for anything the metadata parser cannot follow.
+        "dotnet_name": dotnet_name,
         "is_dll": bool(characteristics & _FILE_DLL),
         # See _RESOURCE_ONLY_NOTE. An image with no code in it is not a payload,
         # and Windows maps a dozen of them into every process.
@@ -500,6 +513,153 @@ def module_fingerprint(timestamp: object, size_of_image: object) -> tuple[int, i
         return (0, 0)
 
 
+#: Module names that identify a .NET framework assembly rather than a payload.
+#:
+#: Measured 20 Aug: a benign `Add-Type` compile and run `c14cb5b6` both produced
+#: **four unmapped .NET images at 36 modules loaded** -- mscorlib, System,
+#: System.Core and System.Management.Automation -- byte-identical in size
+#: between the two. `csc.exe` memory-maps its reference assemblies to read their
+#: metadata, and a mapped file is not a loaded module, so nothing covers it.
+#: `Add-Type` passes the calling session's assemblies, which is why the
+#: PowerShell engine turns up inside a C# compiler.
+#:
+#: The name is read from the image's **own Module table**, not from `#Strings`
+#: at large: every managed assembly references `mscorlib`, so a heap scan would
+#: match on a reference and suppress real payloads.
+_FRAMEWORK_EXACT = {
+    "mscorlib.dll", "netstandard.dll", "windowsbase.dll", "accessibility.dll",
+    "presentationcore.dll", "presentationframework.dll", "system.dll",
+}
+_FRAMEWORK_PREFIXES = ("system.", "microsoft.")
+
+
+def _is_framework_assembly(module_name: str) -> bool:
+    """True for a .NET assembly that ships with the framework."""
+    name = (module_name or "").strip().lower()
+    if not name.endswith(".dll"):
+        return False
+    return name in _FRAMEWORK_EXACT or name.startswith(_FRAMEWORK_PREFIXES)
+
+
+def _rva_candidates(
+    data: bytes, image_offset: int, section_table: int, sections: int,
+    limit: int, rva: int,
+) -> list[int]:
+    """Offsets an RVA could sit at, mapped layout first, then file layout.
+
+    Which applies is not known until `_resolve_layout`, so both are tried and
+    the caller validates with a magic number.
+    """
+    out: list[int] = []
+    if rva <= 0:
+        return out
+    out.append(image_offset + rva)
+    for index in range(min(sections, _MAX_SECTIONS)):
+        entry = section_table + index * 40
+        if entry + 40 > limit:
+            break
+        try:
+            virtual_size = _u32(data, entry + 8)
+            virtual_address = _u32(data, entry + 12)
+            raw_pointer = _u32(data, entry + 20)
+        except struct.error:
+            break
+        if virtual_address <= rva < virtual_address + max(virtual_size, 1):
+            out.append(image_offset + raw_pointer + (rva - virtual_address))
+    return out
+
+
+def _module_name_at(data: bytes, root: int, limit: int) -> str:
+    """The Module table's Name, given a metadata root. '' if this is not one."""
+    if root < 0 or root + 20 > limit or data[root:root + 4] != b"BSJB":
+        return ""
+    version_length = _u32(data, root + 12)
+    if not 0 < version_length <= 256:
+        return ""
+
+    cursor = root + 16 + ((version_length + 3) & ~3)
+    if cursor + 4 > limit:
+        return ""
+    stream_count = _u16(data, cursor + 2)
+    cursor += 4
+
+    tables: tuple[int, int] | None = None
+    strings: tuple[int, int] | None = None
+    for _ in range(min(stream_count, 16)):
+        if cursor + 8 > limit:
+            return ""
+        stream_offset = _u32(data, cursor)
+        stream_size = _u32(data, cursor + 4)
+        name_start = cursor + 8
+        name_end = data.find(b"\x00", name_start, min(limit, name_start + 32))
+        if name_end < 0:
+            return ""
+        name = data[name_start:name_end]
+        cursor = name_start + (((name_end - name_start) + 4) & ~3)
+        if name in (b"#~", b"#-"):
+            tables = (stream_offset, stream_size)
+        elif name == b"#Strings":
+            strings = (stream_offset, stream_size)
+
+    if tables is None or strings is None:
+        return ""
+
+    table_root = root + tables[0]
+    if table_root + 24 > limit:
+        return ""
+    heap_sizes = data[table_root + 6]
+    valid = int.from_bytes(data[table_root + 8:table_root + 16], "little")
+    # Module is table 0. Being first is what makes this cheap: no other table's
+    # row width has to be computed to reach it.
+    if not valid & 1:
+        return ""
+
+    rows = table_root + 24 + 4 * bin(valid).count("1")
+    index_width = 4 if heap_sizes & 0x01 else 2
+    name_field = rows + 2  # after Generation (u16)
+    if name_field + index_width > limit:
+        return ""
+    name_index = (
+        _u32(data, name_field) if index_width == 4 else _u16(data, name_field)
+    )
+
+    start = root + strings[0] + name_index
+    if start < 0 or start >= limit:
+        return ""
+    end = data.find(b"\x00", start, min(limit, start + 256))
+    if end < 0:
+        return ""
+    return data[start:end].decode("ascii", "ignore")
+
+
+def _dotnet_module_name(
+    data: bytes, image_offset: int, limit: int, section_table: int,
+    sections: int, clr_rva: int,
+) -> str:
+    """The .NET module's own name, or '' if it cannot be read.
+
+    Every failure returns '' so the image stays classified as evidence. On a
+    detector, the safe direction for a parser that cannot make sense of
+    something is to keep reporting it.
+    """
+    try:
+        for clr_offset in _rva_candidates(
+            data, image_offset, section_table, sections, limit, clr_rva
+        ):
+            if clr_offset < 0 or clr_offset + 16 > limit:
+                continue
+            metadata_rva = _u32(data, clr_offset + 8)
+            for root in _rva_candidates(
+                data, image_offset, section_table, sections, limit, metadata_rva
+            ):
+                name = _module_name_at(data, root, limit)
+                if name:
+                    return name
+    except (struct.error, IndexError, ValueError, TypeError):
+        return ""
+    return ""
+
+
 def _classify(
     va: int,
     modules: list[dict[str, Any]],
@@ -537,6 +697,14 @@ def _classify(
     if known_modules and header is not None:
         if module_fingerprint(header.get("timestamp"), header.get("size_of_image")) in known_modules:
             return "known_module", None
+
+    # A framework assembly the process mapped to read metadata. Real, unmapped,
+    # and not evidence -- the same shape of exclusion as `resource_only`, and
+    # measured the same way: benign and malicious `csc.exe` produce the identical
+    # four. Keyed on the image's own Module name, so a *custom* assembly injected
+    # into `RegSvcs` -- which is what `422e30ed` does -- is untouched by this.
+    if header is not None and _is_framework_assembly(header.get("dotnet_name", "")):
+        return "framework_assembly", None
 
     return "unmapped", None
 
@@ -694,6 +862,13 @@ def analyze_dump(
                     # run reporting none of these is a run whose dumps were not
                     # searched properly. See _RESOURCE_ONLY_NOTE.
                     "resource_only": sum(1 for i in images if i["classification"] == "resource_only"),
+                    # A framework assembly mapped to have its metadata read.
+                    # Counted for the same reason as the two above: a benign
+                    # `csc.exe` holds four, so a run reporting none of these
+                    # against a managed process has not looked properly.
+                    "framework_assembly": sum(
+                        1 for i in images if i["classification"] == "framework_assembly"
+                    ),
                     # A system DLL this dump failed to enumerate but another
                     # dump in the run did. Counted for the same reason: six
                     # copies of ntdll once read as a hollowing finding, and a
@@ -887,6 +1062,7 @@ def carve_dumps(
     analyzed = 0
     failed = 0
     resource_only = 0
+    framework_images = 0
     known_module_images = 0
     carried: list[dict[str, Any]] = []
 
@@ -931,6 +1107,9 @@ def carve_dumps(
             if image["classification"] in ("unmapped", "inside_module")
         ]
         resource_only += int((analysis.get("counts", {}) or {}).get("resource_only", 0) or 0)
+        framework_images += int(
+            (analysis.get("counts", {}) or {}).get("framework_assembly", 0) or 0
+        )
         known_module_images += int((analysis.get("counts", {}) or {}).get("known_module", 0) or 0)
         notable.sort(key=lambda i: (i["classification"] != "unmapped", i["_offset"]))
 
@@ -1000,6 +1179,11 @@ def carve_dumps(
         # Real, unmapped, and not evidence. Windows maps localised resource
         # files as data into every process; see _RESOURCE_ONLY_NOTE.
         "resource_only_images": resource_only,
+        # Framework assemblies a process mapped to read metadata. Real,
+        # unmapped, and not evidence -- counted so a suppression is visible
+        # rather than a silent absence. See _FRAMEWORK_EXACT: benign and
+        # malicious `csc.exe` produce the identical four.
+        "framework_assembly_images": framework_images,
         # System DLLs a dump failed to enumerate. Six of these -- all ntdll --
         # were once reported as unmapped images inside a hollowing target, and
         # took process_injection to strong on a route that had not earned it.
