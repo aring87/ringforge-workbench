@@ -220,8 +220,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f'    set RINGFORGE_RPC_REPLY=error')
     if args.tls:
         print(f'    set RINGFORGE_RPC_TLS=1')
-    print("\nC1 is the control: if jsonrpc_summary.json reads no_connection, the")
-    print("diverter did not route the port and nothing below C1 may be written up.")
+    print("\nC1 is the control. Prove the bench with your own client before the")
+    print("sample: a no_connection summary means the port was not routed --")
+    if args.tls:
+        print("or, with TLS on, that the client refused the certificate. Those")
+        print("are different findings and the pcap separates them: look for a")
+        print("TLS alert after the ServerHello.")
     return 0
 
 
