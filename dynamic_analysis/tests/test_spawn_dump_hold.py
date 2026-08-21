@@ -63,7 +63,15 @@ class HoldingAProcess(unittest.TestCase):
         self.assertTrue(_wait_exit(proc), "it never resumed")
 
     def test_release_lets_it_finish(self):
-        proc = _short_lived(0.1)
+        # Lives comfortably longer than the settle below. At 0.1s this raced its
+        # own setup -- the child was already gone when the hold was attempted,
+        # `_hold_process` correctly returned None for a dead pid, and the
+        # assertion below then contradicted
+        # `test_holding_a_dead_pid_is_a_real_answer_not_an_error` directly. It
+        # passed on a host where interpreter startup padded the child's life and
+        # failed on a guest where it did not. What this test is for is the
+        # release, not the margin.
+        proc = _short_lived(2.0)
         self.addCleanup(lambda: proc.kill() if _alive(proc) else None)
         time.sleep(0.15)
         handle, _reason = _hold_process(proc.pid)
