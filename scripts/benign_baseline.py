@@ -69,8 +69,36 @@ MAX_DUMP_BYTES = 320 * 1024 * 1024
 ALWAYS_SKIP = {"virtualboxvm.exe", "vboxsvc.exe", "vboxheadless.exe"}
 
 
-def _dump_process(pid: int, path: Path) -> tuple[bool, str]:
-    """Full-memory dump of another process. False plus a reason on failure."""
+def _dump_process(pid: int, path: Path, suspend: bool = False) -> tuple[bool, str]:
+    """Full-memory dump of another process. False plus a reason on failure.
+
+    `suspend` holds the target for the duration. A process actively churning its
+    address space fails a full-memory dump with `ERROR_PARTIAL_COPY` --
+    `ReadProcessMemory` returns partial when regions move under it -- and a
+    compiler mid-compile does exactly that. One guest run failed eight
+    consecutive attempts on a benign `csc.exe` over 2.1 seconds without it.
+    `memory_dump._dump_one` has always suspended for the same reason.
+    """
+    held = None
+    if suspend:
+        try:
+            import psutil
+            held = psutil.Process(pid)
+            held.suspend()
+        except Exception:
+            held = None
+    try:
+        return _dump_process_raw(pid, path)
+    finally:
+        if held is not None:
+            try:
+                held.resume()
+            except Exception:
+                pass
+
+
+def _dump_process_raw(pid: int, path: Path) -> tuple[bool, str]:
+    """The dump itself, with the target in whatever state the caller left it."""
     # use_last_error on **both**. Without it on dbghelp, a MiniDumpWriteDump
     # failure reports "(0)" -- ctypes never captured dbghelp's error, so the
     # one number that says why the dump failed was always zero. The OpenProcess
@@ -295,7 +323,9 @@ def _spawn_managed(scratch: Path, poll_seconds: float = 30.0,
             if now - last_dump.get(child.pid, 0.0) < _MANAGED_REDUMP_SECONDS:
                 continue
             path = scratch / f"benign_{Path(name).stem}_{child.pid}.dmp"
-            ok, why = _dump_process(child.pid, path)
+            # Suspended: a compiler mid-compile churns its address space and
+            # fails full-memory dumps with ERROR_PARTIAL_COPY otherwise.
+            ok, why = _dump_process(child.pid, path, suspend=True)
             last_dump[child.pid] = now
             if ok:
                 found[child.pid] = (name, path)
