@@ -2848,9 +2848,16 @@ malicious anywhere — produced **`unmapped 2`, both in a hollowing target**.
     c14cb5b6     --          --      36        4
 
 **Benign and malicious are indistinguishable: 36 modules, 4 unmapped, both.**
-The four benign images are byte-identical in size to the sample's. **The
-detector cannot tell them apart because there is nothing to tell apart** — the
-sample's hits carried no information at all.
+The four benign images match the sample's on every field — size, typedef count,
+methoddef count, every heap size — and all four are identified:
+
+    5,447,680  3356 typedefs  DaysTo10000, Digit100, S400      mscorlib
+    3,547,136  2365 typedefs  PERF_NUMBER_DEC_1000, PDH_FMT_*  System.dll
+    1,530,368  1176 typedefs  Func`10, Action`10, GetEnumerator System.Core.dll
+    6,668,800  3692 typedefs  InvokeTopLevelPowerShell, PSObject  S.M.Automation
+
+**The detector cannot tell them apart because there is nothing to tell apart**
+— the sample's hits carried no information at all.
 
 **The variable is how far into its life the process is dumped**, not
 references, not the sample. Monotonic in module count every time. Every earlier
