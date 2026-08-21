@@ -526,9 +526,18 @@ def module_fingerprint(timestamp: object, size_of_image: object) -> tuple[int, i
 #: The name is read from the image's **own Module table**, not from `#Strings`
 #: at large: every managed assembly references `mscorlib`, so a heap scan would
 #: match on a reference and suppress real payloads.
+#: `mscorlib` does not call itself `mscorlib.dll`. Its Module table entry reads
+#: **`CommonLanguageRuntimeLibrary`**, with no extension -- verified against
+#: `Framework64\v4.0.30319\mscorlib.dll` on disk, so it is how the assembly
+#: ships and not an artefact of a dump. It is listed here rather than special-
+#: cased because it is still the image's own Module name; only the spelling is
+#: surprising. Without it the `.dll` suffix test below rejected `mscorlib`
+#: outright and a benign `Add-Type` still left one unmapped image behind --
+#: which, under the carve route's current gate, is a `strong` grade on its own.
 _FRAMEWORK_EXACT = {
     "mscorlib.dll", "netstandard.dll", "windowsbase.dll", "accessibility.dll",
     "presentationcore.dll", "presentationframework.dll", "system.dll",
+    "commonlanguageruntimelibrary",
 }
 _FRAMEWORK_PREFIXES = ("system.", "microsoft.")
 
@@ -536,9 +545,14 @@ _FRAMEWORK_PREFIXES = ("system.", "microsoft.")
 def _is_framework_assembly(module_name: str) -> bool:
     """True for a .NET assembly that ships with the framework."""
     name = (module_name or "").strip().lower()
+    # Exact names are consulted first: the set holds one entry that carries no
+    # extension, and the suffix test exists only to keep the *prefix* match from
+    # reaching for arbitrary strings that happen to start "system.".
+    if name in _FRAMEWORK_EXACT:
+        return True
     if not name.endswith(".dll"):
         return False
-    return name in _FRAMEWORK_EXACT or name.startswith(_FRAMEWORK_PREFIXES)
+    return name.startswith(_FRAMEWORK_PREFIXES)
 
 
 def _rva_candidates(

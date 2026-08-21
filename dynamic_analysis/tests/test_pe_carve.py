@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 
 from dynamic_analysis.pe_carve import (
+    _classify,
+    _is_framework_assembly,
     analyze_dump,
     carve_dumps,
     parse_pe_header,
@@ -755,6 +757,90 @@ class CarveTests(unittest.TestCase):
             summary["counts"]["known_module_images"],
             sum(row["known_module"] for row in summary["per_dump"]),
         )
+
+
+class FrameworkAssemblyTests(unittest.TestCase):
+    """The four images a `csc.exe` compile leaves unmapped, and what they cost.
+
+    `csc.exe` memory-maps its reference assemblies to read metadata, and a
+    mapped file is not a loaded module, so nothing in the module list covers
+    them. On run `c14cb5b6` that put four framework assemblies in front of the
+    carve route, and a benign `Add-Type` reproduced all four exactly.
+
+    These are checked at `_classify` rather than through `analyze_dump` because
+    `make_pe` writes a CLR directory entry but no metadata tables, so a
+    synthesised image has no Module name to read. The names below are not
+    invented for the test: each is the `dotnet_name` the parser actually
+    returned from the carves in `c14cb5b6_carved` and `benign_carved`.
+    """
+
+    def _classification(self, dotnet_name: str) -> str:
+        classification, _ = _classify(
+            va=0x1000,
+            modules=[],
+            carries_code=True,
+            header={"dotnet_name": dotnet_name},
+            known_modules=set(),
+        )
+        return classification
+
+    def test_mscorlib_does_not_call_itself_mscorlib(self) -> None:
+        # The regression that shipped. `mscorlib`'s Module table reads
+        # `CommonLanguageRuntimeLibrary`, with no extension -- confirmed against
+        # the file on disk, so it is how the assembly ships. A `.dll` suffix
+        # test rejected it, and because it is one of the four, a benign
+        # `Add-Type` still left one unmapped image; under the carve route's
+        # gate that single image is a `strong` grade by itself.
+        self.assertTrue(_is_framework_assembly("CommonLanguageRuntimeLibrary"))
+        self.assertEqual(
+            self._classification("CommonLanguageRuntimeLibrary"), "framework_assembly"
+        )
+
+    def test_the_four_from_the_compile_are_all_suppressed(self) -> None:
+        for name in (
+            "CommonLanguageRuntimeLibrary",
+            "System.dll",
+            "System.Core.dll",
+            "System.Management.Automation.dll",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(self._classification(name), "framework_assembly")
+
+    def test_a_native_payload_carries_no_managed_name_and_stays_evidence(self) -> None:
+        # The 258 KB image in `SecurityHealthHost.exe`: native, so the metadata
+        # parse yields "". The suppression must not reach it -- that payload is
+        # the reason the hollowing-target test was dropped from the carve route.
+        self.assertFalse(_is_framework_assembly(""))
+        self.assertEqual(self._classification(""), "unmapped")
+
+    def test_a_custom_managed_payload_stays_evidence(self) -> None:
+        # A stage-2 assembly injected into RegSvcs names itself. Matching on the
+        # image's own Module name rather than a `#Strings` scan is what keeps
+        # this one visible: every managed assembly *references* mscorlib, so a
+        # heap scan would have suppressed it.
+        for name in ("Stage2.dll", "Loader.dll", "a.dll"):
+            with self.subTest(name=name):
+                self.assertEqual(self._classification(name), "unmapped")
+
+    def test_a_parse_failure_leaves_the_image_as_evidence(self) -> None:
+        # Every path that cannot read a name returns "", and "" must never be
+        # mistaken for a framework match.
+        classification, _ = _classify(
+            va=0x1000, modules=[], carries_code=True, header=None, known_modules=set()
+        )
+        self.assertEqual(classification, "unmapped")
+
+    def test_the_prefix_match_is_a_known_evasion_gap(self) -> None:
+        # **Pinned, not endorsed.** `_FRAMEWORK_PREFIXES` accepts `system.` and
+        # `microsoft.`, so a payload that names its own module `System.Foo.dll`
+        # is suppressed. That takes deliberate naming rather than luck, and the
+        # prefix is what keeps the list from needing an entry per framework
+        # assembly -- but it is a real gap, and this test exists so that it is
+        # recorded behaviour rather than something rediscovered in a run.
+        self.assertEqual(self._classification("System.Totally.Legit.dll"), "framework_assembly")
+        self.assertEqual(self._classification("Microsoft.Evil.dll"), "framework_assembly")
+        # The suffix test is what stops the prefix reaching arbitrary strings.
+        self.assertEqual(self._classification("System.Foo.exe"), "unmapped")
 
 
 if __name__ == "__main__":

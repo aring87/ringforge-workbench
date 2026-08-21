@@ -557,7 +557,10 @@ class CorroborationTests(unittest.TestCase):
 
         self.assertTrue(injection["present"])
         self.assertTrue(injection["strong"])
-        self.assertEqual(result["severity"], "Medium")
+        # Identical to the in-target case above, and that is the point of the
+        # reversal: `unmapped_in_hollowing_target` now reaches only the detail
+        # string, never the gate, so the host's name cannot change the grade.
+        self.assertEqual(result["severity"], "High")
 
     def test_a_hollow_seen_twice_still_counts_once(self) -> None:
         # The crash and the carved image come from one event. A category that
