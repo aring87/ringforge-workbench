@@ -129,6 +129,20 @@ programs on one machine at one moment* — not a percentage with a confidence
 interval. It is enough to say the dump-based passes do not fire on ordinary
 desktop software, and not enough to characterise a rate.
 
+**The gate fix is verified on the guest — 21 Aug.** The benign `Add-Type`
+compile that produced `unmapped 4, both in a hollowing target` on 20 Aug now
+produces **`unmapped 0, framework_assembly 4`** at the same 36-module depth
+(118.8 MB dump against 116.0 MB). The four were identified and suppressed rather
+than absent — `framework_assembly 4` is the positive control, and `0, 0` would
+have meant the compile never loaded them. Module integrity clean alongside: 36
+identical, 0 patched, 0 replaced, 0 `header_mismatch`.
+
+**Two caveats stay on the record.** The benign rate behind `strong` on any
+unmapped image is **16 processes on one host**, not the 870 module comparisons
+it was cited as — that number belongs to the module-integrity pass. And
+`_FRAMEWORK_PREFIXES` accepts `system.*`/`microsoft.*`, so a payload naming
+itself `System.Foo.dll` is suppressed by name.
+
 **Managed processes measured 20 Aug — 570 comparisons, still 0.** The 13 Aug
 corpus contained no .NET process at all, which mattered once run `c14cb5b6`
 graded **strong** on five .NET images inside a legitimately spawned `csc.exe`.

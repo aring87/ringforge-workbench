@@ -2800,6 +2800,36 @@ three wrong diagnoses had been recorded and retracted** (`0bp`).
 
 ## The two decisions this wants, and neither is mine to take
 
+> **DECISION 1 IS SETTLED BY MEASUREMENT — 21 Aug, on the guest.** The fix was
+> run against the case it was built for and the false positive is gone. The
+> control is a benign `Add-Type` compile, the same one that reproduced the
+> sample's four images exactly on 20 Aug:
+>
+> | | dump MB | modules | unmapped | framework | in target |
+> |---|---|---|---|---|---|
+> | `c14cb5b6` (sample) | -- | **36** | **4** | -- | 4 |
+> | benign `norefs2`, 20 Aug | 116.0 | **36** | **4** | -- | 4 |
+> | **benign, 21 Aug, fix live** | 118.8 | **36** | **0** | **4** | **0** |
+>
+> **Same 36 modules, so the compile reached the same depth** -- the check this
+> file demands before believing any zero here. The four were *identified and
+> suppressed*, not absent: `framework_assembly 4` is the positive control, and a
+> run reporting `0, 0` would have meant the test never ran. Module integrity was
+> clean alongside it (36 identical, 0 patched, 0 replaced, 0 header_mismatch)
+> and `resource_only 1` shows that path still working.
+>
+> So the benign compile that graded **strong -> High** on 20 Aug now grades
+> nothing, and it does so by reading the images' own metadata rather than by the
+> compile failing to reproduce. **`mscorlib` was the load-bearing part** and it
+> was never suppressed until 21 Aug: its Module table reads
+> `CommonLanguageRuntimeLibrary`, so the `.dll` suffix test rejected it. See
+> `9c28bab`.
+>
+> **Still open after this:** the `_FRAMEWORK_PREFIXES` evasion gap
+> (`System.Foo.dll` is suppressed by name), and whether `strong` on *any*
+> unmapped image is warranted -- that rests on 16 processes, not on the 870
+> module comparisons it used to cite. See `74c1385`.
+
 **1. Gap 5's gate scores ordinary .NET — CONFIRMED 20 Aug, by reading the
 images.** `unmapped_pe_in_hollowing_target` fires on the CLR's own assemblies
 inside `csc.exe`, which `Add-Type` spawns legitimately, and `HOLLOWING_TARGETS`
