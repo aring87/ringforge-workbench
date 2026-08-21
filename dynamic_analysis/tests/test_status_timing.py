@@ -163,11 +163,32 @@ class TheStatusLogSurvivesTheWindow(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
     def test_an_unwritable_log_does_not_fail_the_run(self):
-        """Losing the log must never lose the detonation."""
-        orchestrator._reset_emit_clock(Path("Z:/no/such/volume/status.log"))
+        """Losing the log must never lose the detonation.
+
+        **The path is made unwritable, not assumed to be.** This used to point
+        at `Z:/no/such/volume/status.log` on the reasoning that no such drive
+        exists. On the host that held and the test passed; on the *guest* `Z:`
+        is the VirtualBox share, so `mkdir(parents=True)` created
+        `Z:\\no\\such\\volume\\` for real and the write succeeded -- littering
+        host storage through a share mounted into the detonation VM, and
+        exercising the writable branch on the one machine where runs actually
+        happen. The assertion could not fail either way, which is why nothing
+        noticed until the directory was found by hand.
+
+        A file where a directory must be cannot be traversed on any platform,
+        so this needs no drive letter and leaves nothing behind.
+        """
+        blocker = Path(self._tmp.name) / "not-a-directory"
+        blocker.write_text("", encoding="utf-8")
+        unwritable = blocker / "metadata" / "status.log"
+
+        orchestrator._reset_emit_clock(unwritable)
         lines = []
         orchestrator._emit(lines.append, "still emitted")
+
         self.assertEqual(lines, ["still emitted"])
+        # The branch this test is named for was genuinely taken.
+        self.assertFalse(unwritable.exists())
 
     def test_it_records_lines_with_no_status_callback(self):
         # A headless/orchestrator-only run has no pane; the file is then the
