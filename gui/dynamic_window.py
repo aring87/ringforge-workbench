@@ -237,6 +237,15 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.fakenet_path_var = tk.StringVar(
             value=cfg.get("dynamic_fakenet_path", str(project_root / "tools" / "fakenet" / "fakenet.exe"))
         )
+        #: A custom FakeNet config, empty for the stock one. The orchestrator has
+        #: read `fakenet_config_path` since it was written, but nothing ever set
+        #: it -- so a generated config was silently ignored and the run used the
+        #: defaults while appearing to honour the setting. Set
+        #: `dynamic_fakenet_config_path` in config.json; `0bw` needs it to route
+        #: 8545 to the EtherHiding handler.
+        self.fakenet_config_var = tk.StringVar(
+            value=cfg.get("dynamic_fakenet_config_path", "")
+        )
         self.summary_telemetry_var = tk.StringVar(value="-")
 
         self.status_var = tk.StringVar(value="Idle")
@@ -1650,6 +1659,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.app.cfg["dynamic_pcap_enabled"] = bool(self.pcap_enabled_var.get())
         self.app.cfg["dynamic_fakenet_enabled"] = bool(self.fakenet_enabled_var.get())
         self.app.cfg["dynamic_fakenet_path"] = self.fakenet_path_var.get().strip()
+        self.app.cfg["dynamic_fakenet_config_path"] = self.fakenet_config_var.get().strip()
         self.app.cfg["dynamic_memory_dump_enabled"] = bool(self.memory_dump_enabled_var.get())
         self.app.cfg["dynamic_memory_dump_offsets"] = self.dump_offsets_var.get().strip()
         self.app.cfg["dynamic_memory_dump_max_processes"] = int(self.dump_max_processes_var.get())
@@ -2317,6 +2327,7 @@ ul {{ margin-top: 8px; }}
             "pcap_enabled": bool(self.pcap_enabled_var.get()),
             "fakenet_enabled": bool(self.fakenet_enabled_var.get()),
             "fakenet_path": self.fakenet_path_var.get().strip(),
+            "fakenet_config_path": self.fakenet_config_var.get().strip(),
             "memory_dump_enabled": bool(self.memory_dump_enabled_var.get()),
             "memory_yara_enabled": bool(self.memory_yara_enabled_var.get()),
             # Blank offsets fall back to the run profile's defaults in the
