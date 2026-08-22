@@ -147,6 +147,13 @@ local. The snapshot is the only thing that carries them. **If the baseline is
 ever rebuilt from scratch, that list is the checklist**, and the snapshot's own
 description repeats it.
 
+**Proven by restoring it, not merely by taking it.** `tooling-baseline` has been
+reverted to twice and the seven-point check run against the *restored* guest
+both times: commit `5e1a31c`, the corrected rule, both SANs, the CA trusted, the
+`fakenet-0bw` config path, offsets `3, 10, 25, 55`, no `cases\`. A snapshot that
+has been written and a snapshot that is known to carry what its description
+claims are different things, and the step that separates them is one revert.
+
 **Verify before freezing, always.** The pre-snapshot check caught a single-SAN
 leaf and `1, 25` offsets that a revert had quietly restored: the cert work had
 been done *before* that revert and died with it, while the YARA copy survived
