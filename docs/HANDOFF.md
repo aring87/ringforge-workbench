@@ -2703,12 +2703,26 @@ None changed the result, and all three would have corrupted the *record*.
    `c0ffee-sink.ringforge.test`. An empty IOC section reads as a finding, which
    makes this worse than no section at all.
 
-2. **The scanned YARA copy is two days stale.** `memory_yara_summary.rules_dir`
-   is `tools\yara\rules`, and `tools\yara\rules\local\ringforge_etherhiding.yar`
-   is the **20 Aug** file: 1,980 bytes against the canonical 4,401, `$con` still
-   `0x0F14fc3b` (the *wallet*), no `$c2`. `tools\yara\rules\` is gitignored and
-   populated by `bootstrap_yara_rules.ps1`; it has not run since 20 Aug, so
-   **every memory scan since then used pre-correction rules.** Only
+2. **The rule was not in the guest's scanned tree at all.**
+   `memory_yara_summary.rules_dir` is `tools\yara\rules`, which is gitignored
+   and populated only by `bootstrap_yara_rules.ps1`. On the guest that
+   directory's `local\` subdirectory held **three** files -- `formbook_stage4`,
+   `memory_canary`, `split_api_loader`, the first and last dated **16 Aug** --
+   and **no `ringforge_etherhiding.yar` in any version**. The bootstrap has not
+   run on that machine since 16 Aug, four days before the rule was first
+   written, so it could never have been compiled.
+
+   > **Corrected 22 Aug, after this section was first committed.** It originally
+   > read "the scanned YARA copy is two days stale ... 1,980 bytes against the
+   > canonical 4,401, `$con` still naming the wallet". That describes the *host*
+   > clone, checked while writing this up, and the guest was assumed to match.
+   > It did not: on the host the file is stale, on the guest it was absent.
+   > Same trap, same remedy, different mechanism -- and asserting a mechanism
+   > from the wrong filesystem is the identical error that put `0x0F14fc3b` in
+   > the constant for two days. `formbook_stage4` was a revision behind on the
+   > guest as well, so the drift was never specific to this rule.
+
+   Only
    `RingForge_Split_API_Injection_Loader` matched, on 8 of 10 dumps;
    `RingForge_EtherHiding_eth_call` fired on none -- including the
    `SecurityHealthHost` exit dump, taken ten seconds after that process built
@@ -2740,8 +2754,11 @@ None changed the result, and all three would have corrupted the *record*.
 `rescan_memory_yara.py --rules-dir tools\yara\local --expect ...` against the
 same dumps, no detonation. **24 of the rule file's 26 strings matched** on
 `SecurityHealthHost.exe_7972_t161_exit.dmp` (77.4 MB), and
-`dumps_with_matches` went 8 -> 9. The zero was the stale bootstrap copy and
-nothing else.
+`dumps_with_matches` went 8 -> 9. The zero was the rule's **absence** from the
+guest's bootstrap tree and nothing else -- `--expect` aimed at that tree would
+have exited 3 rather than reporting a zero, which is exactly what it is for. We
+got the right answer by pointing `--rules-dir` at `local`, not because the guest
+was in a state that could have produced one.
 
 **Resident in the payload at exit:** all 17 substitution wallets, and `$con` =
 `0x4E31128a13AcBD1cF1909D67F072460c853F87f7` in EIP-55 form -- the corrected
