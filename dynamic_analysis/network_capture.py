@@ -939,13 +939,38 @@ def _url_host(url: str) -> str:
     return (url or "").split("//", 1)[-1].split("/", 1)[0].split(":")[0]
 
 
-def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
-    """Collapse a parsed capture into deduplicated domain and IP indicators."""
+def extract_network_iocs(
+    summary: dict[str, Any],
+    fakenet_summary: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """Collapse observed network activity into deduplicated indicators.
+
+    **Two sources, because one of them is blind to the traffic that matters.**
+    The pcap is taken on the host adapter, and FakeNet's diverter intercepts
+    before anything reaches it -- so on a run with the simulated internet on,
+    `capture.pcapng` sees local discovery chatter and nothing the sample
+    actually contacted. Run `4bb6b0d5` reported zero notable domains and zero
+    external IPs for a run in which the sample fetched a C2 hostname from a
+    contract and beaconed to it; both names were sitting in
+    `fakenet_summary["dns_requests"]` the whole time.
+
+    An empty IOC section reads as a finding rather than as an absence, which
+    makes that failure worse than emitting nothing at all. So FakeNet's view is
+    merged in, and `sources` records which inputs actually contributed.
+    """
+    fakenet = fakenet_summary if isinstance(fakenet_summary, dict) else {}
+
     domains: list[str] = []
     ips: list[str] = []
     urls: list[str] = []
 
-    for name in list(summary.get("dns_queries", [])) + list(summary.get("tls_sni", [])):
+    pcap_names = list(summary.get("dns_queries", [])) + list(summary.get("tls_sni", []))
+    # FakeNet answers every name locally, so its DNS log is the authoritative
+    # record of what the guest asked for -- including the names the diverter
+    # kept off the wire the pcap was reading.
+    fakenet_names = [n for n in fakenet.get("dns_requests", []) or []]
+
+    for name in pcap_names + fakenet_names:
         name = (name or "").strip().rstrip(".")
         if not name:
             continue
@@ -1006,7 +1031,42 @@ def extract_network_iocs(summary: dict[str, Any]) -> dict[str, list[str]]:
         if not is_private_ip(ip) and not is_non_routable_ip(ip)
     ]
 
+    sources = []
+    if pcap_names or summary.get("http_requests") or summary.get("connections"):
+        sources.append("pcap")
+    if fakenet_names:
+        sources.append("fakenet")
+
+    # **"Blind to what mattered", not "blind to everything".** The first
+    # version of this asked whether the pcap saw *any* name, and run 4bb6b0d5 --
+    # the run it was written for -- would have failed it: the pcap held three
+    # Chromecast and SSDP names while missing both C2 hostnames entirely. A
+    # capture full of multicast chatter and empty of the sample's traffic is the
+    # case to catch, so the test is whether any *notable* name reached us only
+    # through FakeNet.
+    pcap_name_set = {(n or "").strip().rstrip(".").lower() for n in pcap_names}
+    fakenet_only_notable = [
+        d for d in notable_domains if d.lower() not in pcap_name_set
+    ]
+    pcap_blind = bool(fakenet_only_notable)
+    note = ""
+    if pcap_blind:
+        note = (
+            "%d notable name(s) were recorded by the simulated internet and not "
+            "by the packet capture: %s. FakeNet's diverter intercepts before the "
+            "host adapter the pcap reads, so the pcap cannot see what it handled "
+            "-- an empty pcap-only IOC set is a collection gap, not a quiet run."
+            % (len(fakenet_only_notable), ", ".join(fakenet_only_notable[:5]))
+        )
+    elif not sources:
+        note = ("Neither the packet capture nor the simulated internet recorded "
+                "any names. This is an absence of collection as much as an "
+                "absence of activity -- check both were running.")
+
     return {
+        "sources": sources,
+        "pcap_blind": pcap_blind,
+        "note": note,
         "domains": domains[:300],
         "ips": ips[:300],
         "urls": urls[:300],

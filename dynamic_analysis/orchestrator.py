@@ -2926,11 +2926,6 @@ def run_dynamic_analysis(
                     network_summary["capture"] = pcap_stop_result
                     write_json(network_summary_json, network_summary)
 
-                    network_iocs = extract_network_iocs(network_summary)
-                    write_json(network_iocs_json, network_iocs)
-                    # Attach so scoring can use the baseline-filtered counts.
-                    network_summary["iocs"] = network_iocs
-
                     if network_summary.get("parsed"):
                         counts = network_summary.get("counts", {})
                         _emit(
@@ -2979,6 +2974,22 @@ def run_dynamic_analysis(
                 elif received_files.get("note"):
                     _emit(status_cb, f"Simulated internet: {received_files['note']}")
                 write_json(fakenet_summary_json, fakenet_summary)
+
+            # **After both parsers, and outside either block.** The IOC set is
+            # built from the pcap *and* FakeNet, and it used to be built inside
+            # the pcap block -- which runs before FakeNet's log is parsed, so
+            # the merge could never have seen it. It also meant a run with no
+            # pcap produced no IOC file at all, even when the simulated
+            # internet had recorded every name the sample asked for.
+            try:
+                network_iocs = extract_network_iocs(network_summary, fakenet_summary)
+                write_json(network_iocs_json, network_iocs)
+                # Attach so scoring can use the baseline-filtered counts.
+                network_summary["iocs"] = network_iocs
+                if network_iocs.get("pcap_blind"):
+                    _emit(status_cb, f"Network IOCs: {network_iocs.get('note', '')}")
+            except Exception as error:
+                _emit(status_cb, f"Network IOC extraction warning: {error}")
 
             # Scanned last: it is the slowest step in teardown, and it depends
             # on the dumps having been written and closed.

@@ -115,5 +115,92 @@ class RealIndicatorsSurviveTests(unittest.TestCase):
         self.assertNotIn("192.168.56.10", iocs["external_ips"])
 
 
+class TheSimulatedInternetIsTheOtherHalfOfTheCapture(unittest.TestCase):
+    """The pcap cannot see what FakeNet's diverter intercepted.
+
+    Taken from run `4bb6b0d5` (2026-08-22), which reported **zero** notable
+    domains and zero external IPs for a detonation in which the sample fetched
+    a C2 hostname from a smart contract and beaconed to it over HTTPS. Both
+    names sat in `fakenet_summary["dns_requests"]` the whole time; the pcap held
+    three Chromecast and SSDP names and nothing else.
+
+    An empty IOC section reads as a finding rather than as an absence, so this
+    was worse than emitting nothing.
+    """
+
+    #: What the host adapter saw: local discovery chatter only.
+    PCAP = {
+        "dns_queries": ["_googlecast._tcp.local", "_spotify-connect._tcp.local"],
+        "tls_sni": [],
+        "http_requests": [],
+        "connections": [],
+    }
+
+    #: What FakeNet answered, which is what the guest actually asked for.
+    FAKENET = {
+        "dns_requests": [
+            "www.msftconnecttest.com",
+            "data-seed-prebsc-1-s1.binance.org",
+            "c0ffee-sink.ringforge.test",
+        ],
+    }
+
+    def test_the_c2_names_survive_a_pcap_that_never_saw_them(self) -> None:
+        iocs = extract_network_iocs(self.PCAP, self.FAKENET)
+
+        self.assertIn("data-seed-prebsc-1-s1.binance.org", iocs["notable_domains"])
+        self.assertIn("c0ffee-sink.ringforge.test", iocs["notable_domains"])
+
+    def test_without_the_merge_the_run_reports_nothing(self) -> None:
+        # The regression itself, kept as an executable statement of what was
+        # wrong rather than a comment about it.
+        self.assertEqual(extract_network_iocs(self.PCAP)["notable_domains"], [])
+
+    def test_a_pcap_full_of_multicast_still_counts_as_blind(self) -> None:
+        # The first version of this flag asked whether the pcap saw *any* name,
+        # which run 4bb6b0d5 would have passed on two names of Chromecast noise.
+        # What matters is whether it saw the names that mattered.
+        iocs = extract_network_iocs(self.PCAP, self.FAKENET)
+
+        self.assertTrue(iocs["pcap_blind"])
+        self.assertIn("c0ffee-sink.ringforge.test", iocs["note"])
+
+    def test_agreement_between_the_two_is_not_a_gap(self) -> None:
+        pcap = dict(self.PCAP, dns_queries=["evil-c2.example"])
+        iocs = extract_network_iocs(pcap, {"dns_requests": ["evil-c2.example"]})
+
+        self.assertEqual(iocs["notable_domains"], ["evil-c2.example"])
+        self.assertFalse(iocs["pcap_blind"])
+
+    def test_sources_says_which_input_contributed(self) -> None:
+        self.assertEqual(extract_network_iocs(self.PCAP, self.FAKENET)["sources"],
+                         ["pcap", "fakenet"])
+        self.assertEqual(extract_network_iocs(self.PCAP)["sources"], ["pcap"])
+
+    def test_fakenet_baseline_noise_is_still_suppressed(self) -> None:
+        # The control this file exists for: a merge that also promotes Windows
+        # telemetry to a lead is worse than the false negative it fixes.
+        iocs = extract_network_iocs(self.PCAP, self.FAKENET)
+
+        self.assertIn("www.msftconnecttest.com", iocs["baseline_domains"])
+        self.assertNotIn("www.msftconnecttest.com", iocs["notable_domains"])
+
+    def test_neither_source_recording_is_reported_as_a_collection_gap(self) -> None:
+        # Silence from both is ambiguous, and saying so is the whole point.
+        iocs = extract_network_iocs(
+            {"dns_queries": [], "tls_sni": [], "http_requests": [], "connections": []},
+            {"dns_requests": []},
+        )
+
+        self.assertEqual(iocs["sources"], [])
+        self.assertIn("absence of collection", iocs["note"])
+
+    def test_a_missing_fakenet_summary_is_not_an_error(self) -> None:
+        # FakeNet off, or its log unparsed, must cost only FakeNet's half.
+        for absent in (None, {}, "not a dict"):
+            iocs = extract_network_iocs(self.PCAP, absent)
+            self.assertEqual(iocs["sources"], ["pcap"])
+
+
 if __name__ == "__main__":
     unittest.main()
