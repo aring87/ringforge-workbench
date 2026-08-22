@@ -2621,6 +2621,10 @@ identical from outside. The two triage defects found alongside the carve are **b
 (`1264b1c`, `4d30e43`). **Detonation empty**,
 and `af2d8300…` has nothing left to give: its contract is dead on-chain, so a
 re-run cannot get further than `c14cb5b6` did. 716 tests.
+**WITHDRAWN 22 Aug — see *The IOCs*.** The dead address was
+`0x0F14fc3b`, which is a *wallet*. The contract the implant queries is
+`0x4E31128a` and has never been checked. A re-run got substantially further:
+it delivered the request.
 
 ---
 
@@ -2650,41 +2654,92 @@ that test was weaker than it looked. Do not record this as settled.
 
 ### The IOCs
 
+> **CORRECTED 22 Aug, by reading the request off the wire.** The 20 Aug entry
+> named `0x0F14fc3b…` as the contract and concluded no EVM destination existed
+> in the binary. **Both halves were wrong**, and only a live request could show
+> it: run `20260822_134019` captured seven `eth_call`s through a TLS responder
+> the implant trusted, and every one asked for a *different* address. Going back
+> to the carve with that address in hand, both are present, 1,581 bytes apart,
+> and their surroundings settle which is which — `0x0F14fc3b` sits **inside the
+> wallet table**, between a BTC bech32 and a BCH cashaddr; `0x4E31128a` is
+> embedded in the `eth_call` template itself.
+
 Config block is contiguous at file offsets 148728–150541: wallets, then
 identity, then C2.
 
-    contract   0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff
+    contract   0x4E31128a13AcBD1cF1909D67F072460c853F87f7   <- queried, confirmed on the wire
     selector   0x3bc5de30   (getData())
-    RPC        data-seed-prebsc-1-s1.binance.org:8545   (BSC testnet)
+    RPC        data-seed-prebsc-1-s1.binance.org:8545   (BSC testnet, HTTPS)
     guid       4b817807-2731-459c-bc5d-4bd914c9eb55
     beacon     POST, application/x-www-form-urlencoded
                method=refresh&guid=
                method=send&guid=&address=
 
-Ten hardcoded substitution wallets, chain from Base58 version-byte prefix:
+**The request, verbatim, as it left the implant:**
 
-    BTC   19eWJh8J6Mx9DrGXKEv3ojKmqw8Cv9pscK
-    BTC   3BFNGKQZW9FcwxHmBGNfctsCdiSiqT8qZk
-    BTC   bc1qtmvdcp0p5j3jd9a4k8e8qvv5gy9hrg7w28wxkg
-    LTC   LUut5sRxQzEPUM6NobeyanY9Yi748ZztsX
-    LTC   MAkF7mCn3tPqp662daybvERzwsKQYqnzM8
-    DOGE  DJhtvoh4N49pt2yfTQWgjnStBBnD4KdbRy
-    DASH  Xet9CxZ8ihR3Cqu32nbShKABRf2FTUqXxd
-    RVN   RTCqpJfyxBS4J3p2b5e5EKju1cc1FjKiMh
-    TRX   TWXh8n73LuT5MJ23pd8dCjFskRZckveFbP
-    SOL   DcJHrrHSgvFpsYxqb6g97uaQTd2kE31rPUeDZTeDsjVq
+    POST / HTTP/1.1
+    Content-Type: application/json
+    Host: data-seed-prebsc-1-s1.binance.org:8545
+    Content-Length: 136
+    Cache-Control: no-cache
+
+    {"id":1,"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x4E31128a13AcBD1cF1909D67F072460c853F87f7","data":"0x3bc5de30"},"latest"]}
+
+No `User-Agent`, `Cache-Control: no-cache`, and `id` ordered before `jsonrpc` —
+a hand-rolled client, not a library, consistent with the Zig hypothesis. **No
+handshake precedes it**: no `eth_chainId`, no `net_version`, straight to the
+call. Seven attempts on one keep-alive connection, ~510 ms apart for five then
+three inside 11 ms, then it gives up rather than looping.
+
+**Seventeen substitution wallets, not the ten first recorded.** The missed ones
+are whole chains — BCH, XRP, Algorand, TON and Cosmos — plus a third BTC and a
+third LTC format. In file order:
+
+    BTC    19eWJh8J6Mx9DrGXKEv3ojKmqw8Cv9pscK
+    BTC    3BFNGKQZW9FcwxHmBGNfctsCdiSiqT8qZk
+    BTC    bc1qtmvdcp0p5j3jd9a4k8e8qvv5gy9hrg7w28wxkg
+    ETH    0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff   <- a WALLET, not the contract
+    BCH    qzmvjauj8j2parcdn0a54samn9trnqf30cdufdf555
+    LTC    LUut5sRxQzEPUM6NobeyanY9Yi748ZztsX
+    LTC    MAkF7mCn3tPqp662daybvERzwsKQYqnzM8
+    LTC    ltc1qdfryskhwlwyernnpf348qtsh36rereugpgyu9s
+    DOGE   DJhtvoh4N49pt2yfTQWgjnStBBnD4KdbRy
+    XRP    rpZEAWYtiB6bJ16NuLbGCc6CZ6jJdKfb63
+    DASH   Xet9CxZ8ihR3Cqu32nbShKABRf2FTUqXxd
+    TRX    TWXh8n73LuT5MJ23pd8dCjFskRZckveFbP
+    RVN    RTCqpJfyxBS4J3p2b5e5EKju1cc1FjKiMh
+    ALGO   U65INNXNQYFK5WO5KI4UKDJV7XVVUJ36UCVRCQLGYW7ST7IFNM6ZWHASIM
+    TON    UQBNOrnQlzo3ftqm0Jj5Sf9zEHlPApapd-rWsAHREzkweiTw
+    ATOM   cosmos1qmxpyqgh3auy2k090cqu4q7h4y52j0pjv2cp07
+    SOL    DcJHrrHSgvFpsYxqb6g97uaQTd2kE31rPUeDZTeDsjVq
 
 Base58, Bech32, Base32 and Base64url alphabets sit directly beside them —
 those are the address parsers, the table above is the substitution targets,
 and `address=` is the report channel. **Clipper is demonstrated, not
-inferred.** No EVM destination address exists in the binary; the only `0x…`
-string is the contract, so the Ethereum replacement address is most likely
-delivered at runtime by `getData()`.
+inferred.** The EVM destination **is** hardcoded like every other chain, so
+`getData()` fetches something else — a C2 host for the beacon is the obvious
+candidate and is now testable, since phase 2 can answer the call.
+
+> **`0x4E31128a` has never been checked on-chain, and the "contract is dead"
+> finding does not apply to it.** That test was `eth_getCode` against
+> `0x0F14fc3b`, which is a wallet — an address with no code returns `0x`
+> whether or not anything was ever deployed anywhere else. So **"`af2d8300…`
+> has nothing left to give" is withdrawn**: the reasoning rested on a dead
+> contract that was never the contract.
 
 Detection is committed: `tools\yara\local\ringforge_etherhiding.yar`, two
 rules — technique and campaign, kept separate so contract rotation cannot
 stale out the durable one. **Neither carries a PE anchor**, deliberately, so
-they match raw memory dumps where the header is not at offset 0.
+they match raw memory dumps where the header is not at offset 0. Both were
+re-keyed on 22 Aug; 19 campaign strings match the payload and neither fires on
+the `csc.exe` carves.
+
+**The campaign rule would have missed this sample on its contract.** It keyed
+on `0x0F14fc3b`, and the wallet list carried it, so `2 of them` still matched —
+by accident, on a wallet, not on the contract it named. The responder caught
+the real one only because `_is_target_call` matches contract **or** selector:
+an `and` would have graded all seven `other_rpc` and the run would have read as
+"it asked for something else".
 
 ### Why it exited at t198, and it is not anti-analysis
 
@@ -2695,10 +2750,14 @@ downstream of the config fetch was gated on an answer containment guaranteed
 it would never get. That is the whole explanation for the short life; the
 `process-exit` trigger at t198 is what produced the carve at all.
 
-**The contract is dead.** `eth_getCode` returns `0x` on BSC testnet *and*
-mainnet as of 20 Aug — no code at that address on either chain. So this
-sample is inert in the wild: it cannot retrieve its C2 from anywhere, for
-anyone. Re-detonating will never show more than this run did.
+**~~The contract is dead.~~ RETRACTED 22 Aug.** `eth_getCode` returned `0x` on
+BSC testnet *and* mainnet as of 20 Aug — but against `0x0F14fc3b`, which is a
+**wallet**, not the contract. An address with no code returns `0x` whether or
+not a contract was ever deployed elsewhere, so that query established nothing
+about this sample's C2. The contract is `0x4E31128a13AcBD1cF1909D67F072460c853F87f7`
+and **remains unchecked**. "This sample is inert in the wild" and "re-detonating
+will never show more than this run did" both fall with it: run
+`20260822_134019` re-detonated and captured the request.
 
 ### NEW GAP: containment blocks EtherHiding at the first request
 
@@ -5378,8 +5437,10 @@ now cancel into a correct-looking verdict, which is worse than either alone.
 **The only remaining path into this sample's behaviour.** Everything downstream
 of the config fetch — substitution, the beacon protocol, the clipboard hook —
 was gated on an answer that containment guaranteed it would never get, and the
-chain has nothing to give it either (`eth_getCode` -> `0x` on BSC testnet *and*
-mainnet, 20 Aug). Re-detonating `af2d8300…` unchanged cannot beat `c14cb5b6`.
+chain was believed to have nothing to give it either — **that belief is
+withdrawn**: the `eth_getCode` that returned `0x` was aimed at `0x0F14fc3b`, a
+wallet, and the real contract `0x4E31128a` is unchecked. Re-detonating
+`af2d8300…` *did* beat `c14cb5b6`, once the certificate was acceptable.
 A responder is the lever, and it is **safer than arming the guest**: the
 operator picks the address the implant is handed.
 
