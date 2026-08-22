@@ -152,6 +152,32 @@ def _plan_raw_hex(address: str, host: str) -> str:
     return address
 
 
+def encode_hex_text(text: str) -> str:
+    """`0x` followed by the UTF-8 bytes in hex. **No ABI framing at all.**
+
+    Read out of the payload rather than guessed. The carve's string table holds
+    `result` and `0x`, both NUL-terminated, adjacent at `0x24418`, an uppercase `0123456789ABCDEF`
+    hex table in the same config block, and no ABI machinery anywhere -- so the
+    client looks like it finds `result`, strips `0x`, hex-decodes the rest and
+    uses the bytes. Everything served up to 22 Aug was ABI-encoded, which puts
+    64 bytes of offset and length words in front of the payload; after a naive
+    hex-decode those are binary junk before the text even begins. That is a
+    single explanation for four rejected shapes.
+
+    The attacker controls the contract and the client, so nothing obliges them
+    to use real ABI encoding between the two.
+    """
+    return "0x" + text.encode("utf-8").hex()
+
+
+def _plan_hex_url(address: str, host: str) -> str:
+    return encode_hex_text(f"https://{host}/")
+
+
+def _plan_hex_address(address: str, host: str) -> str:
+    return encode_hex_text(address)
+
+
 def _plan_url_https(address: str, host: str) -> str:
     return to_hex(encode_string(f"https://{host}/"))
 
@@ -198,6 +224,16 @@ PLANS: list[AnswerPlan] = [
                             "scheme and path itself", _plan_bare_host),
     AnswerPlan("json_c2", "returns a document describing a C2 rather than a "
                           "single value", _plan_json_c2),
+    # **Added 22 Aug from the binary, not from a guess.** `result` + `0x` sit
+    # adjacent in the payload's string table with a hex alphabet beside them and
+    # no ABI machinery anywhere, so the client most likely hex-decodes the result
+    # and uses the bytes. These two are the only shapes tried so far that put
+    # nothing in front of the payload.
+    AnswerPlan("hex_url", "hex-encoded URL, no ABI framing -- what a client "
+                          "that strips 0x and hex-decodes would want",
+               _plan_hex_url),
+    AnswerPlan("hex_address", "hex-encoded address, no ABI framing",
+               _plan_hex_address),
 ]
 
 PLANS_BY_NAME = {plan.name: plan for plan in PLANS}

@@ -293,10 +293,67 @@ class UrlShapes(unittest.TestCase):
         self.assertEqual(a, b)
 
     def test_the_url_shapes_come_after_the_address_shapes(self) -> None:
-        # Rotation order matters: the three already ruled out should not be
+        # Rotation order matters: the ones already ruled out should not be
         # re-served ahead of the untested ones on a fresh run... but they are
         # kept first deliberately, so a pinned re-run is the way to skip them.
+        #
+        # Asserted as *relative* order rather than absolute position: this test
+        # pinned `names[-3:]` and broke the moment the hex shapes were appended,
+        # which is a test that fails for growth rather than for regression.
         names = [p.name for p in PLANS]
 
         self.assertEqual(names[:3], ["address", "string_address", "string_json"])
-        self.assertEqual(names[-3:], ["url_https", "bare_host", "json_c2"])
+        for earlier, later in (("string_json", "url_https"),
+                               ("url_https", "bare_host"),
+                               ("bare_host", "json_c2")):
+            with self.subTest(pair=(earlier, later)):
+                self.assertLess(names.index(earlier), names.index(later))
+
+
+class HexTextShapes(unittest.TestCase):
+    """Derived from the payload's own string table, not from another guess.
+
+    `result` and `0x` sit adjacent at `0x24418` in the carve, an uppercase
+    `0123456789ABCDEF` table is in the same config block, and there is no ABI
+    machinery anywhere in it. So the client most likely finds `result`, strips
+    `0x`, hex-decodes, and uses the bytes -- which explains all four rejections
+    at once: every shape served before this put 64 bytes of ABI offset and
+    length words in front of the payload.
+    """
+
+    def test_nothing_precedes_the_payload(self) -> None:
+        # The whole point. An ABI string would begin with an offset word.
+        result = PLANS_BY_NAME["hex_url"].result(TRACER_ADDRESS, SINK_HOST)
+
+        self.assertTrue(result.startswith("0x"))
+        self.assertEqual(bytes.fromhex(result[2:]).decode(),
+                         f"https://{SINK_HOST}/")
+
+    def test_the_address_variant_decodes_to_the_address_text(self) -> None:
+        result = PLANS_BY_NAME["hex_address"].result(TRACER_ADDRESS, SINK_HOST)
+
+        self.assertEqual(bytes.fromhex(result[2:]).decode(), TRACER_ADDRESS)
+
+    def test_it_is_not_abi_framed(self) -> None:
+        # Contrast with the shape it replaces: `string_address` starts with the
+        # 0x20 offset word, and that is exactly the 64 bytes of junk a naive
+        # hex-decoding client would hit first.
+        abi = PLANS_BY_NAME["string_address"].result(TRACER_ADDRESS, SINK_HOST)
+        hexed = PLANS_BY_NAME["hex_address"].result(TRACER_ADDRESS, SINK_HOST)
+
+        self.assertTrue(abi[2:66].startswith("0" * 62 + "20"))
+        self.assertFalse(hexed[2:66].startswith("0" * 62 + "20"))
+
+    def test_encode_hex_text_round_trips_utf8(self) -> None:
+        from dynamic_analysis.jsonrpc_answer import encode_hex_text
+
+        for text in ("https://x.test/", "0xdeadbeef", "a", ""):
+            with self.subTest(text=text):
+                encoded = encode_hex_text(text)
+                self.assertEqual(bytes.fromhex(encoded[2:]).decode(), text)
+
+    def test_the_hex_shapes_are_last_so_a_sweep_reaches_them(self) -> None:
+        names = [p.name for p in PLANS]
+
+        self.assertEqual(names[-2:], ["hex_url", "hex_address"])
+        self.assertEqual(len(names), 10)
