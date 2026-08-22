@@ -122,6 +122,74 @@ than a hash written inline, which has been stale here before.
 
 ## Where things stand
 
+### Pick up here — 22 Aug
+
+**`0bw` is answered.** `getData()` returns a bare hostname, the implant uses it
+as its C2, and the beacon was watched arriving at an operator-chosen sink. See
+*THE BEACON REACHED THE SINK, AND `bare_host` IS THE ANSWER*; the two entries
+below it carry the contract read and the clipboard substitution that led there.
+
+**The guest is in the best state it has been in, and almost none of it survives
+a revert.** That is the single most useful thing to know before touching it.
+
+    commit 5e1a31c            on the snapshotted disk -- a pull does not survive
+    tools\yara\rules\local\   gitignored, hand-copied, NOT in git
+    FakeNet leaf + key        inside the FakeNet install, two SANs
+    RingForge CA              in the guest's Trusted Root store
+    config.json               dump offsets AND dynamic_fakenet_config_path
+    samples\af2d8300…          re-acquired by hash otherwise, which needs arming
+
+Every line of that was rebuilt by hand on 22 Aug, most of it twice. **Replacing
+`tooling-baseline` with this state is worth more than any single run**, and it
+is the one task that makes the others cheap. Take it before the next revert, not
+after.
+
+**The baseline's recorded commit was wrong**, which is worth distrusting again:
+it was noted as `e2046ab`, it was actually `e7e4968`, and the difference spanned
+the commit that introduced `bare_host`. Read the commit on the guest rather than
+the note.
+
+### The pattern of 22 Aug, and it is the thing to carry forward
+
+**Four separate defects were each one step from reading as "the implant rejected
+our answer."** A single-SAN leaf that would have failed the beacon handshake; a
+FakeNet config path with no GUI field, wiped by the revert; a YARA rule absent
+from the scanner; and an IOC extractor reading the one capture that cannot see
+diverted traffic. None of them would have produced an error. All four would have
+produced a plausible negative result.
+
+Only the first was caught before it cost anything, and only because the
+implant's choice of scheme was reasoned about in advance rather than discovered.
+**A negative result from this bench is not evidence until the collector that
+produced it has been shown to be capable of a positive one.**
+
+### Next, ranked
+
+1. **Re-take `tooling-baseline`** at the current guest state, take-before-delete
+   per *Replacing the baseline*. Decide `samples\` deliberately: the hygiene
+   rule says the mimikatz set only, and keeping `af2d8300…` removes an arm
+   cycle from every future revert. That is a real trade, not an oversight.
+2. **Report rule *freshness*, not just `rules_dir`.** Three recurrences, and the
+   remedy for the first was written in August. A hash or mtime comparison
+   between `tools\yara\local\` and `tools\yara\rules\local\`, surfaced in the
+   preflight strip beside `Mem YARA: ready`, ends the class rather than the
+   instance. **This is the one that pays for itself on every future run.**
+3. **Phase 3: answer `method=refresh`.** Justified by evidence now rather than
+   inference -- `$c2b` and `$c2c` are resident in the payload. The constraint is
+   ten seconds, t+151 to t+161, so a longer window buys nothing. Build it as a
+   small rotation like the `getData()` planner, because nothing on disk says
+   what a plausible response looks like.
+4. **`make_tls_cert.py` re-mints the CA on every run**, silently invalidating
+   the trust store. Reuse an existing CA when one is present.
+5. **The contract's transaction history** -- deployer and rotation timeline.
+   Needs a decision about querying the live chain from this network, which is an
+   attribution question rather than a technical one.
+6. **`test_restore_env_guard` has been failing** since before 22 Aug: four
+   `RINGFORGE_RPC_*` names are read by `make_fakenet_config.py` and absent from
+   `ENV_TOGGLES`. The test's own message says the fix depends on whether each
+   changes what the harness *claims exists* or only its fidelity.
+
+
 Three live samples have been through the pipeline end to end.
 
 **Remcos** (`aa4d6427…`) is the current reference case and the first sample to
