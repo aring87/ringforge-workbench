@@ -8,7 +8,11 @@ spent runs on premises that were withdrawn twice before they reproduced.
 
 The request used throughout is the one the sample is expected to send, built
 from the config block read out of the carve at file offsets 148728-150541:
-contract `0x0F14fc3b...`, selector `0x3bc5de30` (`getData()`).
+contract `0x4E31128a...`, selector `0x3bc5de30` (`getData()`).
+
+`0x0F14fc3b...` appears here too, as the address these tests must *not* treat
+as the contract: it is the EVM substitution wallet, and it stood in the constant
+for two days.
 """
 
 import json
@@ -32,9 +36,13 @@ from dynamic_analysis.jsonrpc_responder import (
     _parse_jsonrpc,
 )
 
-#: The contract as it appears in the carve -- EIP-55 mixed case, which is how a
-#: caller usually writes it and which must still match the lowercased constant.
-CONTRACT_CHECKSUMMED = "0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff"
+#: The contract as the implant writes it on the wire -- EIP-55 mixed case,
+#: which must still match the lowercased constant.
+CONTRACT_CHECKSUMMED = "0x4E31128a13AcBD1cF1909D67F072460c853F87f7"
+
+#: The EVM substitution wallet. Not a contract, and the whole point of keeping
+#: it here is that a call naming it must not be mistaken for one.
+SUBSTITUTION_WALLET = "0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff"
 
 
 def _eth_call_body(to: str = CONTRACT_CHECKSUMMED, data: str = GETDATA_SELECTOR) -> bytes:

@@ -44,7 +44,20 @@ from typing import Any, Optional
 
 #: The contract `c14cb5b6`'s payload reads, lowercased for comparison because
 #: JSON-RPC callers mix EIP-55 checksum case with plain hex freely.
-ETHERHIDING_CONTRACT = "0x0f14fc3bfac3726172acd08fe4bfb79b633e76ff"
+#:
+#: **Corrected 22 Aug, and the error it replaces cost two days.** This held
+#: `0x0f14fc3bfac3726172acd08fe4bfb79b633e76ff` until then, lifted from the
+#: config block -- where it sits *inside the wallet table*, between a BTC bech32
+#: and a BCH cashaddr. It is the EVM substitution address, not a contract. The
+#: real one is below, read off the wire from the `eth_call` the implant actually
+#: sends and since confirmed live on BSC testnet.
+#:
+#: The failure mode is worth keeping in view: `eth_getCode` against the wallet
+#: returned `0x`, which is also what a node returns for an address with no code,
+#: and that was written up as "the contract is dead, this sample is inert in the
+#: wild". An address with no code says nothing about a contract deployed
+#: elsewhere.
+ETHERHIDING_CONTRACT = "0x4e31128a13acbd1cf1909d67f072460c853f87f7"
 
 #: `getData()`. The first four bytes of the `eth_call` data field.
 GETDATA_SELECTOR = "0x3bc5de30"
@@ -204,6 +217,22 @@ def _is_target_call(call: dict[str, Any]) -> bool:
     return to == ETHERHIDING_CONTRACT or selector == GETDATA_SELECTOR
 
 
+def _observed_contracts(records: list[dict[str, Any]]) -> list[str]:
+    """Every distinct address a target call named, lowercased, first seen first.
+
+    Deliberately taken from the records rather than from `ETHERHIDING_CONTRACT`.
+    A campaign that rotates its contract is the expected case, and a constant
+    that has drifted from the wire is the measured one.
+    """
+    seen: list[str] = []
+    for record in records:
+        for call in record.get("calls", []):
+            to = str(call.get("to", "") or "").lower()
+            if to and to not in seen:
+                seen.append(to)
+    return seen
+
+
 def _handshake_first(records: list[dict[str, Any]]) -> bool:
     """True when a handshake method was seen before the first target call."""
     for record in records:
@@ -335,10 +364,14 @@ class RequestRecorder:
         self.planner = planner
         # `error` is phase 1's default: a well-formed JSON-RPC error, which is
         # what a node returns when a call cannot be executed. `empty` returns a
-        # successful `0x`, which is what a node returns for a contract with no
-        # code -- the truthful answer for this dead contract, and a different
-        # path through the implant's parser. Which one it is matters to C4, so
-        # it is a knob rather than a constant.
+        # successful `0x`, which is what a node returns for an address with no
+        # code, and is a different path through the implant's parser. Which one
+        # it is matters to C4, so it is a knob rather than a constant.
+        #
+        # It is no longer "the truthful answer for this dead contract", which is
+        # what this said while the constant named a wallet: the contract is
+        # live, and `0x` is now a fiction being told deliberately rather than a
+        # fact being relayed.
         self.reply = reply if reply in ("error", "empty") else "error"
 
         self.requests_path = self.output_dir / "jsonrpc_requests.jsonl"
@@ -487,6 +520,7 @@ class RequestRecorder:
                 methods[method] = methods.get(method, 0) + 1
 
         target = [r for r in records if r.get("is_target_call")]
+        observed = _observed_contracts(target)
         jsonrpc = [r for r in records if r.get("is_jsonrpc")]
 
         tls = [r for r in records if r.get("is_tls")]
@@ -536,6 +570,13 @@ class RequestRecorder:
             "handshake_methods": [m for m in methods if m.lower() in HANDSHAKE_METHODS],
             "handshake_before_target": _handshake_first(records),
             "contract": ETHERHIDING_CONTRACT,
+            # **The wire, beside the expectation.** `contract` is a constant and
+            # was wrong for two days without anything contradicting it, because
+            # nothing in the summary reported what the implant had actually
+            # asked for. These are the addresses it named; when they disagree
+            # with `contract`, they are the ones that are true.
+            "contract_observed": observed,
+            "contract_matches_observed": observed == [ETHERHIDING_CONTRACT],
             "selector": GETDATA_SELECTOR,
             "first_seen": records[0]["time"] if records else "",
             "last_seen": records[-1]["time"] if records else "",
