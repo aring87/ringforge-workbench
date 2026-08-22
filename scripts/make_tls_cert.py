@@ -43,11 +43,31 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Sequence
 
 #: The host the implant asks for, taken from the SNI in run `7ae41ca7`'s
 #: ClientHello rather than from the config block, so it matches what is actually
 #: on the wire.
 DEFAULT_HOSTNAME = "data-seed-prebsc-1-s1.binance.org"
+
+#: The phase 2 sink, which must equal `jsonrpc_answer.SINK_HOST`.
+#:
+#: **Duplicated rather than imported.** This runs on the guest, from `scripts/`,
+#: often before anything has put the repo root on `sys.path`; a cross-package
+#: import here would make certificate generation fail for a reason that has
+#: nothing to do with certificates. `test_tls_cert_swap` asserts the two agree,
+#: which is the cheap half of that trade.
+DEFAULT_SINK_HOST = "c0ffee-sink.ringforge.test"
+
+#: **Both, by default, because a `bare_host` run needs both.**
+#:
+#: A single SAN is enough while the only TLS connection is the `eth_call`. It
+#: stops being enough the moment `getData()` is answered with a hostname: the
+#: implant supplies its own scheme, and if it picks `https://` the beacon opens
+#: a second connection to a name the leaf does not cover. That handshake fails
+#: exactly as run `7ae41ca7` did -- silent FIN, no request -- one layer further
+#: in, and the run yields nothing while reading like a rejected answer.
+DEFAULT_HOSTNAMES = (DEFAULT_HOSTNAME, DEFAULT_SINK_HOST)
 
 #: FakeNet's `RawListener` hardcodes these two paths -- they are not config
 #: keys. Controlling the files is therefore the only way to control the cert it
@@ -106,13 +126,41 @@ def _run(openssl: Path, args: list[str], cwd: Path) -> None:
         )
 
 
+def normalise_hostnames(hostnames: Sequence[str]) -> list[str]:
+    """Trim, drop blanks and de-duplicate, keeping the order given.
+
+    Order matters because the first name becomes the CN. De-duplication matters
+    because `--hostname` is repeatable: openssl rejects a SAN carrying the same
+    entry twice, and it reports that as a parse failure on the extension file
+    rather than as the duplicate it is.
+    """
+    seen: set[str] = set()
+    names: list[str] = []
+    for raw in hostnames:
+        name = str(raw or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        names.append(name)
+    if not names:
+        raise CertError("at least one hostname is required for the leaf's SAN")
+    return names
+
+
+def san_line(hostnames: Sequence[str]) -> str:
+    """The `subjectAltName` line covering every name the leaf answers for."""
+    return "subjectAltName=" + ",".join(
+        "DNS:" + name for name in normalise_hostnames(hostnames))
+
+
 def generate(
     out_dir: Path,
-    hostname: str = DEFAULT_HOSTNAME,
+    hostnames: Sequence[str] = DEFAULT_HOSTNAMES,
     openssl: Path | None = None,
     days: int = 825,
 ) -> dict[str, Path]:
-    """Mint a CA and a leaf for `hostname`, into `out_dir`."""
+    """Mint a CA, and one leaf covering every name in `hostnames`."""
+    names = normalise_hostnames(hostnames)
     binary = openssl or find_openssl()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +184,9 @@ def generate(
     _run(binary, [
         "req", "-newkey", "rsa:2048", "-nodes", "-sha256",
         "-keyout", leaf_key.name, "-out", csr.name,
-        "-subj", f"/CN={hostname}/O=RingForge",
+        # The CN is vestigial -- modern clients ignore it and match the SAN
+        # below -- so the first name is as good as any.
+        "-subj", f"/CN={names[0]}/O=RingForge",
     ], out_dir)
 
     # **The SAN is the part that matters.** Modern clients ignore CN entirely
@@ -145,7 +195,7 @@ def generate(
     # and send this investigation down the wrong path.
     ext = out_dir / "leaf.ext"
     ext.write_text(
-        f"subjectAltName=DNS:{hostname}\n"
+        san_line(names) + "\n"
         "basicConstraints=CA:FALSE\n"
         "keyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n",
@@ -235,7 +285,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default=r"C:\fakenet-0bw\tls",
                         help="where the CA and leaf are written")
-    parser.add_argument("--hostname", default=DEFAULT_HOSTNAME)
+    parser.add_argument("--hostname", action="append", dest="hostnames",
+                        metavar="HOST",
+                        help="a name the leaf must answer for; repeat for more "
+                             "than one. Defaults to the RPC host and the phase "
+                             "2 sink, which is what a bare_host run needs.")
     parser.add_argument("--openssl", default="",
                         help="path to openssl.exe; found automatically otherwise")
     parser.add_argument("--fakenet", default="",
@@ -259,9 +313,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         out_dir = Path(args.out)
-        made = generate(out_dir, args.hostname,
+        hostnames = normalise_hostnames(args.hostnames or DEFAULT_HOSTNAMES)
+        made = generate(out_dir, hostnames,
                         Path(args.openssl) if args.openssl else None)
-        print(f"hostname : {args.hostname}")
+        print(f"hostnames: {', '.join(hostnames)}")
         print(f"CA cert  : {made['ca_cert']}")
         print(f"leaf     : {made['leaf_cert']}")
 

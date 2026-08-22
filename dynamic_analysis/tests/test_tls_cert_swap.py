@@ -17,11 +17,16 @@ from pathlib import Path
 
 from scripts.make_tls_cert import (
     BACKUP_SUFFIX,
+    DEFAULT_HOSTNAME,
+    DEFAULT_HOSTNAMES,
+    DEFAULT_SINK_HOST,
     LEAF_CERT_NAME,
     LEAF_KEY_NAME,
     CertError,
     install,
+    normalise_hostnames,
     restore,
+    san_line,
     ssl_utils_dir,
 )
 
@@ -125,6 +130,56 @@ class SwappingTheCertificate(unittest.TestCase):
         # The cert half must not have been swapped on the way to failing.
         self.assertEqual((self.target / LEAF_CERT_NAME).read_text(),
                          "FAKENET ORIGINAL CERT")
+
+
+class TheNamesTheLeafCovers(unittest.TestCase):
+    """The SAN, which is the half of the certificate clients actually match.
+
+    Run `7ae41ca7` established what a name the leaf does not cover costs: a
+    silent FIN, no request, and a result indistinguishable from an implant that
+    pins. These run without openssl because the extension file is built before
+    openssl is ever invoked, and it is the part that can be quietly wrong.
+    """
+
+    def test_the_default_covers_the_rpc_host_and_the_sink(self) -> None:
+        # A `bare_host` answer sends the implant to the sink over a scheme it
+        # picks itself. If it picks https, the leaf has to already cover it --
+        # there is no second chance inside one detonation.
+        line = san_line(DEFAULT_HOSTNAMES)
+
+        self.assertIn("DNS:" + DEFAULT_HOSTNAME, line)
+        self.assertIn("DNS:" + DEFAULT_SINK_HOST, line)
+
+    def test_the_sink_matches_the_one_phase_2_actually_serves(self) -> None:
+        # The constant is duplicated here rather than imported, because this
+        # script runs on the guest before the repo root is necessarily on
+        # sys.path. This is the assertion that pays for that duplication: a
+        # leaf minted for the wrong sink fails at the handshake, which is the
+        # most expensive place in this bench to discover a typo.
+        from dynamic_analysis.jsonrpc_answer import SINK_HOST
+
+        self.assertEqual(DEFAULT_SINK_HOST, SINK_HOST)
+
+    def test_the_extension_line_is_comma_separated(self) -> None:
+        self.assertEqual(san_line(["a.test", "b.test"]),
+                         "subjectAltName=DNS:a.test,DNS:b.test")
+
+    def test_repeats_are_dropped_because_openssl_rejects_them(self) -> None:
+        # --hostname is repeatable, so passing the default plus an explicit copy
+        # of it is the obvious thing to do and must not produce a SAN openssl
+        # refuses to parse.
+        self.assertEqual(normalise_hostnames(["a.test", "A.TEST", " a.test "]),
+                         ["a.test"])
+
+    def test_order_is_kept_because_the_first_name_becomes_the_cn(self) -> None:
+        self.assertEqual(normalise_hostnames(["b.test", "a.test"]),
+                         ["b.test", "a.test"])
+
+    def test_no_usable_name_is_an_error_rather_than_an_empty_san(self) -> None:
+        # An empty SAN is accepted by openssl and rejected by every client, so
+        # it would fail as a handshake problem hours later rather than here.
+        with self.assertRaises(CertError):
+            san_line(["", "   "])
 
 
 if __name__ == "__main__":
