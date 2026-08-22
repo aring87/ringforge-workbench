@@ -179,10 +179,29 @@ function Invoke-VBox {
 }
 
 function Get-VmRunState {
-  param([string]$Exe, [string]$Name)
+  <#
+    .SYNOPSIS
+      The VM's run state. `-Tolerant` returns "" instead of throwing.
+
+    **A poll loop must not die on a transient read.** `showvminfo` briefly
+    fails against a machine that is mid-transition -- a hard poweroff is the
+    reliable way to see it -- and the message it produces sends the reader
+    after a naming problem that does not exist. On 22 Aug a `-Baseline` restore
+    aborted exactly that way, at `Stop-VmHard`'s poll loop, *after* the poweroff
+    it was waiting on had already succeeded; the VM was `poweroff` with no
+    frontends by the time anyone looked. Re-running it worked, which is the
+    worst kind of bug: one that rewards not understanding it.
+
+    Throwing stays the default, because a genuinely wrong name should fail
+    loudly and immediately. Tolerant callers are the poll loops, and every one
+    of them runs after `Get-Snapshots` has already read the machine once -- so
+    the name is known good by then and nothing is being hidden.
+  #>
+  param([string]$Exe, [string]$Name, [switch]$Tolerant)
 
   $result = Invoke-VBox -Exe $Exe -Arguments @("showvminfo", $Name, "--machinereadable")
   if ($result.ExitCode -ne 0) {
+    if ($Tolerant) { return "" }
     throw "Could not read VM '$Name'. Check the name with: VBoxManage list vms"
   }
   foreach ($line in $result.Output) {
@@ -254,12 +273,16 @@ function Wait-VmSettled {
     [string]$Because = ""
   )
 
-  $state = Get-VmRunState -Exe $Exe -Name $Name
-  if ($script:TransientStates -notcontains $state) { return $state }
+  # Tolerant, and "" deliberately does not count as settled: an unreadable
+  # machine must fall through into the wait loop rather than be reported as a
+  # resting state, which is what -notcontains would otherwise do with it.
+  $state = Get-VmRunState -Exe $Exe -Name $Name -Tolerant
+  if ($state -and $script:TransientStates -notcontains $state) { return $state }
   Warn-IfManagerOpen
 
   $label = if ($Because) { " ($Because)" } else { "" }
-  Write-Info "Waiting for VirtualBox to finish '$state'$label..."
+  $shown = if ($state) { $state } else { "unreadable" }
+  Write-Info "Waiting for VirtualBox to finish '$shown'$label..."
 
   # A wedge and a slow restore look identical from the state alone, and the
   # remedy for one is wrong for the other: restarting VBoxSVC takes every other
@@ -275,8 +298,10 @@ function Wait-VmSettled {
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 700
-    $state = Get-VmRunState -Exe $Exe -Name $Name
-    if ($script:TransientStates -notcontains $state) {
+    $state = Get-VmRunState -Exe $Exe -Name $Name -Tolerant
+    # An unreadable state is not a settled state: "" must keep waiting rather
+    # than fall through the -notcontains test, which it would otherwise pass.
+    if ($state -and $script:TransientStates -notcontains $state) {
       Write-Ok "Settled ($state)."
       return $state
     }
@@ -433,14 +458,15 @@ function Stop-VmHard {
   $deadline = (Get-Date).AddSeconds(60)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 700
-    $state = Get-VmRunState -Exe $Exe -Name $Name
+    $state = Get-VmRunState -Exe $Exe -Name $Name -Tolerant
     if ($state -match 'poweroff|aborted') {
       Write-Ok "Stopped."
       Wait-FrontendsExited -Exe $Exe -Name $Name
       return
     }
   }
-  throw "VM '$Name' did not stop within 60 seconds (state: $state)."
+  $seen = if ($state) { $state } else { "unreadable" }
+  throw "VM '$Name' did not stop within 60 seconds (state: $seen)."
 }
 
 function Get-GuestIPv4 {
@@ -491,7 +517,7 @@ function Wait-GuestReady {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
 
-    $state = Get-VmRunState -Exe $Exe -Name $Name
+    $state = Get-VmRunState -Exe $Exe -Name $Name -Tolerant
     if ($state -notmatch 'running') { continue }
 
     # Network first: it comes up well before the desktop, so it distinguishes
@@ -586,7 +612,9 @@ try {
   # ---------------------------------------------------------------- list ---
   if ($List) {
     Write-Host ""
-    Write-Info "VM: $VMName  (state: $(Get-VmRunState -Exe $exe -Name $VMName))"
+    $listed = Get-VmRunState -Exe $exe -Name $VMName -Tolerant
+    if (-not $listed) { $listed = "unreadable -- a state change may be in flight" }
+    Write-Info "VM: $VMName  (state: $listed)"
     if ($snapshots.Names.Count -eq 0) {
       Write-Warn "No snapshots. Take one after bootstrap_tools.ps1 with:"
       Write-Warn "  .\scripts\vm_snapshot.ps1 -Take '$BaselineName'"
@@ -722,7 +750,8 @@ try {
   if ($started.ExitCode -ne 0) {
     # E_FAIL with no detail is what a launch into a transient state returns,
     # and the state is the only thing that explains it.
-    $now = Get-VmRunState -Exe $exe -Name $VMName
+    $now = Get-VmRunState -Exe $exe -Name $VMName -Tolerant
+    if (-not $now) { $now = "unreadable" }
     throw ("VBoxManage failed to start '$VMName' (state: $now): " +
            ($started.Output -join ' '))
   }
