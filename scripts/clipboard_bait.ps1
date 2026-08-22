@@ -55,8 +55,10 @@
   **Disable the clipboard bridge before running this.** With
   `clipboard=bidirectional` a substitution in the guest reaches the host
   clipboard, which is the 22 Aug incident reproduced deliberately.
-  `vm_snapshot.ps1 -Baseline` now closes it on every restore; this script checks
-  what it can from inside and refuses to start quietly if it looks open.
+  **Nothing closes it for you.** Containment covers the network only, on purpose
+  -- see the comment on `Set-Containment`. Close it yourself with
+  `VBoxManage controlvm <vm> clipboard mode disabled`, and re-open it afterwards;
+  this script warns from inside but cannot read the host setting to check.
 
   This runs as an extra `powershell.exe` inside the run window. It will appear
   in Procmon and Sysmon output, and analyzer-attribution filters may or may not
@@ -121,8 +123,9 @@ function Test-ClipboardBridge {
     Write-Warn2 "If the host's clipboard mode is not 'disabled', a substitution here"
     Write-Warn2 "reaches the HOST clipboard -- the 22 Aug incident, on purpose."
     Write-Warn2 "Close it on the host with:"
-    Write-Warn2 "  VBoxManage modifyvm <vm> --clipboard-mode disabled --drag-and-drop disabled"
-    Write-Warn2 "(vm_snapshot.ps1 -Baseline now does this on every restore.)"
+    Write-Warn2 "  VBoxManage controlvm <vm> clipboard mode disabled"
+    Write-Warn2 "(Nothing does this for you: containment covers the network only,"
+    Write-Warn2 " deliberately -- see the comment on Set-Containment in vm_snapshot.ps1.)"
   }
 }
 
