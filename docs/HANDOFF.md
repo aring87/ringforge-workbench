@@ -2734,6 +2734,52 @@ None changed the result, and all three would have corrupted the *record*.
    indistinguishable from a diverter fault. The code comment beside it already
    says this happened once; it nearly happened again.
 
+
+### The rescan settled it: the rules were fine, the copy was not
+
+`rescan_memory_yara.py --rules-dir tools\yara\local --expect ...` against the
+same dumps, no detonation. **24 of the rule file's 26 strings matched** on
+`SecurityHealthHost.exe_7972_t161_exit.dmp` (77.4 MB), and
+`dumps_with_matches` went 8 -> 9. The zero was the stale bootstrap copy and
+nothing else.
+
+**Resident in the payload at exit:** all 17 substitution wallets, and `$con` =
+`0x4E31128a13AcBD1cF1909D67F072460c853F87f7` in EIP-55 form -- the corrected
+contract confirmed in captured memory rather than only on the wire. **`$c2b`
+(`method=send&guid=`) and `$c2c` (`&address=`) are both present**, so the
+substitution beacon is an implemented code path that was never triggered, and
+phase 3 is chasing something real.
+
+**Both non-matches say something.**
+
+- **`$c2` (`klopasnarhia.cc`) is absent, and that is the control working.** The
+  responder served `c0ffee-sink.ringforge.test`, so the real C2 never entered
+  memory. Its absence is positive evidence that the substitution held and the
+  implant did not reach the chain by some other route.
+- **`$selector` missed while `$sel_bare` hit.** `$tmpl` sits at dump offset
+  5561499 and `$sel_bare` at 5561613 -- two separate literals 114 bytes apart.
+  The `eth_call` is assembled from fragments at runtime, so the composed
+  `"data":"0x3bc5de30"` exists only on the wire. `$selector` is therefore dead
+  against memory, and a later cleanup that removes `$sel_bare` as its duplicate
+  would silently cost the memory match. Noted in the rule itself.
+
+**Two clusters, and the second is the live request buffer.**
+
+    ~5.56 MB   $guid 5561024  $tmpl 5561499  $sel_bare 5561613
+               $c2a 5561642   $c2b 5561662   $c2c 5561679    <- string table
+    ~16.62 MB  $guid 16621538              $c2a 16621706     <- assembled request
+
+The second pair is 168 bytes apart and 11 MB from the table, in the order the
+wire showed: the `Authorization` GUID, then `method=refresh&guid=`. That is the
+outgoing beacon in memory, locatable by offset. A third `$guid` copy sits at
+1647342.
+
+**Hollowing, cleanly.** Only the `SecurityHealthHost` exit dump carries either
+payload rule; every `powershell.exe` and `csc.exe` dump carries only
+`RingForge_Split_API_Injection_Loader`. The payload exists solely in the
+injected host, and the `process-exit` trigger is the only thing that caught it
+-- which is `timeout 240` earning its keep for the second time.
+
 ### Where this leaves `0bw`
 
 Proven, on the wire, in one run:

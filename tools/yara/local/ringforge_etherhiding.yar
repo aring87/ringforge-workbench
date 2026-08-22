@@ -8,12 +8,22 @@ rule RingForge_EtherHiding_eth_call
         reference2  = "request template confirmed on the wire, run 20260822_134019, via a trusted-CA TLS responder"
         hash        = "7ea500ad175878014fa1ec391416ae477066b2622c96c8b882126febdeddf004"
         note        = "No PE anchor -- must match raw memory dumps, where the header is not at offset 0"
+        note2       = "Confirmed against memory 22 Aug, run 4bb6b0d5: 5 of 6 strings hit in SecurityHealthHost.exe pid 7972. $selector was the miss -- see the comment beside it."
 
     strings:
         // The template as it appears in the binary, and as it went out on the
         // wire: field order `id` before `jsonrpc`, no spaces. That ordering is
         // a hand-rolled client's fingerprint rather than a library's.
         $tmpl     = "{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"to\":\"" ascii
+        // **`$selector` is dead against memory, and `$sel_bare` is not
+        // redundant with it.** The composed JSON fragment matches a captured
+        // *request* and never the implant: run `4bb6b0d5` hit `$tmpl` at dump
+        // offset 5561499 and `$sel_bare` at 5561613, 114 bytes apart as two
+        // separate literals, and `$selector` not at all. The request is
+        // assembled from fragments at runtime, so `"data":"0x3bc5de30"` exists
+        // only on the wire. Keep both: `$selector` still earns its place
+        // against a pcap or a proxy log. **Do not delete `$sel_bare` as a
+        // duplicate of it** -- that would take the memory match with it.
         $selector = "\"data\":\"0x3bc5de30\"" ascii
         $sel_bare = "0x3bc5de30" ascii
         $c2a      = "method=refresh&guid=" ascii
