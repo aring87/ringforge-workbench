@@ -129,25 +129,50 @@ as its C2, and the beacon was watched arriving at an operator-chosen sink. See
 *THE BEACON REACHED THE SINK, AND `bare_host` IS THE ANSWER*; the two entries
 below it carry the contract read and the clipboard substitution that led there.
 
-**The guest is in the best state it has been in, and almost none of it survives
-a revert.** That is the single most useful thing to know before touching it.
+**`tooling-baseline` was replaced on 22 Aug and now holds all of it.** A revert
+restores the working bench rather than a starting point for rebuilding one:
 
-    commit 5e1a31c            on the snapshotted disk -- a pull does not survive
-    tools\yara\rules\local\   gitignored, hand-copied, NOT in git
-    FakeNet leaf + key        inside the FakeNet install, two SANs
-    RingForge CA              in the guest's Trusted Root store
-    config.json               dump offsets AND dynamic_fakenet_config_path
-    samples\af2d8300…          re-acquired by hash otherwise, which needs arming
+    commit 5e1a31c            the clone, with bare_host and the corrected rule
+    tools\yara\rules\local\   corrected ringforge_etherhiding.yar, hand-copied
+    FakeNet leaf + key        two SANs: the RPC host and the phase 2 sink
+    RingForge CA              trusted in Root, and it signs that leaf
+    config.json               offsets 3,10,25,55 / max 24 / redump 2 /
+                              dynamic_fakenet_config_path -> fakenet-0bw
+    samples\                  af2d8300 and 422e30ed both retained
 
-Every line of that was rebuilt by hand on 22 Aug, most of it twice. **Replacing
-`tooling-baseline` with this state is worth more than any single run**, and it
-is the one task that makes the others cheap. Take it before the next revert, not
-after.
+Every line was rebuilt by hand that day, most of it twice, and **none of it is
+in git** -- `tools\yara\rules\` is gitignored, the leaf lives inside the FakeNet
+install, the CA lives in the guest's certificate store, and `config.json` is
+local. The snapshot is the only thing that carries them. **If the baseline is
+ever rebuilt from scratch, that list is the checklist**, and the snapshot's own
+description repeats it.
 
-**The baseline's recorded commit was wrong**, which is worth distrusting again:
-it was noted as `e2046ab`, it was actually `e7e4968`, and the difference spanned
-the commit that introduced `bare_host`. Read the commit on the guest rather than
-the note.
+**Verify before freezing, always.** The pre-snapshot check caught a single-SAN
+leaf and `1, 25` offsets that a revert had quietly restored: the cert work had
+been done *before* that revert and died with it, while the YARA copy survived
+because it happened after. Freezing then would have baked in a leaf that fails
+the beacon handshake on every future run, silently, reading as a rejected
+answer.
+
+### The snapshot tree, and why descriptions are not optional
+
+    tooling-baseline-16aug
+    └── tooling-baseline-e7e4968     <- was `tooling-baseline` until 22 Aug
+        └── tooling-baseline-new     <- undescribed, origin unknown
+            └── tooling-baseline     <- 22 Aug, current
+
+**Renamed rather than deleted.** `-Delete` merges a differencing disk on a
+93.9 GB VM and is the only irreversible step; nothing needed deleting to make
+`-Baseline` land on the new state, so nothing was. The chain is four deep, which
+is a restore-speed and disk cost worth paying down deliberately later -- and not
+before someone establishes what `tooling-baseline-new` is. It has no
+description, which is exactly why it cannot safely be removed.
+
+**The old baseline's description is what settled the commit question.** It reads
+"Clone at e7e4968" in as many words. The handoff note had said `e2046ab`, the
+difference spanned the commit that introduced `bare_host`, and a run was planned
+on the strength of the wrong one. Write the description; it is the only account
+of a snapshot that survives contact with a bad memory.
 
 ### The pattern of 22 Aug, and it is the thing to carry forward
 
@@ -165,10 +190,11 @@ produced it has been shown to be capable of a positive one.**
 
 ### Next, ranked
 
-1. **Re-take `tooling-baseline`** at the current guest state, take-before-delete
-   per *Replacing the baseline*. Decide `samples\` deliberately: the hygiene
-   rule says the mimikatz set only, and keeping `af2d8300…` removes an arm
-   cycle from every future revert. That is a real trade, not an oversight.
+1. ~~Re-take `tooling-baseline`~~ **— done 22 Aug**, see above. The `samples\`
+   question is closed by observation rather than by decision: the old baseline
+   already carried `af2d8300` and `422e30ed` deliberately, and its description
+   says so, so retaining them is the standing convention rather than a lapse
+   from the hygiene rule.
 2. **Report rule *freshness*, not just `rules_dir`.** Three recurrences, and the
    remedy for the first was written in August. A hash or mtime comparison
    between `tools\yara\local\` and `tools\yara\rules\local\`, surfaced in the
