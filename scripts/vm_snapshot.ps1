@@ -338,6 +338,81 @@ function Get-Snapshots {
   return [PSCustomObject]@{ Names = $names; Current = $current }
 }
 
+function Get-VmUuid {
+  param([string]$Exe, [string]$Name)
+
+  $result = Invoke-VBox -Exe $Exe -Arguments @("showvminfo", $Name, "--machinereadable")
+  if ($result.ExitCode -ne 0) { return "" }
+  foreach ($line in $result.Output) {
+    if ($line -match '^UUID="(.+)"$') { return $matches[1] }
+  }
+  return ""
+}
+
+function Wait-FrontendsExited {
+  <#
+    .SYNOPSIS
+      Wait for this VM's VirtualBoxVM.exe frontend to actually exit.
+
+    VMState reaching 'poweroff' is not the end of the session. The frontend
+    process outlives it by a moment, and while it does VBoxSVC still holds the
+    machine's session lock -- so a `snapshot restore` issued in that window dies
+    at roughly 50% with E_ACCESSDENIED, after it has already begun discarding
+    state. The run state cannot warn you, because it has read 'poweroff' the
+    whole time; that is precisely why waiting on it is not enough.
+
+    Matching is on the VM name and UUID, both of which VirtualBox puts on the
+    frontend's command line, so a second VM running for another purpose is not
+    waited on. A process whose command line cannot be read counts as a match:
+    waiting a few seconds too long is recoverable, and restoring too early is
+    not.
+  #>
+  param([string]$Exe, [string]$Name, [int]$Seconds = 60)
+
+  $uuid = Get-VmUuid -Exe $Exe -Name $Name
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  $announced = $false
+
+  while ($true) {
+    try {
+      $procs = @(Get-CimInstance Win32_Process -Filter "Name='VirtualBoxVM.exe'" -ErrorAction Stop)
+    } catch {
+      # No CIM on this host. Fall back to a fixed grace rather than blocking the
+      # restore on a query that is never going to answer.
+      Write-Warn "Could not enumerate VirtualBoxVM.exe: $($_.Exception.Message)"
+      Start-Sleep -Seconds 3
+      return
+    }
+
+    $lingering = @()
+    foreach ($proc in $procs) {
+      $cmdline = [string]$proc.CommandLine
+      if (-not $cmdline) { $lingering += $proc.ProcessId; continue }
+      if ($cmdline.Contains($Name)) { $lingering += $proc.ProcessId; continue }
+      if ($uuid -and $cmdline.Contains($uuid)) { $lingering += $proc.ProcessId }
+    }
+
+    if ($lingering.Count -eq 0) { break }
+
+    if (-not $announced) {
+      Write-Info ("Waiting for the VM frontend to exit (PID " + ($lingering -join ', ') + ")...")
+      $announced = $true
+    }
+    if ((Get-Date) -ge $deadline) {
+      Write-Warn ("VirtualBoxVM.exe (PID " + ($lingering -join ', ') + ") is still " +
+                  "running after $Seconds seconds. Restoring now is what produces " +
+                  "E_ACCESSDENIED at 50% -- close the VM window, or end that " +
+                  "process, then run this again.")
+      return
+    }
+    Start-Sleep -Milliseconds 500
+  }
+
+  # VBoxSVC drops the session lock just after the frontend goes, not with it.
+  Start-Sleep -Milliseconds 750
+  if ($announced) { Write-Ok "Frontend exited." }
+}
+
 function Stop-VmHard {
   param([string]$Exe, [string]$Name)
 
@@ -345,6 +420,7 @@ function Stop-VmHard {
   $state = Wait-VmSettled -Exe $Exe -Name $Name -Because "before powering off"
   if ($state -match 'poweroff|aborted') {
     Write-Info "VM is already stopped ($state)."
+    Wait-FrontendsExited -Exe $Exe -Name $Name
     return
   }
 
@@ -360,6 +436,7 @@ function Stop-VmHard {
     $state = Get-VmRunState -Exe $Exe -Name $Name
     if ($state -match 'poweroff|aborted') {
       Write-Ok "Stopped."
+      Wait-FrontendsExited -Exe $Exe -Name $Name
       return
     }
   }
