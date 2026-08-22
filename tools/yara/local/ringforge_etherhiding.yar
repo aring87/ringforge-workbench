@@ -32,13 +32,20 @@ rule RingForge_Clipper_c14cb5b6_wallets
         date        = "2026-08-22"
         note        = "CORRECTED 22 Aug. The 20 Aug read named 0x0F14fc3b as the contract; it is not. It sits inside the wallet table between a BTC bech32 and a BCH cashaddr, and is the EVM substitution address. The contract is 0x4E31128a, taken from the eth_call the implant actually sent."
         note2       = "17 substitution wallets, not the 10 first recorded. BCH, XRP, ALGO, TON and Cosmos were missed, as were the second LTC and third BTC formats."
-        note3       = "0x4E31128a has NOT been checked on-chain. The 20 Aug 'contract is dead' result was eth_getCode against 0x0F14fc3b, which is a wallet, so it said nothing about this contract."
+        note3       = "CHECKED on-chain 22 Aug: the contract is LIVE on BSC testnet (chainId 0x61), 2008 bytes of bytecode, and getData() returns the C2 hostname klopasnarhia.cc. The 20 Aug 'contract is dead' result was eth_getCode against 0x0F14fc3b, which is a wallet, so it never said anything about this contract."
+        note4       = "$c2 is NOT in the sample. It exists on-chain and, after a successful fetch, in memory -- which is what these PE-anchorless rules scan. A file-only scan will never match it, and that is expected rather than a fault."
 
     strings:
         $guid = "4b817807-2731-459c-bc5d-4bd914c9eb55" ascii nocase
 
         // The contract the implant queries. Confirmed on the wire, seven times.
         $con  = "0x4E31128a13AcBD1cF1909D67F072460c853F87f7" ascii nocase
+
+        // The C2 the contract hands back. Retrieved from the live chain rather
+        // than from the sample, which is the whole point of EtherHiding: it is
+        // in no static artefact and can be rotated without touching the
+        // malware. Present in memory only once a fetch has succeeded.
+        $c2   = "klopasnarhia.cc" ascii wide
 
         // The substitution table, in file order. `$eth` is the one that was
         // misfiled as a contract for two days.

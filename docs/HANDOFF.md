@@ -2628,6 +2628,64 @@ it delivered the request.
 
 ---
 
+## THE CONTRACT IS LIVE AND THE C2 IS `klopasnarhia.cc` — 22 Aug
+
+**One read of the chain answered what four detonations could not.**
+
+    address    0x4E31128a13AcBD1cF1909D67F072460c853F87f7
+    chain      BSC testnet, chainId 0x61
+    bytecode   2,008 bytes -- deployed, not an empty address
+    getData()  ABI string: offset 0x20, length 0x0f, "klopasnarhia.cc"
+    balance    0
+    selectors  0x3bc5de30 getData() public; 0x47064d6a reverts for us --
+               an owner-gated setter, i.e. the rotation channel
+
+**`klopasnarhia.cc` is the beacon C2.** It is in **no static artefact** -- not
+the config block, not the carve, not any string table -- which is the entire
+point of EtherHiding. The beacon strings (`method=refresh&guid=`,
+`method=send&guid=&address=`) carry no host precisely because the host arrives
+from the chain, and `0x47064d6a` means it can be rotated without touching the
+malware.
+
+### It also corrects the phase 2 reasoning
+
+**`getData()` returns a properly ABI-encoded string.** The 22 Aug reading of the
+payload's string table -- `result` and `0x` adjacent, a hex alphabet nearby, no
+ABI machinery visible -- suggested a naive client that hex-decodes without
+ABI-decoding. **That was wrong**, and the chain disproved it before `hex_url`
+cost a run.
+
+So the four rejected shapes were rejected on **content, not framing**.
+`url_https` served `https://c0ffee-sink.ringforge.test/` -- 35 bytes, scheme and
+trailing slash. The real payload is a bare hostname, 15 bytes, no scheme, no
+slash. **`bare_host` is the correct shape**, and it was the one skipped on the
+strength of the wrong reading.
+
+### What this closes and what it opens
+
+Substitution was already demonstrated (see the clipboard entry) and needs no
+fetch. What the fetch gates is the **beacon**, and its destination is now known
+without ever having to make the implant accept an answer.
+
+Still open:
+
+- **A `bare_host` run**, serving a hostname-shaped sink, to watch the beacon
+  protocol itself -- what it sends, when, and whether `address=` carries a
+  substituted wallet.
+- **The contract's transaction history**, which would date the campaign and name
+  the deploying wallet. Not yet pulled.
+- **`klopasnarhia.cc` itself** -- unresolved and unqueried by this bench.
+
+### Recorded so the next reader does not repeat it
+
+`eth_getCode` on 20 Aug returned `0x` and was written up as "the contract is
+dead, this sample is inert in the wild". It was aimed at `0x0F14fc3b`, which is
+a **wallet**. An address with no code returns `0x` whether or not a contract
+exists elsewhere. **Two days of "nothing left to give" rested on querying the
+wrong address**, and the correction cost one RPC call once the right one was
+known.
+
+
 ## THE CLIPPER SUBSTITUTES, AND IT DID IT TO US — 22 Aug
 
 **The behaviour this sample has never been observed performing was observed on
