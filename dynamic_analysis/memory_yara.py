@@ -27,6 +27,7 @@ degrade to a status dict.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -86,10 +87,92 @@ def resolve_rules_dir(configured: str | Path | None = None) -> Optional[Path]:
         return None
 
 
+#: Where hand-written rules are authored, relative to the repository root.
+#:
+#: This directory is tracked by git. `tools\\yara\\rules\\` is not -- it is deleted
+#: and rebuilt by `bootstrap_yara_rules.ps1`, which copies this one into it as
+#: its last step. So a rule can be written, reviewed, committed and pulled, and
+#: still never reach the scanner.
+LOCAL_RULES_RELATIVE = Path("tools") / "yara" / "local"
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def local_rule_drift(rules_dir: Path | None,
+                     canonical_dir: Path | None = None) -> dict[str, Any]:
+    """Compare the authored local rules against the copies being scanned.
+
+    **`rules_dir` is reported by every run; its freshness never was.** Run
+    `4bb6b0d5` scanned ten dumps against a `local\\` subdirectory dated 16 Aug
+    that did not contain `ringforge_etherhiding.yar` at all -- four days older
+    than the rule, and written up as "no matches" because a rule that is absent
+    and a rule that does not fire produce the same number. That number is the
+    one people read. This is the smallest thing that tells them apart *before*
+    the run rather than after it.
+
+    Missing and stale are separated because they are different mistakes: stale
+    means the bootstrap ran before the last edit, missing means it has not run
+    since the rule was created.
+    """
+    result: dict[str, Any] = {
+        "checked": False, "missing": [], "stale": [], "current": [],
+        "canonical_dir": "", "scanned_dir": "", "note": "",
+    }
+
+    canonical = (Path(canonical_dir) if canonical_dir
+                 else Path(__file__).resolve().parents[1] / LOCAL_RULES_RELATIVE)
+    result["canonical_dir"] = str(canonical)
+    if rules_dir is None or not canonical.is_dir():
+        result["note"] = (
+            "No authored rules directory to compare against; freshness unknown."
+        )
+        return result
+
+    scanned = Path(rules_dir) / "local"
+    result["scanned_dir"] = str(scanned)
+    result["checked"] = True
+
+    for source in sorted(canonical.glob("*.yar")) + sorted(canonical.glob("*.yara")):
+        target = scanned / source.name
+        try:
+            if not target.is_file():
+                result["missing"].append(source.name)
+            elif _digest(source) != _digest(target):
+                result["stale"].append(source.name)
+            else:
+                result["current"].append(source.name)
+        except OSError:
+            # Unreadable counts as stale: the safe direction is to warn.
+            result["stale"].append(source.name)
+
+    missing, stale = result["missing"], result["stale"]
+    if missing or stale:
+        parts = []
+        if missing:
+            parts.append(f"{len(missing)} missing ({', '.join(missing)})")
+        if stale:
+            parts.append(f"{len(stale)} stale ({', '.join(stale)})")
+        result["note"] = (
+            f"Authored rules in {canonical} differ from the scanned copies in "
+            f"{scanned}: {'; '.join(parts)}. Run "
+            f"scripts\\bootstrap_yara_rules.ps1, or copy tools\\yara\\local\\*.yar "
+            f"into it -- until then those rules cannot match, and a run will "
+            f"report zero rather than an error."
+        )
+    else:
+        result["note"] = (
+            f"{len(result['current'])} authored rule file(s) match the scanned copies."
+        )
+    return result
+
+
 def memory_yara_status(configured_rules_dir: str | Path | None = None) -> dict[str, Any]:
     """Preflight summary describing whether dumps can be scanned."""
     rules_dir = resolve_rules_dir(configured_rules_dir)
     rule_files = _collect_rule_files(rules_dir) if rules_dir else {}
+    drift = local_rule_drift(rules_dir)
 
     if yara is None:
         available = False
@@ -113,12 +196,29 @@ def memory_yara_status(configured_rules_dir: str | Path | None = None) -> dict[s
         available = True
         note = f"{len(rule_files)} YARA rule file(s) available for scanning process memory."
 
+    # **Drift does not make the scan unavailable, and must not be silent
+    # either.** The ruleset still compiles and still matches; it is simply not
+    # the ruleset the operator believes they are running. `warning` is rendered
+    # beside "ready" in the preflight strip, which is the only place anyone
+    # looks before starting a run.
+    warning = ""
+    if drift.get("missing") or drift.get("stale"):
+        counts = []
+        if drift["missing"]:
+            counts.append(f"{len(drift['missing'])} local rule(s) MISSING")
+        if drift["stale"]:
+            counts.append(f"{len(drift['stale'])} STALE")
+        warning = ", ".join(counts)
+        note = f"{note} {drift['note']}"
+
     return {
         "available": bool(available),
         "engine": "yara-python",
         "yara_available": yara is not None,
         "rules_dir": str(rules_dir) if rules_dir else "",
         "rule_file_count": len(rule_files),
+        "local_rules": drift,
+        "warning": warning,
         "note": note,
     }
 
