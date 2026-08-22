@@ -20,6 +20,7 @@ from pathlib import Path
 from dynamic_analysis.jsonrpc_answer import (
     PLANS,
     PLANS_BY_NAME,
+    SINK_HOST,
     TRACER_ADDRESS,
     AnswerError,
     AnswerPlanner,
@@ -235,3 +236,67 @@ class OverTheWireTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UrlShapes(unittest.TestCase):
+    """Added after run `20260822_141514`, which ruled the address shapes out.
+
+    Three address encodings were served and rejected, and the implant stopped
+    asking. Separately the EVM wallet turned out to be hardcoded alongside
+    sixteen others, and substitution was observed working with no successful
+    fetch at all -- so `getData()` is not delivering a substitution address.
+    The beacon has no host anywhere in the config block, which is what makes a
+    C2 endpoint the remaining candidate.
+    """
+
+    def _decode_string(self, result: str) -> str:
+        raw = bytes.fromhex(result[2:])
+        length = int.from_bytes(raw[32:64], "big")
+        return raw[64:64 + length].decode()
+
+    def test_the_sink_host_is_unregistrable(self) -> None:
+        # A shape that escapes the guest must not be able to reach anyone.
+        # `.test` is RFC 2606 and can never be registered.
+        self.assertTrue(SINK_HOST.endswith(".test"))
+        self.assertIn("c0ffee", SINK_HOST)
+
+    def test_the_url_shape_carries_a_usable_url(self) -> None:
+        result = PLANS_BY_NAME["url_https"].result(TRACER_ADDRESS, SINK_HOST)
+
+        self.assertEqual(self._decode_string(result), f"https://{SINK_HOST}/")
+
+    def test_the_bare_host_shape_carries_only_the_host(self) -> None:
+        result = PLANS_BY_NAME["bare_host"].result(TRACER_ADDRESS, SINK_HOST)
+
+        self.assertEqual(self._decode_string(result), SINK_HOST)
+
+    def test_the_c2_document_carries_host_and_address(self) -> None:
+        result = PLANS_BY_NAME["json_c2"].result(TRACER_ADDRESS, SINK_HOST)
+        doc = json.loads(self._decode_string(result))
+
+        self.assertEqual(doc["host"], SINK_HOST)
+        self.assertEqual(doc["url"], f"https://{SINK_HOST}/")
+        self.assertEqual(doc["address"], TRACER_ADDRESS)
+
+    def test_a_custom_sink_host_reaches_the_shapes(self) -> None:
+        planner = AnswerPlanner(plan="bare_host", sink_host="elsewhere.test")
+        answer = planner.answer()
+
+        self.assertEqual(self._decode_string(answer["result"]), "elsewhere.test")
+        self.assertFalse(planner.report()["sink_host_is_default"])
+
+    def test_the_address_shapes_ignore_the_host(self) -> None:
+        # Every shape takes both now; the older ones must not start varying.
+        a = PLANS_BY_NAME["address"].result(TRACER_ADDRESS, SINK_HOST)
+        b = PLANS_BY_NAME["address"].result(TRACER_ADDRESS, "other.test")
+
+        self.assertEqual(a, b)
+
+    def test_the_url_shapes_come_after_the_address_shapes(self) -> None:
+        # Rotation order matters: the three already ruled out should not be
+        # re-served ahead of the untested ones on a fresh run... but they are
+        # kept first deliberately, so a pinned re-run is the way to skip them.
+        names = [p.name for p in PLANS]
+
+        self.assertEqual(names[:3], ["address", "string_address", "string_json"])
+        self.assertEqual(names[-3:], ["url_https", "bare_host", "json_c2"])

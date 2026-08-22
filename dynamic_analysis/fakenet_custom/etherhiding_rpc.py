@@ -29,6 +29,8 @@ else to pass arguments:
     RINGFORGE_RPC_ADDRESS      the substitution address; defaults to the tracer.
                                **Never a real wallet** -- see `jsonrpc_answer`
     RINGFORGE_RPC_PLAN         pin one candidate shape instead of rotating
+    RINGFORGE_RPC_SINK_HOST    host for the URL shapes; defaults to a
+                               reserved-TLD sink
     RINGFORGE_RPC_TLS          `1` when the listener runs `UseSSL: Yes`. Only
                                changes what a *missing* connection means -- see
                                below -- because the socket arrives decrypted.
@@ -102,6 +104,7 @@ def _load_recorder():
         planner = AnswerPlanner(
             os.environ.get("RINGFORGE_RPC_ADDRESS") or TRACER_ADDRESS,
             os.environ.get("RINGFORGE_RPC_PLAN", ""),
+            os.environ.get("RINGFORGE_RPC_SINK_HOST", ""),
         )
 
     return RequestRecorder(

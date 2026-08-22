@@ -46,6 +46,15 @@ from typing import Any, Callable, Optional
 #: making the run more realistic.
 TRACER_ADDRESS = "0xC0FFEE0000000000000000000000000000C0FFEE"
 
+#: The host served by the URL-bearing shapes.
+#:
+#: **Reserved TLD on purpose.** `.test` is RFC 2606 and can never be
+#: registered, so a shape that escapes the guest cannot reach anyone; and
+#: FakeNet answers every name locally anyway, so plausibility buys nothing.
+#: `c0ffee` keeps it greppable in a beacon body, exactly like the address
+#: tracer.
+SINK_HOST = "c0ffee-sink.ringforge.test"
+
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
@@ -101,43 +110,62 @@ class AnswerPlan:
     was accepted" means nothing without the reason plan 3 existed.
     """
 
-    def __init__(self, name: str, why: str, encode: Callable[[str], str]):
+    def __init__(self, name: str, why: str, encode: Callable[[str, str], str]):
         self.name = name
         self.why = why
         self._encode = encode
 
-    def result(self, address: str) -> str:
-        return self._encode(address)
+    def result(self, address: str, host: str = SINK_HOST) -> str:
+        # Both are passed to every shape. What `getData()` returns is still
+        # unknown -- run `20260822_141514` showed it is not an address in any of
+        # three encodings -- so a shape must be free to use either.
+        return self._encode(address, host)
 
     def describe(self) -> dict[str, str]:
         return {"name": self.name, "why": self.why}
 
 
-def _plan_address(address: str) -> str:
+def _plan_address(address: str, host: str) -> str:
     return to_hex(encode_address(address))
 
 
-def _plan_string_address(address: str) -> str:
+def _plan_string_address(address: str, host: str) -> str:
     return to_hex(encode_string(address))
 
 
-def _plan_string_json(address: str) -> str:
+def _plan_string_json(address: str, host: str) -> str:
     # EtherHiding payloads are commonly a blob the implant parses rather than a
     # single typed value. The key names are a guess and are meant to be; what is
     # being tested is whether the parser wants a JSON document at all.
     return to_hex(encode_string(json.dumps({"eth": address, "address": address})))
 
 
-def _plan_bytes_ascii(address: str) -> str:
+def _plan_bytes_ascii(address: str, host: str) -> str:
     return to_hex(encode_bytes(address.encode("ascii")))
 
 
-def _plan_raw_hex(address: str) -> str:
+def _plan_raw_hex(address: str, host: str) -> str:
     # No ABI framing whatsoever: the result is the address, as a node would
     # never return it for a typed getter. Included because a hand-rolled client
     # that does its own slicing may not implement the ABI at all, and this is
     # the cheapest hypothesis to be wrong about.
     return address
+
+
+def _plan_url_https(address: str, host: str) -> str:
+    return to_hex(encode_string(f"https://{host}/"))
+
+
+def _plan_bare_host(address: str, host: str) -> str:
+    return to_hex(encode_string(host))
+
+
+def _plan_json_c2(address: str, host: str) -> str:
+    # Field names are a guess and meant to be. What is under test is whether the
+    # parser wants a *document describing a C2* at all, not these key names.
+    return to_hex(encode_string(json.dumps({
+        "url": f"https://{host}/", "host": host, "address": address,
+    })))
 
 
 #: Ordered. The first is served first, and the order is roughly cheapest-to-
@@ -156,6 +184,20 @@ PLANS: list[AnswerPlan] = [
                _plan_bytes_ascii),
     AnswerPlan("raw_hex", "no ABI framing at all -- a client doing its own "
                           "slicing", _plan_raw_hex),
+    # **Added 22 Aug, and they are now the likelier half.** Run
+    # `20260822_141514` served three address shapes and the implant rejected all
+    # three, then stopped asking. Meanwhile the EVM wallet turned out to be
+    # hardcoded alongside sixteen others, and substitution was observed working
+    # *without* any successful fetch -- so `getData()` is not delivering a
+    # substitution address. The beacon has no host anywhere in the config block,
+    # which makes a C2 endpoint the thing still missing.
+    AnswerPlan("url_https", "returns an https:// URL -- the beacon has no host "
+                            "in the config block, so this is what it lacks",
+               _plan_url_https),
+    AnswerPlan("bare_host", "returns just the hostname, the implant supplying "
+                            "scheme and path itself", _plan_bare_host),
+    AnswerPlan("json_c2", "returns a document describing a C2 rather than a "
+                          "single value", _plan_json_c2),
 ]
 
 PLANS_BY_NAME = {plan.name: plan for plan in PLANS}
@@ -168,10 +210,12 @@ class AnswerPlanner:
     this does no locking of its own.
     """
 
-    def __init__(self, address: str = TRACER_ADDRESS, plan: str = ""):
+    def __init__(self, address: str = TRACER_ADDRESS, plan: str = "",
+                 sink_host: str = SINK_HOST):
         if not _ADDRESS_RE.match(address):
             raise AnswerError(f"not a 20-byte hex address: {address!r}")
         self.address = address
+        self.sink_host = sink_host or SINK_HOST
 
         if plan:
             if plan not in PLANS_BY_NAME:
@@ -199,7 +243,7 @@ class AnswerPlanner:
     def answer(self, address: Optional[str] = None) -> dict[str, Any]:
         """Encode the next answer and record which hypothesis it was."""
         plan = self.next_plan()
-        result = plan.result(address or self.address)
+        result = plan.result(address or self.address, self.sink_host)
         self.served.append(plan.name)
         return {
             "result": result,
@@ -214,6 +258,8 @@ class AnswerPlanner:
             "mode": "answer",
             "address": self.address,
             "address_is_tracer": self.address == TRACER_ADDRESS,
+            "sink_host": self.sink_host,
+            "sink_host_is_default": self.sink_host == SINK_HOST,
             "pinned_plan": self.pinned.name if self.pinned else "",
             "plans_available": [plan.describe() for plan in PLANS],
             "plans_served": list(self.served),

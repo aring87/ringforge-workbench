@@ -2628,6 +2628,73 @@ it delivered the request.
 
 ---
 
+## THE CLIPPER SUBSTITUTES, AND IT DID IT TO US — 22 Aug
+
+**The behaviour this sample has never been observed performing was observed on
+22 Aug, through the analyst's own clipboard.** It needed no successful
+`getData()`, which is the part that reframes `0bw`.
+
+**What happened.** A command was copied from the analysis chat into the guest's
+terminal. It contained the phase 2 tracer address. What arrived in the terminal
+was the clipper's own ETH wallet:
+
+    sent      s='0xC0FFEE0000000000000000000000000000C0FFEE'
+    pasted    s='0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff'
+
+Terminal output copied *back out* of the guest was rewritten the same way.
+Comparing a paste against the same file read over the share gives the
+transformation exactly:
+
+    in the file  0x0f14fc3bfac3726172acd08fe4bfb79b633e76ff   (our constant)
+    as pasted    0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff
+
+    in the file  0xC0FFEE0000000000000000000000000000C0FFEE   (the tracer)
+    as pasted    0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff
+
+**Two different inputs, one output: the wallet at index 4 of the substitution
+table.** Substitution demonstrated, not inferred.
+
+### It explains three anomalies recorded as unexplained
+
+All three were the same mechanism, and all three cost hours on 21–22 Aug.
+
+1. **`ETHERHIDING_CONTRACT` "changing case in the file".** The constant is
+   `0x0f14fc3b…` lowercase. Copied out of the guest it came back checksummed,
+   and `git status`, `git show`, `git cat-file` and a fresh Python import all
+   "agreed" it was checksummed. Nothing on disk had changed — every one of those
+   readings reached the analyst through a copy-paste. The file read over the
+   share was byte-identical to the host's, SHA-256 included.
+2. **Why it defeated every cache theory.** Git's stat cache and CPython's `.pyc`
+   revalidation were both blamed, plausibly, because a case-only edit preserves
+   size and mtime. Neither was involved.
+3. **Why it vanished after a revert and returned after a detonation.** It was
+   never in the image. It was a running process.
+
+**The substitution is invisible when the copied address is already the
+attacker's wallet** — only the case changes, because the clipper rewrites in
+EIP-55 form. That is exactly the case that occurred first, which is why it read
+as a formatting quirk rather than a hijack.
+
+### Consequences for the bench
+
+**Terminal output copied from a detonated guest is not evidence.** Anything
+carrying a crypto address may have been rewritten between the guest and the
+notes. **Use the share** — a file copy does not pass through the clipboard, and
+the phase 2 summary read that way showed the correct tracer and the correct
+lowercase constant while the pasted copy showed neither.
+
+**The analyst's clipboard is in scope while a sample runs.** The guest is
+contained, but the clipboard is the analyst's, and it is being rewritten.
+
+### What it means for `getData()`
+
+Substitution runs **without** any successful contract fetch. Combined with the
+EVM wallet being hardcoded alongside sixteen others, `getData()` is not
+delivering a substitution address. The beacon has no host anywhere in the config
+block, which makes a **C2 endpoint** the remaining candidate — and `url_https`,
+`bare_host` and `json_c2` were added to the phase 2 planner on that reasoning.
+
+
 ## THE CARVE IS IDENTIFIED — a multi-chain clipper with EtherHiding C2, 20 Aug
 
 **Run `c14cb5b6`'s 258 KB payload is a cryptocurrency clipper that reads its

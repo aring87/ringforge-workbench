@@ -680,6 +680,9 @@ def main(argv: list[str] | None = None) -> int:
                              "synthetic tracer -- NEVER point this at a real "
                              "wallet; the safety argument for a responder is "
                              "that the operator picks a sink")
+    parser.add_argument("--sink-host", default="",
+                        help="host served by the URL shapes. Defaults to a "
+                             "reserved-TLD sink; never a host you do not own")
     parser.add_argument("--plan", default="",
                         help="pin one candidate shape instead of rotating, for "
                              "a focused re-run once the answer is known")
@@ -689,7 +692,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.answer or args.address or args.plan:
         from dynamic_analysis.jsonrpc_answer import TRACER_ADDRESS, AnswerPlanner
         try:
-            planner = AnswerPlanner(args.address or TRACER_ADDRESS, args.plan)
+            planner = AnswerPlanner(args.address or TRACER_ADDRESS, args.plan,
+                                    args.sink_host)
         except Exception as error:
             print(f"failed: {error}")
             return 1
