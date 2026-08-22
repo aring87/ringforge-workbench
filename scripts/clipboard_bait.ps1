@@ -27,8 +27,15 @@
   loop against a predicted window is how you get one run that proves nothing.
 
 .PARAMETER Seconds
-  How long to keep baiting. Default 420, which outlasts a 240-second run plus
-  its post-exit observation.
+  How long to keep baiting. Default 900.
+
+  **It was 420, and that was too short by the width of the experiment.** On the
+  first run the loop was started before the GUI was set up, spent 5.7 minutes of
+  its budget waiting for the operator, and expired at t+79 -- seventy-nine
+  seconds before the payload spawned at t158. Nothing was watching the clipboard
+  during the only window that mattered. The `send` beacon still fired, because
+  the clipboard *retained* the last value written, but the substitution question
+  it was built to answer went unobserved.
 
 .PARAMETER IntervalMs
   Delay between writing the clipboard and reading it back, and between rounds.
@@ -67,7 +74,7 @@
 
 [CmdletBinding()]
 param(
-  [int]$Seconds = 420,
+  [int]$Seconds = 900,
   [int]$IntervalMs = 500,
   [string]$Address = "0xC0FFEE0000000000000000000000000000C0FFEE",
   [string]$Log = "",
@@ -107,8 +114,16 @@ function Write-Record($record) {
   # Appended immediately rather than buffered: the interesting case is a run
   # that ends unexpectedly, and a buffer lost on exit is the one record that
   # mattered.
+  #
+  # **AppendAllText rather than Add-Content -Encoding utf8.** The latter writes a
+  # UTF-8 BOM in PowerShell 5.1, which lands at the head of the first JSON line
+  # and makes it fail to parse -- silently, if the reader skips bad lines, which
+  # is exactly what happened to the first run's `start` record. The same
+  # preamble also turned a "truncate this file" step into a 3-byte file earlier
+  # the same day.
   $json = ($record | ConvertTo-Json -Compress -Depth 4)
-  Add-Content -LiteralPath $Log -Value $json -Encoding utf8
+  [System.IO.File]::AppendAllText($Log, $json + [Environment]::NewLine,
+                                  (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function Test-ClipboardBridge {
@@ -150,6 +165,7 @@ $deadline = $started.AddSeconds($Seconds)
 $round = 0
 $hits = 0
 $errors = 0
+$blanks = 0
 $index = 0
 
 while ((Get-Date) -lt $deadline) {
@@ -172,7 +188,15 @@ while ((Get-Date) -lt $deadline) {
     $errors++
   }
 
-  $changed = (-not $failure) -and ($readBack -ne $wrote)
+  # **An empty read-back is not a substitution, and calling it one cried wolf
+  # on the first run.** `$readBack -ne $wrote` is true for "" as readily as for
+  # the attacker's wallet, so a clipboard that came back blank printed
+  # SUBSTITUTED in magenta with nothing on the `read` line. Blank means the read
+  # lost -- an API race, or another process holding the clipboard, which a
+  # polling clipper would produce -- and that is worth recording under its own
+  # name rather than as the finding this tool exists to report.
+  $blank   = (-not $failure) -and ($readBack -eq "")
+  $changed = (-not $failure) -and (-not $blank) -and ($readBack -ne $wrote)
 
   # **Case-only differences are still substitutions.** The clipper rewrites in
   # EIP-55 form, so the first swap observed on 22 Aug looked like a formatting
@@ -186,6 +210,11 @@ while ((Get-Date) -lt $deadline) {
     Write-Hit "round ${round}: $label"
     Write-Hit "  wrote : $wrote"
     Write-Hit "  read  : $readBack"
+  } elseif ($blank) {
+    $blanks++
+    # Quiet by default: one blank is noise, a burst of them is contention and
+    # shows up in the summary count.
+    Write-Verbose "round ${round}: clipboard read back empty"
   }
 
   Write-Record @{
@@ -197,6 +226,7 @@ while ((Get-Date) -lt $deadline) {
     read_back = $readBack
     changed   = [bool]$changed
     case_only = [bool]$caseOnly
+    blank     = [bool]$blank
     error     = $failure
   }
 
@@ -209,6 +239,9 @@ $summary = @{
   rounds  = $round
   hits    = $hits
   errors  = $errors
+  blanks  = $blanks
+  started = $started.ToUniversalTime().ToString("o")
+  ended   = (Get-Date).ToUniversalTime().ToString("o")
   # The reading that matters, stated rather than left to be inferred from a
   # count of zero -- which is the shape of result this bench keeps misreading.
   note    = if ($hits -gt 0) {
@@ -216,7 +249,7 @@ $summary = @{
             } elseif ($errors -ge $round) {
               "Every round failed to touch the clipboard: this measured nothing."
             } else {
-              "No substitution in ${round} rounds. That is only evidence if the payload was running for some of them -- check the SecurityHealthHost spawn and exit offsets against the timestamps here."
+              "No substitution in ${round} rounds. That is only evidence if the payload was alive for some of them: compare `started`/`ended` here against the SecurityHealthHost spawn and exit offsets. On the first run they did not overlap at all, and the absence meant nothing."
             }
 }
 Write-Record $summary
