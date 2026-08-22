@@ -2759,11 +2759,42 @@ machine rather than the execution.
 
 ### What this retires, and what it leaves
 
-**Retired: the response-shape hypothesis.** `empty` was the control precisely
-because it is the cheapest thing the implant could tolerate, and it changed
-nothing. `beacon_responder`'s other five shapes are unlikely to move a timer
-that ignored the first, so spending five runs on them is spending five runs to
-confirm a null.
+**Narrowed, not retired: the response shape does not drive the *timer*.**
+`empty` was the control because it is the cheapest thing the implant could
+tolerate, and the 36 seconds did not move. So no response will buy more time,
+and `beacon_responder`'s other five shapes will not extend the window.
+
+> **Corrected, an hour after this section was first committed.** It originally
+> read "Retired: the response-shape hypothesis ... five runs to confirm a null".
+> That claims more than the control measured. The control tested *lifetime*, and
+> lifetime is a fixed timer. It did not test whether a valid response changes
+> what the sample *does* -- whether it installs persistence, or emits `send`.
+> Those are separate questions and the second is now more interesting rather
+> than less. Reading a null on one measurement as a null on all of them is the
+> error this file keeps recording other people making.
+
+**And the process tree makes the open question sharper.** Every descendant is
+accounted for and none of them survives::
+
+    harness (2040 in one run, 6084 in the next -- the launcher, not the sample)
+    └── powershell.exe            THE SAMPLE: a 1.09 MB .ps1, not a PE
+        ├── csc.exe x2            compiles C# loaded in-process
+        │   └── cvtres.exe x2
+        └── SecurityHealthHost    hollowed; eth_call + beacon; 36s
+
+`pid 2040` was chased as a possible long-lived clipper and is the analyzer: the
+sample is a script, so the harness starts `powershell.exe` to run it, and the
+parent pid changes between runs exactly as a launcher's would.
+
+**So nothing persists and nothing survives.** No autoruns, no task, no service,
+no surviving dropped file, and the whole chain exits inside a few minutes. That
+is not a working clipper -- a clipper has to watch the clipboard to be worth
+anything -- which means either the clipping component is conditional, or this
+sample is a stage that installs nothing until told to.
+
+**The missing persistence and the missing `send` may be the same missing
+thing:** a C2 response the implant can act on. That is a different experiment
+from extending the window, and the control did not touch it.
 
 **The remaining explanation is that there has never been anything to send.**
 Read the two methods against what the clipper actually does:
