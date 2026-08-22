@@ -1456,7 +1456,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
             self._isolation = {"level": "unknown", "note": "", "egress_count": 0}
 
         def mark(label, status):
-            return f"{label}: {'ready' if status.get('available') else 'not installed'}"
+            state = "ready" if status.get("available") else "not installed"
+            # A collector that is running but not collecting what the operator
+            # believes is the failure this strip exists to catch, and "ready" on
+            # its own has said the opposite at least once -- run 4bb6b0d5 read
+            # "Mem YARA: ready" while scanning without the rule it was booked to
+            # exercise.
+            warning = str(status.get("warning") or "")
+            if warning:
+                state = f"{state} -- {warning}"
+            return f"{label}: {state}"
 
         parts = [
             mark("Sysmon", self._sysmon_preflight),
