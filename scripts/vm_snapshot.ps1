@@ -576,78 +576,31 @@ function Confirm-Destructive {
   return ($answer -eq "yes")
 }
 
-function Set-ClipboardBridgeOff {
-  <#
-    .SYNOPSIS
-      Close the shared-clipboard and drag-and-drop channels.
-
-    **Containment is not only the network, and this bench learned that the
-    expensive way.** The sample in `0bw` is a clipper: it rewrites crypto
-    addresses in the clipboard. On 22 Aug it rewrote the *analyst's*, because
-    the VM was set to `bidirectional`. A command copied into the guest arrived
-    carrying the attacker's wallet instead of the tracer, and terminal output
-    copied back out was rewritten the same way. It cost a day, chasing a
-    "checksum-case bug" in a file that had never changed -- every reading of it
-    had reached the analyst through a paste.
-
-    The guest was contained the whole time. The clipboard was not part of what
-    containment meant, and it is now.
-
-    Snapshots capture hardware configuration, so a revert restores whatever the
-    snapshot held -- exactly why the network cable state is re-established here
-    rather than trusted. The same reasoning applies unchanged, and it matters
-    more for a run that deliberately puts an address on the guest's clipboard.
-  #>
-  param([string]$Exe, [string]$Name)
-
-  # `--clipboard-mode` is the current spelling and `--clipboard` the older one.
-  # Trying both is cheaper and steadier than parsing a version string.
-  $done = $false
-  foreach ($flag in @("--clipboard-mode", "--clipboard")) {
-    if ((Invoke-VBox -Exe $Exe -Arguments @("modifyvm", $Name, $flag, "disabled")).ExitCode -eq 0) {
-      $done = $true
-      break
-    }
-  }
-  # Same story: 7.x spells it `--drag-and-drop`, older builds `--draganddrop`.
-  # Checked against VBoxManage 7.1.4 rather than assumed -- the old spelling
-  # fails silently on it, which would have left this half open while reporting
-  # success.
-  $dnd = $false
-  foreach ($flag in @("--drag-and-drop", "--draganddrop")) {
-    if ((Invoke-VBox -Exe $Exe -Arguments @("modifyvm", $Name, $flag, "disabled")).ExitCode -eq 0) {
-      $dnd = $true
-      break
-    }
-  }
-
-  if ($done -and $dnd) {
-    Write-Ok "Clipboard and drag-and-drop bridges disabled."
-  } else {
-    # Not fatal, and deliberately loud: the operator can still choose to run,
-    # but must not do so believing a channel is shut that is open.
-    Write-Warn ("Could not disable the clipboard bridge (clipboard: $done, " +
-                "drag-and-drop: $dnd). A clipper in the guest can rewrite the " +
-                "HOST clipboard while this is open -- see the 22 Aug entry.")
-  }
-}
-
 function Set-Containment {
-  param([string]$Exe, [string]$Name)
+  param([string]$Name)
 
   # Delegates to vm_net.ps1 rather than reimplementing adapter detection, so
   # containment has exactly one definition. It now handles a stopped VM, which
   # is what lets this run before the machine boots.
+  #
+  # **Containment here is the network, and deliberately not the clipboard.**
+  # A version of this closed the shared-clipboard and drag-and-drop bridges too,
+  # on the reasoning that the sample is a clipper and the 22 Aug incident came
+  # through that channel. It was removed: pasting commands into the guest is how
+  # this bench is actually driven, and a control that breaks the workflow on
+  # every revert gets worked around rather than obeyed.
+  #
+  # The hazard is real and is handled by knowing it rather than by a setting --
+  # see the 22 Aug entry, and bench rule 1: output copied out of a detonated
+  # guest is not evidence, so use the share. `VBoxManage controlvm <vm>
+  # clipboard mode hosttoguest` blocks the direction that did the damage without
+  # costing the paste, for anyone who wants a middle ground.
   $vmNet = Join-Path (Get-ScriptDir) "vm_net.ps1"
   if (-not (Test-Path -LiteralPath $vmNet)) {
     Write-Warn "vm_net.ps1 not found; cannot verify containment automatically."
-  } else {
-    & $vmNet -Disarm -VMName $Name
+    return
   }
-
-  # After the network, and unconditionally: a missing vm_net.ps1 must not take
-  # the clipboard half down with it.
-  Set-ClipboardBridgeOff -Exe $Exe -Name $Name
+  & $vmNet -Disarm -VMName $Name
 }
 
 try {
@@ -791,7 +744,7 @@ try {
   # booting armed.
   if (-not $KeepNetworkState) {
     Write-Step "Re-establishing containment"
-    Set-Containment -Exe $exe -Name $VMName
+    Set-Containment -Name $VMName
   } else {
     Write-Warn "-KeepNetworkState given: the restored adapter state is whatever the snapshot held."
     Write-Warn "Check it with .\scripts\vm_net.ps1 before detonating."
