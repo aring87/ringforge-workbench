@@ -2729,6 +2729,95 @@ it delivered the request.
 
 ---
 
+## PHASE 3'S CONTROL CAME BACK NEGATIVE, AND IT REFRAMES THE QUESTION — 22 Aug
+
+**The response body is not what ends the process, and probably not what
+withholds `method=send`.** Run `d2f8fe51`, identical to `4bb6b0d5` in every
+respect except one: `tools\fakenet\defaultFiles\FakeNet.html` truncated to zero
+bytes, so the beacon received a 200 with an empty body instead of FakeNet's
+stock page.
+
+                          phase 2 (HTML)   phase 3 (empty)
+    SecurityHealthHost      spawn t125       spawn t158
+                             exit t161        exit t194
+    lifetime                     36s              36s
+    beacons                        1                1
+    method=send                   no               no
+    victim guid           4814CF26…        4814CF26…
+
+**36 seconds, twice, to the second.** The beacon landed at spawn+26 in one run
+and spawn+35 in the other, and the process still died at spawn+36 both times.
+That is a fixed lifetime, not a reaction: **the implant is not exiting because
+it disliked the answer.** Whatever ends it is a timer, and no response shape
+will extend it.
+
+**The victim GUID is stable across runs and across a revert.**
+`4814CF26358FE5E4F8A1F9B0F4980910`, byte-identical, on a machine restored from a
+snapshot in between. It is derived from something durable in the image -- check
+it against `MachineGuid` -- and it is *not* per-run, so it identifies the
+machine rather than the execution.
+
+### What this retires, and what it leaves
+
+**Retired: the response-shape hypothesis.** `empty` was the control precisely
+because it is the cheapest thing the implant could tolerate, and it changed
+nothing. `beacon_responder`'s other five shapes are unlikely to move a timer
+that ignored the first, so spending five runs on them is spending five runs to
+confirm a null.
+
+**The remaining explanation is that there has never been anything to send.**
+Read the two methods against what the clipper actually does:
+
+    method=refresh&guid=            check in, fetch config
+    method=send&guid=&address=      report a substitution that happened
+
+Nobody has touched the guest's clipboard during any run. No copy event, no
+substitution, nothing to report -- and `send` is the report. That explains the
+absence without any assumption about response parsing, and it fits every
+observation: one beacon, in, and out on a timer.
+
+**So the next experiment is a clipboard event inside the window, not a better
+answer.** A guest-local loop putting a known address on the clipboard for the
+whole run, because spawn time varies (t125 against t158) and the window is only
+36 seconds. Two dividends if it works: `send` on the wire at last, and a second
+confirmation of substitution taken *inside* containment rather than through the
+analyst's own clipboard.
+
+### Containment now means the clipboard too
+
+`clipboard="bidirectional"` was still set. That is the channel that rewrote the
+analyst's clipboard on 22 Aug, and the experiment above deliberately hands a
+clipper an address to rewrite.
+
+`Set-Containment` in `vm_snapshot.ps1` now closes the clipboard and
+drag-and-drop bridges alongside the network cable, on every restore. It belongs
+in the same place and for the same reason: **snapshots capture hardware
+configuration, so a revert restores whatever the snapshot held.** Verified by
+running it -- `bidirectional` before, `disabled` after, with the restore in
+between reopening it exactly as predicted.
+
+The flag spelling was checked rather than assumed: VBoxManage 7.1.4 takes
+`--clipboard-mode` and `--drag-and-drop`, and the older `--draganddrop` fails
+silently on it. Both spellings are attempted, and a failure to close either half
+warns rather than passing quietly, because the one thing worse than an open
+channel is believing it shut.
+
+### Two bench fixes proved themselves on this run
+
+Neither needed a re-scan or a re-read to demonstrate.
+
+- **The corrected YARA rules fired natively.** `rule_file_count: 1545`, and all
+  three campaign rules matched -- `RingForge_Clipper_c14cb5b6_wallets` and
+  `RingForge_EtherHiding_eth_call` on the `SecurityHealthHost` exit dump. First
+  run where they matched without `rescan_memory_yara.py`, which is what the
+  baseline carrying the hand-copied `local\` rules bought.
+- **`network_iocs.json` told the truth, including about itself.**
+  `notable_domains` now carries `data-seed-prebsc-1-s1.binance.org` and
+  `c0ffee-sink.ringforge.test`, `sources` reads `['pcap', 'fakenet']`, and
+  `pcap_blind` is `true` -- the report naming its own blind spot rather than
+  presenting an empty section as a finding.
+
+
 ## THE BEACON REACHED THE SINK, AND `bare_host` IS THE ANSWER — 22 Aug
 
 **One `eth_call`, one answer, no retry, and a beacon one second later.** Run
