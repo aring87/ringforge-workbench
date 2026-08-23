@@ -2729,6 +2729,69 @@ it delivered the request.
 
 ---
 
+## THE CLIPPER HAS THREE PHASES, AND THE RUN ENDS INSIDE THE THIRD — 23 Aug
+
+**A complete behavioural profile, from run `f3f6da3b` with a 900-second window
+and the clipboard baited throughout.** Every earlier null result is explained by
+it.
+
+    14:03:41   SecurityHealthHost spawns             watcher t155
+    14:03:49   substitution begins                   +8s
+    14:03:58   loader powershell.exe exits           +17s   (the "root-exit" dump)
+    14:07:06   clipboard LOCKED                      +205s
+    14:21:05   still locked when the bait stopped    +1044s, never released
+
+796 bait rounds: **129 clean, 186 substituted, 481 locked out.**
+
+**Substitution starts within about eight seconds of the payload spawning**, runs
+for roughly 197 seconds, and then the clipper takes the clipboard and keeps it.
+Nothing released it in the following seventeen minutes. The loader exits *nine
+seconds into* the substitution phase, which is why "the sample exited" was never
+a statement about the sample.
+
+(The 8s figure uses this bench's established ~26-second gap between
+`started_at_utc` and the watcher's t0. `rpc5` was not exported, so the two clocks
+were not cross-anchored on the `eth_call` this run; the phase *ordering* and the
+wall-clock intervals are direct readings and do not depend on it.)
+
+### Why every earlier bait run said nothing
+
+- **The 240-second runs** tore down during or just after phase 1. The window
+  ended before the clipper had done anything.
+- **The phase-4 bait** was locked out from t212 -- it arrived in phase 3 and
+  never saw phase 2. Its "no substitution" was a **114-round blind spot**, not
+  an absence, and was written up as one at the time.
+- **The 21:08 run** substituted from round 1 because the *previous* run's
+  payload was still in phase 2 an hour later. That was contamination, and also
+  the first evidence the payload outlives its run.
+
+### `timeout` is not the lever. `post_exit_observation_seconds` is.
+
+The 900-second window did nothing: `duration_seconds: 496`, `ended_because:
+post_exit_observation_complete`.
+
+**Installer mode ends the run 120 seconds after the *root* exits.** The root
+exited at t192, so the run was over at ~t312 no matter what the timeout said.
+The field everyone reaches for cannot extend observation past that, and the run
+tore down two minutes into the lock phase with the payload still running.
+
+To watch longer: raise `post_exit_observation_seconds`, or untick installer
+mode. Not the timeout.
+
+### What this makes the sample
+
+A clipper that is **useless to sandbox with default settings and works fine in
+the wild**. Its whole active window opens after the loader has exited -- the
+moment most pipelines call the run finished -- and its steady state is holding
+the clipboard open, which no dynamic report has a field for.
+
+Still untested, and now one variable: the clipper writes the C2's response body
+into the clipboard verbatim, so **an attacker controlling the C2 controls what
+lands in every victim's clipboard**. Putting a tracer address in the served file
+and re-running confirms it. The guest is characterised; this is minutes, not a
+campaign.
+
+
 ## THE PAYLOAD DOES NOT EXIT AFTER 36 SECONDS. IT NEVER EXITED. — 23 Aug
 
 **`SecurityHealthHost.exe` pid 6208 started at 13:26:00 and was still running at
