@@ -2741,28 +2741,35 @@ guest's own process table while it ran:
 The "36-second lifetime" recorded in the two sections below is **wrong**, and so
 is everything derived from it.
 
-### How the mistake was made
+### How the mistake was made, and the tooling was not at fault
 
-Every run produced a `process-exit` memory dump for `SecurityHealthHost` roughly
-36 seconds after spawn, twice landing on exactly 36. That was read as the
-process's lifetime. It is not: it is the *exit trigger firing on a false
-signal*.
+Every run produced a dump named `SecurityHealthHost.exe_<pid>_t161_exit.dmp`,
+trigger `process-exit`, roughly 36 seconds after spawn. That was read as the
+process's lifetime.
 
-**And this file already said so.** From *the spawn dump fails with
-`ERROR_PARTIAL_COPY`*:
+**The trigger fires when the *root* exits, and dumps everything still alive
+beneath it.** `SecurityHealthHost` is in that dump *because the watcher knew it
+was alive*: `_dump_tree` only ever targets live processes, and `_pid_alive` has
+always used psutil's process table, never ProcDump's output. The pipeline was
+right. The name said "exit" next to a pid and I read it as a statement about
+that pid.
 
-> **ProcDump renders `0x8007012B` as "Target process no longer running", which
-> is false**, and that string cost three runs.
+> **This paragraph replaces a wrong one, 23 Aug.** The first version of this
+> section blamed ProcDump's false `0x8007012B` -> "Target process no longer
+> running", cited the existing entry saying that string had already cost three
+> runs, and called for a fix so the watcher reads liveness from the process
+> table. All of that was wrong: it already does. The real defect was a
+> misleading label and a reader who did not check. Correcting a misreading with
+> a second misreading, and filing a bug against working code, is worth leaving
+> visible.
 
-That entry is about the *spawn* dump failing. The same false death is what drives
-the *exit* trigger, and this is the fourth run it has cost. The evidence was in
-every run summary: `SecurityHealthHost` spawn dumps failing with `0x8007012B` on
-a process that then made an `eth_call` twenty-five seconds later. That was noted
-in passing as "a hollowing signature" and not followed through to the obvious
-next question -- whether the *exit* record was the same lie.
+**So what is the 36 seconds?** It is the **loader** exiting 36 seconds after
+injecting -- `t125 -> t161` in one run, `t158 -> t194` in the next. That is real,
+consistent, and a property of the `.ps1`, not of the payload. It was attributed
+to the wrong process.
 
-**A dump labelled `process-exit` is not evidence a process exited.** It is
-evidence the watcher believed it had.
+**A dump filename is not a death certificate.** `_exit` on an image of a live
+process is what four runs were read on.
 
 ### What this explains, all at once
 
@@ -2792,10 +2799,22 @@ One command in the guest, while the run was live:
 
     Get-Process -Id <pid>
 
-Nothing in the pipeline asks the guest whether a process is still running; it
-infers death from a dumper's error string that this file already documents as
-false. **A run summary should record process exit from the process table, not
-from ProcDump's opinion.** That is the fix, and it is not written.
+It was never run because a filename appeared to have answered it. The pipeline
+had the truth the whole time and no reader asked it for the one fact that
+mattered.
+
+### What was changed, 23 Aug
+
+Naming, not logic -- there was no logic defect to repair.
+
+- The trigger is now **`root-exit`**, which is what it means, and its files are
+  suffixed **`_rootexit`**. `process-exit` -> `_exit` stays in `TRIGGER_SUFFIXES`
+  so images written before the rename remain interpretable; a four-run
+  misreading is exactly when someone goes back to old dumps.
+- Every dump record now carries **`alive_at_dump`**, taken from the process
+  table at the moment the image is written. The trigger names the *tree's*
+  event; this names the *process's* state, and nothing downstream has to infer
+  the second from the first ever again.
 
 
 ## THE CLIPPER SUBSTITUTES FROM THE C2 RESPONSE, AND `method=send` IS ON THE WIRE — 22 Aug

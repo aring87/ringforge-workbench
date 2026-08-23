@@ -66,7 +66,7 @@ class CarveFilenameTests(unittest.TestCase):
 
         names = {
             _carve_name({**common, "trigger": trigger}, image)
-            for trigger in ("process-spawn", "process-exit", "spawn-redump", "crash")
+            for trigger in ("process-spawn", "root-exit", "spawn-redump", "crash")
         }
 
         self.assertEqual(len(names), 4, names)

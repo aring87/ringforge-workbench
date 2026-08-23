@@ -95,6 +95,27 @@ DEFAULT_MAX_TOTAL_MB = 4096
 #: use it can tune it.
 DEFAULT_SPAWN_REDUMP_SECONDS = 10
 
+#: Filename suffix per trigger, so two dumps of one process in the same second
+#: are distinguishable on disk.
+#:
+#: **`root-exit` is suffixed `_rootexit`, and the distinction is not cosmetic.**
+#: That trigger fires when the *root* dies and dumps everything still alive
+#: beneath it, so its records describe live processes. Under the old name the
+#: file read `SecurityHealthHost.exe_7972_t161_exit.dmp`, which four runs of
+#: `0bw` took as evidence the payload exited at t161. It had not: it was still
+#: running an hour later, holding the guest's clipboard. The filename is what an
+#: analyst reads first and often all they read.
+#:
+#: `process-exit` stays mapped so images written before the rename can still be
+#: interpreted -- a four-run misreading is precisely when someone goes back to
+#: old dumps.
+TRIGGER_SUFFIXES = {
+    "root-exit": "_rootexit",
+    "process-exit": "_exit",
+    "spawn-redump": "_redump",
+    "parent-at-spawn": "_atspawn",
+}
+
 #: Per-process ProcDump timeout. Full dumps of a large working set are slow on
 #: a VM's virtual disk, but a hang here would hold up the whole run teardown.
 _DUMP_TIMEOUT_SECONDS = 300
@@ -572,10 +593,17 @@ class MemoryDumpSession:
                 self._root_exit_handled = True
                 self._record_root_never_dumped(elapsed)
                 if not due:
+                    # **`root-exit`, not `process-exit`.** This fires when the
+                    # *root* dies and dumps everything still alive beneath it,
+                    # so the old name described a process that had exited while
+                    # labelling images of processes that had not. Four runs of
+                    # `0bw` were read as "the payload exited at t161" on the
+                    # strength of that word; the payload was still running, and
+                    # still holding the clipboard, an hour later.
                     self._dump_tree(
                         offset=int(elapsed),
                         elapsed=elapsed,
-                        trigger="process-exit",
+                        trigger="root-exit",
                     )
                 else:
                     with self._lock:
@@ -1282,11 +1310,7 @@ class MemoryDumpSession:
         # different evidence. The re-dump needs it for a sharper reason: a
         # scheduled offset landing on the same second would otherwise overwrite
         # the one image taken after the payload was written.
-        suffix = {
-            "process-exit": "_exit",
-            "spawn-redump": "_redump",
-            "parent-at-spawn": "_atspawn",
-        }.get(trigger, "")
+        suffix = TRIGGER_SUFFIXES.get(trigger, "")
         out_path = self.output_dir / f"{safe_name}_{pid}_t{offset}{suffix}.dmp"
 
         record: dict[str, Any] = {
@@ -1296,6 +1320,17 @@ class MemoryDumpSession:
             "parent_pid": target.get("parent_pid"),
             "offset_seconds": offset,
             "trigger": trigger,
+            # **Whether *this* process was alive when its image was taken.**
+            #
+            # A `root-exit` dump captures every process still running when the
+            # root died, so a record can carry an exit-flavoured trigger while
+            # describing a process that is very much alive. That is not a
+            # hypothetical: `SecurityHealthHost.exe_7972_t161_exit.dmp` was read
+            # across four runs as evidence the payload exited at t161, and it
+            # exited nothing -- it was still clipping an hour later. The trigger
+            # names the *tree's* event, this names the process's own state, and
+            # nothing downstream should have to infer the second from the first.
+            "alive_at_dump": self._pid_alive(pid),
             "path": str(out_path),
             "size": 0,
             "sha256": "",
