@@ -2729,6 +2729,75 @@ it delivered the request.
 
 ---
 
+## THE PAYLOAD DOES NOT EXIT AFTER 36 SECONDS. IT NEVER EXITED. — 23 Aug
+
+**`SecurityHealthHost.exe` pid 6208 started at 13:26:00 and was still running at
+13:30:45**, four and a half minutes later, holding the clipboard. Read out of the
+guest's own process table while it ran:
+
+    Id     Name                 StartTime            MB
+    6208   SecurityHealthHost   8/23/2026 9:26:00 AM 77
+
+The "36-second lifetime" recorded in the two sections below is **wrong**, and so
+is everything derived from it.
+
+### How the mistake was made
+
+Every run produced a `process-exit` memory dump for `SecurityHealthHost` roughly
+36 seconds after spawn, twice landing on exactly 36. That was read as the
+process's lifetime. It is not: it is the *exit trigger firing on a false
+signal*.
+
+**And this file already said so.** From *the spawn dump fails with
+`ERROR_PARTIAL_COPY`*:
+
+> **ProcDump renders `0x8007012B` as "Target process no longer running", which
+> is false**, and that string cost three runs.
+
+That entry is about the *spawn* dump failing. The same false death is what drives
+the *exit* trigger, and this is the fourth run it has cost. The evidence was in
+every run summary: `SecurityHealthHost` spawn dumps failing with `0x8007012B` on
+a process that then made an `eth_call` twenty-five seconds later. That was noted
+in passing as "a hollowing signature" and not followed through to the obvious
+next question -- whether the *exit* record was the same lie.
+
+**A dump labelled `process-exit` is not evidence a process exited.** It is
+evidence the watcher believed it had.
+
+### What this explains, all at once
+
+- **The clipper is `SecurityHealthHost`**, alive the whole time. Nothing needed
+  to outlive anything.
+- **The 21:08 contamination**: the substituting clipper was the 19:57 run's
+  `SecurityHealthHost`, still running an hour later. Not a mysterious survivor --
+  a process nobody had checked was dead.
+- **The absent persistence.** A clipper needs no autoruns, task or service if its
+  process never exits. The "not a working clipper" puzzle was an artefact of
+  believing it had a 36-second life.
+- **The clipboard lock at +46s** is the payload taking the clipboard and keeping
+  it, which is what a clipper does.
+
+### What is now unsupported
+
+- **"A fixed lifetime, not a reaction."** There is no measured lifetime at all.
+- **The empty-body control.** It concluded the response does not change the
+  timer. There is no timer. What it actually showed is that the response does not
+  change *when the watcher is fooled*, which is nothing about the sample.
+- **"Ten seconds to work with" after the beacon.** The window is not ten seconds
+  and may not be bounded.
+
+### The measurement that would have caught it
+
+One command in the guest, while the run was live:
+
+    Get-Process -Id <pid>
+
+Nothing in the pipeline asks the guest whether a process is still running; it
+infers death from a dumper's error string that this file already documents as
+false. **A run summary should record process exit from the process table, not
+from ProcDump's opinion.** That is the fix, and it is not written.
+
+
 ## THE CLIPPER SUBSTITUTES FROM THE C2 RESPONSE, AND `method=send` IS ON THE WIRE — 22 Aug
 
 **Both missing behaviours were produced, and the mechanism turned out to be
@@ -2833,6 +2902,13 @@ stock page.
     beacons                        1                1
     method=send                   no               no
     victim guid           4814CF26…        4814CF26…
+
+> **WRONG, corrected 23 Aug.** The process did not exit at all -- see *THE
+> PAYLOAD DOES NOT EXIT AFTER 36 SECONDS*. The `process-exit` dump fires on
+> ProcDump's false "Target process no longer running", and everything this
+> subsection infers from a 36-second lifetime is unsupported. Kept as written
+> because the reasoning below is a worked example of building on a measurement
+> nobody checked.
 
 **36 seconds, twice, to the second.** The beacon landed at spawn+26 in one run
 and spawn+35 in the other, and the process still died at spawn+36 both times.
