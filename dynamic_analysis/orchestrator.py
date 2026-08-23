@@ -361,7 +361,16 @@ def run_sample(
         _observed_activity()
         return {
             "exit_code": -1 if exit_code is None else int(exit_code),
+            # **This is the root, and only the root.** `proc` is the process the
+            # harness launched -- for a `.ps1` sample that is `powershell.exe`,
+            # which exits once it has injected and leaves the payload running.
+            # `0bw` read this as the sample being finished for four runs while
+            # `SecurityHealthHost.exe` went on clipping for at least an hour
+            # afterwards. What survives teardown is in the memory session's
+            # `descendants_alive_at_end`; this field cannot answer that and is
+            # named the way it is for compatibility rather than accuracy.
             "sample_exited": exit_code is not None,
+            "root_exited": exit_code is not None,
             "elapsed_seconds": int(elapsed),
             "base_window_seconds": int(timeout_seconds),
             "window_seconds": window_seconds,
@@ -2522,6 +2531,25 @@ def run_dynamic_analysis(
                     f"from {counts.get('processes_observed', 0)} observed process(es) "
                     f"({counts.get('total_mb', 0)} MB).",
                 )
+
+                # **Said out loud, because the guest is not safe to reuse.**
+                # Teardown terminates the root only, so anything it injected is
+                # still running now. Nothing used to report that, and the result
+                # was two detonations' behaviour in one log: the previous run's
+                # payload was still substituting clipboard contents when the
+                # next run started. Revert before the next sample.
+                still_alive = memory_dump_result.get("descendants_alive_at_end") or []
+                if still_alive:
+                    named = ", ".join(
+                        f"{p.get('name') or 'pid'} ({p.get('pid')})" for p in still_alive[:6]
+                    )
+                    _emit(
+                        status_cb,
+                        f"WARNING: {len(still_alive)} process(es) from the sample tree are "
+                        f"STILL RUNNING after teardown: {named}. Only the launched root is "
+                        f"terminated. Revert the VM before the next run, or its results will "
+                        f"describe both samples.",
+                    )
                 for failure in memory_summary.get("failures", []):
                     _emit(
                         status_cb,

@@ -478,12 +478,36 @@ class MemoryDumpSession:
 
         successful = [d for d in dumps if d.get("success")]
 
+        # **What is still running when the run ends.**
+        #
+        # Teardown terminates the root and nothing else, so a hollowed child
+        # outlives the run by design. That is tolerable and was never recorded,
+        # which is how two detonations ended up in one clipboard log: the 19:57
+        # payload was still running -- and still substituting -- when the 21:08
+        # run started, because nobody had been told it survived.
+        #
+        # `sample_exited` in the observation record answers a different question:
+        # it means the *root* returned an exit code. This answers the one that
+        # decides whether the guest is safe to reuse, and the answer is usually
+        # no.
+        alive = []
+        for info in observed:
+            pid = info.get("pid")
+            if pid is not None and pid != self._root_pid and self._pid_alive(int(pid)):
+                alive.append({
+                    "pid": int(pid),
+                    "name": info.get("name", ""),
+                    "image": info.get("image", ""),
+                })
+
         return {
             "stopped": True,
             "started": self.started,
             "error": self.error,
             "procdump_path": str(self.procdump) if self.procdump else "",
             "root_pid": self._root_pid,
+            "descendants_alive_at_end": alive,
+            "root_alive_at_end": self._pid_alive(self._root_pid),
             "dump_offsets": list(self.dump_offsets),
             "spawn_redump_seconds": self.spawn_redump_seconds,
             "dumps": dumps,
