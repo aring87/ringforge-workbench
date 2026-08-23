@@ -167,6 +167,8 @@ $hits = 0
 $errors = 0
 $blanks = 0
 $index = 0
+$script:LastPhase = ""
+$script:Phases = @()
 
 while ((Get-Date) -lt $deadline) {
   $round++
@@ -204,6 +206,36 @@ while ((Get-Date) -lt $deadline) {
   # dismissed as noise a second time.
   $caseOnly = $changed -and ($readBack.ToLower() -eq $wrote.ToLower())
 
+  # **Phase, not just state.** The interesting thing this tool records is not
+  # any single round but the sequence: quiet, then substituting, then the
+  # clipboard held shut. Run `bait5` went 78 clean rounds, 188 substituted, then
+  # 428 locked -- and that shape is the finding. Tracking it here means the
+  # script can announce a transition as it happens and summarise it at the end,
+  # instead of leaving both to be reconstructed from the log afterwards.
+  $phase = if ($failure) { "locked" } elseif ($changed) { "substituting" }
+           elseif ($blank) { "blank" } else { "clean" }
+
+  if ($phase -ne $script:LastPhase) {
+    $elapsed = [int]((Get-Date) - $started).TotalSeconds
+    switch ($phase) {
+      "locked"       { Write-Warn2 "round ${round} (+${elapsed}s): clipboard LOCKED -- cannot open it at all. Rounds continue; this line will not repeat." }
+      "substituting" { Write-Hit  "round ${round} (+${elapsed}s): SUBSTITUTION BEGINS" }
+      "clean"        {
+        # "again" is only true after something went wrong; on the first round it
+        # would be quietly misleading about what has been observed so far.
+        $word = if ($script:LastPhase) { "readable again" } else { "readable" }
+        Write-Ok "round ${round} (+${elapsed}s): clipboard $word, tracer intact"
+      }
+      "blank"        { Write-Warn2 "round ${round} (+${elapsed}s): reads coming back empty" }
+    }
+    $script:Phases += @{ round = $round; elapsed = $elapsed; phase = $phase
+                         time = (Get-Date).ToUniversalTime().ToString("o") }
+    Write-Record @{ kind = "phase"; phase = $phase; round = $round
+                    elapsed_seconds = $elapsed
+                    time = (Get-Date).ToUniversalTime().ToString("o") }
+    $script:LastPhase = $phase
+  }
+
   if ($changed) {
     $hits++
     $label = if ($caseOnly) { "CASE-ONLY (still a rewrite)" } else { "SUBSTITUTED" }
@@ -212,9 +244,17 @@ while ((Get-Date) -lt $deadline) {
     Write-Hit "  read  : $readBack"
   } elseif ($blank) {
     $blanks++
-    # Quiet by default: one blank is noise, a burst of them is contention and
-    # shows up in the summary count.
     Write-Verbose "round ${round}: clipboard read back empty"
+  } elseif ($failure) {
+    # **A locked clipboard used to print nothing at all.** The loop kept
+    # running and the console went silent, which reads as a hung script: on run
+    # `bait5` it looked like the bait had stopped at round 266 when it was
+    # working normally 400 rounds later. The transition above says it once;
+    # this keeps a slow pulse so the window never looks dead.
+    if (($round % 60) -eq 0) {
+      $elapsed = [int]((Get-Date) - $started).TotalSeconds
+      Write-Warn2 "round ${round} (+${elapsed}s): still locked out ($errors failed rounds)"
+    }
   }
 
   Write-Record @{
@@ -242,6 +282,10 @@ $summary = @{
   blanks  = $blanks
   started = $started.ToUniversalTime().ToString("o")
   ended   = (Get-Date).ToUniversalTime().ToString("o")
+  # The sequence, not just the totals. `hits: 186` says substitution happened;
+  # it does not say it began at +165s, ran for 195s and stopped because the
+  # clipboard was taken and held. That shape is what predicts the next run.
+  phases  = $script:Phases
   # The reading that matters, stated rather than left to be inferred from a
   # count of zero -- which is the shape of result this bench keeps misreading.
   note    = if ($hits -gt 0) {
@@ -255,6 +299,23 @@ $summary = @{
 Write-Record $summary
 
 Write-Host ""
-Write-Ok "rounds: $round   substitutions: $hits   errors: $errors"
+Write-Ok "rounds: $round   substitutions: $hits   locked: $errors   blank: $blanks"
+
+# **The timeline, printed.** It was always in the log and never on the screen,
+# so run `bait5`'s three-phase shape -- quiet, substituting, locked -- had to be
+# reconstructed afterwards from timestamps. An operator who can see it as it
+# happens knows whether the window covered the interesting part.
+if ($script:Phases.Count -gt 0) {
+  Write-Host ""
+  Write-Info "phases (seconds from bait start):"
+  foreach ($p in $script:Phases) {
+    Write-Info ("  +{0,-6}s  round {1,-5}  {2}" -f $p.elapsed, $p.round, $p.phase)
+  }
+  if ($script:LastPhase -eq "locked") {
+    Write-Warn2 "Ended while still locked out: the clipboard was never released."
+  }
+}
+
+Write-Host ""
 Write-Info $summary.note
 Write-Info "record: $Log"
