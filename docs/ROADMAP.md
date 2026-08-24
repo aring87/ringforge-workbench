@@ -411,73 +411,107 @@ The prediction in the line below this heading — *this one has no tests at all,
 so read it with Phase 2's question* — was worth writing down, because it paid
 out three times.
 
-### Phase 3b — api and extension have no engine layer
+### Phase 3b — extension and api — **DONE, 24 Aug**
 
-**This is not the rename the design note assumed.** `gui/extension_window.py` is
-1,743 lines and performs the analysis *itself* — zip/crx extraction, manifest
-parsing, file inventory, risk verdict — inside a Tkinter `Toplevel` that imports
-nothing but the theme. `gui/api_window.py` is 1,394 lines and is built the same
-way.
+Not the rename the design note assumed. Both analyses lived inside Tkinter
+windows importing nothing but the theme, which is why neither had a test:
+there was nothing importable to reach. 385 lines lifted out into
+`static_triage_engine/extension_analysis.py` and
+`static_triage_engine/api_response_analysis.py`, 41 tests between them.
 
-Neither can emit categories until the logic is extracted from the window, and
-that is also why neither has a single test: there is nothing importable to test.
-Until then they report `collected: false` and contribute nothing, which is at
-least true.
+Both scorers were **saturated** rather than merely wrong. The extension one
+added source-pattern points *per file*, so a jQuery bundle reached the top band
+on `fetch(` and `https://` alone — nine ordinary files scored 67 before the
+manifest terms added 43 more, and every non-trivial extension rated `Critical`.
+The api one had exactly one High finding and it fired on every endpoint that
+sets a cookie, which is every login endpoint an analyst would test.
 
 ### Phase 4a — the combiner — **DONE, 24 Aug**
 
-38 tests. `verdict/combine.py` pools and bands and touches no disk;
-`static_triage_engine/combine_case.py` reads the case and owns the VirusTotal
-thresholds, which are kept out of `verdict/` so that the module deciding bands
-cannot have its numbers tuned to move verdicts. The additive writer still
-produces `combined_score.json`; the new verdict goes to `combined_verdict.json`
-beside it, and the deletions happen in 4b once the consumers have moved.
+### Phase 4b — the report and the theme — **DONE, 24 Aug**
 
-What it replaced, for the record. Seven things break, and they are
-listed in `docs/SCORING.md` under *What breaks* rather than repeated here. The
-headline: `calculate_combined_score`, `classify_verdict` and `score_dynamic` are
-**deleted**, not migrated — the last of those removes an entire re-scoring path.
-`combined_score.json` changes shape, 19 files reference the retired verdict
-strings, and a test should pin that none of them survives.
+Two commits. `design_tokens.py` holds one palette both media derive from — the
+"37 hardcoded colours" turned out to be **five report stylesheets**, and four of
+them are gone. Then `engine.py`, `report.py` and the GUI moved onto
+`combined_verdict.json`, and `scoring.py` went from 1,150 lines to 274.
 
-### Phase 4b — the report and the theme
+### The band names — **RESOLVED, 24 Aug**
 
-The flow work. One verdict to display makes the unified report a design problem
-instead of a reconciliation problem.
+Left open at the end of 3b and closed the same day. Neither option written up
+was taken: the model emits a **neutral band** and the **verdict is a sentence
+derived from it** plus a domain read off which modules ran. `band` is the stable
+field to compare cases on; `verdict` is prose and may be reworded without
+touching anything else. See `docs/SCORING.md`.
 
-The theme is bounded and measured: `gui/theme.py` defines 40 colours,
-`dynamic_analysis/report_theme.py` defines 17, and they share **zero** values —
-which is why the application and its own reports read as different products. On
-top of that, 37 hardcoded hex colours bypass the theme entirely:
-`extension_window` 14, `unified_report_window` 9, `dynamic_window` 8,
-`api_window` 6. One source, both media derived from it, and a test asserting no
-literal hex outside it.
+---
 
-### The order, and why
+## Where this leaves the project — 24 Aug
 
-**3a → 4a → 4b → 3b.**
+**Both build queues are empty and the bench is clean.** The dynamic pipeline was
+already there; the scoring rewrite finished today; the baseline is replaced,
+restored, verified and recorded. 867 tests and a standing failure this morning,
+1081 now.
 
-Spec is cheap and keeps the contract honest while it is still young. The
-combiner is where two verdict vocabularies in one window stop being a design
-note and start being a fix. The report and theme are the payoff. The
-api/extension extraction is real work with no verdict consequence until it is
-finished, so it goes last — unless those two modules need to be trustworthy
-sooner, in which case it moves up and nothing else changes.
+**Twelve silent false positives were found across five scorers**, every one of
+which produced results rather than errors. The pattern never varied: an additive
+model priced something it could not justify, and the pricing hid that it could
+not. Asking *what claim is this, and does it stand alone* is a harder question
+to answer and a much harder one to get wrong quietly.
 
-### The dynamic track, still open and independent
+### 1. The new model has never produced a verdict on a real sample
 
-1. **The contract's transaction history.** Blocked on a BscScan key or an
-   archive node; the public node prunes historical state and refuses wide
-   `eth_getLogs`. No detonation. The script does not exist yet — the "drafted"
-   code referred to in `docs/HANDOFF.md` is not in the repo.
-2. **Why `bait6` produced the hardcoded wallet.** Needs bench time, one
-   detonation per revert. Arm A — an unusable C2 response served to a fresh
-   payload — is cheaper and tests the likelier explanation, so it goes first.
-3. **The FakeNet shim for `beacon_responder.py`.** Built, never wired, not
-   needed for anything currently open.
+**This is the gap that matters, and it is the project's own standard turned on
+today's work.** Every discrimination test written today is a *contract* test
+against synthetic inputs — deliberately, because the sample binaries are not on
+this host and a fixture suite could not have been written. That was the right
+call and it leaves something unproven: 1081 tests and **zero real cases** scored
+under `corroboration-v1`.
 
-**And the baseline re-take is mid-flight.** Verified through the pre-freeze
-checklist with `timeout 240` corrected to `900`; the take, restore-verify,
-delete and rename were not confirmed. Close that before anything else touches
-the VM — a half-replaced baseline is the one state nothing in this bench is safe
-on top of.
+`Arm A of the bait6 question` does double duty here. It answers the last open
+question on `0bw`, and it is the first real case through the unified model —
+static categories, dynamic categories, coverage state, a pooled band and a
+report rendered from it, end to end.
+
+Run it, then read the verdict as sceptically as anything else this bench
+produces. A model that has only ever been tested against inputs its author
+wrote is a model whose first real disagreement is still ahead of it.
+
+### 2. Nothing scores that has not been measured — except the four new scorers
+
+The dynamic side's two scored detectors have measured benign rates: module
+integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 across
+35 real crashes. That standard is quoted at the top of this file.
+
+Static, spec, extension and api now have categories and **no benign corpus at
+all**. The extension one is the sharpest case, because the scorer it replaced
+was saturated: it is now known to rate a synthetic jQuery bundle `Low`, and not
+known to rate fifty real store extensions anything in particular.
+
+This needs no detonation and no samples that are hard to get — the Chrome Web
+Store is a benign corpus that anyone can download, and any signed installer on
+this host exercises the static side. It is the cheapest remaining way to find
+out whether today's work holds.
+
+### 3. The unified report was rewired, not redesigned
+
+Phase 4b moved the consumers onto one verdict and unified the palette. What it
+did not do is *design the page*, which was the original reason for wanting one
+verdict — a reader should meet the band, the corroboration behind it and the
+coverage before they meet a number, and the report currently leads with a table
+because that is what it led with before.
+
+Worth doing after (1) and (2), when there is a real case to lay out and a benign
+corpus to show what the quiet end looks like.
+
+### Standing items, neither urgent
+
+- **The `0bw` deployer.** Etherscan's API needs a paid plan for chain 97 and no
+  free public node has full archive state — six probed, all partial. The
+  explorer's *web UI* shows the creator and creation transaction for free and
+  403s scripted access, so it is a manual read. `scripts/chain_history.py`
+  carries both automated routes for whenever one becomes available.
+- **The FakeNet shim for `beacon_responder.py`.** Built, never wired, needed by
+  nothing currently open.
+- **The stale CA.** The guest's Root store holds `141C8310…` (live) and
+  `6CDD5E8D…` (21 Aug, the re-mint bug's fingerprint). Untidy rather than
+  broken; remove it on the new baseline, where a mistake costs one revert.
