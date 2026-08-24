@@ -10,6 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from verdict import (
+    CATEGORY_POINTS,
+    MAX_CONTEXT_SCORE,
+    STRONG_CATEGORY_BONUS,
+    Category,
+    band,
+)
+
 from dynamic_analysis.diff_services import diff_services
 from dynamic_analysis.diff_tasks import diff_scheduled_tasks
 from dynamic_analysis.dropped_file_triage import (
@@ -1094,15 +1102,41 @@ def diff_autoruns_snapshots(before_csv: Path, after_csv: Path) -> dict[str, Any]
 
 
 
-#: The most that raw activity volume can contribute. Background noise alone
-#: moved a score by nine points between two runs of the same control on
-#: identical code; anything that noisy has to stay a minority of the total.
-MAX_CONTEXT_SCORE = 15
+#: The band model and its constants now live in `verdict/`, shared with every
+#: other analysis module -- see `docs/SCORING.md`. They are imported at the top
+#: of this file rather than redefined here, because two copies of a threshold is
+#: how the two halves of a model drift apart without anything ever failing.
+#:
+#: What stays local is *authoring*: deciding that three memory-only rules is
+#: emphatic and one is the canary. That reasoning belongs next to the data it
+#: was checked against, which is here.
 
-#: Points for a kind of evidence being present at all, and for it being
-#: emphatic enough to stand on its own.
-CATEGORY_POINTS = 20
-STRONG_CATEGORY_BONUS = 15
+#: Which run summaries can make each category fire, by summary name.
+#:
+#: This exists so an absence can be read. A summary carries `available: False`
+#: when its collector was disabled for the run or failed to start, and without
+#: this map a run with Sysmon switched off reports exactly the silence of a run
+#: where Sysmon watched and saw nothing -- only one of which is evidence.
+#:
+#: **Module-level so it can be tested for drift.** A category added without a
+#: line here would default to "collected" forever and quietly claim coverage it
+#: never had; `test_category_coverage` compares this against what the scorer
+#: actually emits.
+#:
+#: A category counts as collected when *any* of its sources ran, because any one
+#: of them can make it fire. That understates uncertainty where a category has
+#: three routes and two are dark -- carrying the missing sources rather than a
+#: single bit is a question for the combiner.
+CATEGORY_SOURCES: dict[str, tuple[str, ...]] = {
+    "packed_payload": ("memory_yara_summary",),
+    "process_injection": ("sysmon_summary", "crash_summary", "pe_carve_summary"),
+    "credential_access_or_tampering": ("sysmon_summary",),
+    "persistence_installed": ("task_diff_summary", "service_diff_summary",
+                              "autoruns_diff_summary"),
+    "payload_dropped": ("dropped_files_summary",),
+    "external_contact": ("network_summary", "fakenet_summary"),
+    "scripted_execution": ("powershell_summary",),
+}
 
 #: Distinct memory-only rules that make the packed-payload category strong.
 #:
@@ -1792,55 +1826,96 @@ def calculate_dynamic_score(
         suspicious_scriptblocks=suspicious_scriptblocks,
     )
 
-    present = [c for c in categories if c["present"]]
-    strong = [c for c in present if c["strong"]]
-
-    score = context_score
-    score += len(present) * CATEGORY_POINTS
-    score += len(strong) * STRONG_CATEGORY_BONUS
+    # --- Which collectors were actually able to look ------------------------
+    #
+    # A summary carries `available: False` when its collector was disabled for
+    # the run or failed to start; no key at all means it ran. Without this, a
+    # run with Sysmon switched off reports exactly the silence of a run where
+    # Sysmon watched and saw nothing -- and only one of those is evidence.
+    #
+    # A category counts as collected when *any* of its sources ran, because any
+    # one of them can make it fire. That understates uncertainty where a
+    # category has three routes and two are dark; carrying the missing sources
+    # rather than a single bit is a question for the combiner, not for here.
+    summaries = {
+        "memory_yara_summary": memory_yara_summary,
+        "sysmon_summary": sysmon_summary,
+        "crash_summary": crash_summary,
+        "pe_carve_summary": pe_carve_summary,
+        "task_diff_summary": task_diff_summary,
+        "service_diff_summary": service_diff_summary,
+        "autoruns_diff_summary": autoruns_diff_summary,
+        "dropped_files_summary": dropped_files_summary,
+        "network_summary": network_summary,
+        "fakenet_summary": fakenet_summary,
+        "powershell_summary": powershell_summary,
+    }
+    for entry in categories:
+        feeds = CATEGORY_SOURCES.get(entry["name"], ())
+        entry["collected"] = (
+            True if not feeds
+            else any((summaries.get(name) or {}).get("available", True)
+                     for name in feeds))
 
     # --- Verdict: corroboration, not volume --------------------------------
     #
-    # The old model banded on the total, and the total could not tell a benign
-    # canary (24) from live AgentTesla (60) from packed mimikatz (69): all three
-    # landed in Needs Review / Medium, and High at >120 was unreachable. What
-    # separates them is not how much they did but how many independent kinds of
-    # evidence agree, and how emphatic each one is.
+    # The bands moved to `verdict/` in Phase 1 of `docs/SCORING.md` so that
+    # static, spec and the rest band the same way. They are unchanged by the
+    # move, and `test_score_discrimination.py` passing untouched is the check
+    # that says so -- if that file ever needs editing to accommodate this call,
+    # the model drifted and that is a finding rather than a chore.
     #
-    # One weak category is a single unexplained observation -- exactly what the
-    # memory canary is built to produce, and it must stay at Medium so that
-    # control keeps its meaning. Two agreeing categories, or one emphatic
-    # enough to stand alone, is a finding.
-    if not present:
-        severity = "Low"
-        verdict = "Low Suspicion" if score > 10 else "Benign / Clean Baseline"
-    elif len(present) == 1 and not strong:
-        severity = "Medium"
-        verdict = "Needs Review"
-    elif len(present) >= 3 or len(strong) >= 2:
-        severity = "High"
-        verdict = "Likely Malicious"
-    else:
-        severity = "High"
-        verdict = "Elevated Attention"
+    # `third_party_dissent` is not passed here on purpose. VirusTotal is a
+    # case-level fact, not a run-level one, and a dynamic run has no business
+    # knowing about it.
+    banded = band(
+        [
+            Category(
+                name=entry["name"],
+                module="dynamic",
+                collected=entry["collected"],
+                present=entry["present"],
+                strong=entry["strong"],
+                detail=entry.get("detail", ""),
+                reason=entry.get("reason", ""),
+            )
+            for entry in categories
+        ],
+        context_score=context_score,
+    )
+
+    present = [c for c in categories if c["present"]]
+    strong = [c for c in present if c["strong"]]
+
+    score = banded.score
+    severity = banded.severity
+    verdict = banded.verdict
 
     # Retained under their original names: the report and the controls read
-    # these. The floor is now the single-category case -- one decisive
-    # observation with nothing corroborating it -- which is what the old
-    # qualitative escalation was reaching for.
-    floor_applied = severity == "Medium" and bool(present)
-    floor_reason = present[0]["reason"] if floor_applied else ""
+    # these. The floor is the single-category case -- one decisive observation
+    # with nothing corroborating it -- which is what the old qualitative
+    # escalation was reaching for.
+    floor_applied = banded.severity_floor_applied
+    floor_reason = banded.severity_floor_reason
 
     return {
         "score": score,
         "severity": severity,
         "verdict": verdict,
         "context_score": context_score,
+        # Only what fired. An absent category is not a finding, and listing all
+        # seven every run would bury the two that matter.
         "evidence_categories": present,
         "evidence_counts": {
             "categories_present": len(present),
             "categories_strong": len(strong),
+            # New in Phase 1. A category whose collector never ran is unknown,
+            # not absent, and a reader who cannot see the difference will read
+            # a disabled collector as a clean result.
+            "categories_unknown": banded.categories_unknown,
         },
+        "coverage_complete": banded.coverage_complete,
+        "uncollected_categories": list(banded.unknown_names),
         # What was attributed to the sample versus what the host did anyway.
         # Kept because a scorer that quietly reads host-wide telemetry is
         # indistinguishable from one that does not, until a sample proves it.
@@ -1859,7 +1934,10 @@ def calculate_dynamic_score(
         },
         "severity_floor_applied": floor_applied,
         "severity_floor_reason": floor_reason,
-        "score_model": "dynamic-corroboration-v3",
+        # One model now, shared with static and the rest. The dynamic-only
+        # `dynamic-corroboration-v3` retires with this change; output carrying
+        # it came from before the modules were unified.
+        "score_model": banded.score_model,
         "score_notes": [
             "The verdict comes from how many independent kinds of evidence agree, "
             "not from the total. Volume is capped at "

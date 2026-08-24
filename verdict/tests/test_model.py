@@ -173,6 +173,25 @@ class WhatWasNotCollected(unittest.TestCase):
         self.assertEqual(result.severity, "Unknown")
         self.assertEqual(result.verdict, "Insufficient Coverage")
 
+    def test_a_dark_detector_costs_the_clean_headline(self) -> None:
+        # The band is still Low -- nothing fired, and nothing firing is not a
+        # finding. What is not available is the *claim*: a run with memory YARA
+        # switched off cannot report Clean Baseline, because the detector that
+        # would have disagreed was not asked.
+        result = band([_cat("packed_payload", "dynamic", collected=False),
+                       _cat("external_contact", "dynamic")])
+
+        self.assertEqual(result.severity, "Low")
+        self.assertEqual(result.verdict, "No Findings, Coverage Incomplete")
+
+    def test_a_dark_detector_does_not_suppress_a_real_finding(self) -> None:
+        # Coverage gaps qualify a clean result. They say nothing about a
+        # category that did fire.
+        result = band([_cat("packed_payload", "dynamic", collected=False),
+                       _cat("external_contact", "dynamic", present=True)])
+
+        self.assertEqual(result.verdict, "Needs Review")
+
     def test_coverage_reports_per_module(self) -> None:
         cover = coverage([_cat("known_malware_signature", "static", collected=False),
                           _cat("dangerous_capability", "static"),

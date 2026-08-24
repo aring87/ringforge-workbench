@@ -107,14 +107,23 @@ memory canary lands, and moving it would cost that control its meaning.
 A **score is still emitted** — context points, capped — but it is a description,
 not a verdict input. Nothing bands on it.
 
-### Two more bands, both about not having looked
+### Three more verdicts, all about not having looked
 
     nothing collected at all       Unknown  Insufficient Coverage
-    no category present, and
+    nothing fired, but some
+      collector was dark           Low      No Findings, Coverage Incomplete
+    nothing fired, and
       dynamic never ran            Low      No Indicators Found
 
 The first exists because a run in which every collector failed would otherwise
 produce the *cleanest* verdict the model can express.
+
+The second keeps the band and withdraws the claim. Nothing fired, and nothing
+firing is not a finding — so `Low` is right. But a run whose packer detector was
+switched off has not earned the words *Clean Baseline*, because the detector
+that would have disagreed was never asked. Coverage gaps qualify a clean result
+and say nothing about a category that did fire; a finding stands regardless of
+what else was dark.
 
 The second is narrower and worth stating plainly: **"Clean Baseline" is a claim
 about having watched the sample run.** Static analysis can establish that
@@ -272,9 +281,27 @@ this note.
 band function, and the JSON schema, with tests. Nothing consumes it yet. This is
 the only phase where the design can still be changed cheaply.
 
-**Phase 1 — dynamic emits the shared shape.** Mostly a lift. `test_score_discrimination.py`
-must pass unchanged against the new emitter, since it encodes the bands that are
-being preserved — if it needs editing, the model changed and that is a finding.
+**Phase 1 — dynamic emits the shared shape. DONE, 24 Aug.**
+`test_score_discrimination.py` passed unchanged — 29 tests, file untouched,
+which is the record that the bands survived the move rather than being
+renegotiated during it.
+
+`orchestrator.py` now imports the constants and `band()` from `verdict/` instead
+of defining its own, and builds `verdict.Category` objects. What stayed local is
+authoring: `STRONG_MEMORY_ONLY_RULES = 3` is a judgement checked against
+mimikatz.upx (five rules) and live AgentTesla (three), and it belongs next to
+that data.
+
+The lift also forced the coverage question the dynamic side had never had to
+answer. `CATEGORY_SOURCES` maps each category to the run summaries that can make
+it fire, so `available: False` on a summary becomes `collected: False` on its
+categories. `test_category_coverage.py` pins it, including a drift check —
+a category added without a line in that map would default to collected forever
+and claim coverage it never had, silently, in the direction that makes samples
+look clean.
+
+Writing that test is what exposed the missing verdict above: a run with memory
+YARA disabled was still reporting **Benign / Clean Baseline**.
 
 **Phase 2 — static authors its categories, with coverage state.** Gated on a
 discrimination test that does not exist yet. Static currently has **two tests

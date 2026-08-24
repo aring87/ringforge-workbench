@@ -241,6 +241,13 @@ def band(
         severity = "Low"
         if score > 10:
             verdict = "Low Suspicion"
+        elif unknown:
+            # **A clean headline is not available while a detector was dark.**
+            # The band is right -- nothing fired, and nothing firing is not a
+            # finding -- but the wording has to stop short of the claim. A run
+            # with memory YARA disabled that reports "Clean Baseline" has said
+            # the one thing it cannot know.
+            verdict = "No Findings, Coverage Incomplete"
         elif "dynamic" in modules_run:
             verdict = "Benign / Clean Baseline"
         else:
