@@ -390,8 +390,46 @@ can emit categories until the logic is extracted, which is also why neither has
 a test. Until then they report `collected: false` and contribute nothing, which
 is at least true.
 
-**Phase 4 — the combiner, the report, and the theme.** One verdict to display
-makes the unified report a design problem instead of a reconciliation problem.
+**Phase 4a — the combiner. DONE, 24 Aug.** 38 tests across
+`verdict/tests/test_combine.py` and `static_triage_engine/tests/test_combine_case.py`.
+
+Split in two, and the split is the point:
+
+- **`verdict/combine.py` is pure.** It pools categories, bands once, and emits
+  the JSON shape. It knows nothing about case directories, file layouts or
+  VirusTotal — so the thing that decides the verdict can be tested without
+  building a case folder, which is exactly what the old combiner could not do.
+- **`static_triage_engine/combine_case.py` reads disk.** Case layout, both
+  historical folder shapes, and the VirusTotal thresholds live here. Those
+  thresholds are deliberately *outside* `verdict/`: the moment the module that
+  decides bands also knows what VirusTotal is, its numbers start being tuned to
+  move verdicts.
+
+**Nothing is deleted yet.** The additive `combined_score.json` keeps being
+written by the old path, and the new verdict goes to `combined_verdict.json`
+beside it. A shape change and a consumer migration in one commit would leave no
+working state to bisect back to; Phase 4b moves the consumers and then deletes.
+
+**Dynamic categories are rebuilt from the run summary, not recomputed.** The run
+happened in another process on another machine, so `calculate_dynamic_score` now
+serialises its whole category set under `score_detail.categories` — absent and
+uncollected ones included, because pooling is only meaningful if each module
+says what it *looked for*. The contract invariants are re-applied on the way
+back in: a summary claiming a category is present with no reason is dropped
+rather than trusted, and one unreadable row does not make a months-old case
+unreadable.
+
+**The dissent threshold is five engines.** One or two is the noise floor of
+multi-engine scanning — `_is_weak_vt_noise` already encoded that — and a floor
+firing there would move a large fraction of ordinary software to Needs Review
+and teach everyone to ignore the band.
+
+**Phase 4b — the report and the theme.** One verdict to display makes the
+unified report a design problem instead of a reconciliation problem. This is
+also where `calculate_combined_score`, `classify_verdict` and `score_dynamic`
+are finally deleted, and where the 19 files referencing retired verdict strings
+get checked.
+
 The theme work belongs here and not earlier: `gui/theme.py` (40 colours) and
 `dynamic_analysis/report_theme.py` (17 colours) currently share **zero** values,
 and 37 hardcoded hex colours bypass the theme in four windows. One source, both

@@ -424,9 +424,16 @@ that is also why neither has a single test: there is nothing importable to test.
 Until then they report `collected: false` and contribute nothing, which is at
 least true.
 
-### Phase 4a — the combiner
+### Phase 4a — the combiner — **DONE, 24 Aug**
 
-Where the current incoherence actually hurts. Seven things break, and they are
+38 tests. `verdict/combine.py` pools and bands and touches no disk;
+`static_triage_engine/combine_case.py` reads the case and owns the VirusTotal
+thresholds, which are kept out of `verdict/` so that the module deciding bands
+cannot have its numbers tuned to move verdicts. The additive writer still
+produces `combined_score.json`; the new verdict goes to `combined_verdict.json`
+beside it, and the deletions happen in 4b once the consumers have moved.
+
+What it replaced, for the record. Seven things break, and they are
 listed in `docs/SCORING.md` under *What breaks* rather than repeated here. The
 headline: `calculate_combined_score`, `classify_verdict` and `score_dynamic` are
 **deleted**, not migrated — the last of those removes an entire re-scoring path.

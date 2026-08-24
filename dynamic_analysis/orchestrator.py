@@ -1906,6 +1906,24 @@ def calculate_dynamic_score(
         # Only what fired. An absent category is not a finding, and listing all
         # seven every run would bury the two that matter.
         "evidence_categories": present,
+        # **The whole set, for the combiner.** `evidence_categories` is written
+        # for a reader; this is written for `verdict.combine`, which needs the
+        # absent and uncollected ones too -- pooling across modules is only
+        # meaningful if each module says what it looked for, not just what it
+        # found. Deriving the missing entries from the present ones would work
+        # today and break the first time a category is added.
+        "categories": [
+            {
+                "name": entry["name"],
+                "module": "dynamic",
+                "collected": entry["collected"],
+                "present": entry["present"],
+                "strong": entry["strong"],
+                "detail": entry.get("detail", ""),
+                "reason": entry.get("reason", ""),
+            }
+            for entry in categories
+        ],
         "evidence_counts": {
             "categories_present": len(present),
             "categories_strong": len(strong),
