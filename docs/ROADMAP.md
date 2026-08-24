@@ -1,8 +1,15 @@
-# Finishing dynamic analysis
+# Finishing dynamic analysis, and what came after
 
-Written 13 Aug 2026. Scope is `dynamic_analysis/` — the pipeline. The emulator
-in `scripts/` belongs to the `422e30ed` investigation, not to this, and mixing
-the two is why "how much is left" keeps feeling unanswerable.
+Written 13 Aug 2026, extended 24 Aug. The original scope was
+`dynamic_analysis/` — the pipeline. The emulator in `scripts/` belongs to the
+`422e30ed` investigation, not to this, and mixing the two is why "how much is
+left" keeps feeling unanswerable.
+
+**That scope is now largely closed, and the work moved.** For the current plan,
+start at *After dynamic — the roadmap from 24 Aug* at the end of this file. The
+sections between are the dynamic plan and its outcomes, kept because the
+standard below is quoted by `docs/SCORING.md` and because how each item closed
+is more useful than the fact that it did.
 
 ---
 
@@ -332,10 +339,138 @@ showed.
 
 ---
 
-## After dynamic
+## After dynamic — the roadmap from 24 Aug
 
-Not now — but so it is not lost. `static_triage_engine/` is 6,419 lines with two
-tests, and until 13 Aug `pytest` did not collect them at all. `gui/` is 13,667
-lines with none. The first static task is a harness, not a feature: pin what
-`score_static` currently does, then apply the `collection_available` pattern to
-capa / FLOSS / YARA / VirusTotal, all of which can be silently absent.
+The 13 Aug note below this heading read, in full:
+
+> `static_triage_engine/` is 6,419 lines with two tests, and until 13 Aug
+> `pytest` did not collect them at all. `gui/` is 13,667 lines with none. The
+> first static task is a harness, not a feature: pin what `score_static`
+> currently does, then apply the `collection_available` pattern to capa / FLOSS
+> / YARA / VirusTotal, all of which can be silently absent.
+
+It was right about the shape and wrong about one thing: `score_static` was not
+worth pinning. Pinning it would have preserved three false positives. See
+*Phase 2* below.
+
+### Why this happened at all
+
+The repo held **two independent scoring systems** that did not share a scale or
+a vocabulary:
+
+- `static_triage_engine/scoring.py` — additive points, static capped at 40,
+  dynamic at 30, summed and clamped to 100, banded with thresholds derived for
+  the 0–40 scale. `MALICIOUS` fired at 30 of 100, while the VirusTotal branches
+  in the same function tested 50 and 75.
+- `dynamic_analysis/orchestrator.py` — category agreement. *Three agreeing
+  categories, or two strong ones, is Likely Malicious.*
+
+The combined score re-scored the dynamic module's corroboration output back into
+additive points on the way in, and the unified report displayed both
+vocabularies at once with no stated relationship between them. `docs/SCORING.md`
+is the design note; this is the schedule.
+
+### Done — 24 Aug
+
+**Phase 0 — the contract** (`168302c`). `verdict/` holds the `Category` shape,
+the band function and the invariants, consumed by nothing. 28 tests.
+
+**Phase 1 — dynamic on the shared model** (`49f628c`).
+`test_score_discrimination.py` passed **unchanged**, which is the record that
+the bands survived the move rather than being renegotiated during it. The lift
+forced the coverage question the dynamic side had never had to answer, and
+answering it found a live bug: a run with memory YARA disabled reported
+*Benign / Clean Baseline*.
+
+**Phase 2 — static authors categories** (`c5b26e3`). Six categories, everything
+injected, no case-directory reads. Static went from 2 tests against 6,518 lines
+to 36 — and writing them found three false positives in the additive scorer,
+each of which the 13 Aug plan would have preserved by pinning:
+
+1. A hash-like filename charged 6 points, and this pipeline acquires samples by
+   hash and stores them under it. Every sample it ever downloaded started six
+   points up.
+2. An empty version-info block would have stood alone at Elevated Attention,
+   sweeping up Go and Rust binaries and anything built without a resource
+   script.
+3. Being unsigned was worth 8 points. Absence of exculpatory evidence is not
+   incriminating evidence.
+
+Each time the additive model priced something it could not justify, and the
+price hid that it could not.
+
+### Phase 3a — spec — **DONE, 24 Aug**
+
+Four categories, 21 tests against a scorer that had none. It found three more
+defects of the same shape as Phase 2's, and the full account is in
+`docs/SCORING.md`; the headline is that **an unparseable spec scored 10 of 30
+for having no authentication**, because the test was `auth_scheme_count == 0`
+and an empty dict satisfies it.
+
+The prediction in the line below this heading — *this one has no tests at all,
+so read it with Phase 2's question* — was worth writing down, because it paid
+out three times.
+
+### Phase 3b — api and extension have no engine layer
+
+**This is not the rename the design note assumed.** `gui/extension_window.py` is
+1,743 lines and performs the analysis *itself* — zip/crx extraction, manifest
+parsing, file inventory, risk verdict — inside a Tkinter `Toplevel` that imports
+nothing but the theme. `gui/api_window.py` is 1,394 lines and is built the same
+way.
+
+Neither can emit categories until the logic is extracted from the window, and
+that is also why neither has a single test: there is nothing importable to test.
+Until then they report `collected: false` and contribute nothing, which is at
+least true.
+
+### Phase 4a — the combiner
+
+Where the current incoherence actually hurts. Seven things break, and they are
+listed in `docs/SCORING.md` under *What breaks* rather than repeated here. The
+headline: `calculate_combined_score`, `classify_verdict` and `score_dynamic` are
+**deleted**, not migrated — the last of those removes an entire re-scoring path.
+`combined_score.json` changes shape, 19 files reference the retired verdict
+strings, and a test should pin that none of them survives.
+
+### Phase 4b — the report and the theme
+
+The flow work. One verdict to display makes the unified report a design problem
+instead of a reconciliation problem.
+
+The theme is bounded and measured: `gui/theme.py` defines 40 colours,
+`dynamic_analysis/report_theme.py` defines 17, and they share **zero** values —
+which is why the application and its own reports read as different products. On
+top of that, 37 hardcoded hex colours bypass the theme entirely:
+`extension_window` 14, `unified_report_window` 9, `dynamic_window` 8,
+`api_window` 6. One source, both media derived from it, and a test asserting no
+literal hex outside it.
+
+### The order, and why
+
+**3a → 4a → 4b → 3b.**
+
+Spec is cheap and keeps the contract honest while it is still young. The
+combiner is where two verdict vocabularies in one window stop being a design
+note and start being a fix. The report and theme are the payoff. The
+api/extension extraction is real work with no verdict consequence until it is
+finished, so it goes last — unless those two modules need to be trustworthy
+sooner, in which case it moves up and nothing else changes.
+
+### The dynamic track, still open and independent
+
+1. **The contract's transaction history.** Blocked on a BscScan key or an
+   archive node; the public node prunes historical state and refuses wide
+   `eth_getLogs`. No detonation. The script does not exist yet — the "drafted"
+   code referred to in `docs/HANDOFF.md` is not in the repo.
+2. **Why `bait6` produced the hardcoded wallet.** Needs bench time, one
+   detonation per revert. Arm A — an unusable C2 response served to a fresh
+   payload — is cheaper and tests the likelier explanation, so it goes first.
+3. **The FakeNet shim for `beacon_responder.py`.** Built, never wired, not
+   needed for anything currently open.
+
+**And the baseline re-take is mid-flight.** Verified through the pre-freeze
+checklist with `timeout 240` corrected to `900`; the take, restore-verify,
+delete and rename were not confirmed. Close that before anything else touches
+the VM — a half-replaced baseline is the one state nothing in this bench is safe
+on top of.

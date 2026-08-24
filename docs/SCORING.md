@@ -356,8 +356,39 @@ version-info reaches exactly one and stays at Needs Review; a family-named YARA
 hit alongside a dangerous API capability reaches Elevated Attention; and a capa
 run with no ruleset reports **unknown** rather than contributing an absence.
 
-**Phase 3 — spec, api, extension.** Same contract, `collected: false` until each
-is genuinely wired.
+**Phase 3a — spec. DONE, 24 Aug.** Four categories in `categories.py`, 21 tests
+in `test_spec_discrimination.py`, against a scorer that had none. Reading it
+with Phase 2's question found three more defects of the same shape:
+
+1. **An unparseable spec scored 10 of 30 for having no authentication.** The
+   test was `auth_scheme_count == 0`, which is true of an empty dict, a spec
+   that failed to parse, and a file that was never a spec. Missing data read as
+   a finding, which is the error the whole model exists to stop. Categories are
+   now gated on the analysis having run *and* the document describing at least
+   one endpoint.
+2. **`no_auth` and `sensitive_unauth` were one claim charged twice.**
+   `sensitive_unauth` required `auth_scheme_count == 0`, one of the conditions
+   that made `no_auth` true — so an unauthenticated admin route scored on both,
+   up to 18 of a 30-point ceiling. Collapsed: the admin case is the strong form
+   of the same category.
+3. **`http://localhost:8080` cost 6 points.** A spec listing a loopback or
+   private-network server is describing a development environment.
+   `plaintext_transport` now exempts loopback, RFC1918 and `.local`/`.internal`
+   hosts.
+
+And one the rewrite changed rather than found: `destructive_admin_surface` is
+about the **exemption**, not the existence. `DELETE /admin/users/{id}` is how a
+correct admin API is built. What is a finding is a spec that declares
+authentication and then exempts a destructive administrative route from it —
+which also keeps the category independent of the one above, so an API with no
+auth cannot corroborate itself.
+
+**Phase 3b — api and extension.** Not the rename this note assumed:
+`gui/extension_window.py` (1,743 lines) and `gui/api_window.py` (1,394) perform
+their analysis inside Tkinter windows, importing nothing but the theme. Neither
+can emit categories until the logic is extracted, which is also why neither has
+a test. Until then they report `collected: false` and contribute nothing, which
+is at least true.
 
 **Phase 4 — the combiner, the report, and the theme.** One verdict to display
 makes the unified report a design problem instead of a reconciliation problem.

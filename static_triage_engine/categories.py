@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Sequence
+from urllib.parse import urlparse
 
 from verdict import MAX_CONTEXT_SCORE, Category
 
@@ -353,3 +354,203 @@ def static_categories(
     context = max(0, min(MAX_CONTEXT_SCORE, context))
 
     return cats, context
+
+
+# ---------------------------------------------------------------------------
+# API specifications
+# ---------------------------------------------------------------------------
+
+#: Hosts where a plaintext scheme says nothing. A spec that lists
+#: `http://localhost:8080` is describing a development server, not shipping an
+#: unencrypted service.
+_LOCAL_HOST_NAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}
+_LOCAL_SUFFIXES = (".local", ".test", ".localhost", ".internal", ".invalid")
+
+
+def _is_local_host(url: str) -> bool:
+    try:
+        host = (urlparse(str(url).strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host in _LOCAL_HOST_NAMES or host.endswith(_LOCAL_SUFFIXES):
+        return True
+    if host.startswith("10.") or host.startswith("192.168."):
+        return True
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) > 1 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+            return True
+    return False
+
+
+def spec_categories(
+    spec_result: dict[str, Any] | None = None,
+) -> tuple[list[Category], int]:
+    """What an API specification review can claim, as categories.
+
+    Phase 3a of `docs/SCORING.md`. `score_spec` had no tests at all, and reading
+    it with the question Phase 2 was built on -- *what claim is this, and does it
+    stand alone* -- turned up the same shape of defect three more times.
+
+    **An unparseable spec scored 10 of 30 for having no authentication.** The
+    old `no_auth` test was `auth_scheme_count == 0`, which is true of an empty
+    dict, a spec that failed to parse, and a file that was never a spec. Missing
+    data was read as a finding, which is the error this whole model exists to
+    stop.
+
+    **`no_auth` and `sensitive_unauth` were one claim charged twice.**
+    `sensitive_unauth` requires `auth_scheme_count == 0`, which is one of the
+    conditions that makes `no_auth` true -- so an unauthenticated admin route
+    scored on both, up to 18 of a 30-point ceiling. They are collapsed here: the
+    admin case is the *strong form* of the same category, exactly as the design
+    note called for.
+
+    **A destructive admin route is not a finding on its own.** `DELETE
+    /admin/users/{id}` is how a correct admin API is built; every CRUD service
+    has one. It is interesting when nothing authenticates it, and that is
+    already the category above. It stays as a category because exposed
+    destructive power corroborates, but it can never be emphatic by itself.
+
+    `None`, or a result whose `returncode` is non-zero, means the analysis did
+    not run: every category comes back `collected=False` rather than absent.
+    """
+    ran = spec_result is not None and int((spec_result or {}).get("returncode", 0) or 0) == 0
+    spec_result = spec_result or {}
+
+    summary = spec_result.get("summary") if isinstance(spec_result.get("summary"), dict) else {}
+    endpoints = spec_result.get("endpoints") if isinstance(spec_result.get("endpoints"), list) else []
+    servers = spec_result.get("servers") if isinstance(spec_result.get("servers"), list) else []
+    auth_summary = spec_result.get("auth_summary") if isinstance(spec_result.get("auth_summary"), list) else []
+    security_schemes = spec_result.get("security_schemes") if isinstance(spec_result.get("security_schemes"), list) else []
+
+    endpoint_count = int(summary.get("endpoint_count", 0)
+                         or spec_result.get("endpoint_count", 0) or 0) or len(endpoints)
+    auth_scheme_count = int(summary.get("auth_scheme_count", 0)
+                            or spec_result.get("auth_scheme_count", 0) or 0)
+
+    # **A spec with no endpoints cannot be unauthenticated.** There is nothing
+    # to authenticate. Gating on this is what stops an empty document scoring.
+    described = ran and endpoint_count > 0
+
+    no_auth = described and (
+        bool(spec_result.get("no_auth_detected"))
+        or (auth_scheme_count == 0 and not auth_summary and not security_schemes)
+    )
+
+    admin_routes = [ep for ep in endpoints
+                    if isinstance(ep, dict) and ep.get("admin_like_route")]
+    sensitive_unauth = bool(admin_routes) and no_auth
+
+    # **The exemption, not the existence.** `DELETE /admin/users/{id}` is how a
+    # correct admin API is built; every CRUD service has one, and a category
+    # that fires on its existence would put all of them at Needs Review.
+    #
+    # What is a finding is a spec that *declares* authentication and then
+    # exempts a destructive administrative route from it. Scoping the category
+    # that way also keeps it independent of the one above, which covers the
+    # no-auth-anywhere case -- if both could fire on the same spec, an API with
+    # no auth would corroborate itself.
+    exempt_destructive_admin = [] if no_auth else [
+        ep for ep in admin_routes
+        if ep.get("destructive_method") and not ep.get("auth_required", True)
+    ]
+
+    uploads = [
+        ep for ep in endpoints
+        if isinstance(ep, dict) and any(
+            isinstance(param, dict)
+            and str(param.get("in", "")).lower() == "body:multipart/form-data"
+            for param in (ep.get("parameters") or [])
+        )
+    ]
+
+    plaintext = [s for s in servers
+                 if str(s).lower().startswith("http://") and not _is_local_host(s)]
+    if spec_result.get("http_server_detected") and not servers:
+        # The analyser flagged it without listing the URL. Take its word, but
+        # there is no host to exempt.
+        plaintext = ["(server URL not recorded)"]
+
+    cats: list[Category] = [
+        Category(
+            name="unauthenticated_sensitive_endpoint",
+            module="spec",
+            collected=ran,
+            present=no_auth,
+            # **The strong form is the admin case, not a separate claim.** An
+            # API with no auth may be a legitimate public read-only service. An
+            # API whose *administrative* routes have no auth is not.
+            strong=sensitive_unauth,
+            detail=(f"{endpoint_count} endpoint(s), no authentication scheme"
+                    + (f", {len(admin_routes)} admin-like"
+                       if admin_routes else "")) if no_auth else "",
+            reason=(
+                f"The specification describes {endpoint_count} endpoint(s) and "
+                f"no authentication scheme"
+                + (f", including {len(admin_routes)} administrative route(s) "
+                   f"that anyone reaching the service can call."
+                   if admin_routes else ".")
+            ) if no_auth else "",
+        ),
+        Category(
+            name="destructive_admin_surface",
+            module="spec",
+            collected=ran,
+            present=bool(exempt_destructive_admin),
+            # Never strong. A route can be exempt from the declared scheme for
+            # legitimate reasons -- a health check, an internal callback -- and
+            # the spec does not record which. It corroborates.
+            strong=False,
+            detail=f"{len(exempt_destructive_admin)} destructive admin route(s) "
+                   f"exempt from the declared auth scheme"
+            if exempt_destructive_admin else "",
+            reason=(
+                f"The specification declares authentication, and then exempts "
+                f"{len(exempt_destructive_admin)} destructive administrative "
+                f"route(s) from it "
+                f"({', '.join(str(e.get('path', '?')) for e in exempt_destructive_admin[:3])}). "
+                f"A scheme with holes in it is not the scheme the document "
+                f"appears to describe."
+            ) if exempt_destructive_admin else "",
+        ),
+        Category(
+            name="unrestricted_upload",
+            module="spec",
+            collected=ran,
+            present=bool(uploads),
+            # Also never strong on its own -- accepting files is a feature.
+            strong=False,
+            detail=f"{len(uploads)} multipart upload endpoint(s)" if uploads else "",
+            reason=(
+                f"{len(uploads)} endpoint(s) accept multipart file uploads, so "
+                f"content can be pushed into the service from outside."
+            ) if uploads else "",
+        ),
+        Category(
+            name="plaintext_transport",
+            module="spec",
+            collected=ran,
+            present=bool(plaintext),
+            strong=False,
+            detail=", ".join(str(s) for s in plaintext[:3]) if plaintext else "",
+            reason=(
+                f"The specification declares a non-TLS server URL "
+                f"({', '.join(str(s) for s in plaintext[:2])}), so traffic to it "
+                f"is readable in transit."
+            ) if plaintext else "",
+        ),
+    ]
+
+    # Volume: how large the described surface is. Descriptive only -- a big API
+    # is a big API, not a suspicious one.
+    context = 0
+    if endpoint_count:
+        context += min(6, endpoint_count // 20)
+    if admin_routes:
+        context += min(4, len(admin_routes))
+    context = max(0, min(MAX_CONTEXT_SCORE, context))
+
+    return cats, context
+
