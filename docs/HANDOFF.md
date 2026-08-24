@@ -122,23 +122,57 @@ than a hash written inline, which has been stale here before.
 
 ## Where things stand
 
-### Pick up here — 22 Aug
+### Pick up here — 24 Aug
 
-**`0bw` is answered.** `getData()` returns a bare hostname, the implant uses it
-as its C2, and the beacon was watched arriving at an operator-chosen sink. See
-*THE BEACON REACHED THE SINK, AND `bare_host` IS THE ANSWER*; the two entries
-below it carry the contract read and the clipboard substitution that led there.
+**`0bw` is CLOSED.** The whole chain is measured, not inferred:
 
-**`tooling-baseline` was replaced on 22 Aug and now holds all of it.** A revert
-restores the working bench rather than a starting point for rebuilding one:
+    .ps1 loader -> csc.exe x2 -> hollowed SecurityHealthHost.exe
+        -> eth_call to 0x4E31128a on BSC testnet (chainId 0x61)
+        -> getData() returns "klopasnarhia.cc", a bare hostname
+        -> then, once per second, indefinitely:
+             read the clipboard
+             method=send&guid=&address=  <- what the victim copied
+             write the C2's response body into the clipboard  <- the replacement
 
-    commit 5e1a31c            the clone, with bare_host and the corrected rule
-    tools\yara\rules\local\   corrected ringforge_etherhiding.yar, hand-copied
+**No validation anywhere in that path.** Serving `0xDEADBEEF…` put
+`0xDEADBEEF…` in the clipboard, 644 times. Serving an HTML page put the HTML
+page there. Whoever controls the C2 controls what lands in the victim's
+clipboard. Read the 24 Aug and 23 Aug entries in order; several of them correct
+the ones below.
+
+**Chain state, read 24 Aug.** Contract live, 2,008 bytes, balance 0.
+`getData()` still returns `klopasnarhia.cc` -- **not rotated**. The string sits
+in **storage slot 0** in Solidity short-string form, so rotation is a single
+`SSTORE` against selector `0x47064d6a`: no redeploy, no new address, nothing the
+malware would notice. Transaction history was not obtained -- the public node
+refuses `eth_getLogs` over wide ranges and prunes historical state, so the
+deployer needs an archive node or an explorer API key.
+
+**`tooling-baseline` was replaced on 24 Aug at `faedb81`.** A revert restores the
+working bench rather than a starting point for rebuilding one:
+
+    commit faedb81            the clone, current
+    tools\yara\rules\local\   all four local rules, hand-copied
     FakeNet leaf + key        two SANs: the RPC host and the phase 2 sink
     RingForge CA              trusted in Root, and it signs that leaf
     config.json               offsets 3,10,25,55 / max 24 / redump 2 /
-                              dynamic_fakenet_config_path -> fakenet-0bw
+                              post_exit_observation 600 / fakenet-0bw path
+    run_phase3.ps1            repo root, NOT tracked by git
     samples\                  af2d8300 and 422e30ed both retained
+    clipboard                 BIDIRECTIONAL, deliberately -- see below
+
+**Clipboard is bidirectional on purpose.** The analyst pastes console output
+back out, which needs guest-to-host. It is safe between runs on a clean guest.
+During and after a detonation, anything copied out may be rewritten **if it
+contains a crypto address** -- ordinary error text and paths are untouched,
+which is exactly why the 22 Aug incident read as a formatting quirk. Use the
+share for anything address-bearing.
+
+**Snapshots: two, and the disk chain is flat.** `tooling-baseline` and
+`tooling-baseline-5e1a31c`. Six orphaned differencing disks were removed on
+24 Aug -- residue of the `E_ACCESSDENIED at 50%` restore failures, since a
+differencing disk is created at the *start* of a restore and left behind when
+one dies partway. They had blocked every merge. VM footprint 137 -> 100 GB.
 
 Every line was rebuilt by hand that day, most of it twice, and **none of it is
 in git** -- `tools\yara\rules\` is gitignored, the leaf lives inside the FakeNet
@@ -147,12 +181,13 @@ local. The snapshot is the only thing that carries them. **If the baseline is
 ever rebuilt from scratch, that list is the checklist**, and the snapshot's own
 description repeats it.
 
-**Proven by restoring it, not merely by taking it.** `tooling-baseline` has been
-reverted to twice and the seven-point check run against the *restored* guest
-both times: commit `5e1a31c`, the corrected rule, both SANs, the CA trusted, the
-`fakenet-0bw` config path, offsets `3, 10, 25, 55`, no `cases\`. A snapshot that
-has been written and a snapshot that is known to carry what its description
-claims are different things, and the step that separates them is one revert.
+**Proven by restoring it, not merely by taking it.** The 24 Aug baseline was
+taken, restored, and then checked against the *restored* guest: commit
+`faedb81`, the corrected rule, both SANs, the CA trusted, the `fakenet-0bw`
+path, offsets `3, 10, 25, 55`, post-exit `600`, both helper scripts, no
+`cases\`. A snapshot that has been written and a snapshot known to carry what
+its description claims are different things, and the step between them is one
+revert.
 
 **Verify before freezing, always.** The pre-snapshot check caught a single-SAN
 leaf and `1, 25` offsets that a revert had quietly restored: the cert work had
@@ -163,17 +198,27 @@ answer.
 
 ### The snapshot tree, and why descriptions are not optional
 
-    tooling-baseline-16aug
-    └── tooling-baseline-e7e4968     <- was `tooling-baseline` until 22 Aug
-        └── tooling-baseline-new     <- undescribed, origin unknown
-            └── tooling-baseline     <- 22 Aug, current
+    tooling-baseline-5e1a31c     <- 22 Aug, kept as the fallback
+    └── tooling-baseline         <- 24 Aug at faedb81, current
 
-**Renamed rather than deleted.** `-Delete` merges a differencing disk on a
-93.9 GB VM and is the only irreversible step; nothing needed deleting to make
-`-Baseline` land on the new state, so nothing was. The chain is four deep, which
-is a restore-speed and disk cost worth paying down deliberately later -- and not
-before someone establishes what `tooling-baseline-new` is. It has no
-description, which is exactly why it cannot safely be removed.
+**Cleaned on 24 Aug.** Three older snapshots were merged away and six orphaned
+differencing disks removed. Two of the merges refused at first --
+`"has more than one child hard disk (4)"` -- because a snapshot cannot merge
+while its parent's disk has multiple children, and six unreferenced differencing
+disks were hanging off the base and off `16aug`. Removing them with
+`VBoxManage closemedium disk <uuid> --delete` unblocked both.
+
+**Those orphans were made by the `E_ACCESSDENIED` bug.** A differencing disk is
+created at the *start* of a restore; a restore that dies partway leaves it
+registered and referenced by nothing. Three of the six were 0 bytes, which is
+what a restore that failed immediately after creating its child looks like. The
+frontend-wait fix stopped new ones being made; these were the backlog.
+
+**The in-use check was validated before anything was deleted.** `showhdinfo`
+printing no `In use by VMs:` line looks like proof a disk is unattached -- but
+only if that line prints at all. Running it first against a disk *known* to be
+attached confirmed it does, and names the owning snapshot. Six irreversible
+deletions rested on that control.
 
 **The old baseline's description is what settled the commit question.** It reads
 "Clone at e7e4968" in as many words. The handoff note had said `e2046ab`, the
@@ -197,30 +242,36 @@ produced it has been shown to be capable of a positive one.**
 
 ### Next, ranked
 
-1. ~~Re-take `tooling-baseline`~~ **— done 22 Aug**, see above. The `samples\`
-   question is closed by observation rather than by decision: the old baseline
-   already carried `af2d8300` and `422e30ed` deliberately, and its description
-   says so, so retaining them is the standing convention rather than a lapse
-   from the hygiene rule.
-2. **Report rule *freshness*, not just `rules_dir`.** Three recurrences, and the
-   remedy for the first was written in August. A hash or mtime comparison
-   between `tools\yara\local\` and `tools\yara\rules\local\`, surfaced in the
-   preflight strip beside `Mem YARA: ready`, ends the class rather than the
-   instance. **This is the one that pays for itself on every future run.**
-3. **Phase 3: answer `method=refresh`.** Justified by evidence now rather than
-   inference -- `$c2b` and `$c2c` are resident in the payload. The constraint is
-   ten seconds, t+151 to t+161, so a longer window buys nothing. Build it as a
-   small rotation like the `getData()` planner, because nothing on disk says
-   what a plausible response looks like.
-4. **`make_tls_cert.py` re-mints the CA on every run**, silently invalidating
+Done 22-24 Aug and struck from this list: re-taking the baseline; rule-freshness
+reporting in the preflight strip; phase 3 (answered by supplying a clipboard,
+not by answering `refresh`); the contract read. What remains:
+
+1. **The contract's transaction history.** The chain read on 24 Aug got
+   everything *except* this: the public node prunes historical state and refuses
+   `eth_getLogs` over wide ranges, so the deployer and the deployment date need
+   an archive node or an explorer API key. A binary search on `eth_getCode`
+   across blocks would find the creation block on an archive node --
+   `scripts/`-adjacent code for it was drafted and never run.
+2. **Why `bait6` produced the hardcoded wallet.** One observation, against a
+   payload nearly eight hours old, where every other run produced the served
+   response body. Unexplained. Possibly a fallback when the C2 answer is
+   unusable, possibly something about age. It is one data point.
+3. **`make_tls_cert.py` re-mints the CA on every run**, silently invalidating
    the trust store. Reuse an existing CA when one is present.
-5. **The contract's transaction history** -- deployer and rotation timeline.
-   Needs a decision about querying the live chain from this network, which is an
-   attribution question rather than a technical one.
-6. **`test_restore_env_guard` has been failing** since before 22 Aug: four
+4. **`make_fakenet_config.py` prints "cert is FakeNet's own"** even after
+   `make_tls_cert.py` has swapped the leaf -- a reassuring falsehood read at the
+   moment someone is deciding whether a `no_connection` means a routing fault or
+   a rejected certificate.
+5. **`test_restore_env_guard` has been failing** since before 22 Aug: four
    `RINGFORGE_RPC_*` names are read by `make_fakenet_config.py` and absent from
    `ENV_TOGGLES`. The test's own message says the fix depends on whether each
    changes what the harness *claims exists* or only its fidelity.
+6. **The FakeNet shim for `beacon_responder.py`.** Built and tested, never
+   wired: it needs FakeNet's custom-response matching keys
+   (`sample_custom_response.ini`, `docs/CustomResponse.md` in the FakeNet
+   install) so the handler binds to the sink host rather than swallowing all of
+   443. Not needed for anything currently open -- the served-file route answered
+   the question it was built for.
 
 
 Three live samples have been through the pipeline end to end.
