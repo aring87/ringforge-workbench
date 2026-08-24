@@ -1,6 +1,6 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.9.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.11.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
@@ -19,8 +19,8 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.10.0` |
-| Release Name | Attribution and the Simulated Internet |
+| Version | `v1.11.0` |
+| Release Name | One Verdict Model |
 | Release Type | Feature release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
@@ -37,7 +37,7 @@ The workbench emphasizes practical analyst outcomes:
 - repeatable case folders
 - structured JSON artifacts
 - readable HTML/Markdown reports
-- scoring and verdict logic
+- one corroboration-based verdict model shared by every module
 - baseline/noise reduction
 - workflow-specific review screens
 - API response review and evidence capture
@@ -214,9 +214,86 @@ Supported module summaries include:
 - Manual API Tester
 - API Specification Analysis
 - Browser Extension Analysis
-- Combined Score
+- Case Verdict
 
-The Unified Report now summarizes Manual API Tester findings, API Spec Analysis findings, Browser Extension Analysis status, and available static/dynamic results. It also uses clearer labels such as `Not run` and `Not generated` when a module has no artifacts in the selected case.
+The Unified Report leads with the case verdict, the corroboration behind it and the collection coverage, then the per-module summaries. It uses explicit labels such as `Not run` and `INCOMPLETE` when a module produced no artifacts or a collector did not run — a module that was never run and a module that ran and found nothing are different facts and are reported as such.
+
+---
+
+## What's New in v1.11.0
+
+`v1.11.0` replaces five separate scoring systems with one, and the reason is
+worth stating plainly: **rewriting them turned up twelve false positives, none
+of which produced an error.** Every one produced a result.
+
+### One verdict model
+
+Every module now reports **evidence categories** rather than points, and the
+verdict comes from how many independent kinds of evidence agree — not from a
+total.
+
+    band                     what it means
+    ─────────────────────    ────────────────────────────────────────
+    No Evidence              nothing fired
+    Single Observation       one category, nothing corroborating it
+    Corroborated             two categories, or one emphatic enough
+                             to stand alone
+    Strongly Corroborated    three categories, or two emphatic ones
+    Nothing Collected        no collector ran; nothing can be concluded
+
+The band is what the model computes and it never changes meaning. The **verdict**
+is a sentence derived from it, worded for what was actually assessed — a sample
+reads `Likely Malicious` where an API specification reads `Serious Exposure`, at
+the same severity. Compare cases on the band; the verdict is prose.
+
+The additive model this replaces summed a 0–40 static score, a 0–30 dynamic
+score and a spec score, clamped the total to 100, then banded it with thresholds
+derived for the 0–40 scale. `MALICIOUS` fired at 30 of 100.
+
+### Absence is not silence
+
+A collector that did not run reports **unknown**, never absent. `capa` with no
+ruleset, YARA with no rules directory and a scan that timed out each used to
+degrade into a quiet zero that read exactly like a clean sample.
+
+A run whose packer detector was switched off can no longer report a clean
+headline, and a case where nothing was collected reports `Insufficient Coverage`
+rather than the cleanest verdict the model can express. `Benign / Clean
+Baseline` is reserved for a sample that was actually watched running — static
+analysis can establish that nothing was found, not that nothing happens.
+
+### What the rewrite found
+
+Each of these was live, silent, and produced results rather than errors:
+
+- **A hash-like filename cost 6 points**, and the pipeline stores samples by
+  hash — so every sample it had ever downloaded started six points up.
+- **Being unsigned cost 8 points.** Most malware is unsigned and so is most
+  small legitimate tooling; the absence of exculpatory evidence is not
+  incriminating evidence.
+- **An unparseable API specification scored 10 of 30** for having no
+  authentication, because the test was `auth_scheme_count == 0` and an empty
+  document satisfies it.
+- **The browser-extension scorer was saturated.** It added source-pattern points
+  once *per file*, so a bundled copy of jQuery reached the top band on `fetch(`
+  and `https://` alone. Every non-trivial extension rated `Critical`.
+- **The API response analyser's only High finding fired on every endpoint that
+  sets a cookie** — every login endpoint an analyst would test.
+
+### One palette, one stylesheet
+
+The desktop application defined 40 colours and the HTML reports defined 17, and
+they shared **none** — which is why the workbench and its own reports read as
+different products. There were five report stylesheets in the repository; there
+is now one, and both media derive from `design_tokens.py`.
+
+### Supporting changes
+
+- Analysis logic lifted out of two Tkinter windows that had no tests, because
+  there was nothing importable to reach.
+- `static_triage_engine/scoring.py` reduced from 1,150 lines to 274; what
+  remains is the helpers that never had anything to do with scoring.
+- The test suite went from 867 with a standing failure to **1081**.
 
 ---
 
