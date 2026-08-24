@@ -2729,6 +2729,80 @@ it delivered the request.
 
 ---
 
+## THE C2 CONTROLS THE CLIPBOARD, AND THE LOOP RUNS ONCE A SECOND — 24 Aug
+
+**Run `98e2f479`, with a served address deliberately different from the baited
+one.** That single change made all three outcomes distinguishable and the answer
+is unambiguous.
+
+    bait wrote     0xC0FFEE0000000000000000000000000000C0FFEE
+    served body    0xDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF
+    clipboard got  0xDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF   644 times, no exceptions
+
+    839 bait rounds: 644 substituted, 122 clean, 73 locked
+    593 method=send beacons, one per second, every one carrying 0xC0FFEE...
+
+**The clipper writes whatever the C2 returns.** Not the hardcoded table -- the
+response body, verbatim, whether that is a wallet, an HTML page, or a string
+nobody would mistake for an address. **An attacker controlling the C2 controls
+what lands in the victim's clipboard**, with no validation anywhere in the path.
+
+### The loop, timed
+
+    t169    SecurityHealthHost spawns
+    t197.9  eth_call -> answered with the sink hostname
+    t198    first substitution        <- within one second of the C2 answer
+    ...     once per second thereafter
+
+Substitution is keyed to **the C2 fetch, not to spawn**: it begins the second the
+answer arrives. Each cycle then does three things:
+
+1. read the clipboard
+2. `method=send&guid=&address=` -- report **what the victim copied**
+3. write the C2's reply into the clipboard -- **the replacement**
+
+The two channels carry different values simultaneously, which is the cleanest
+statement of what this does: 593 beacons reported `0xC0FFEE…` while the
+clipboard held `0xDEADBEEF…`.
+
+### The lock is not a phase, it is jitter
+
+    +3s     clean          +224s   substituting
+    +195s   substituting   +596s   locked
+    +215s   locked         +597s   substituting
+                           +880s   locked
+
+Seven transitions, locks lasting one to nine seconds. `bait5`'s 481-round lock
+was one long instance of the same contention, not a distinct stage. The
+three-phase model below over-fits a single run.
+
+### And it restores a claim this file retracted
+
+**"The clipper writes the C2's response body verbatim" was correct.** It was
+retracted on 23 Aug because `bait6` produced the hardcoded wallet instead --
+one observation, against a payload seven hours and forty-five minutes old,
+taken as decisive against two consistent ones.
+
+> That retraction was written directly beneath a paragraph warning against
+> mistaking the longest observation available for the whole behaviour. The same
+> error, in the opposite direction: **generalising from a single counter-example
+> is no better than generalising from a single example.**
+
+`bait6` remains **unexplained** and is now the anomaly rather than the rule. It
+may be a fallback when the C2 answer is unusable, or something about a payload
+left running for hours. It is one data point and is recorded as one.
+
+### What is closed
+
+- `getData()` -> bare hostname -> C2. **Closed.**
+- Beacon protocol, both methods, and what selects between them. **Closed.**
+- Substitution, with the real wallet, inside containment. **Closed** (23 Aug).
+- The replacement's source: **the C2 response body. Closed.**
+- The payload's lifetime: it does not exit. **Closed.**
+
+Open: why `bait6` behaved differently, and the contract's transaction history.
+
+
 ## THE ATTACKER'S WALLET, IN OUR CLIPBOARD, 576 TIMES — 23 Aug
 
 **Substitution is measured, with the real wallet, inside containment.** Run
@@ -2748,6 +2822,13 @@ substitutes, it substitutes with the wallet in the table, and the wallet is
 `0x0F14fc3b`.**
 
 ### This corrects two claims in the sections below
+
+> **This retraction was itself wrong, 24 Aug.** Serving an address *different*
+> from the baited one produced `0xDEADBEEF…` in the clipboard 644 times: the
+> clipper does write the C2's response body verbatim. See *THE C2 CONTROLS THE
+> CLIPBOARD*. `bait6` is the anomaly, not the rule, and retracting on one
+> counter-example was the same error as generalising from one example. The text
+> below stands as written.
 
 **1. "The clipper writes the C2's response body verbatim." Not supported.**
 
