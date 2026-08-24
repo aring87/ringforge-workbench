@@ -9,6 +9,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from dynamic_analysis.report_theme import report_css
+from static_triage_engine.extension_analysis import analyze_extension
 from gui import theme as T
 from gui.components import HeaderBar, ScrolledText
 from gui.styles import apply_window_theme
@@ -783,239 +784,25 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         self._set_text(self.manifest_text, pretty)
 
     def _populate_risk_notes(self, manifest: dict, working_dir: Path):
-        notes = []
-        score = 0
+        """Render what `static_triage_engine.extension_analysis` decided.
 
-        permissions = manifest.get("permissions", []) or []
-        host_permissions = manifest.get("host_permissions", []) or []
-        background = manifest.get("background", {}) or {}
-        externally_connectable = manifest.get("externally_connectable")
-        update_url = manifest.get("update_url")
-        content_scripts = manifest.get("content_scripts", []) or []
-        web_resources = manifest.get("web_accessible_resources", []) or []
+        **This method used to be the analysis** -- 190 lines of weighted
+        permissions and per-file pattern scoring, inside a Tkinter window, with
+        no test able to reach it. It summed toward 100 and banded `Critical` at
+        80, and its source scan added points once per *file*, so a vendor bundle
+        reached the ceiling on `fetch(` and `https://` alone. Nine ordinary
+        files scored 67 before the manifest terms were counted.
 
-        if not isinstance(permissions, list):
-            permissions = [permissions]
+        The engine emits `corroboration-v1` categories now, and this draws them.
+        """
+        result = analyze_extension(working_dir, manifest)
 
-        if not isinstance(host_permissions, list):
-            host_permissions = [host_permissions]
-
-        # Manifest v2 may place host patterns directly in permissions.
-        permission_host_patterns = [
-            p for p in permissions
-            if isinstance(p, str) and ("://" in p or p == "<all_urls>")
-        ]
-
-        all_host_permissions = list(host_permissions) + permission_host_patterns
-
-        # ------------------------------------------------------------------
-        # Permission scoring, normalized toward 100.
-        # ------------------------------------------------------------------
-        permission_weights = {
-            "debugger": 25,
-            "nativeMessaging": 25,
-            "proxy": 20,
-            "webRequestBlocking": 20,
-            "webRequest": 15,
-            "cookies": 15,
-            "management": 15,
-            "declarativeNetRequestWithHostAccess": 15,
-            "desktopCapture": 15,
-            "tabs": 10,
-            "history": 10,
-            "downloads": 10,
-            "scripting": 10,
-            "clipboardRead": 10,
-            "clipboardWrite": 6,
-            "declarativeNetRequest": 6,
-            "storage": 1,
-            "activeTab": 3,
-            "identity": 8,
-            "geolocation": 8,
-            "bookmarks": 6,
-            "notifications": 2,
-        }
-
-        found_sensitive = []
-        for permission in permissions:
-            if not isinstance(permission, str):
-                continue
-
-            if permission in permission_weights:
-                found_sensitive.append(permission)
-                score += permission_weights[permission]
-
-        if found_sensitive:
-            notes.append(
-                "- Elevated/sensitive permissions present: "
-                + ", ".join(sorted(found_sensitive))
-            )
-
-        # ------------------------------------------------------------------
-        # Host permission scoring.
-        # ------------------------------------------------------------------
-        broad_hosts = {"<all_urls>", "*://*/*", "http://*/*", "https://*/*"}
-
-        broad_host_hits = [
-            host for host in all_host_permissions
-            if isinstance(host, str) and host in broad_hosts
-        ]
-
-        wildcard_host_hits = [
-            host for host in all_host_permissions
-            if isinstance(host, str)
-            and "://" in host
-            and "*" in host
-            and host not in broad_hosts
-        ]
-
-        if broad_host_hits:
-            notes.append(
-                "- Host permissions include broad access patterns: "
-                + ", ".join(sorted(set(broad_host_hits)))
-            )
-            score += 25
-
-        if wildcard_host_hits:
-            notes.append(
-                "- Host permissions include wildcard URL patterns: "
-                + ", ".join(sorted(set(wildcard_host_hits[:5])))
-            )
-
-            broadish_wildcards = [
-                host for host in wildcard_host_hits
-                if isinstance(host, str)
-                and (
-                    host.startswith("*://")
-                    or host.startswith("http://*")
-                    or host.startswith("https://*")
-                    or "://*." in host
-                )
-            ]
-
-            if broadish_wildcards:
-                score += 15
-            else:
-                score += 5
-
-        # ------------------------------------------------------------------
-        # Manifest behavior scoring.
-        # ------------------------------------------------------------------
-        if background:
-            notes.append("- Background execution is enabled via background page or service worker.")
-            score += 8
-
-        if content_scripts:
-            notes.append("- Content scripts are present and can interact with page content.")
-            score += 10
-
-            for script in content_scripts:
-                if not isinstance(script, dict):
-                    continue
-
-                matches = script.get("matches", []) or []
-                if not isinstance(matches, list):
-                    matches = [matches]
-
-                if any(isinstance(match, str) and match in broad_hosts for match in matches):
-                    notes.append("- Content scripts run on broad match patterns such as <all_urls> or *://*/*.")
-                    score += 15
-                    break
-
-        if web_resources:
-            notes.append("- Web-accessible resources are exposed to web pages or other extension contexts.")
-            score += 5
-
-        if externally_connectable:
-            notes.append("- externally_connectable is configured, allowing outside pages or apps to communicate with the extension.")
-            score += 12
-
-            if isinstance(externally_connectable, dict):
-                matches = externally_connectable.get("matches", []) or []
-                if not isinstance(matches, list):
-                    matches = [matches]
-
-                if any(isinstance(match, str) and match in broad_hosts for match in matches):
-                    notes.append("- externally_connectable allows broad external origins.")
-                    score += 20
-
-        if update_url:
-            notes.append("- update_url is defined. Review whether updates are expected from a trusted source.")
-            score += 8
-
-        csp = manifest.get("content_security_policy")
-        if isinstance(csp, str) and "unsafe-eval" in csp:
-            notes.append("- CSP contains unsafe-eval.")
-            score += 20
-        elif isinstance(csp, dict):
-            csp_text = json.dumps(csp)
-            if "unsafe-eval" in csp_text:
-                notes.append("- CSP contains unsafe-eval.")
-                score += 20
-
-        # ------------------------------------------------------------------
-        # Source file scan scoring.
-        # ------------------------------------------------------------------
-        code_hits, code_score = self._scan_source_files(working_dir)
-        notes.extend(code_hits)
-        score += code_score
-
-        # Normalize to /100.
-        score = max(0, min(score, 100))
-
-        if not notes:
-            notes.append("- No obvious high-risk indicators were found from the manifest or quick file scan.")
-            notes.append("- This does not prove the extension is safe; it only means no obvious red flags were identified in this pass.")
-
-        self.risk_score_var.set(str(score))
-        verdict = self._get_risk_verdict(score)
-        self.risk_verdict_var.set(verdict)
-        self._update_risk_visuals(verdict)
-        self._set_text(self.risk_text, "\n".join(notes))
-
-    def _scan_source_files(self, working_dir: Path):
-        notes = []
-        score = 0
-
-        patterns = [
-            ("eval(", "Use of eval() found", 15),
-            ("new Function(", "Use of new Function() found", 15),
-            ("document.cookie", "Access to document.cookie found", 15),
-            ("chrome.cookies", "Use of chrome.cookies API found", 15),
-            ("chrome.webRequest", "Use of chrome.webRequest API found", 12),
-            ("chrome.scripting", "Use of chrome.scripting API found", 8),
-            ("chrome.tabs", "Use of chrome.tabs API found", 6),
-            ("chrome.runtime.sendMessage", "Runtime messaging found", 5),
-            ("XMLHttpRequest", "Use of XMLHttpRequest found", 5),
-            ("fetch(", "Use of fetch() found", 5),
-            ("http://", "Plain HTTP URL found", 10),
-            ("https://", "Remote HTTPS URL found", 1),
-        ]
-
-        matched_messages = set()
-
-        for path in working_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in {".js", ".html", ".json", ".htm"}:
-                continue
-
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-
-            rel = path.relative_to(working_dir).as_posix()
-
-            for needle, message, value in patterns:
-                if needle in text:
-                    key = f"{message}::{rel}"
-                    if key not in matched_messages:
-                        matched_messages.add(key)
-                        notes.append(f"- {message}: {rel}")
-                        score += value
-
-        return notes, score
+        self.risk_score_var.set(str(result["score"]))
+        self.risk_verdict_var.set(result["verdict"])
+        self._update_risk_visuals(result["severity"])
+        self._set_text(
+            self.risk_text,
+            "\n".join(f"- {note}" for note in result["notes"]))
 
     def _preview_file(self, relative_path: str):
         if not self.current_working_dir:
@@ -1452,15 +1239,6 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             self.status_var.set(f"Opened report folder: {report_dir}")
         except Exception as e:
             messagebox.showerror("Open Reports", f"Could not open report folder:\n{e}")
-
-    def _get_risk_verdict(self, score: int) -> str:
-        if score >= 80:
-            return "Critical"
-        if score >= 50:
-            return "High"
-        if score >= 20:
-            return "Medium"
-        return "Low"
 
     def _update_risk_visuals(self, verdict: str):
         verdict_l = (verdict or "").strip().lower()

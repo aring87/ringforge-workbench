@@ -85,6 +85,10 @@ STATUS_COLORS = {
     "failed": (DANGER, DANGER_SOFT),
     "error": (DANGER, DANGER_SOFT),
     "critical": (CRITICAL, DANGER_SOFT),
+    # `corroboration-v1` severities. `unknown` is Insufficient Coverage -- a
+    # statement about the bench rather than the sample, so it reads as neutral
+    # rather than as a clean result.
+    "unknown": (NEUTRAL, NEUTRAL_SOFT),
 }
 
 

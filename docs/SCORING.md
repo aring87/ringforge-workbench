@@ -386,12 +386,41 @@ authentication and then exempts a destructive administrative route from it —
 which also keeps the category independent of the one above, so an API with no
 auth cannot corroborate itself.
 
-**Phase 3b — api and extension.** Not the rename this note assumed:
-`gui/extension_window.py` (1,743 lines) and `gui/api_window.py` (1,394) perform
-their analysis inside Tkinter windows, importing nothing but the theme. Neither
-can emit categories until the logic is extracted, which is also why neither has
-a test. Until then they report `collected: false` and contribute nothing, which
-is at least true.
+**Phase 3b — extension. DONE, 24 Aug. api still to do.**
+
+Not the rename this note assumed: `gui/extension_window.py` (1,743 lines) and
+`gui/api_window.py` (1,394) performed their analysis inside Tkinter windows,
+importing nothing but the theme. Neither could emit categories until the logic
+was extracted, which is also why neither had a test.
+
+`static_triage_engine/extension_analysis.py` now holds the extension half, with
+26 tests, and the window draws what it decides. Five categories:
+`broad_host_access`, `high_risk_permission`, `credential_surface`,
+`dynamic_code_execution`, `external_control_surface`.
+
+**The scorer it replaced was saturated, which is worse than wrong.** It summed
+weighted permissions, manifest features and source-pattern hits toward 100 and
+called 80 `Critical` — and the source scan added its points **once per file**.
+`fetch(` was worth 5 in every file containing it, `https://` one, and
+`XMLHttpRequest` five. Measured on a nine-file package with a jQuery bundle and
+no malicious behaviour: **67 from the source scan alone**, plus 43 from the
+manifest terms for broad hosts, content scripts and a background worker. Every
+non-trivial extension in existence rated `Critical`. A verdict that is the same
+for everything is not a verdict.
+
+The fix is not a reweighting. **A pattern fires once however many files contain
+it**, and the file count moves to `detail` where a reader can weigh it —
+counting occurrences is precisely what a corroboration model does not do. The
+same package now reads `Low`, and a session-stealer shape reaches
+`Likely Malicious` on five categories.
+
+One place this module departs from the dynamic side deliberately: a category
+that reads both the manifest and the source tree is `collected` only when
+**both** ran. The dynamic module counts *any* of its telemetry routes as enough,
+because those are three views of one behaviour. Here they are not — the manifest
+says what an extension *requests* and the source says what it *uses*, and an
+extension asking for nothing while its code reads cookies is exactly the case
+worth catching.
 
 **Phase 4a — the combiner. DONE, 24 Aug.** 38 tests across
 `verdict/tests/test_combine.py` and `static_triage_engine/tests/test_combine_case.py`.
