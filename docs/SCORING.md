@@ -2,9 +2,12 @@
 
 Written 24 Aug 2026. Scope is the *verdict*: how `static_triage_engine`,
 `dynamic_analysis`, the API spec analyser and the extension analyser combine
-into one answer a reader can defend. It is a design note, not a plan of record
-— nothing here has been built yet, and the mapping below is the thing to argue
-with before any of it is.
+into one answer a reader can defend.
+
+**Written as a design note before any of it existed; now a record of what was
+built.** Phases 0 through 4b are done and marked so below. The reasoning is left
+as it was written — including the two places the design was wrong and the tests
+said so — because how a decision was reached outlasts the decision.
 
 ---
 
@@ -125,7 +128,7 @@ that would have disagreed was never asked. Coverage gaps qualify a clean result
 and say nothing about a category that did fire; a finding stands regardless of
 what else was dark.
 
-The second is narrower and worth stating plainly: **"Clean Baseline" is a claim
+The third is narrower and worth stating plainly: **"Clean Baseline" is a claim
 about having watched the sample run.** Static analysis can establish that
 nothing was found; it cannot establish that nothing happens. A static-only case
 that says "Benign / Clean Baseline" is how a sample nobody detonated ends up
