@@ -156,7 +156,8 @@ working bench rather than a starting point for rebuilding one:
     FakeNet leaf + key        two SANs: the RPC host and the phase 2 sink
     RingForge CA              trusted in Root, and it signs that leaf
     config.json               offsets 3,10,25,55 / max 24 / redump 2 /
-                              post_exit_observation 600 / fakenet-0bw path
+                              post_exit_observation 600 / TIMEOUT 900 /
+                              fakenet-0bw path
     run_phase3.ps1            repo root, NOT tracked by git
     samples\                  af2d8300 and 422e30ed both retained
     clipboard                 BIDIRECTIONAL, deliberately -- see below
@@ -204,6 +205,23 @@ been done *before* that revert and died with it, while the YARA copy survived
 because it happened after. Freezing then would have baked in a leaf that fails
 the beacon handshake on every future run, silently, reading as a rejected
 answer.
+
+**`timeout_seconds` is on that checklist because leaving it off cost the next
+freeze.** On the 24 Aug re-take the config read `timeout 240` under
+`post_exit_observation 600` — the exact pairing *Whichever expires first ends
+the run* was written about, with the ceiling below the window, so the 600 was
+inert and the run would have stopped at t240. It was caught by reading the whole
+file rather than the checklist, because **the checklist did not list it**: the
+line named offsets, max, redump, post-exit and the fakenet path, and the one
+setting that has to move *with* post-exit was the one missing. 240 is not a
+stale number either — it is the documented floor for this sample, from
+`Run settings that work`, which is what made it look right.
+
+Two lessons, and the second is the general one. A revert restores whatever the
+baseline holds, so any setting changed *after* the last freeze is living on
+borrowed time. And **a checklist that omits a field is worse than no checklist**,
+because it converts "I have not checked" into "I have checked" for everything it
+does not mention.
 
 ### The snapshot tree, and why descriptions are not optional
 
