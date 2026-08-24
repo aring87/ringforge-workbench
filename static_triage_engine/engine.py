@@ -1229,6 +1229,8 @@ def run_case(
         verdict=verdict,
         confidence=confidence,
         severity=static["severity"],
+        band=static["band"],
+        domain=static["domain"],
         # The categories already carry prose written to be read aloud, so the
         # rationale quotes them rather than re-deriving a parallel set of
         # sentences from raw counts that could disagree with the verdict.

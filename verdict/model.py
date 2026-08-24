@@ -65,6 +65,50 @@ MAX_CONTEXT_SCORE = 15
 CATEGORY_POINTS = 20
 STRONG_CATEGORY_BONUS = 15
 
+#: **What the model computes**, in words that describe evidence rather than
+#: interpret it. These never change meaning: `CORROBORATED` is two agreeing
+#: categories or one emphatic enough to stand alone, in every module, forever.
+#:
+#: The interpretation is a separate step -- see `DOMAIN_VERDICTS`. Naming the
+#: band for malice was wrong in a way that only showed up once two of the five
+#: modules stopped assessing malice: a misconfigured API reported "Likely
+#: Malicious", which is the right severity under a noun nobody would accept,
+#: and an analyst who discounts that once will discount the next real one.
+NOTHING_COLLECTED = "Nothing Collected"
+NO_EVIDENCE = "No Evidence"
+SINGLE_OBSERVATION = "Single Observation"
+CORROBORATED = "Corroborated"
+STRONGLY_CORROBORATED = "Strongly Corroborated"
+
+#: Modules that assess whether an artifact is hostile, and modules that assess
+#: whether a service is exposed. The distinction decides which sentence a reader
+#: is shown; it changes nothing the model computes.
+#:
+#: A case touching both is framed as malware, because in that case the file is
+#: the subject and the API it talks to is evidence about the file.
+MALWARE_MODULES = frozenset({"static", "dynamic", "extension"})
+POSTURE_MODULES = frozenset({"spec", "api"})
+
+#: band -> the sentence, per domain. `Needs Review` is shared deliberately: one
+#: observation with nothing corroborating it means the same thing whichever
+#: question was being asked.
+DOMAIN_VERDICTS: dict[str, dict[str, str]] = {
+    "malware": {
+        NOTHING_COLLECTED: "Insufficient Coverage",
+        NO_EVIDENCE: "No Indicators Found",
+        SINGLE_OBSERVATION: "Needs Review",
+        CORROBORATED: "Elevated Attention",
+        STRONGLY_CORROBORATED: "Likely Malicious",
+    },
+    "posture": {
+        NOTHING_COLLECTED: "Insufficient Coverage",
+        NO_EVIDENCE: "No Weaknesses Found",
+        SINGLE_OBSERVATION: "Needs Review",
+        CORROBORATED: "Multiple Weaknesses",
+        STRONGLY_CORROBORATED: "Serious Exposure",
+    },
+}
+
 #: Category names are identifiers that outlive the code that emits them: they
 #: are written into `combined_score.json`, quoted in reports and compared across
 #: cases. A renamed category silently splits one population into two.
@@ -135,6 +179,12 @@ class Verdict:
 
     severity: str
     verdict: str
+    #: What the model computed. Stable across domains and across releases; this
+    #: is the field to compare cases on, not `verdict`.
+    band: str
+    #: `malware` or `posture` -- which question the modules that ran were
+    #: answering, and therefore which sentence `verdict` is written in.
+    domain: str
     score: int
     context_score: int
     categories_present: int
@@ -238,30 +288,13 @@ def band(
     # that control loses its meaning. Two agreeing categories, or one emphatic
     # enough to stand alone, is a finding.
     if not present:
-        severity = "Low"
-        if score > 10:
-            verdict = "Low Suspicion"
-        elif unknown:
-            # **A clean headline is not available while a detector was dark.**
-            # The band is right -- nothing fired, and nothing firing is not a
-            # finding -- but the wording has to stop short of the claim. A run
-            # with memory YARA disabled that reports "Clean Baseline" has said
-            # the one thing it cannot know.
-            verdict = "No Findings, Coverage Incomplete"
-        elif "dynamic" in modules_run:
-            verdict = "Benign / Clean Baseline"
-        else:
-            # **"Clean Baseline" is a claim about having watched it run.**
-            # Static analysis can establish that nothing was found; it cannot
-            # establish that nothing happens. Saying otherwise is how a sample
-            # nobody detonated ends up filed as clean.
-            verdict = "No Indicators Found"
+        severity, band_name = "Low", NO_EVIDENCE
     elif len(present) == 1 and not strong:
-        severity, verdict = "Medium", "Needs Review"
+        severity, band_name = "Medium", SINGLE_OBSERVATION
     elif len(present) >= 3 or len(strong) >= 2:
-        severity, verdict = "High", "Likely Malicious"
+        severity, band_name = "High", STRONGLY_CORROBORATED
     else:
-        severity, verdict = "High", "Elevated Attention"
+        severity, band_name = "High", CORROBORATED
 
     severity_floor_applied = severity == "Medium" and bool(present)
     severity_floor_reason = present[0].reason if severity_floor_applied else ""
@@ -271,7 +304,7 @@ def band(
     # model can produce, which is the project's most expensive recurring
     # mistake wearing a new hat.
     if not present and categories and not collected_any:
-        severity, verdict = "Unknown", "Insufficient Coverage"
+        severity, band_name = "Unknown", NOTHING_COLLECTED
 
     # **The dissent floor.** Removing VirusTotal from the verdict removes an
     # override that used to exist, and without a replacement a file 60 of 70
@@ -283,15 +316,44 @@ def band(
     dissent_floor_applied = False
     dissent_floor_reason = ""
     if third_party_dissent and severity in ("Low", "Unknown"):
-        severity, verdict = "Medium", "Needs Review"
+        severity, band_name = "Medium", SINGLE_OBSERVATION
         dissent_floor_applied = True
         dissent_floor_reason = (
             "third-party dissent, not local evidence: our collectors did not "
             "reproduce it")
 
+    # --- The sentence a reader is shown -------------------------------------
+    #
+    # Derived from the band rather than computed alongside it, so the model has
+    # exactly one output and the wording can change without anything else
+    # moving. The three qualifications below all narrow "nothing fired" -- none
+    # of them touches a band, because a coverage gap is not evidence.
+    domain = ("malware" if MALWARE_MODULES.intersection(modules_run)
+              else "posture" if POSTURE_MODULES.intersection(modules_run)
+              else "malware")
+    verdict = DOMAIN_VERDICTS[domain][band_name]
+
+    if band_name == NO_EVIDENCE:
+        if unknown:
+            # **A clean headline is not available while a detector was dark.**
+            # Nothing fired, and nothing firing is not a finding -- but the
+            # wording has to stop short of the claim. A run with memory YARA
+            # disabled that reports "Clean Baseline" has said the one thing it
+            # cannot know.
+            verdict = "No Findings, Coverage Incomplete"
+        elif score > 10:
+            verdict = "Low Suspicion"
+        elif domain == "malware" and "dynamic" in modules_run:
+            # **"Clean Baseline" is a claim about having watched it run.**
+            # Static analysis can establish that nothing was found; it cannot
+            # establish that nothing happens.
+            verdict = "Benign / Clean Baseline"
+
     return Verdict(
         severity=severity,
         verdict=verdict,
+        band=band_name,
+        domain=domain,
         score=score,
         context_score=context,
         categories_present=len(present),

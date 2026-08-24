@@ -27,41 +27,86 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-#: What to do next, per band. Keyed on the verdict rather than the severity
-#: because two verdicts share a severity and want different advice: a case at
-#: `Insufficient Coverage` and one at `Needs Review` are both Medium, and only
-#: one of them is a statement about the sample.
+from verdict.model import (
+    CORROBORATED,
+    NO_EVIDENCE,
+    NOTHING_COLLECTED,
+    SINGLE_OBSERVATION,
+    STRONGLY_CORROBORATED,
+)
+
+#: What to do next, keyed on `(domain, band)`.
+#:
+#: **On the band, not the verdict.** The band is what the model computes and it
+#: never changes meaning; the verdict is the sentence a reader is shown and its
+#: wording follows the domain. Advice keyed on wording would need an entry every
+#: time a phrase was reconsidered, and would silently fall through to the
+#: default the day one was.
 _NEXT_STEP = {
-    "Likely Malicious": (
+    ("malware", STRONGLY_CORROBORATED): (
         "Contain first. Several independent kinds of evidence agree, which is "
         "the strongest statement this model makes. Pivot on the hash and the "
         "observables, and treat any host that ran this as suspect."),
-    "Elevated Attention": (
+    ("malware", CORROBORATED): (
         "Detonate. There is real evidence here and not yet enough of it to be "
         "sure what the sample does -- a run is the cheapest way to find out."),
-    "Needs Review": (
+    ("malware", SINGLE_OBSERVATION): (
         "One observation with nothing corroborating it. Look at the evidence "
         "below and decide whether it is explained; if it is not, a detonation "
         "is what would corroborate or dismiss it."),
-    "Insufficient Coverage": (
+    ("malware", NO_EVIDENCE): (
+        "Static analysis found nothing. That is not the same as the sample "
+        "doing nothing, and only a detonation can tell the two apart."),
+    ("malware", NOTHING_COLLECTED): (
         "This is a statement about the bench, not the sample. Nothing was "
         "collected, so nothing can be concluded -- fix the collectors and run "
         "it again before reading anything into the result."),
+
+    ("posture", STRONGLY_CORROBORATED): (
+        "Treat as exposed. Several independent weaknesses agree, and an "
+        "attacker needs only one of them to be reachable. Fix before this "
+        "faces anything untrusted."),
+    ("posture", CORROBORATED): (
+        "More than one weakness, and they compound: each makes the others "
+        "cheaper to exploit. Work through the evidence below rather than "
+        "picking the easiest one."),
+    ("posture", SINGLE_OBSERVATION): (
+        "One weakness with nothing corroborating it. Decide whether it is "
+        "intended -- a public read-only API and an unauthenticated admin route "
+        "look identical from a distance and are not the same thing."),
+    ("posture", NO_EVIDENCE): (
+        "Nothing in the specification or the response reached a category. This "
+        "is a documentation and header review; it says nothing about the "
+        "implementation behind them."),
+    ("posture", NOTHING_COLLECTED): (
+        "Nothing was read. A specification that failed to parse is not a "
+        "specification with no problems -- fix the input and run it again."),
+}
+
+#: Three verdicts narrow the `NO_EVIDENCE` band, and each wants different
+#: advice: nothing fired *and a detector was dark* is not the same as nothing
+#: fired *after a detonation*. Looked up before the band.
+_VERDICT_OVERRIDE = {
     "No Findings, Coverage Incomplete": (
         "Nothing fired, but at least one collector never ran, so 'clean' is not "
         "available. Re-run the missing collector before filing this."),
-    "No Indicators Found": (
-        "Static analysis found nothing. That is not the same as the sample "
-        "doing nothing, and only a detonation can tell the two apart."),
+    "Benign / Clean Baseline": (
+        "Collected in full, watched running, and nothing fired. File it."),
     "Low Suspicion": (
         "Nothing reached a category. The activity volume is worth a glance, "
         "then treat as unremarkable unless provenance says otherwise."),
-    "Benign / Clean Baseline": (
-        "Collected in full, watched running, and nothing fired. File it."),
 }
 
 _DEFAULT_NEXT_STEP = (
     "Read the full report and decide whether a detonation is warranted.")
+
+
+def next_step(verdict: str, band: str, domain: str = "malware") -> str:
+    """The recommended action, from the band and how it was worded."""
+    override = _VERDICT_OVERRIDE.get(str(verdict or "").strip())
+    if override:
+        return override
+    return _NEXT_STEP.get((domain, str(band or "").strip()), _DEFAULT_NEXT_STEP)
 
 
 def build_static_verdict_rationale(
@@ -70,6 +115,8 @@ def build_static_verdict_rationale(
     verdict: str | None = None,
     confidence: str | None = None,
     severity: str | None = None,
+    band: str | None = None,
+    domain: str = "malware",
     evidence: Sequence[dict[str, Any]] | None = None,
     coverage_complete: bool = True,
     uncollected: Sequence[str] | None = None,
@@ -132,12 +179,13 @@ def build_static_verdict_rationale(
         "score": static_score,
         "score_is_descriptive": True,
         "verdict": verdict or "",
+        "band": band or "",
+        "domain": domain,
         "severity": severity or "",
         "confidence": confidence or "N/A",
         "findings": findings[:8],
         "coverage": coverage,
         "third_party": third_party,
         "notes": notes[:5],
-        "recommended_next_step": _NEXT_STEP.get(
-            str(verdict or "").strip(), _DEFAULT_NEXT_STEP),
+        "recommended_next_step": next_step(verdict or "", band or "", domain),
     }

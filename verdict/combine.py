@@ -119,6 +119,13 @@ def combine(
     return {
         "score_model": SCORE_MODEL,
         "severity": result.severity,
+        # **The band is what the model computed; the verdict is the sentence.**
+        # Compare cases on `band` -- it is stable across domains and releases.
+        # `verdict` is written for a reader and its wording follows the domain,
+        # so the same band reads "Likely Malicious" for a sample and "Serious
+        # Exposure" for an API.
+        "band": result.band,
+        "domain": result.domain,
         "verdict": result.verdict,
         # Descriptive. Nothing bands on it, and it is not the sum of the
         # per-module scores in any meaningful sense -- it is capped volume plus

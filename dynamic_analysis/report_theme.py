@@ -113,10 +113,14 @@ def severity_class_for_label(value: Any) -> str:
     """
     text = str(value or "").strip().lower()
     if text in {"critical", "high", "malicious",
-                "likely malicious", "elevated attention"}:
+                # malware wording, then posture wording, then the neutral band
+                "likely malicious", "elevated attention",
+                "serious exposure", "multiple weaknesses",
+                "strongly corroborated", "corroborated"}:
         return "sev-high"
     if text in {"medium", "suspicious", "needs review",
-                "unknown", "insufficient coverage"}:
+                "unknown", "insufficient coverage",
+                "single observation", "nothing collected"}:
         return "sev-med"
     if text in {"low", "low_risk", "low suspicion",
                 "no findings, coverage incomplete"}:

@@ -96,13 +96,33 @@ zero that reads as a clean sample. A category whose collector did not run is
 Same standard the detonation bench runs under. A module reporting all-absent
 with no positive control behind it is reporting nothing.
 
-### The bands, unchanged
+### The bands
 
-    no category present            Low     Benign / Clean Baseline
-                                           (Low Suspicion if context > 10)
-    one present, none strong       Medium  Needs Review
-    two present, or one strong     High    Elevated Attention
-    three present, or two strong   High    Likely Malicious
+**What the model computes is neutral.** The band describes evidence; it does not
+interpret it, and it never changes meaning:
+
+    no category present            Low      No Evidence
+    one present, none strong       Medium   Single Observation
+    two present, or one strong     High     Corroborated
+    three present, or two strong   High     Strongly Corroborated
+    nothing collected at all       Unknown  Nothing Collected
+
+**The sentence a reader is shown is derived from it**, and its wording follows
+what was actually assessed:
+
+    band                     malware                posture
+    ─────────────────────    ───────────────────    ────────────────────
+    No Evidence              No Indicators Found    No Weaknesses Found
+    Single Observation       Needs Review           Needs Review
+    Corroborated             Elevated Attention     Multiple Weaknesses
+    Strongly Corroborated    Likely Malicious       Serious Exposure
+    Nothing Collected        Insufficient Coverage  Insufficient Coverage
+
+`Needs Review` is shared deliberately: one observation with nothing
+corroborating it means the same thing whichever question was being asked.
+
+**Compare cases on `band`, not on `verdict`.** The band is stable across domains
+and across releases; the verdict is prose and may be reworded.
 
 The single-category floor is deliberate and load-bearing: it is where the benign
 memory canary lands, and moving it would cost that control its meaning.
@@ -444,24 +464,44 @@ Two verbose-error markers also went: `debug` matched any JSON carrying a `debug`
 field and `line ` matched most English, both tested against the body *and* the
 raw text, so `{"debug": false}` read as leaked internals.
 
-### Open: the band names are malware-shaped
+### Resolved: the band is neutral, the sentence is not — 24 Aug
 
-Worth recording rather than shipping quietly. Three modules ask *is this
-malicious* — static, dynamic, extension. Two ask *is this insecure* — spec and
-api. They share one set of band names, so a misconfigured API endpoint that
-returns a token over cleartext reports **Likely Malicious**, which is the right
-severity under the wrong noun.
+Three modules ask *is this malicious* — static, dynamic, extension. Two ask *is
+this insecure* — spec and api. They shared one set of band names, so a
+misconfigured API returning a token over cleartext reported **Likely Malicious**:
+the right severity under a noun nobody would accept. Wrong in both directions,
+too — an analyst reading that about their own staging API discounts it, and
+discounting it once is how the next real finding gets missed.
 
-Nothing is wrong with the corroboration; the reasoning holds and the severity is
-right. What is wrong is the word, and it is wrong in both directions: an analyst
-reading "Likely Malicious" about their own staging API will discount it, and
-discounting it is how the next real finding gets missed.
+**Neither of the two options originally written here was taken.** Per-module
+vocabularies meant five of them to keep coherent, and left open what the
+combiner says when modules pool. Neutral names throughout cost the malware side
+"Likely Malicious", which is genuinely useful when it is accurate — it is the
+phrase the dynamic model was built to be able to say defensibly.
 
-Two ways out, neither taken yet. Per-module verdict vocabularies sharing one
-severity axis — more honest, more surface. Or neutral band names across the
-board (`Strong Evidence` / `Corroborated` / `Single Observation`) — one change,
-and it costs the malware side a phrase that is genuinely useful when it is
-accurate. This wants deciding before anyone outside the bench reads a report.
+What was taken instead separates the two things that had been one: **the band is
+what the model computes, and the verdict is the sentence a reader is shown.**
+The band is neutral and stable. The verdict is looked up from the band plus the
+domain, and the domain is read off which modules ran — no new input, no
+configuration, nothing to keep in step.
+
+A case touching both domains is framed as malware, because there the file is the
+subject and the API it talks to is evidence about the file.
+
+Three things follow, and each of them is a small win rather than a cost:
+
+- **Recommended next steps key on `(domain, band)`**, not on wording. "Contain
+  first" is wrong for an API and "fix before this faces anything untrusted" is
+  wrong for a sample, and a test asserts the two domains never share a string.
+- **`verdict` can be reworded without touching anything else.** Only the lookup
+  table moves.
+- **Comparisons across cases have a stable field to use.** `band` is it, and the
+  JSON says so.
+
+The three verdicts that narrow `No Evidence` — `Benign / Clean Baseline`,
+`No Findings, Coverage Incomplete`, `Low Suspicion` — are verdict-level
+overrides rather than bands, because they qualify *why* nothing fired without
+changing the fact that nothing did. A coverage gap is not evidence.
 
 **Phase 4a — the combiner. DONE, 24 Aug.** 38 tests across
 `verdict/tests/test_combine.py` and `static_triage_engine/tests/test_combine_case.py`.

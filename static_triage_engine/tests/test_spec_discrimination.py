@@ -7,10 +7,14 @@ static ones.
 
 The contract:
 
-    an authenticated, TLS-only spec           no category      Low
-    a public API with no auth                 one category     Needs Review
-    admin routes reachable with no auth       one, strong      Elevated Attention
-    an empty or unparseable spec              unknown, not a finding
+    an authenticated, TLS-only spec           No Evidence           Low
+    a public API with no auth                 Single Observation    Medium
+    admin routes reachable with no auth       Corroborated          High
+    an empty or unparseable spec              Nothing Collected     Unknown
+
+The verdict wording is the *posture* vocabulary -- "Multiple Weaknesses",
+"Serious Exposure" -- because a specification review is not a malware verdict.
+The band underneath is the same one every module computes.
 """
 
 import unittest
@@ -154,7 +158,9 @@ class OneClaimNotTwo(unittest.TestCase):
 
         category = _named(cats, "unauthenticated_sensitive_endpoint")
         self.assertTrue(category.strong)
-        self.assertEqual(result.verdict, "Elevated Attention")
+        self.assertEqual(result.band, "Corroborated")
+        # The posture wording: this is a specification review, not a sample.
+        self.assertEqual(result.verdict, "Multiple Weaknesses")
 
 
 class DestructiveSurfaceIsAboutTheExemption(unittest.TestCase):
@@ -254,7 +260,7 @@ class TheBandsSeparateTheReferenceSpecs(unittest.TestCase):
 
         self.assertEqual(result.severity, "Low")
 
-    def test_the_worst_case_is_likely_malicious(self) -> None:
+    def test_the_worst_case_is_serious_exposure(self) -> None:
         # No auth on admin routes, destructive methods, uploads, plaintext.
         spec = {
             "returncode": 0,
@@ -273,7 +279,11 @@ class TheBandsSeparateTheReferenceSpecs(unittest.TestCase):
         # when nothing is authenticated, because the first category already
         # says so.
         self.assertEqual(result.categories_present, 3)
-        self.assertEqual(result.verdict, "Likely Malicious")
+        self.assertEqual(result.band, "Strongly Corroborated")
+        # Not "Likely Malicious". A specification is not malware, and the
+        # severity is the same either way -- only the noun changes.
+        self.assertEqual(result.verdict, "Serious Exposure")
+        self.assertEqual(result.domain, "posture")
 
 
 if __name__ == "__main__":

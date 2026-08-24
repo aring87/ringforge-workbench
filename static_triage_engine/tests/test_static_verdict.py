@@ -16,7 +16,9 @@ from static_triage_engine.combine_case import static_verdict_for_case
 from static_triage_engine.verdict_rationale import (
     _NEXT_STEP,
     build_static_verdict_rationale,
+    next_step,
 )
+from verdict.model import NO_EVIDENCE, NOTHING_COLLECTED
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -133,53 +135,79 @@ class TheRetiredVocabularyIsGone(unittest.TestCase):
 
 
 class EveryBandHasAdvice(unittest.TestCase):
-    """A verdict with no next step is a verdict nobody can act on."""
+    """A band with no next step is a verdict nobody can act on."""
 
-    def test_the_advice_table_covers_every_verdict_the_model_produces(self) -> None:
-        # Driven through the model rather than read off its source: parsing the
-        # file for string literals also picks up the severities, and a guard
-        # that cannot tell a band from a verdict is not a guard.
+    def _produced(self):
+        """Every (domain, band) the model can reach, driven through it.
+
+        Read off the model rather than listed by hand, so a new band fails here
+        instead of silently falling through to the default the day it is added.
+        Driven rather than parsed: an earlier version of this test scanned the
+        source for string literals and could not tell a severity from a verdict.
+        """
         from verdict import Category, band
 
-        def cat(name, module="dynamic", **kw):
+        def cat(name, module, **kw):
             kw.setdefault("present", False)
             if kw["present"]:
                 kw.setdefault("reason", "observed")
             return Category(name=name, module=module, **kw)
 
-        scenarios = [
-            ([cat("a")], 0, False),                       # clean, detonated
-            ([cat("a", "static")], 0, False),              # clean, static only
-            ([cat("a")], 99, False),                       # volume, no category
-            ([cat("a", collected=False)], 0, False),       # a dark collector
-            ([cat("a", collected=False)], 0, True),        # dark + dissent
-            ([cat("a", present=True)], 0, False),          # one category
-            ([cat("a", present=True), cat("b", present=True)], 0, False),
-            ([cat("a", present=True), cat("b", present=True),
-              cat("c", present=True)], 0, False),
-        ]
+        out = set()
+        for module in ("dynamic", "api"):
+            scenarios = [
+                [cat("a", module)],
+                [cat("a", module, collected=False)],
+                [cat("a", module, present=True)],
+                [cat("a", module, present=True), cat("b", module, present=True)],
+                [cat("a", module, present=True), cat("b", module, present=True),
+                 cat("c", module, present=True)],
+            ]
+            for cats in scenarios:
+                result = band(cats)
+                out.add((result.domain, result.band))
+        return out
 
-        produced = {band(cats, context_score=ctx,
-                         third_party_dissent=dissent).verdict
-                    for cats, ctx, dissent in scenarios}
+    def test_the_table_covers_every_band_in_both_domains(self) -> None:
+        produced = self._produced()
 
-        # Sanity: the scenarios have to actually cover the range, or a table
-        # with one entry would pass.
-        self.assertGreaterEqual(len(produced), 6, f"only reached {produced}")
+        # Sanity: the scenarios have to cover the range, or a table with one
+        # entry would pass.
+        self.assertGreaterEqual(len(produced), 8, f"only reached {produced}")
         missing = produced - set(_NEXT_STEP)
         self.assertFalse(missing, f"no recommended next step for: {sorted(missing)}")
 
+    def test_the_two_domains_do_not_share_advice(self) -> None:
+        # "Contain first" is wrong for an API and "fix before this faces
+        # anything untrusted" is wrong for a sample. If these ever match, the
+        # split has been undone and the wording is back to fitting one of them.
+        for _, band_name in self._produced():
+            with self.subTest(band=band_name):
+                malware = _NEXT_STEP.get(("malware", band_name))
+                posture = _NEXT_STEP.get(("posture", band_name))
+                if malware and posture:
+                    self.assertNotEqual(malware, posture)
+
     def test_each_next_step_says_something_specific(self) -> None:
-        for verdict, advice in _NEXT_STEP.items():
-            with self.subTest(verdict=verdict):
+        for key, advice in _NEXT_STEP.items():
+            with self.subTest(key=key):
                 self.assertGreater(len(advice), 40)
 
-    def test_coverage_verdicts_point_at_the_bench_not_the_sample(self) -> None:
-        # The two that are statements about collection rather than about the
-        # file. Advising someone to investigate the sample would be wrong.
-        for verdict in ("Insufficient Coverage", "No Findings, Coverage Incomplete"):
-            with self.subTest(verdict=verdict):
-                self.assertRegex(_NEXT_STEP[verdict], r"collector|bench")
+    def test_the_coverage_verdicts_point_at_the_bench_not_the_subject(self) -> None:
+        # The band says nothing fired; these three verdicts narrow *why*, and
+        # each wants different advice. Nothing fired with a detector dark is not
+        # nothing fired after a detonation.
+        self.assertRegex(next_step("No Findings, Coverage Incomplete",
+                                   NO_EVIDENCE, "malware"), r"collector")
+        self.assertRegex(next_step("Insufficient Coverage",
+                                   NOTHING_COLLECTED, "malware"), r"collector|bench")
+        self.assertRegex(next_step("Insufficient Coverage",
+                                   NOTHING_COLLECTED, "posture"), r"parse|read")
+
+    def test_a_clean_baseline_and_a_dark_detector_do_not_share_advice(self) -> None:
+        self.assertNotEqual(
+            next_step("Benign / Clean Baseline", NO_EVIDENCE, "malware"),
+            next_step("No Findings, Coverage Incomplete", NO_EVIDENCE, "malware"))
 
 
 class TheRationaleQuotesTheCategories(unittest.TestCase):
