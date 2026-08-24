@@ -1,0 +1,8 @@
+{
+  "contract": "0x4E31128a13AcBD1cF1909D67F072460c853F87f7",
+  "chain_id": 97,
+  "route": "etherscan-v2",
+  "provenance": "Etherscan's record of the deployment, not a measurement made here. Trustworthy for the transaction hash; confirm the deployer against the transaction if it matters.",
+  "found": false,
+  "note": "Free API access is not supported for this chain. Please upgrade your api plan for full chain coverage. https://etherscan.io/apis"
+}
