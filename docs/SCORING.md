@@ -177,8 +177,9 @@ The current rules are additive facets. Grouped into claims:
 
 | Current evidence rules | Becomes | Strong when |
 |---|---|---|
-| `missing_company`, `missing_product`, `missing_description`, `missing_original_filename` | `stripped_metadata` | all four absent |
-| `hash_like_name`, `suspicious_extension` | `deceptive_file_identity` | double extension, or RLO |
+| `missing_company`, `missing_product`, `missing_description`, `missing_original_filename` | `stripped_metadata` | **never** — see below |
+| `suspicious_extension` | `deceptive_file_identity` | double extension, or RLO |
+| `hash_like_name` | **deleted** — see below | — |
 | YARA matches | `known_malware_signature` | a family-named rule, or 3+ distinct |
 | API findings | `dangerous_capability` | 2+ high-signal groups |
 | Authenticode result | `invalid_signature` | present but broken, which is worse than absent |
@@ -303,10 +304,42 @@ look clean.
 Writing that test is what exposed the missing verdict above: a run with memory
 YARA disabled was still reporting **Benign / Clean Baseline**.
 
-**Phase 2 — static authors its categories, with coverage state.** Gated on a
-discrimination test that does not exist yet. Static currently has **two tests
-against 6,518 lines**, one of which only asserts return types. That test is the
-deliverable of this phase; the categories are how it passes.
+**Phase 2 — static authors its categories, with coverage state. DONE, 24 Aug.**
+`static_triage_engine/categories.py` emits six categories against the shared
+contract, and `test_static_discrimination.py` encodes what they have to
+separate. Static went from **two tests against 6,518 lines** to **36**.
+
+Written alongside `scoring.py` rather than replacing it: nothing consumes the
+new emitter until Phase 4, so the additive scorer stays live and the GUI keeps
+working. Everything is injected — no case-directory reads — which is what makes
+a six-line contract test possible.
+
+**Three things the rewrite found in the live scorer.** All three are false
+positives, all three are silent, and none of them would have been visible from
+reading the additive code:
+
+1. **A hash-like filename charged 6 points**, and this pipeline acquires
+   samples by hash and stores them under it. Every sample it has ever
+   downloaded started six points up. The on-disk name is what the *analyst*
+   called the file; the author's claim about the name is `OriginalFilename`,
+   which the version-info category already covers. Deleted, not ported.
+2. **An empty version-info block would have stood alone.** Marked strong at
+   first, which put it at Elevated Attention by itself — sweeping up Go and
+   Rust binaries and anything built without a resource script. `stripped_metadata`
+   now corroborates and never concludes.
+3. **Being unsigned was worth 8 points.** Most malware is unsigned and so is
+   most small legitimate tooling; the absence of exculpatory evidence is not
+   incriminating evidence. A signature that is *present and does not verify* is
+   a different claim, and that is what became the category.
+
+The pattern is the same each time: the additive model priced things it could
+not justify, and pricing hid the fact that it could not justify them. Asking
+"what claim is this, and does it stand alone" is a harder question to answer
+and a much harder one to get wrong quietly.
+
+Only three of the six static categories can ever be strong —
+`known_malware_signature`, `dangerous_capability`, `deceptive_file_identity`.
+The other three corroborate only.
 
 Method, copied from `test_score_discrimination.py` rather than invented: that
 test calls the scorer directly with synthetic inputs and encodes the *contract*
