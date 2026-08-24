@@ -148,10 +148,10 @@ malware would notice. Transaction history was not obtained -- the public node
 refuses `eth_getLogs` over wide ranges and prunes historical state, so the
 deployer needs an archive node or an explorer API key.
 
-**`tooling-baseline` was replaced on 24 Aug at `faedb81`.** A revert restores the
-working bench rather than a starting point for rebuilding one:
+**`tooling-baseline` was replaced again on 24 Aug, now at `40e19f8`.** A revert
+restores the working bench rather than a starting point for rebuilding one:
 
-    commit faedb81            the clone, current
+    commit 40e19f8            the clone, current
     tools\yara\rules\local\   all four local rules, hand-copied
     FakeNet leaf + key        two SANs: the RPC host and the phase 2 sink
     RingForge CA              trusted in Root, and it signs that leaf
@@ -178,11 +178,36 @@ contains a crypto address** -- ordinary error text and paths are untouched,
 which is exactly why the 22 Aug incident read as a formatting quirk. Use the
 share for anything address-bearing.
 
-**Snapshots: two, and the disk chain is flat.** `tooling-baseline` and
-`tooling-baseline-5e1a31c`. Six orphaned differencing disks were removed on
-24 Aug -- residue of the `E_ACCESSDENIED at 50%` restore failures, since a
-differencing disk is created at the *start* of a restore and left behind when
-one dies partway. They had blocked every merge. VM footprint 137 -> 100 GB.
+**Snapshots: two, and the disk chain is flat.**
+
+    tooling-baseline-5e1a31c     22 Aug, kept as the fallback
+    └── tooling-baseline         40e19f8, current
+                                 UUID be35853b-5807-4d77-b50b-062842b5817b
+
+Six orphaned differencing disks were removed on 24 Aug -- residue of the
+`E_ACCESSDENIED at 50%` restore failures, since a differencing disk is created
+at the *start* of a restore and left behind when one dies partway. They had
+blocked every merge. VM footprint 137 -> 100 GB.
+
+**The `40e19f8` re-take carried `timeout 900`, and that is the whole reason it
+happened.** The previous baseline's own description said *"post_exit_observation
+600 -- raise the GUI timeout to 900 to match, whichever expires first ends the
+run"*, and the config it froze still read `240`. The warning was written down,
+in the right place, by someone who understood it, and nothing checked it -- so
+every run from that baseline would have stopped at t240 with an inert
+600-second window. The pre-freeze check caught it by reading the whole file
+rather than the checklist, because **the checklist did not list
+`timeout_seconds`**. It does now. See *Verify before freezing, always*.
+
+**Two things in the older description are now obsolete.**
+`tooling-baseline-5e1a31c` still says *"make_tls_cert mints a NEW CA every run,
+so leaf and store must be refreshed together"* -- a standing workaround for a
+defect fixed on 24 Aug; the script reuses an existing CA now and only re-mints
+under `--new-ca`. And the guest's Root store holds **two** RingForge CAs,
+`141C8310…` (22 Aug, the live one, which signs the installed leaf) and
+`6CDD5E8D…` (21 Aug, stale) -- the re-mint bug's fingerprint. Removing the stale
+one is safe and untaken; do it on the new baseline so a mistake costs one revert
+rather than a run.
 
 Every line was rebuilt by hand that day, most of it twice, and **none of it is
 in git** -- `tools\yara\rules\` is gitignored, the leaf lives inside the FakeNet
@@ -191,13 +216,18 @@ local. The snapshot is the only thing that carries them. **If the baseline is
 ever rebuilt from scratch, that list is the checklist**, and the snapshot's own
 description repeats it.
 
-**Proven by restoring it, not merely by taking it.** The 24 Aug baseline was
-taken, restored, and then checked against the *restored* guest: commit
-`faedb81`, the corrected rule, both SANs, the CA trusted, the `fakenet-0bw`
-path, offsets `3, 10, 25, 55`, post-exit `600`, both helper scripts, no
-`cases\`. A snapshot that has been written and a snapshot known to carry what
-its description claims are different things, and the step between them is one
-revert.
+**Proven by restoring it, not merely by taking it.** Both 24 Aug baselines were
+taken, restored, and then checked against the *restored* guest: the commit, the
+corrected rule, both SANs, the CA trusted and verifying against the installed
+leaf, the `fakenet-0bw` path, offsets `3, 10, 25, 55`, post-exit `600`, timeout
+`900`, both helper scripts, no `cases\`. A snapshot that has been written and a
+snapshot known to carry what its description claims are different things, and
+the step between them is one revert.
+
+**The order used, and worth reusing:** take the new snapshot, restore it to
+verify, *then* delete the old one and rename the new into place. On the
+`40e19f8` replacement the rename kept the same UUID, so nothing was recreated
+and no differencing disk was orphaned by it.
 
 **Verify before freezing, always.** The pre-snapshot check caught a single-SAN
 leaf and `1, 25` offsets that a revert had quietly restored: the cert work had
