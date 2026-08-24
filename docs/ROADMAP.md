@@ -467,14 +467,21 @@ this host and a fixture suite could not have been written. That was the right
 call and it leaves something unproven: 1081 tests and **zero real cases** scored
 under `corroboration-v1`.
 
-`Arm A of the bait6 question` does double duty here. It answers the last open
-question on `0bw`, and it is the first real case through the unified model —
-static categories, dynamic categories, coverage state, a pooled band and a
-report rendered from it, end to end.
+**This is blocked, and finding out how was worth the run.** Arm A was described
+here as doing double duty -- answering the `bait6` question *and* being the
+first real case through the unified model. It could not be the second: the
+baseline is frozen at `40e19f8` and every scoring commit from `168302c` onward
+is host-only, so the run reported `dynamic-corroboration-v3` and emitted no
+categories at all.
 
-Run it, then read the verdict as sceptically as anything else this bench
-produces. A model that has only ever been tested against inputs its author
-wrote is a model whose first real disagreement is still ahead of it.
+Exercising `corroboration-v1` on real data therefore needs a **guest pull and
+another baseline re-take** first. That is cheap -- the procedure is written down
+and was executed twice on 24 Aug -- but it is a prerequisite, not a side effect
+of the next detonation.
+
+Read the first real verdict as sceptically as anything else this bench produces.
+A model that has only ever been tested against inputs its author wrote is a
+model whose first real disagreement is still ahead of it.
 
 ### 2. Nothing scores that has not been measured — except the four new scorers
 

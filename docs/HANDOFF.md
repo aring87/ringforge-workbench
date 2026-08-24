@@ -346,7 +346,8 @@ other that no entry has outlived the name it describes.
 Done 22-24 Aug and struck from this list: re-taking the baseline; rule-freshness
 reporting in the preflight strip; phase 3 (answered by supplying a clipboard,
 not by answering `refresh`); the contract read; the CA re-mint, the certificate
-claim and the `ENV_TOGGLES` guard (all three above). What remains:
+claim and the `ENV_TOGGLES` guard. The whole scoring model was rebuilt the same
+day -- see `docs/SCORING.md`. What remains:
 
 1. **The contract's transaction history.** The chain read on 24 Aug got
    everything *except* this: the public node prunes historical state and refuses
@@ -354,10 +355,14 @@ claim and the `ENV_TOGGLES` guard (all three above). What remains:
    an archive node or an explorer API key. A binary search on `eth_getCode`
    across blocks would find the creation block on an archive node --
    `scripts/`-adjacent code for it was drafted and never run.
-2. **Why `bait6` produced the hardcoded wallet.** One observation, against a
-   payload nearly eight hours old, where every other run produced the served
-   response body. Unexplained. Possibly a fallback when the C2 answer is
-   unusable, possibly something about age. It is one data point.
+2. **Why `bait6` produced the hardcoded wallet — age is ruled out, 24 Aug.**
+   Arm A ran and missed its target: the RPC handler could not load, so the
+   `eth_call` was refused nine times and the tracer was never served. A *fresh*
+   payload with no usable C2 answer substituted 664 times with the hardcoded
+   wallet anyway. See *Arm A missed its target*. The live hypothesis is now that
+   the wallet is the **no-C2 fallback**, which fits all four observations; it
+   rests on one observation of the failure branch and the corrected run is
+   specified in that section.
 3. **The FakeNet shim for `beacon_responder.py`.** Built and tested, never
    wired: it needs FakeNet's custom-response matching keys
    (`sample_custom_response.ini`, `docs/CustomResponse.md` in the FakeNet
@@ -479,6 +484,110 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
   the next VBoxManage call and disk images are untouched. `vm_snapshot.ps1` now
   waits for the state to settle before each step, so the script no longer
   causes this — but a manual VBoxManage command still can.
+
+---
+
+## ARM A MISSED ITS TARGET AND HIT A BIGGER ONE — 24 Aug
+
+Run `af2d83008fff89591cf33cdb_20260824_232310_972a3761`, 1,033 seconds, on the
+freshly frozen `40e19f8` baseline. Designed to answer why `bait6` produced the
+hardcoded wallet: serve the same 42-byte tracer `bait6` was served, to a *fresh*
+payload, and see whether the clipboard receives the tracer or the wallet.
+
+**It did not test that.** The tracer was never served, because the implant never
+got a hostname to fetch it from.
+
+### What actually happened
+
+    23:23:11   bait starts, baiting 0xBA17...BA17
+    23:26:14   first eth_call             handler_import_failed
+    23:26:17   first substitution         0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff
+    23:36:41   ninth eth_call             handler_import_failed
+    23:38:10   bait ends
+
+    851 rounds, 664 substituted, 3 clipboard errors
+    every substitution identical: the hardcoded wallet
+
+Nine `eth_call` connections over ten minutes, every one refused with
+`execution reverted` by `_fallback_reply()`. No `getData()` answer, no hostname,
+no beacon -- confirmed independently by the absence of `klopasnarhia.cc`
+anywhere in `fakenet.log` and by zero recorded requests in the RPC jsonl.
+
+**The bait was deliberately different from the served value this time**, which
+`bait6` was not: `bait6` baited `0xC0FFEE…` *and* served `0xC0FFEE…`, so a
+verbatim relay would have been indistinguishable from no substitution at all.
+That arm was only readable because it happened to return a third value.
+
+### What it establishes, and what it does not
+
+**A fresh payload with no usable C2 answer substitutes with the hardcoded
+wallet.** That is one clean observation and it kills the age hypothesis: `bait6`
+was not about a payload having run for seven hours.
+
+The mechanism it suggests fits all four observations to date:
+
+    C2 state                clipboard receives      runs
+    ────────────────────    ────────────────────    ──────────────────────
+    answers with a body     that body, verbatim     bait5 (HTML), 24 Aug
+    unreachable / errors    the hardcoded wallet    bait6, this run
+
+**It is not proven.** This is a single observation of the *failure* branch, and
+the pattern that keeps costing this bench days is exactly this: one observation
+taken for the general rule. The success branch has two runs behind it; the
+failure branch now has two, and one of them was an accident.
+
+**And the `bait6` explanation is an inference, not a reading.** `bait6` ran at
+21:49 against a payload that spawned at 14:03, by which time that run's FakeNet
+had almost certainly stopped -- orphaning the payload from its C2, the same
+condition as here. **That is checkable and has not been checked**: whether
+FakeNet was still up at 21:49 is in that run's logs.
+
+### Two bench defects, and the second is the familiar one
+
+**1. `RINGFORGE_REPO_ROOT` was wrong by one path segment.** It read
+`C:\projects\RingForge_Analyzer`; the repo is
+`C:\projects\RingForge_Analyzer\ringforge-workbench`. The handler could not
+import `dynamic_analysis.jsonrpc_responder`, so it never built a recorder and
+never built an `AnswerPlanner` -- phase 2 could not have been armed even with
+`RINGFORGE_RPC_ANSWER=1` set. `make_fakenet_config.py` prints the correct value,
+derived from its own location; use its output rather than editing by hand.
+
+**2. The run reported cleanly while a collector was dead.** Nine
+`handler_import_failed` records, and `dynamic_run_summary.json` carried
+`warnings: (none)` and a verdict of `Likely Malicious` on three strong
+categories. The RPC responder failed completely, left evidence in its own log,
+and nothing surfaced it in the run summary.
+
+That is the principle this bench spent 24 Aug applying everywhere else --
+*a collector that cannot run must say so* -- not yet applied to the RPC
+responder. `_fallback_reply` is documented as keeping a failed import from
+"silently becoming a different experiment"; it keeps the *implant's* experience
+identical, and that is precisely what makes the failure invisible from the
+report. The run summary should carry the import failure as a degraded-collection
+warning.
+
+### The corrected run
+
+Both variables, set for the FakeNet process, and verified in the RPC log rather
+than assumed:
+
+    RINGFORGE_REPO_ROOT=C:\projects\RingForge_Analyzer\ringforge-workbench
+    RINGFORGE_RPC_ANSWER=1
+
+The check that it armed is one line: the RPC jsonl should contain recorded
+requests, not `handler_import_failed`. If it does not, stop -- the run is
+measuring the failure branch again.
+
+### The guest predates the unified scoring model
+
+This run reported `score_model: dynamic-corroboration-v3` and emitted no
+`categories` array, because the baseline is frozen at `40e19f8` and every
+scoring commit from `168302c` onward is host-only.
+
+`docs/ROADMAP.md` claimed this run would be the first real case through
+`corroboration-v1`. It could not be. **Nothing has exercised the unified model
+on real data yet**, and doing so needs a guest pull and another baseline re-take
+first. That is now the blocking dependency on that item.
 
 ---
 
