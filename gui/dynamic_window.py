@@ -28,7 +28,7 @@ from dynamic_analysis.procmon_config import (
     DEFAULT_PROCMON_CONFIG_NAME,
     describe_procmon_filter,
 )
-from static_triage_engine.scoring import combined_score_from_case_dir
+from static_triage_engine.combine_case import combine_case
 from dynamic_analysis.report_theme import report_css
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
@@ -2500,14 +2500,13 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 )
 
                 try:
-                    combined_score_from_case_dir(
-                        case_home,
-                        dynamic_result=summary,
-                        spec_result=None,
-                        write_output=True,
-                    )
+                    # The run summary has already been written, so the combiner
+                    # reads the same categories from disk that any later reader
+                    # will -- rather than being handed an in-memory copy that
+                    # could differ from what was saved.
+                    combine_case(case_home, write_output=True)
                 except Exception as e:
-                    self.output_q.put(f"\n[warning] Combined score refresh failed: {e}\n")
+                    self.output_q.put(f"\n[warning] Case verdict refresh failed: {e}\n")
 
                 if hasattr(self.app, "refresh_combined_score"):
                     self.app.refresh_combined_score(case_home)

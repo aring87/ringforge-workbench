@@ -28,7 +28,7 @@ from .floss_runner import floss_result_to_dict, run_floss
 from .ioc_parser import extract_iocs_from_strings
 from .logging import EventCallback, emit, ledger_append, log_line, utc_now_iso
 from .report import generate_reports
-from .scoring import classify_verdict, score_risk
+from .combine_case import static_verdict_for_case
 from .steps import (
     sha_hash,
     step_capa,
@@ -819,17 +819,6 @@ def _vt_summary_from_result(vt_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _classify_verdict_compat(score: int, summary: Optional[dict[str, Any]] = None) -> tuple[str, str]:
-    try:
-        if summary is not None:
-            return classify_verdict(score, summary)
-    except TypeError as e:
-        msg = str(e)
-        if "positional argument" not in msg or "were given" not in msg:
-            raise
-    return classify_verdict(score)
-
-
 def run_case(
     sample_path: str,
     case_name: Optional[str] = None,
@@ -1130,12 +1119,15 @@ def run_case(
 
             sub_summary["api_analysis"] = api_sf
 
-            sf_score, sf_susp, sf_ben = score_risk(sub_summary, iocs_sf, pe_sf, lief_sf)
-            sf_verdict, sf_conf = _classify_verdict_compat(sf_score, sub_summary)
+            sf = static_verdict_for_case(sub_dir, sub_summary, iocs_sf, pe_sf, api_sf)
+            sf_susp, sf_ben = sf["suspicious"], sf["benign"]
 
-            sub_summary["risk_score"] = sf_score
-            sub_summary["verdict"] = sf_verdict
-            sub_summary["confidence"] = sf_conf
+            sub_summary["risk_score"] = sf["score"]
+            sub_summary["verdict"] = sf["verdict"]
+            sub_summary["severity"] = sf["severity"]
+            sub_summary["confidence"] = sf["confidence"]
+            sub_summary["coverage_complete"] = sf["coverage_complete"]
+            sub_summary["evidence_categories"] = sf["evidence"]
             sub_summary["reasons"] = _reasons_list(sf_susp, sf_ben)
             sub_summary["reason_breakdown"] = {"suspicious": sf_susp, "benign": sf_ben}
 
@@ -1204,12 +1196,28 @@ def run_case(
 
     summary["api_analysis"] = api_analysis
 
-    score, suspicious, benign = score_risk(summary, iocs, pe_meta, lief_meta)
-    verdict, confidence = _classify_verdict_compat(score, summary)
+    # `corroboration-v1` -- see docs/SCORING.md. This replaced `score_risk` plus
+    # `classify_verdict`, which produced a 0-40 additive score banded at 8/20/30
+    # and let a clean VirusTotal result suppress local observations.
+    #
+    # `risk_score` keeps its name and stops being a verdict input: it is capped
+    # descriptive volume now, and the band comes from how many independent kinds
+    # of evidence agree. Readers that print it still work; readers that
+    # *threshold* it were already wrong, because the thresholds moved with every
+    # change to the additive weights.
+    static = static_verdict_for_case(case_dir, summary, iocs, pe_meta, api_analysis)
+    score = static["score"]
+    verdict, confidence = static["verdict"], static["confidence"]
+    suspicious, benign = static["suspicious"], static["benign"]
 
     summary["risk_score"] = score
     summary["verdict"] = verdict
+    summary["severity"] = static["severity"]
     summary["confidence"] = confidence
+    summary["coverage_complete"] = static["coverage_complete"]
+    summary["uncollected_categories"] = static["uncollected_categories"]
+    summary["evidence_categories"] = static["evidence"]
+    summary["score_model"] = static["score_model"]
     summary["reasons"] = _reasons_list(suspicious, benign)
     summary["reason_breakdown"] = {"suspicious": suspicious, "benign": benign}
     summary.setdefault("flags", {})
@@ -1220,12 +1228,14 @@ def run_case(
         static_score=score,
         verdict=verdict,
         confidence=confidence,
-        is_signed=bool(summary.get("signing", {}).get("verify_ok", False)),
-        yara_hits=int(summary.get("yara", {}).get("match_count", 0) or 0),
+        severity=static["severity"],
+        # The categories already carry prose written to be read aloud, so the
+        # rationale quotes them rather than re-deriving a parallel set of
+        # sentences from raw counts that could disagree with the verdict.
+        evidence=static["evidence"],
+        coverage_complete=static["coverage_complete"],
+        uncollected=static["uncollected_categories"],
         capa_hits=capa_hits,
-        high_risk_strings=int(summary.get("decoded_strings", {}).get("stats", {}).get("high_risk_count", 0) or 0),
-        ioc_counts=summary.get("ioc_summary", {}).get("counts", {}) or {},
-        packer_score=summary.get("packer_obfuscation_rating"),
         vt_found=bool(summary.get("virustotal", {}).get("found", False)),
         vt_malicious=int(summary.get("virustotal", {}).get("malicious", 0) or 0),
         vt_suspicious=int(summary.get("virustotal", {}).get("suspicious", 0) or 0),

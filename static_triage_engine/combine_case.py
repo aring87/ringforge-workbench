@@ -6,12 +6,16 @@ of two historical layouts a folder is in. `verdict.combine` is the part that
 decides, and it is deliberately separate so that the deciding can be tested
 without building a case folder.
 
-**Written alongside `scoring.combined_score_from_case_dir`, not replacing it.**
-The old writer keeps producing `combined_score.json` in the additive shape so
-the GUI and the reports keep working; this one writes `combined_verdict.json`
-next to it. Phase 4b moves the consumers and deletes the additive path, which is
-the only safe order -- a shape change and a consumer migration in one commit
-would leave no working state to bisect back to.
+**This replaced `scoring.combined_score_from_case_dir`, which is gone.** It was
+kept alive for exactly one phase: 4a wrote `combined_verdict.json` beside the
+additive `combined_score.json` and changed no consumers, and 4b moved the
+consumers and deleted the old path. A shape change and a consumer migration in
+one commit would have left no working state to bisect back to.
+
+A case folder from before the change still has a `combined_score.json` on disk.
+It is deliberately not read: its `total_score` was a 0-100 sum banded at 8/20/30,
+and rendering it beside a corroboration verdict would put two incompatible
+numbers on one page.
 """
 
 from __future__ import annotations
@@ -219,4 +223,108 @@ def combine_case(
         (metadata / VERDICT_FILENAME).write_text(payload, encoding="utf-8",
                                                  errors="replace")
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# The static module's own verdict
+# ---------------------------------------------------------------------------
+
+def _confidence(result: dict[str, Any]) -> str:
+    """How much the static verdict is worth on its own.
+
+    Coverage first: a verdict from a run where a collector was dark is a low
+    confidence verdict whatever it says, because the thing that would have
+    disagreed was never asked. After that, corroboration -- one category is one
+    observation, and one observation is not a case.
+
+    **A clean static result never reaches high confidence.** Static analysis can
+    establish that nothing was found; only watching the sample run can establish
+    that nothing happens, and the module that does that is not this one.
+    """
+    if not result.get("coverage_complete", True):
+        return "Low confidence"
+
+    counts = result.get("counts", {})
+    if counts.get("categories_strong", 0) >= 1 or counts.get("categories_present", 0) >= 3:
+        return "High confidence"
+    if counts.get("categories_present", 0) >= 1:
+        return "Moderate confidence"
+    return "Moderate confidence"
+
+
+def static_verdict_for_case(
+    case_dir: str | Path,
+    summary: dict[str, Any] | None,
+    iocs: dict[str, Any] | None,
+    pe_meta: dict[str, Any] | None,
+    api_analysis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The static module's standalone verdict, for `summary.json`.
+
+    Replaces `scoring.score_risk` plus `scoring.classify_verdict`, which between
+    them produced a 0-40 additive score and a MALICIOUS / SUSPICIOUS / LOW_RISK
+    / BENIGN band whose thresholds were 8 / 20 / 30 -- and which let a clean
+    VirusTotal result suppress local observations.
+
+    The case directory is still read for the collectors `engine.py` does not
+    hold in memory, exactly as `score_risk` did. What changed is that a missing
+    file now means `collected: false` rather than a quiet zero.
+
+    Returns the combiner's shape plus `confidence`, `suspicious` and `benign` --
+    the last two kept under their old names because `summary.json` carries them
+    and the report renders them.
+    """
+    home = case_home(case_dir)
+
+    def newest(*names: str) -> dict[str, Any] | None:
+        candidates: list[Path] = []
+        for name in names:
+            candidates += [home / "static_analysis" / name,
+                           home / "static_analysis" / "metadata" / name,
+                           home / name, home / "metadata" / name]
+        return _newest(candidates)
+
+    if not isinstance(api_analysis, dict) or not api_analysis:
+        api_analysis = newest("api_analysis.json")
+
+    capa_path = next((p for p in (home / "static_analysis" / "capa.json",
+                                  home / "capa.json") if p.exists()), None)
+
+    cats, context = static_categories(
+        summary=summary,
+        iocs=iocs,
+        pe_meta=pe_meta,
+        api_analysis=api_analysis,
+        yara_results=newest("yara_results.json"),
+        signing=newest("signing.json"),
+        techniques=_extract_techniques(summary) if summary is not None else None,
+        capa_match_count=(
+            capa_path.read_text(encoding="utf-8", errors="replace").count('"matches"')
+            if capa_path else None),
+    )
+
+    dissent, dissent_detail = virustotal_dissent(summary)
+    result = combine({"static": (cats, context)},
+                     third_party_dissent=dissent, dissent_detail=dissent_detail)
+
+    result["confidence"] = _confidence(result)
+    # Kept under their old names: `summary.json` carries them and the report
+    # renders them as bullet lists. The content is better than it was -- these
+    # are the category reasons, written to be read aloud, rather than scoring
+    # messages with point values attached.
+    result["suspicious"] = [e["reason"] for e in result["evidence"] if e["reason"]]
+
+    benign: list[str] = []
+    if not result["counts"]["categories_present"]:
+        benign.append("No static evidence category fired.")
+    if result["coverage_complete"]:
+        benign.append("Every static collector ran.")
+    else:
+        # Not a benign observation, and it must not read as one -- but it is
+        # what a reader scanning this list needs to see first.
+        benign.append(
+            "Coverage incomplete: "
+            + ", ".join(result["uncollected_categories"])
+            + " could not be checked.")
     return result

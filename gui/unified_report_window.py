@@ -25,10 +25,10 @@ class UnifiedReportWindow(tk.Toplevel):
 
         cases\<case>\
             case_metadata.json
-            combined_score.json
+            combined_verdict.json
             metadata\
                 static_run_summary.json
-                combined_score.json
+                combined_verdict.json
 
             static_analysis\
                 summary.json
@@ -416,9 +416,9 @@ class UnifiedReportWindow(tk.Toplevel):
                 case_dir / "extension_analysis.json",
                 case_dir / "reports" / "extension_analysis.json",
             ],
-            "Combined Score": [
-                case_dir / "combined_score.json",
-                case_dir / "metadata" / "combined_score.json",
+            "Case Verdict": [
+                case_dir / "combined_verdict.json",
+                case_dir / "metadata" / "combined_verdict.json",
             ],
         }
 
@@ -866,8 +866,8 @@ class UnifiedReportWindow(tk.Toplevel):
         if not self.case_dir:
             return None
         p = self._latest_path([
-            self.case_dir / "combined_score.json",
-            self.case_dir / "metadata" / "combined_score.json",
+            self.case_dir / "combined_verdict.json",
+            self.case_dir / "metadata" / "combined_verdict.json",
         ])
         data = self._load_json_if_exists(p) if p else None
         return data if isinstance(data, dict) else None
@@ -1118,8 +1118,28 @@ class UnifiedReportWindow(tk.Toplevel):
         extension_score = None
         combined_score = None
 
+        combined_verdict = None
+        combined_severity = None
+        combined_categories = None
+        combined_coverage = None
+
         if isinstance(combined_summary, dict):
-            combined_score = combined_summary.get("total_score", combined_summary.get("score"))
+            # `score` under `corroboration-v1`; `total_score` in case folders
+            # written before the change. It is descriptive volume either way and
+            # the verdict below is what the reader should be looking at.
+            combined_score = combined_summary.get("score", combined_summary.get("total_score"))
+            combined_verdict = combined_summary.get("verdict")
+            combined_severity = combined_summary.get("severity")
+            counts = combined_summary.get("counts", {})
+            if isinstance(counts, dict) and counts:
+                combined_categories = (
+                    f"{counts.get('categories_present', 0)} present, "
+                    f"{counts.get('categories_strong', 0)} emphatic, "
+                    f"{counts.get('categories_unknown', 0)} not collected")
+            if "coverage_complete" in combined_summary:
+                combined_coverage = (
+                    "complete" if combined_summary.get("coverage_complete")
+                    else "INCOMPLETE -- a collector did not run")
 
             subscores = combined_summary.get("subscores", {})
             if isinstance(subscores, dict):
@@ -1163,6 +1183,10 @@ class UnifiedReportWindow(tk.Toplevel):
             "case_path": str(self.case_dir),
             "overall_verdict": self._derive_overall_verdict(self.detected_artifacts),
             "combined_score": combined_score,
+            "combined_verdict": combined_verdict,
+            "combined_severity": combined_severity,
+            "combined_categories": combined_categories,
+            "combined_coverage": combined_coverage,
             "static_score": static_score,
             "dynamic_score": dynamic_score,
             "api_score": api_score,
@@ -1203,6 +1227,10 @@ class UnifiedReportWindow(tk.Toplevel):
         case_path = html.escape(str(data.get("case_path", "-")))
         overall_verdict = html.escape(str(data.get("overall_verdict", "-")))
         combined_score = data.get("combined_score")
+        combined_verdict = data.get("combined_verdict")
+        combined_severity = data.get("combined_severity")
+        combined_categories = data.get("combined_categories")
+        combined_coverage = data.get("combined_coverage")
         static_score = data.get("static_score")
         dynamic_score = data.get("dynamic_score")
         api_score = data.get("api_score")
@@ -1306,7 +1334,11 @@ class UnifiedReportWindow(tk.Toplevel):
         <table>
           <tr><th>Case Name</th><td>{case_name}</td></tr>
           <tr><th>Case Path</th><td>{case_path}</td></tr>
-          <tr><th>Combined Score</th><td>{fmt_score(combined_score, "Not generated")}</td></tr>
+          <tr><th>Verdict</th><td>{fmt_score(combined_verdict, "Not generated")}</td></tr>
+          <tr><th>Severity</th><td>{fmt_score(combined_severity, "Not generated")}</td></tr>
+          <tr><th>Evidence</th><td>{fmt_score(combined_categories, "Not generated")}</td></tr>
+          <tr><th>Coverage</th><td>{fmt_score(combined_coverage, "Not generated")}</td></tr>
+          <tr><th>Context Score</th><td>{fmt_score(combined_score, "Not generated")}</td></tr>
           <tr><th>Static Score</th><td>{fmt_score(static_score, "Not run")}</td></tr>
           <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score, "Not run")}</td></tr>
           <tr><th>API Analysis</th><td>{fmt_score(api_score, "Not run")}</td></tr>

@@ -27,7 +27,7 @@ from gui.gui_utils import (
     run_cli_streaming,
 )
 
-from static_triage_engine.scoring import combined_score_from_case_dir
+from static_triage_engine.combine_case import combine_case
 
 SUBFILE_TRIAGE_RE = re.compile(
     r"^\[subfile:triage\]\s+selected=(?P<selected>\d+)\s+limit=(?P<limit>\d+)",
@@ -481,9 +481,9 @@ class StaticAnalysisController:
                 self._save_static_test_summary(static_output_dir, case_home_dir)
 
                 try:
-                    combined_score_from_case_dir(case_home_dir or static_output_dir, write_output=True)
+                    combine_case(case_home_dir or static_output_dir, write_output=True)
                 except Exception as e:
-                    app.output.insert("end", f"[warn] Combined score refresh failed: {e}\n")
+                    app.output.insert("end", f"[warn] Case verdict refresh failed: {e}\n")
                     app.output.see("end")
 
                 # After static summary is updated, expose the case home to the rest

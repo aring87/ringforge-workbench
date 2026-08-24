@@ -4,11 +4,11 @@ Phase 2 of `docs/SCORING.md`. This is the static half of `corroboration-v1`:
 the same contract `dynamic_analysis` emits, so the combiner can count agreement
 across the two instead of adding their scores together.
 
-**Written alongside `scoring.py` rather than replacing it.** Nothing consumes
-this yet -- the swap happens in Phase 4, with the report -- so the additive
-scorer stays live and its callers keep working. Two scorers briefly coexisting
-is the cost of not breaking the GUI mid-migration; the additive one is deleted
-when the last consumer moves.
+**This is the only static scorer now.** It was written alongside the additive
+one in Phase 2 and consumed nothing until Phase 4, so that the GUI kept working
+through the migration; Phase 4b moved the last consumer and deleted the old
+path. What survives in `scoring.py` is the helpers below, which never had
+anything to do with scoring.
 
 **Everything is injected, nothing is read from disk.** `scoring.score_static`
 reaches into the case directory for `yara_results.json`, `capa.json` and

@@ -424,16 +424,40 @@ multi-engine scanning — `_is_weak_vt_noise` already encoded that — and a flo
 firing there would move a large fraction of ordinary software to Needs Review
 and teach everyone to ignore the band.
 
-**Phase 4b — the report and the theme.** One verdict to display makes the
-unified report a design problem instead of a reconciliation problem. This is
-also where `calculate_combined_score`, `classify_verdict` and `score_dynamic`
-are finally deleted, and where the 19 files referencing retired verdict strings
-get checked.
+**Phase 4b — the report and the theme. DONE, 24 Aug.** Two commits.
 
-The theme work belongs here and not earlier: `gui/theme.py` (40 colours) and
-`dynamic_analysis/report_theme.py` (17 colours) currently share **zero** values,
-and 37 hardcoded hex colours bypass the theme in four windows. One source, both
-media derived from it, and a test asserting no literal hex outside it.
+*The theme.* `design_tokens.py` holds the palette and depends on nothing;
+`gui/theme.py` re-exports it so the twelve GUI modules needed no changes, and
+`report_theme.report_css()` is built from the same values. The "37 hardcoded hex
+colours" turned out to be **five report stylesheets** — this one, two
+near-identical copies, and two ad-hoc sheets with entirely different palettes.
+All four copies now call the shared sheet; the rules they had and it lacked
+(`.sev-critical`, `pre`, `.label`) were folded in. 457 lines and 6,305
+characters of duplicated CSS gone.
+
+*The verdict.* `engine.py` writes a corroboration band into `summary.json`
+instead of `score_risk` + `classify_verdict`. `report.py` and
+`unified_report_window` read `combined_verdict.json`, and the two GUI call sites
+that invoked the old writer for its side effect now call `combine_case`.
+
+*The deletions.* `scoring.py` went from **1,150 lines to 274** — the additive
+model is gone, and what remains is the helpers that never had anything to do
+with scoring, which the new code imports rather than reimplementing.
+`test_scoring.py` went with it: its two tests covered a function that no longer
+exists, and `test_static_discrimination.py` replaced them with 34.
+
+Two things worth recording. The "19 files referencing retired verdict strings"
+was a false alarm — all but two were unrelated constants like
+`SUSPICIOUS_PATH_HINTS`. The two real ones were in `report.py`, and one of them
+tested for `MEDIUM_RISK`, a verdict `classify_verdict` never produced. And its
+sibling branch tested `score < 60` against a scale whose maximum was 40, so it
+could never fire on its own terms while the `score < 45` branch always did.
+
+`verdict_rationale.py` got shorter, because the categories already carry prose
+written to be read aloud — it quotes them now rather than re-deriving a parallel
+set of sentences that could disagree with the verdict beside them. Three of its
+premises retired with the additive model, including *"file is unsigned"* as a
+reason a score went up.
 
 ---
 

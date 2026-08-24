@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 from dynamic_analysis.report_theme import badge, score_badge, report_page
-from .scoring import combined_score_from_case_dir
+from dynamic_analysis.report_theme import severity_class_for_label
+
+from .combine_case import VERDICT_FILENAME, combine_case
 
 
 def _utc() -> str:
@@ -208,10 +210,15 @@ def _normalize_suspicious_reason(reason: str, summary: dict[str, Any]) -> str:
     vt = summary.get("virustotal") if isinstance(summary.get("virustotal"), dict) else {}
     vt_bad = int(vt.get("malicious", 0) or 0) + int(vt.get("suspicious", 0) or 0)
 
+    # **Driven by the band, not by a number.** This used to test `score < 60`
+    # and `score < 45` against the additive 0-40 static scale -- two thresholds
+    # on a scale whose maximum was below the lower of them, so the first branch
+    # could never fire on its own terms and the second always did.
+    severity = str(summary.get("severity", "") or "").strip().lower()
     attack_like = ("att&ck" in low) or ("technique" in low and "capa" in low)
-    if attack_like and score < 60 and verdict in {"LOW_RISK", "MEDIUM_RISK"} and signed and vt_bad == 0:
+    if attack_like and severity == "low" and signed and vt_bad == 0:
         return sx.replace("High-signal ", "Observed ").replace("present", "observed (context only)")
-    if attack_like and score < 45:
+    if attack_like and severity in {"low", "medium"}:
         return sx.replace("High-signal ", "Observed ").replace("present", "observed (supporting evidence)")
     return sx
 
@@ -364,10 +371,18 @@ def _spec_block(case_dir: Path) -> dict[str, Any]:
 
 
 def _combined_block(case_dir: Path) -> dict[str, Any]:
-    combined = _read_json(case_dir / "combined_score.json")
+    """The case verdict, computed if it has not been already.
+
+    `combined_score.json` -- the additive shape -- is gone. A case folder from
+    before the change still has one on disk and it is deliberately not read:
+    its `total_score` was a 0-100 sum banded at 8/20/30, and rendering it beside
+    a corroboration verdict would put two incompatible numbers on one page.
+    Recomputing is cheap and produces the current model from the same inputs.
+    """
+    combined = _read_json(case_dir / VERDICT_FILENAME)
     if not combined:
         try:
-            combined = combined_score_from_case_dir(case_dir, write_output=True)
+            combined = combine_case(case_dir, write_output=True)
         except Exception:
             combined = {}
     return combined
@@ -400,21 +415,25 @@ def _verdict_rationale_block(summary: dict[str, Any]) -> dict[str, Any]:
     return {
         "score": vr.get("score", summary.get("risk_score", 0)),
         "confidence": str(vr.get("confidence", summary.get("confidence", "")) or ""),
-        "increased": [
-            str(x)
-            for x in (
-                vr.get("increased_score_reasons", [])
-                if isinstance(vr.get("increased_score_reasons"), list)
-                else []
-            )[:8]
+        # `findings` / `coverage` / `third_party` under `corroboration-v1`.
+        # The old keys were `increased_score_reasons` and
+        # `decreased_score_reasons`, which only meant something while a score
+        # was the verdict; they are read as a fallback so a case folder written
+        # before the change still renders its rationale.
+        "findings": [
+            str(x) for x in (vr.get("findings")
+                             if isinstance(vr.get("findings"), list)
+                             else vr.get("increased_score_reasons", [])
+                             if isinstance(vr.get("increased_score_reasons"), list)
+                             else [])[:8]
         ],
-        "decreased": [
-            str(x)
-            for x in (
-                vr.get("decreased_score_reasons", [])
-                if isinstance(vr.get("decreased_score_reasons"), list)
-                else []
-            )[:5]
+        "coverage": [
+            str(x) for x in (vr.get("coverage", [])
+                             if isinstance(vr.get("coverage"), list) else [])[:4]
+        ],
+        "third_party": [
+            str(x) for x in (vr.get("third_party", [])
+                             if isinstance(vr.get("third_party"), list) else [])[:3]
         ],
         "notes": [
             str(x)
@@ -571,13 +590,18 @@ def _subfiles_section(data: dict[str, Any]) -> str:
 
 def _summary_tiles(data: dict[str, Any]) -> str:
     combined = data.get("combined", {}) or {}
+    counts = combined.get("counts", {}) or {}
+    modules = combined.get("modules_run", []) or []
     tiles = [
-        ("Static Verdict", data.get("verdict", "")),
-        ("Static Score", data.get("score", 0)),
-        ("Combined Score", combined.get("total_score", 0)),
-        ("Combined Severity", combined.get("severity", "Informational")),
-        ("Spec Score", combined.get("subscores", {}).get("spec", 0)),
-        ("Dynamic Score", combined.get("subscores", {}).get("dynamic", 0)),
+        ("Verdict", combined.get("verdict", data.get("verdict", ""))),
+        ("Severity", combined.get("severity", "Unknown")),
+        # Corroboration is what the band is built on, so it is what the reader
+        # should see first. The score is volume and sits further down.
+        ("Evidence Categories", counts.get("categories_present", 0)),
+        ("Emphatic", counts.get("categories_strong", 0)),
+        ("Modules Run", ", ".join(modules) or "none"),
+        ("Coverage",
+         "complete" if combined.get("coverage_complete", True) else "INCOMPLETE"),
         ("Techniques", len(data.get("techniques", []) or [])),
         ("IOC URLs", data.get("ioc_counts", {}).get("urls", 0)),
     ]
@@ -656,9 +680,19 @@ def _write_md(case_dir: Path, data: dict[str, Any]) -> Path:
     lines.append("## Verdict Rationale")
     lines.append(f"- **Confidence Model:** `{rationale.get('confidence', data.get('confidence', 'N/A'))}`")
 
-    if rationale.get("increased"):
-        lines.append("- **Score Increased Because:**")
-        for item in rationale["increased"]:
+    if rationale.get("findings"):
+        lines.append("- **Evidence:**")
+        for item in rationale["findings"]:
+            lines.append(f"  - {item}")
+
+    if rationale.get("coverage"):
+        lines.append("- **Coverage:**")
+        for item in rationale["coverage"]:
+            lines.append(f"  - {item}")
+
+    if rationale.get("third_party"):
+        lines.append("- **Third-party (did not contribute to the verdict):**")
+        for item in rationale["third_party"]:
             lines.append(f"  - {item}")
 
     if rationale.get("decreased"):
@@ -817,15 +851,22 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         "Signer": (data.get("signing_summary") or {}).get("subject", ""),
     }
 
+    combined_counts = combined.get("counts", {}) or {}
     combined_meta = {
-        "Total Score": combined.get("total_score", 0),
-        "Severity": combined.get("severity", "Informational"),
         "Verdict": combined.get("verdict", ""),
-        "Confidence": combined.get("confidence", ""),
-        "Static": combined.get("subscores", {}).get("static", 0),
-        "Dynamic": combined.get("subscores", {}).get("dynamic", 0),
-        "Spec": combined.get("subscores", {}).get("spec", 0),
+        "Severity": combined.get("severity", ""),
+        "Model": combined.get("score_model", ""),
+        "Categories Present": combined_counts.get("categories_present", 0),
+        "Emphatic Categories": combined_counts.get("categories_strong", 0),
+        "Unknown (not collected)": combined_counts.get("categories_unknown", 0),
+        "Modules Run": ", ".join(combined.get("modules_run", []) or []),
+        "Modules Not Run": ", ".join(combined.get("modules_absent", []) or []),
+        # Descriptive volume. Deliberately last, and deliberately labelled, so
+        # nobody reads it as the verdict the way the additive total invited.
+        "Context Score (descriptive)": combined.get("score", 0),
     }
+    if combined.get("dissent_floor_applied"):
+        combined_meta["Third-Party Dissent"] = combined.get("dissent_floor_reason", "")
 
     decoded_meta = {
         "Decoder Enabled": decoded.get("enabled", False),
@@ -938,15 +979,17 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
 
     # Only show sections when they contain data
     increased_section = _list_section(
-        "Why Score Increased",
-        verdict_rationale.get("increased", []),
+        "Evidence",
+        verdict_rationale.get("findings", []),
         emphasize=True,
-    ) if verdict_rationale.get("increased") else ""
+    ) if verdict_rationale.get("findings") else ""
 
-    decreased_section = _list_section(
-        "Why Score Decreased",
-        verdict_rationale.get("decreased", []),
-    ) if verdict_rationale.get("decreased") else ""
+    decreased_section = (
+        _list_section("Coverage", verdict_rationale.get("coverage", []))
+        + _list_section("Third-Party (did not contribute to the verdict)",
+                        verdict_rationale.get("third_party", []))
+    ) if (verdict_rationale.get("coverage")
+          or verdict_rationale.get("third_party")) else ""
 
     notes_section = _list_section(
         "Verdict Notes",
@@ -1044,13 +1087,11 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
 """
 
     verdict = str(data.get("verdict", "UNKNOWN"))
-    verdict_class = "sev-none"
-    if verdict.upper() == "MALICIOUS":
-        verdict_class = "sev-high"
-    elif verdict.upper() == "SUSPICIOUS":
-        verdict_class = "sev-med"
-    elif verdict.upper() == "LOW_RISK":
-        verdict_class = "sev-low"
+    # One mapper, in `report_theme`, which knows both the current bands and the
+    # retired additive verdicts -- so a case written before the change still
+    # renders with a colour rather than going grey.
+    verdict_class = severity_class_for_label(
+        data.get("severity") or verdict)
 
     html_doc = report_page(
         "Static Triage Ticket",

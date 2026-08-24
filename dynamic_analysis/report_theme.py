@@ -104,12 +104,22 @@ def severity_class_for_score(value: Any) -> str:
 
 
 def severity_class_for_label(value: Any) -> str:
+    """Map a severity or a verdict onto the badge ramp.
+
+    Knows both vocabularies. The `corroboration-v1` bands are the ones written
+    today; MALICIOUS / SUSPICIOUS / LOW_RISK are the retired additive verdicts,
+    kept here so a case folder written before the change still renders rather
+    than turning grey.
+    """
     text = str(value or "").strip().lower()
-    if text in {"critical", "high", "malicious"}:
+    if text in {"critical", "high", "malicious",
+                "likely malicious", "elevated attention"}:
         return "sev-high"
-    if text in {"medium", "suspicious"}:
+    if text in {"medium", "suspicious", "needs review",
+                "unknown", "insufficient coverage"}:
         return "sev-med"
-    if text in {"low", "low_risk"}:
+    if text in {"low", "low_risk", "low suspicion",
+                "no findings, coverage incomplete"}:
         return "sev-low"
     return "sev-none"
 
