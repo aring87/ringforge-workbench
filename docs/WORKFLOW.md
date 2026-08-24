@@ -151,11 +151,32 @@ was never run against a real replacement.
 dir cases ; dir samples
 ```
 
-`samples\` should hold `mimikatz.exe`, `mimikatz.upx.exe` and
-`upx_control.json` and nothing else — a live sample left there is present on
-every future revert. `cases\` should not exist. Missing the revert has produced
-a post-detonation baseline twice, and both times the only symptom was a stray
-`cases\<hash>` folder that someone happened to notice.
+`cases\` should not exist. Missing the revert has produced a post-detonation
+baseline twice, and both times the only symptom was a stray `cases\<hash>`
+folder that someone happened to notice.
+
+**`samples\` is the opposite case, and this section used to say the opposite
+thing.** It read: `samples\` should hold `mimikatz.exe`, `mimikatz.upx.exe` and
+`upx_control.json` and nothing else, because a live sample left there is
+restored on every future revert. That consequence is real. It is no longer the
+trade being made.
+
+**The sample binaries are not on the host any more** — see *Environment facts*
+in `docs/HANDOFF.md`, checked 17 Aug and still true — so for anything currently
+under analysis the baseline snapshot is the only copy in existence. Deleting one
+to satisfy the rule above means re-acquiring it by hash, which means arming the
+guest, which is a larger and more familiar risk than an inert file sitting on a
+contained disk. The 24 Aug baseline was taken with `af2d8300…` and
+`422e30ed…` retained on purpose, and its checklist lists them as a line item.
+
+So: **check `samples\` against the baseline checklist for the case you are on,
+not against a fixed list here.** What belongs there moves with the work. What
+must never be there is `cases\`.
+
+The risk the old rule was guarding is handled, and not by absence: a sample on
+disk is inert, and *executing* one is what the revert protocol and the
+armed-state refusal govern. Presence was never the dangerous part — which is
+also why the two mimikatz controls have always been allowed to live there.
 
 **What a stale baseline actually costs**, from the 16 Aug rebuild — the old one
 had been restoring all of this on **every revert since roughly 10 Aug**:

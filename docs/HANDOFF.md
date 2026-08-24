@@ -161,6 +161,15 @@ working bench rather than a starting point for rebuilding one:
     samples\                  af2d8300 and 422e30ed both retained
     clipboard                 BIDIRECTIONAL, deliberately -- see below
 
+**`samples\` is on that list on purpose, and `docs/WORKFLOW.md` no longer
+contradicts it — reconciled 24 Aug.** WORKFLOW's pre-freeze hygiene check said
+`samples\` should hold the two mimikatz controls and `upx_control.json` and
+nothing else, because a live sample there is restored on every future revert.
+That consequence is real; it is no longer the trade. The binaries are not on the
+host, so the snapshot is the only copy, and deleting one to satisfy the rule
+means arming the guest to re-acquire it by hash. The half of that check which
+still binds is `cases\` — it must not exist.
+
 **Clipboard is bidirectional on purpose.** The analyst pastes console output
 back out, which needs guest-to-host. It is safe between runs on a clean guest.
 During and after a detonation, anything copied out may be rewritten **if it
@@ -240,11 +249,56 @@ implant's choice of scheme was reasoned about in advance rather than discovered.
 **A negative result from this bench is not evidence until the collector that
 produced it has been shown to be capable of a positive one.**
 
+### The three tools that would have lied, fixed — 24 Aug
+
+The section above says a negative result is not evidence until the collector
+that produced it has been shown capable of a positive. These were the three
+known places where that was still false, and all three are now closed. **None
+of them could produce an error; each would have produced a plausible negative.**
+
+**`make_tls_cert.py` re-minted the CA on every run.** The guest trusts an anchor
+by its key, so a second run — for one more SAN, which is the routine reason to
+run it — left the root store holding a CA that no longer signs the leaf being
+served. The symptom is a silent FIN after the certificate flight, which is this
+bench's own signature for *an implant that pins*: the script's own docstring
+says so. A re-mint would therefore have been read as the answer rather than as
+the defect. The CA is now reused when both its files are present, and re-minted
+only under `--new-ca`, or when the pair is broken — and the script now says
+which happened and whether the guest needs anything. Measured, not reasoned:
+two runs with different `--hostname` sets produced the same CA fingerprint
+(`C8:87:27:08:…`) and a new leaf that verifies against it.
+
+**`make_fakenet_config.py` asserted which certificate was being served.** It
+printed "cert is FakeNet's own" unconditionally, including after
+`make_tls_cert.py` had already swapped the leaf. That line is read at exactly
+one moment — deciding whether a `no_connection` summary means the port was
+never routed or the client refused the certificate — and those are different
+findings separated only by the pcap. It now reads the install: the
+`.ringforge-original` backup is the marker, the bytes are compared against it
+because a hand-copied restore leaves the marker in place, and when no install
+can be located it prints **UNKNOWN** rather than guessing. Unknown is a real
+answer; the confident wrong one is what was there before.
+
+**`test_restore_env_guard` had been failing since before 22 Aug**, which is its
+own version of the same problem — a red suite stops being read. The guard
+required every `RINGFORGE_*` name under `scripts/` to appear in the emulator's
+`ENV_TOGGLES`, and four do not belong there: `RINGFORGE_REPO_ROOT` and the
+three `RINGFORGE_RPC_*` names are read by `make_fakenet_config.py`, which
+configures FakeNet on the guest — a different process on a different machine
+from the emulator, and nothing a stored state can be a function of. They are
+now allowlisted **with the reason each is allowed**, and two further tests keep
+the allowlist from becoming the place a real toggle hides: one asserts no
+allowlisted name appears in `emulate_native_stub.py` or `win32_emu_env.py`, the
+other that no entry has outlived the name it describes.
+
+886 tests pass, up from 867 and a standing failure.
+
 ### Next, ranked
 
 Done 22-24 Aug and struck from this list: re-taking the baseline; rule-freshness
 reporting in the preflight strip; phase 3 (answered by supplying a clipboard,
-not by answering `refresh`); the contract read. What remains:
+not by answering `refresh`); the contract read; the CA re-mint, the certificate
+claim and the `ENV_TOGGLES` guard (all three above). What remains:
 
 1. **The contract's transaction history.** The chain read on 24 Aug got
    everything *except* this: the public node prunes historical state and refuses
@@ -256,17 +310,7 @@ not by answering `refresh`); the contract read. What remains:
    payload nearly eight hours old, where every other run produced the served
    response body. Unexplained. Possibly a fallback when the C2 answer is
    unusable, possibly something about age. It is one data point.
-3. **`make_tls_cert.py` re-mints the CA on every run**, silently invalidating
-   the trust store. Reuse an existing CA when one is present.
-4. **`make_fakenet_config.py` prints "cert is FakeNet's own"** even after
-   `make_tls_cert.py` has swapped the leaf -- a reassuring falsehood read at the
-   moment someone is deciding whether a `no_connection` means a routing fault or
-   a rejected certificate.
-5. **`test_restore_env_guard` has been failing** since before 22 Aug: four
-   `RINGFORGE_RPC_*` names are read by `make_fakenet_config.py` and absent from
-   `ENV_TOGGLES`. The test's own message says the fix depends on whether each
-   changes what the harness *claims exists* or only its fidelity.
-6. **The FakeNet shim for `beacon_responder.py`.** Built and tested, never
+3. **The FakeNet shim for `beacon_responder.py`.** Built and tested, never
    wired: it needs FakeNet's custom-response matching keys
    (`sample_custom_response.ini`, `docs/CustomResponse.md` in the FakeNet
    install) so the handler binds to the sink host rather than swallowing all of

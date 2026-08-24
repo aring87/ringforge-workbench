@@ -38,6 +38,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dynamic_analysis.fakenet_runner import find_fakenet  # noqa: E402
 from dynamic_analysis.jsonrpc_responder import DEFAULT_PORT  # noqa: E402
+from scripts.make_tls_cert import (  # noqa: E402
+    BACKUP_SUFFIX,
+    LEAF_CERT_NAME,
+    CertError,
+    ssl_utils_dir,
+)
 
 #: The listener section appended to FakeNet's config.
 #:
@@ -87,6 +93,66 @@ def find_default_config(configured: str | Path | None = None) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def fakenet_root_from(base_config: Path) -> Path | None:
+    """Find the installation the generated config will actually be served by.
+
+    `--fakenet-config` may point anywhere, so the located binary is tried first
+    and the config's own ancestors after it. `ssl_utils_dir` is the test: a
+    directory that has one is a FakeNet install, and that is the only property
+    being asked about here.
+    """
+    candidates: list[Path] = []
+    binary = find_fakenet()
+    if binary:
+        candidates.append(Path(binary).resolve().parent)
+    here = base_config.resolve().parent
+    candidates += [here, here.parent, here.parent.parent]
+
+    for candidate in candidates:
+        try:
+            ssl_utils_dir(candidate)
+        except CertError:
+            continue
+        return candidate
+    return None
+
+
+def leaf_source(fakenet_root: Path | None) -> tuple[str, str]:
+    """Which certificate `RawListener` will actually serve, and how it is known.
+
+    **This used to be asserted rather than checked**, and it printed "cert is
+    FakeNet's own" whether or not `make_tls_cert.py` had already swapped the
+    leaf. That sentence is read at exactly one moment -- when someone is
+    deciding whether a `no_connection` summary means the port was not routed or
+    the client refused the certificate -- so a confident wrong answer there
+    sends the next hour in the wrong direction. See the 22 Aug entry in
+    docs/HANDOFF.md: four defects that day each looked like a rejected answer.
+
+    Returns `("ringforge" | "fakenet" | "unknown", detail)`. `unknown` is a
+    real answer and is printed as one; guessing is what this replaces.
+    """
+    if fakenet_root is None:
+        return "unknown", "no FakeNet install found from the config's location"
+    try:
+        target = ssl_utils_dir(fakenet_root)
+    except CertError as error:
+        return "unknown", str(error)
+
+    leaf = target / LEAF_CERT_NAME
+    backup = target / (LEAF_CERT_NAME + BACKUP_SUFFIX)
+    if not leaf.is_file():
+        return "unknown", f"{leaf} does not exist"
+    if not backup.is_file():
+        return "fakenet", f"no {BACKUP_SUFFIX} backup beside {LEAF_CERT_NAME}"
+    if leaf.read_bytes() == backup.read_bytes():
+        # `restore` removes the backup; a hand-copy does not. The marker then
+        # says swapped and the bytes say otherwise, and the bytes are what
+        # FakeNet serves.
+        return "fakenet", (f"{LEAF_CERT_NAME} is byte-identical to its backup, "
+                           f"so the swap has been undone by hand")
+    return "ringforge", f"{LEAF_CERT_NAME}{BACKUP_SUFFIX} holds FakeNet's original"
 
 
 def inspect(config_text: str, port: int = DEFAULT_PORT) -> dict[str, object]:
@@ -184,10 +250,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.tls:
         # Measured on run `b610dea4`: the client offers 0x009c/0x009d,
         # 0x003c/0x003d and 0x002f/0x0035, so FakeNet's hardcoded
-        # `ciphers='RSA'` has six suites to choose from. What is *not* settled
-        # is whether it accepts FakeNet's certificate.
-        print("              cert is FakeNet's own; if the implant validates it,")
-        print("              the handshake fails before the handler is reached")
+        # `ciphers='RSA'` has six suites to choose from. Which certificate is
+        # served is a separate question, and it is now read rather than assumed.
+        source, detail = leaf_source(fakenet_root_from(base))
+        if source == "ringforge":
+            print(f"cert        : RingForge's leaf is installed ({detail}).")
+            print("              The names it covers still have to include what")
+            print("              the implant asks for -- re-mint with")
+            print("              make_tls_cert.py --hostname if they do not.")
+        elif source == "fakenet":
+            print(f"cert        : FakeNet's own ({detail}). If the implant")
+            print("              validates it, the handshake fails before the")
+            print("              handler is reached. Swap it with")
+            print("              make_tls_cert.py --fakenet <install root>.")
+        else:
+            print(f"cert        : UNKNOWN -- {detail}. Check by hand which")
+            print("              certificate this install serves before reading")
+            print("              a no_connection summary as a rejected answer.")
 
     problems = []
     if findings.get("port_already_used_by"):

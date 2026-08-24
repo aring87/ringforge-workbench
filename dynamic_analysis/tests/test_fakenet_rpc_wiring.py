@@ -26,7 +26,13 @@ from dynamic_analysis.jsonrpc_responder import (
     OUTCOME_ETH_CALL,
     RequestRecorder,
 )
-from scripts.make_fakenet_config import build, inspect
+from scripts.make_fakenet_config import (
+    build,
+    fakenet_root_from,
+    inspect,
+    leaf_source,
+)
+from scripts.make_tls_cert import BACKUP_SUFFIX, LEAF_CERT_NAME
 
 #: A stand-in for FakeNet's default.ini. Deliberately carries comments and
 #: mixed-case option names -- the two things a configparser round-trip destroys.
@@ -305,3 +311,108 @@ class TlsChangesWhatSilenceMeans(unittest.TestCase):
 
         self.assertEqual(report["outcome"], OUTCOME_ETH_CALL)
         self.assertNotIn("handshake", report["outcome_note"])
+
+
+class WhichCertificateIsActuallyServed(unittest.TestCase):
+    """The script used to assert "cert is FakeNet's own" without looking.
+
+    That line is read at one moment only: when someone is deciding whether a
+    `no_connection` summary means the port was never routed or the client
+    refused the certificate. A confident wrong answer there costs an hour and
+    can cost a detonation, because the two look identical from the summary and
+    are separated only by the pcap.
+
+    The marker is the backup `install` leaves behind. `restore` removes it; a
+    hand-copy does not, which is why the bytes are compared as well.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ssl_utils = self.tmp / "listeners" / "ssl_utils"
+        self.ssl_utils.mkdir(parents=True)
+        (self.ssl_utils / LEAF_CERT_NAME).write_text("STOCK", encoding="ascii")
+
+    @property
+    def _backup(self) -> Path:
+        return self.ssl_utils / (LEAF_CERT_NAME + BACKUP_SUFFIX)
+
+    def test_a_stock_install_reports_fakenets_own(self) -> None:
+        source, _ = leaf_source(self.tmp)
+
+        self.assertEqual(source, "fakenet")
+
+    def test_a_swapped_leaf_is_recognised(self) -> None:
+        self._backup.write_text("STOCK", encoding="ascii")
+        (self.ssl_utils / LEAF_CERT_NAME).write_text("RINGFORGE", encoding="ascii")
+
+        source, _ = leaf_source(self.tmp)
+
+        self.assertEqual(source, "ringforge")
+
+    def test_a_backup_whose_bytes_match_the_leaf_means_the_swap_was_undone(self) -> None:
+        # Copying the backup back by hand leaves the marker in place. The
+        # marker then claims a swap and the served bytes deny it; the bytes win.
+        self._backup.write_text("STOCK", encoding="ascii")
+
+        source, detail = leaf_source(self.tmp)
+
+        self.assertEqual(source, "fakenet")
+        self.assertIn("by hand", detail)
+
+    def test_no_install_is_reported_as_unknown_rather_than_guessed(self) -> None:
+        source, _ = leaf_source(None)
+
+        self.assertEqual(source, "unknown")
+
+    def test_a_directory_that_is_not_a_fakenet_install_is_unknown(self) -> None:
+        source, _ = leaf_source(Path(tempfile.mkdtemp()))
+
+        self.assertEqual(source, "unknown")
+
+    def test_a_missing_leaf_is_unknown_rather_than_fakenets_own(self) -> None:
+        # An install with no server.pem serves nothing, and calling that
+        # "FakeNet's own" would be the same class of confident wrong answer
+        # this replaces.
+        (self.ssl_utils / LEAF_CERT_NAME).unlink()
+
+        source, _ = leaf_source(self.tmp)
+
+        self.assertEqual(source, "unknown")
+
+
+class FindingTheInstallTheConfigBelongsTo(unittest.TestCase):
+    """`leaf_source` can only answer about an install it was handed.
+
+    If this returns `None` on the guest, every report reads UNKNOWN -- honest,
+    and useless, and the kind of degradation nobody notices because it never
+    errors. `--fakenet-config` is routinely pointed at `configs/default.ini`
+    inside the install, so the walk up from the config is the path that
+    actually gets used.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp()) / "fakenet"
+        (self.root / "listeners" / "ssl_utils").mkdir(parents=True)
+        (self.root / "configs").mkdir()
+        self.config = self.root / "configs" / "default.ini"
+        self.config.write_text("[Diverter]\n", encoding="ascii")
+
+    def test_it_walks_up_from_a_config_inside_the_install(self) -> None:
+        self.assertEqual(fakenet_root_from(self.config), self.root)
+
+    def test_a_config_in_the_install_root_is_found_too(self) -> None:
+        loose = self.root / "default.ini"
+        loose.write_text("[Diverter]\n", encoding="ascii")
+
+        self.assertEqual(fakenet_root_from(loose), self.root)
+
+    def test_a_config_nowhere_near_an_install_gives_none(self) -> None:
+        stray = Path(tempfile.mkdtemp()) / "default.ini"
+        stray.write_text("[Diverter]\n", encoding="ascii")
+
+        # Only true when no FakeNet is installed on the machine running the
+        # tests; when one is, the located binary answers first and that is the
+        # right answer, so this asserts the pair rather than the None.
+        found = fakenet_root_from(stray)
+        self.assertTrue(found is None or (found / "listeners" / "ssl_utils").is_dir())
+

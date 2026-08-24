@@ -17,6 +17,16 @@ CA is one action that covers this host, the beacon host, and whatever the next
 sample resolves. The CA is installed into the guest's root store *once* and the
 leaf is regenerated freely.
 
+**And the CA is reused when one is already present, because re-minting it is
+what quietly breaks a bench.** The guest trusts a CA by its key. A fresh one
+leaves the root store holding an anchor that no longer signs the leaf being
+served, and nothing errors: the handshake fails exactly as run `7ae41ca7` did,
+silent FIN and no request written -- which is this file's own description of an
+implant that pins. That is the worst shape a bench defect can take, a plausible
+negative produced by a collector that has been made incapable of a positive.
+Re-mint deliberately with `--new-ca`; the script then says the anchor is new and
+that the guest needs it imported again.
+
 **OpenSSL from Git rather than `pip install cryptography`.** The guest is
 contained for a detonation, and adding a Python dependency means arming the
 network, pulling from PyPI and disarming again -- three chances to leave the
@@ -81,6 +91,12 @@ LEAF_KEY_NAME = "privkey.pem"
 #: refuse: overwriting a backup that already holds our leaf would destroy
 #: FakeNet's real files with no way back.
 BACKUP_SUFFIX = ".ringforge-original"
+
+#: The CA's two files. Named as constants because *whether one already exists*
+#: is a separate question from generating it, and the answer decides whether the
+#: guest's trust store still means anything.
+CA_CERT_NAME = "ringforge_ca.crt"
+CA_KEY_NAME = "ringforge_ca.key"
 
 
 class CertError(RuntimeError):
@@ -153,33 +169,72 @@ def san_line(hostnames: Sequence[str]) -> str:
         "DNS:" + name for name in normalise_hostnames(hostnames))
 
 
+def ca_status(out_dir: Path, force_new: bool = False) -> tuple[str, str]:
+    """Decide whether the CA in `out_dir` can be reused, and say why.
+
+    Split out of `generate` so it can be exercised without openssl. It is the
+    half that goes wrong invisibly -- a re-mint produces a perfectly valid CA,
+    and the only symptom is a guest that has stopped trusting the leaf.
+
+    Returns `("reuse" | "mint", reason)`. The reason is printed, so it is
+    written as an account rather than a status word.
+    """
+    ca_crt = out_dir / CA_CERT_NAME
+    ca_key = out_dir / CA_KEY_NAME
+
+    if force_new:
+        return "mint", "--new-ca was given"
+
+    have_crt, have_key = ca_crt.is_file(), ca_key.is_file()
+    if have_crt and have_key:
+        return "reuse", f"{CA_CERT_NAME} and {CA_KEY_NAME} are both present"
+    if not have_crt and not have_key:
+        return "mint", f"no CA in {out_dir} yet"
+
+    # Half a CA cannot sign anything, so minting is the only way forward -- but
+    # it is still a *new* anchor and that has to be said. Reporting it as an
+    # ordinary mint would let someone skip the import on the strength of a root
+    # store entry that no longer matches.
+    present, missing = ((CA_CERT_NAME, CA_KEY_NAME) if have_crt
+                        else (CA_KEY_NAME, CA_CERT_NAME))
+    return "mint", (f"{present} is present but {missing} is not, so the "
+                    f"existing CA cannot sign a leaf")
+
+
 def generate(
     out_dir: Path,
     hostnames: Sequence[str] = DEFAULT_HOSTNAMES,
     openssl: Path | None = None,
     days: int = 825,
-) -> dict[str, Path]:
-    """Mint a CA, and one leaf covering every name in `hostnames`."""
+    force_new_ca: bool = False,
+) -> dict[str, object]:
+    """Mint a leaf covering every name in `hostnames`, reusing the CA if there.
+
+    The returned `ca_action` is `"reuse"` or `"mint"`, and callers are meant to
+    act on it: a mint invalidates whatever the guest already trusts.
+    """
     names = normalise_hostnames(hostnames)
     binary = openssl or find_openssl()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ca_key = out_dir / "ringforge_ca.key"
-    ca_crt = out_dir / "ringforge_ca.crt"
+    ca_key = out_dir / CA_KEY_NAME
+    ca_crt = out_dir / CA_CERT_NAME
+    ca_action, ca_reason = ca_status(out_dir, force_new_ca)
     leaf_key = out_dir / LEAF_KEY_NAME
     leaf_crt = out_dir / LEAF_CERT_NAME
     csr = out_dir / "leaf.csr"
 
-    # `-nodes` leaves the key unencrypted, which is required: FakeNet loads it
-    # with no way to supply a passphrase.
-    _run(binary, [
-        "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
-        "-days", "3650",
-        "-keyout", ca_key.name, "-out", ca_crt.name,
-        "-subj", "/CN=RingForge Analysis CA/O=RingForge",
-        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
-        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
-    ], out_dir)
+    if ca_action == "mint":
+        # `-nodes` leaves the key unencrypted, which is required: FakeNet loads
+        # it with no way to supply a passphrase.
+        _run(binary, [
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+            "-days", "3650",
+            "-keyout", ca_key.name, "-out", ca_crt.name,
+            "-subj", "/CN=RingForge Analysis CA/O=RingForge",
+            "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        ], out_dir)
 
     _run(binary, [
         "req", "-newkey", "rsa:2048", "-nodes", "-sha256",
@@ -213,7 +268,8 @@ def generate(
         path.unlink(missing_ok=True)
 
     return {"ca_cert": ca_crt, "ca_key": ca_key,
-            "leaf_cert": leaf_crt, "leaf_key": leaf_key}
+            "leaf_cert": leaf_crt, "leaf_key": leaf_key,
+            "ca_action": ca_action, "ca_reason": ca_reason}
 
 
 def ssl_utils_dir(fakenet_root: Path) -> Path:
@@ -297,6 +353,10 @@ def main(argv: list[str] | None = None) -> int:
                              "swapped into listeners/ssl_utils with a backup")
     parser.add_argument("--restore", action="store_true",
                         help="put FakeNet's original certificate back and exit")
+    parser.add_argument("--new-ca", action="store_true", dest="new_ca",
+                        help="re-mint the CA even though one is present. The "
+                             "guest's trust store must then be updated, or "
+                             "every handshake fails looking like pinning")
     args = parser.parse_args(argv)
 
     try:
@@ -315,9 +375,13 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = Path(args.out)
         hostnames = normalise_hostnames(args.hostnames or DEFAULT_HOSTNAMES)
         made = generate(out_dir, hostnames,
-                        Path(args.openssl) if args.openssl else None)
+                        Path(args.openssl) if args.openssl else None,
+                        force_new_ca=args.new_ca)
+        minted_ca = made["ca_action"] == "mint"
         print(f"hostnames: {', '.join(hostnames)}")
         print(f"CA cert  : {made['ca_cert']}")
+        print(f"CA       : {'NEWLY MINTED' if minted_ca else 'reused'}"
+              f" -- {made['ca_reason']}")
         print(f"leaf     : {made['leaf_cert']}")
 
         if args.fakenet:
@@ -329,8 +393,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"failed: {error}")
         return 1
 
-    print("\nInstall the CA in the GUEST's trust store, elevated:")
-    print(f"    certutil -addstore -f Root \"{Path(args.out) / 'ringforge_ca.crt'}\"")
+    if minted_ca:
+        print("\nThe CA is NEW, so anything the guest already trusts is stale.")
+        print("Install it in the GUEST's trust store, elevated:")
+        print(f"    certutil -addstore -f Root \"{Path(args.out) / CA_CERT_NAME}\"")
+    else:
+        print("\nThe CA is unchanged, so a guest that already trusts it needs")
+        print("nothing -- only the leaf was regenerated. Importing again is")
+        print("harmless if this is a fresh guest, or if you are unsure:")
+        print(f"    certutil -addstore -f Root \"{Path(args.out) / CA_CERT_NAME}\"")
     print("\nThen restart FakeNet and re-run. Reading the result:")
     print("  application data after the handshake -> it trusts the CA, and the")
     print("    request is finally capturable.")

@@ -27,6 +27,37 @@ from emulate_native_stub import Emulator          # noqa: E402
 
 TOGGLE = "RINGFORGE_EXPLORER_CHILD"
 
+#: The two files a stored state is a function of. `ENV_TOGGLES` governs resume,
+#: and resume can only be wrong about something one of these reads.
+EMULATOR_SOURCES = ("emulate_native_stub.py", "win32_emu_env.py")
+
+#: `RINGFORGE_*` names that exist on this bench and cannot affect a stored
+#: state, each with the reason it is allowed. The list below answers the
+#: question the guard's failure message asks -- whether a name changes what the
+#: harness *claims exists*, or only where output goes.
+#:
+#: All four belong to `make_fakenet_config.py`, which configures FakeNet on the
+#: guest. That is a different process on a different machine from the emulator;
+#: no emulator state can be a function of any of them, and
+#: `test_the_allowlist_is_checked_against_the_emulator_itself` is what keeps
+#: that true rather than merely asserted here.
+ALLOWED_OUTSIDE_THE_EMULATOR = {
+    "RINGFORGE_REPO_ROOT": "where FakeNet's handler finds this repo",
+    "RINGFORGE_RPC_OUTPUT_DIR": "where the RPC record and summary are written",
+    "RINGFORGE_RPC_REPLY": "which canned reply the RPC listener sends",
+    "RINGFORGE_RPC_TLS": "whether the listener runs UseSSL: Yes",
+}
+
+
+def _names_referenced_in_scripts() -> dict[str, set[str]]:
+    """Every `RINGFORGE_*` name under `scripts/`, mapped to the files using it."""
+    found: dict[str, set[str]] = {}
+    for path in (Path(__file__).resolve().parents[2] / "scripts").glob("*.py"):
+        for name in re.findall(r"RINGFORGE_[A-Z_]+",
+                               path.read_text(encoding="utf-8")):
+            found.setdefault(name, set()).add(path.name)
+    return found
+
 
 def _clear(monkeypatch):
     for name in Emulator.ENV_TOGGLES:
@@ -94,14 +125,47 @@ def test_every_toggle_the_harness_reads_is_covered():
     A new `RINGFORGE_*` toggle that changes what the harness claims exists, added
     without a line here, reintroduces exactly the failure this file exists to
     prevent -- silently, and in a state written months earlier.
+
+    Every name must be *decided*: either governed by `ENV_TOGGLES` or written
+    into `ALLOWED_OUTSIDE_THE_EMULATOR` with its reason. A new one fails here
+    until someone answers the question, which is the whole value of the test.
     """
-    source = (Path(__file__).resolve().parents[2] / "scripts").glob("*.py")
-    referenced = set()
-    for path in source:
-        referenced |= set(re.findall(r"RINGFORGE_[A-Z_]+",
-                                     path.read_text(encoding="utf-8")))
-    missing = referenced - set(Emulator.ENV_TOGGLES)
-    assert not missing, (
-        f"{sorted(missing)} is read by the harness but not in ENV_TOGGLES. If it "
-        f"changes what the harness claims exists, add it; if it only changes "
-        f"fidelity to what is already there, say so here and allow it.")
+    referenced = set(_names_referenced_in_scripts())
+    undecided = referenced - set(Emulator.ENV_TOGGLES) - set(ALLOWED_OUTSIDE_THE_EMULATOR)
+    assert not undecided, (
+        f"{sorted(undecided)} is read by the harness and is neither in "
+        f"ENV_TOGGLES nor allowed. If it changes what the harness claims "
+        f"exists, add it to ENV_TOGGLES; if it only changes where output goes "
+        f"or how faithful it is to what is already there, add it to "
+        f"ALLOWED_OUTSIDE_THE_EMULATOR with the reason.")
+
+
+def test_the_allowlist_is_checked_against_the_emulator_itself():
+    """An allowlist nobody re-checks is where a real toggle goes to hide.
+
+    The claim each entry rests on is that the emulator does not read it. That
+    is a fact about two files and can be verified, so it is -- otherwise the
+    next person to make a `RINGFORGE_RPC_*` name mean something to the emulator
+    would silence this guard by moving a line rather than by thinking.
+    """
+    referenced = _names_referenced_in_scripts()
+    for name in sorted(ALLOWED_OUTSIDE_THE_EMULATOR):
+        users = referenced.get(name, set())
+        overlap = users & set(EMULATOR_SOURCES)
+        assert not overlap, (
+            f"{name} is allowed on the grounds that the emulator never reads "
+            f"it, but {sorted(overlap)} does. Either move it to ENV_TOGGLES or "
+            f"stop reading it there -- a stored state is a function of both.")
+
+
+def test_the_allowlist_carries_no_names_that_have_gone_away():
+    """A stale entry is a decision recorded about nothing.
+
+    It costs nothing to keep, and it is exactly what makes the next reader
+    trust the list less than they should.
+    """
+    referenced = set(_names_referenced_in_scripts())
+    gone = set(ALLOWED_OUTSIDE_THE_EMULATOR) - referenced
+    assert not gone, (
+        f"{sorted(gone)} is allowed but no longer read anywhere under "
+        f"scripts/. Delete the entry.")

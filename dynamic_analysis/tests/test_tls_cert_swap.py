@@ -17,18 +17,30 @@ from pathlib import Path
 
 from scripts.make_tls_cert import (
     BACKUP_SUFFIX,
+    CA_CERT_NAME,
+    CA_KEY_NAME,
     DEFAULT_HOSTNAME,
     DEFAULT_HOSTNAMES,
     DEFAULT_SINK_HOST,
     LEAF_CERT_NAME,
     LEAF_KEY_NAME,
     CertError,
+    ca_status,
+    find_openssl,
+    generate,
     install,
     normalise_hostnames,
     restore,
     san_line,
     ssl_utils_dir,
 )
+
+
+def _openssl_or_none():
+    try:
+        return find_openssl()
+    except CertError:
+        return None
 
 
 def _fake_fakenet(root: Path, with_originals: bool = True) -> Path:
@@ -180,6 +192,106 @@ class TheNamesTheLeafCovers(unittest.TestCase):
         # it would fail as a handshake problem hours later rather than here.
         with self.assertRaises(CertError):
             san_line(["", "   "])
+
+
+class ReusingTheCertificateAuthority(unittest.TestCase):
+    """Re-minting the CA is the way this script breaks a working bench.
+
+    The guest trusts an anchor by its key. Mint a second one and the root store
+    still holds the first, so the leaf being served no longer chains to anything
+    trusted -- and the symptom is a silent FIN after the certificate flight,
+    which is this project's own signature for an implant that pins. A run would
+    be read as an answer when it is a defect.
+
+    Regenerating the *leaf* is routine: `--hostname` changes as soon as a
+    sample resolves somewhere new. So the common operation had to stop taking
+    the anchor with it.
+    """
+
+    def setUp(self) -> None:
+        self.out = Path(tempfile.mkdtemp()) / "tls"
+
+    def _write_ca(self, cert: bool = True, key: bool = True) -> None:
+        self.out.mkdir(parents=True, exist_ok=True)
+        if cert:
+            (self.out / CA_CERT_NAME).write_text("CA CERT", encoding="ascii")
+        if key:
+            (self.out / CA_KEY_NAME).write_text("CA KEY", encoding="ascii")
+
+    def test_an_empty_directory_mints(self) -> None:
+        action, reason = ca_status(self.out)
+
+        self.assertEqual(action, "mint")
+        self.assertIn("no CA", reason)
+
+    def test_a_complete_ca_is_reused(self) -> None:
+        self._write_ca()
+
+        action, _ = ca_status(self.out)
+
+        self.assertEqual(action, "reuse")
+
+    def test_new_ca_overrides_a_complete_one_and_says_which_lever_did_it(self) -> None:
+        self._write_ca()
+
+        action, reason = ca_status(self.out, force_new=True)
+
+        self.assertEqual(action, "mint")
+        self.assertIn("--new-ca", reason)
+
+    def test_a_certificate_with_no_key_mints_and_names_what_is_missing(self) -> None:
+        # Half a CA cannot sign. Minting is right; reporting it as routine is
+        # not, because the root store entry is about to stop matching.
+        self._write_ca(key=False)
+
+        action, reason = ca_status(self.out)
+
+        self.assertEqual(action, "mint")
+        self.assertIn(CA_KEY_NAME, reason)
+
+    def test_a_key_with_no_certificate_mints_too(self) -> None:
+        self._write_ca(cert=False)
+
+        action, reason = ca_status(self.out)
+
+        self.assertEqual(action, "mint")
+        self.assertIn(CA_CERT_NAME, reason)
+
+
+@unittest.skipUnless(_openssl_or_none(), "needs openssl")
+class TheAnchorSurvivesARegeneratedLeaf(unittest.TestCase):
+    """The regression itself, measured rather than reasoned about.
+
+    Everything above tests the decision; this tests that acting on it keeps the
+    anchor byte-for-byte and still produces a leaf that chains to it. Those are
+    two different ways to be wrong and only one of them is a decision.
+    """
+
+    def test_a_second_run_with_different_names_keeps_the_same_ca(self) -> None:
+        out = Path(tempfile.mkdtemp()) / "tls"
+        first = generate(out, ["one.test"])
+        ca_bytes = Path(first["ca_cert"]).read_bytes()
+        leaf_bytes = Path(first["leaf_cert"]).read_bytes()
+
+        second = generate(out, ["two.test"])
+
+        self.assertEqual(first["ca_action"], "mint")
+        self.assertEqual(second["ca_action"], "reuse")
+        self.assertEqual(Path(second["ca_cert"]).read_bytes(), ca_bytes)
+        # The leaf is expected to change -- that is what was asked for.
+        self.assertNotEqual(Path(second["leaf_cert"]).read_bytes(), leaf_bytes)
+
+    def test_new_ca_really_does_replace_it(self) -> None:
+        # The escape hatch has to work, or the only way to rotate the anchor is
+        # to delete files by hand and hope the right ones were chosen.
+        out = Path(tempfile.mkdtemp()) / "tls"
+        first = generate(out, ["one.test"])
+        ca_bytes = Path(first["ca_cert"]).read_bytes()
+
+        second = generate(out, ["one.test"], force_new_ca=True)
+
+        self.assertEqual(second["ca_action"], "mint")
+        self.assertNotEqual(Path(second["ca_cert"]).read_bytes(), ca_bytes)
 
 
 if __name__ == "__main__":
