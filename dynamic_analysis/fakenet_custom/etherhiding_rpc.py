@@ -66,7 +66,39 @@ READ_TIMEOUT = 15.0
 
 MAX_REQUEST_BYTES = 256 * 1024
 
-_DEFAULT_REPO = r"C:\projects\RingForge_Analyzer"
+#: Where to look for `dynamic_analysis` when `RINGFORGE_REPO_ROOT` is unset.
+#:
+#: **This file is not in the repo when it runs.** `make_fakenet_config.py` copies
+#: it next to the generated config, so `__file__` points into the FakeNet working
+#: directory and cannot locate the package. Hence a candidate list rather than a
+#: derivation from `__file__`.
+#:
+#: The list used to be one entry and it was the repo's *parent*. Any run that did
+#: not go through `run_phase3.ps1` therefore got a handler that could not import
+#: its recorder -- and because `_fallback_reply` is byte-identical to the
+#: recorder's own error reply, neither the implant nor the report could tell.
+#: Arm A on 24 Aug lost a detonation to it: nine refused `eth_call`s, a summary
+#: carrying `warnings: (none)`, and a verdict.
+_DEFAULT_REPO_CANDIDATES = (
+    r"C:\projects\RingForge_Analyzer\ringforge-workbench",
+    r"C:\projects\RingForge_Analyzer",
+)
+
+
+def _default_repo() -> str:
+    """The first candidate that actually holds the package.
+
+    Checked rather than assumed, because the failure this replaces was silent in
+    both directions -- a wrong root produces a handler that answers normally and
+    records nothing.
+    """
+    for candidate in _DEFAULT_REPO_CANDIDATES:
+        if os.path.isdir(os.path.join(candidate, "dynamic_analysis")):
+            return candidate
+    return _DEFAULT_REPO_CANDIDATES[0]
+
+
+_DEFAULT_REPO = _default_repo()
 
 
 def _output_dir() -> Path:
