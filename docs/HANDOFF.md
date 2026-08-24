@@ -544,13 +544,21 @@ FakeNet was still up at 21:49 is in that run's logs.
 
 ### Two bench defects, and the second is the familiar one
 
-**1. `RINGFORGE_REPO_ROOT` was wrong by one path segment.** It read
-`C:\projects\RingForge_Analyzer`; the repo is
-`C:\projects\RingForge_Analyzer\ringforge-workbench`. The handler could not
-import `dynamic_analysis.jsonrpc_responder`, so it never built a recorder and
-never built an `AnswerPlanner` -- phase 2 could not have been armed even with
-`RINGFORGE_RPC_ANSWER=1` set. `make_fakenet_config.py` prints the correct value,
-derived from its own location; use its output rather than editing by hand.
+**1. The launcher was not used, and the handler's own default was wrong.**
+`run_phase3.ps1` sets `RINGFORGE_REPO_ROOT` correctly -- nobody typed a wrong
+value. The GUI was started some other way, the variable was unset, and
+`etherhiding_rpc.py` fell back to `_DEFAULT_REPO`, which read
+`C:\projects\RingForge_Analyzer`: **the repo's parent**. It had been wrong since
+it was written, and every run that went through the launcher masked it.
+
+So the handler could not import `dynamic_analysis.jsonrpc_responder`, never
+built a recorder, and never built an `AnswerPlanner` -- phase 2 could not have
+been armed even with `RINGFORGE_RPC_ANSWER=1` set.
+
+Fixed 24 Aug: the default is a candidate list now, checked for a
+`dynamic_analysis` directory rather than assumed. **Launch through
+`run_phase3.ps1` regardless** -- it also sets the plan, the sink, TLS and the
+output directory, and it is the only thing that sets `RINGFORGE_RPC_ANSWER=1`.
 
 **2. The run reported cleanly while a collector was dead.** Nine
 `handler_import_failed` records, and `dynamic_run_summary.json` carried
