@@ -42,6 +42,11 @@ EMULATOR_SOURCES = ("emulate_native_stub.py", "win32_emu_env.py")
 #: `test_the_allowlist_is_checked_against_the_emulator_itself` is what keeps
 #: that true rather than merely asserted here.
 ALLOWED_OUTSIDE_THE_EMULATOR = {
+    "RINGFORGE_ETHERSCAN_KEY": (
+        "a credential for a block explorer, read by chain_history.py on the "
+        "host. It gates whether an external service will answer, not what the "
+        "emulator claims exists -- and the script exits non-zero without it "
+        "rather than returning an empty result"),
     "RINGFORGE_REPO_ROOT": "where FakeNet's handler finds this repo",
     "RINGFORGE_RPC_OUTPUT_DIR": "where the RPC record and summary are written",
     "RINGFORGE_RPC_REPLY": "which canned reply the RPC listener sends",
