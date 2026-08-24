@@ -1,87 +1,66 @@
 """Design tokens for the RingForge Workbench UI.
 
-Single source of truth for color, type, spacing, and radius. Every module in
-``gui`` should pull values from here instead of embedding hex literals, so the
-whole workbench can be re-skinned from one file.
+Type, spacing, radius and the Tk-specific status mapping. **The palette itself
+lives in `design_tokens.py`** and is re-exported here unchanged, so the twelve
+modules that already import from `gui.theme` need no changes -- and so the HTML
+reports can share the same colours without `dynamic_analysis` having to import
+the GUI package. See that module for the palette and why it moved.
 
-Palette
--------
-
-Black and Lexus **Ultrasonic Blue Mica 2.0** -- a vivid, slightly cool electric
-blue. The surfaces are not neutral black: every one carries a blue cast so the
-accent reads as part of the same material rather than a sticker on grey. The
-accent ramp runs deep navy -> ultrasonic -> sky, which keeps the UI blue-rich
-without turning saturated blue into the background.
-
-Naming follows a surface/elevation ladder:
-
-    BG        the application canvas, furthest back
-    SURFACE   a card or panel resting on the canvas
-    RAISED    a control resting on a card (buttons, table headers)
-    SUNKEN    a recessed control (entries, consoles, text areas)
+Every module in ``gui`` should pull values from here rather than embedding hex
+literals; `verdict/tests/test_theme_tokens.py` enforces it.
 """
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Surfaces -- blue-black, never neutral grey
-# ---------------------------------------------------------------------------
-
-BG = "#04070E"           # application canvas, near-black with a blue cast
-BG_ALT = "#070C17"       # banded background
-SURFACE = "#0A1121"      # card / panel
-SURFACE_HOVER = "#0E182C"
-RAISED = "#121D35"       # control resting on a card
-RAISED_HOVER = "#182644"
-SUNKEN = "#02050B"       # entries, consoles -- the deepest black
-
-BORDER = "#16233D"       # default hairline, blue-tinted
-BORDER_STRONG = "#233A63"  # emphasised divider
-BORDER_MUTED = "#0E1830"
-
-# ---------------------------------------------------------------------------
-# Text -- cool whites so nothing reads warm against the blue
-# ---------------------------------------------------------------------------
-
-TEXT = "#EAF1FF"         # primary copy
-TEXT_SECONDARY = "#A8BCDC"
-TEXT_MUTED = "#6E82A6"   # captions, hints
-TEXT_DISABLED = "#42557A"
-TEXT_ON_ACCENT = "#FFFFFF"
-
-# ---------------------------------------------------------------------------
-# Accent -- Lexus Ultrasonic Blue Mica 2.0
-# ---------------------------------------------------------------------------
-
-ACCENT = "#0B63E5"        # the hero blue
-ACCENT_HOVER = "#2D7DF6"
-ACCENT_PRESS = "#0A4FBC"
-ACCENT_DEEP = "#062F73"   # deep end of the ramp, for gradients and glows
-ACCENT_BRIGHT = "#4FA3FF"  # highlights and hairlines
-ACCENT_BORDER = "#1E4FA8"
-ACCENT_SOFT = "#0C1E42"    # tinted fill behind accent content
-ACCENT_TEXT = "#6FA8FF"    # accent-coloured copy on dark surfaces
-GLOW = "#1B6FEF"           # halo colour under primary controls
-
-#: Vertical wash used behind page headers.
-HEADER_TOP = "#0D1E3E"
-HEADER_BOTTOM = "#070D1C"
-
-# ---------------------------------------------------------------------------
-# Semantic status -- kept cool enough to sit beside the blue
-# ---------------------------------------------------------------------------
-
-SUCCESS = "#2FD4A0"
-SUCCESS_SOFT = "#062A22"
-WARNING = "#F5B849"
-WARNING_SOFT = "#2A1F0C"
-DANGER = "#FF6B7A"
-DANGER_SOFT = "#2B1019"
-CRITICAL = "#F2455A"
-INFO = "#4FA3FF"
-INFO_SOFT = "#0C1E42"
-NEUTRAL = "#7C90B4"
-NEUTRAL_SOFT = "#111B31"
+# Re-exported deliberately. Listing them rather than star-importing keeps the
+# names greppable and lets a linter see them.
+from design_tokens import (  # noqa: F401
+    ACCENT,
+    ACCENT_BORDER,
+    ACCENT_BRIGHT,
+    ACCENT_DEEP,
+    ACCENT_HOVER,
+    ACCENT_PRESS,
+    ACCENT_SOFT,
+    ACCENT_TEXT,
+    BG,
+    BG_ALT,
+    BORDER,
+    BORDER_MUTED,
+    BORDER_STRONG,
+    CRITICAL,
+    DANGER,
+    DANGER_FILL,
+    DANGER_SOFT,
+    GLOW,
+    HEADER_BOTTOM,
+    HEADER_TOP,
+    INFO,
+    INFO_SOFT,
+    NEUTRAL,
+    NEUTRAL_SOFT,
+    RAISED,
+    RAISED_HOVER,
+    SUCCESS,
+    SUCCESS_SOFT,
+    SUNKEN,
+    SURFACE,
+    SURFACE_HOVER,
+    TEXT,
+    TEXT_DISABLED,
+    TEXT_MUTED,
+    TEXT_ON_ACCENT,
+    TEXT_SECONDARY,
+    WARNING,
+    WARNING_SOFT,
+    _to_hex,
+    _to_rgb,
+    alpha_over,
+    darken,
+    lighten,
+    mix,
+)
+from design_tokens import CATEGORY  # noqa: F401
 
 #: Verdict / status keyword -> (foreground, soft background).
 STATUS_COLORS = {
@@ -112,23 +91,6 @@ STATUS_COLORS = {
 def status_colors(status: str) -> tuple[str, str]:
     """Return ``(foreground, soft_background)`` for a status keyword."""
     return STATUS_COLORS.get(str(status).strip().lower(), (TEXT_SECONDARY, NEUTRAL_SOFT))
-
-
-# ---------------------------------------------------------------------------
-# Categorical accents
-# ---------------------------------------------------------------------------
-
-#: Used only to distinguish peer items (the six analysis modules), never to
-#: imply severity -- severity always comes from STATUS_COLORS above.
-#: All six stay inside the blue/cyan family so the set reads as one system.
-CATEGORY = {
-    "ultrasonic": "#0B63E5",   # the hero blue
-    "cyan": "#22D3EE",
-    "sky": "#4FA3FF",
-    "periwinkle": "#7C93FF",
-    "azure": "#31A8F0",
-    "teal": "#2DD4BF",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -246,41 +208,3 @@ RADIUS_LG = 12
 
 ROW_HEIGHT = 28          # treeview rows
 CARD_PADDING = SPACE_LG
-
-
-# ---------------------------------------------------------------------------
-# Color utilities
-# ---------------------------------------------------------------------------
-
-def _to_rgb(color: str) -> tuple[int, int, int]:
-    color = color.lstrip("#")
-    if len(color) == 3:
-        color = "".join(ch * 2 for ch in color)
-    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-
-
-def _to_hex(rgb: tuple[int, int, int]) -> str:
-    return "#%02X%02X%02X" % tuple(max(0, min(255, int(round(c)))) for c in rgb)
-
-
-def mix(color_a: str, color_b: str, t: float = 0.5) -> str:
-    """Blend two hex colors. ``t=0`` returns ``color_a``, ``t=1`` returns ``color_b``."""
-    ar, ag, ab = _to_rgb(color_a)
-    br, bg_, bb = _to_rgb(color_b)
-    return _to_hex((ar + (br - ar) * t, ag + (bg_ - ag) * t, ab + (bb - ab) * t))
-
-
-def lighten(color: str, amount: float = 0.1) -> str:
-    return mix(color, "#FFFFFF", amount)
-
-
-def darken(color: str, amount: float = 0.1) -> str:
-    return mix(color, "#000000", amount)
-
-
-def alpha_over(color: str, background: str, alpha: float) -> str:
-    """Flatten ``color`` at ``alpha`` over an opaque ``background``.
-
-    Tk has no alpha channel, so translucency is pre-computed here.
-    """
-    return mix(background, color, alpha)

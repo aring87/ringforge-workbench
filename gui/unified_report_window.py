@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from dynamic_analysis.report_theme import report_css
 from gui import theme as T
 from gui.components import HeaderBar, ScrolledText
 from gui.styles import apply_window_theme
@@ -1291,92 +1292,7 @@ class UnifiedReportWindow(tk.Toplevel):
     <head>
     <meta charset="utf-8">
     <title>Unified RingForge Report</title>
-    <style>
-    :root {{
-      --bg: #0A0A0A;
-      --panel: #101726;
-      --border: #22314F;
-      --text: #F3F6FB;
-      --muted: #A9B7D0;
-      --blue: #6EA8FF;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      font-family: Segoe UI, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      margin: 0;
-      padding: 24px;
-    }}
-    .container {{
-      max-width: 1200px;
-      margin: 0 auto;
-    }}
-    .banner {{
-      background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
-      border: 1px solid #22314F;
-      border-radius: 18px;
-      padding: 22px;
-      margin-bottom: 20px;
-    }}
-    h1 {{
-      margin: 0 0 8px 0;
-      font-size: 30px;
-      color: var(--blue);
-    }}
-    h2 {{
-      color: var(--text);
-      margin-top: 0;
-    }}
-    .subtitle {{
-      color: var(--muted);
-      margin-top: 6px;
-      font-size: 14px;
-    }}
-    .card {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px;
-      margin-bottom: 18px;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-    }}
-    th, td {{
-      text-align: left;
-      padding: 10px;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
-      word-break: normal;
-      overflow-wrap: anywhere;
-      line-height: 1.45;
-    }}
-    
-    td:nth-child(3) {{
-    font-size: 13px;
-    color: #cbd5e1;
-    }}
-    
-    th {{
-      width: 24%;
-      color: #cbd5e1;
-    }}
-    ul {{
-      margin: 0;
-      padding-left: 20px;
-    }}
-    li {{
-      margin-bottom: 6px;
-    }}
-    .footer {{
-      margin-top: 20px;
-      color: var(--muted);
-      font-size: 12px;
-      text-align: right;
-    }}
-    </style>
+    <style>{report_css()}</style>
     </head>
     <body>
     <div class="container">

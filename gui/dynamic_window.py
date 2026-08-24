@@ -29,6 +29,7 @@ from dynamic_analysis.procmon_config import (
     describe_procmon_filter,
 )
 from static_triage_engine.scoring import combined_score_from_case_dir
+from dynamic_analysis.report_theme import report_css
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
 
@@ -629,9 +630,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.armed_banner = tk.Label(
             self,
             text="",
-            bg="#7f1d1d",
-            fg="#ffffff",
-            font=("Segoe UI", 11, "bold"),
+            bg=T.DANGER_FILL,
+            fg=T.TEXT_ON_ACCENT,
+            font=T.font(11, "bold"),
             anchor="w",
             padx=12,
             pady=7,
@@ -1943,15 +1944,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
         html_doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Dynamic Report</title>
-<style>
-body {{ font-family: Segoe UI, Arial, sans-serif; background: #0b1220; color: #e5eefc; margin: 0; padding: 24px; }}
-.card {{ background: #101a2f; border: 1px solid #223455; border-radius: 14px; padding: 18px; margin-bottom: 16px; }}
-h1, h2 {{ margin-top: 0; color: #9cc4ff; }}
-table {{ width: 100%; border-collapse: collapse; }}
-th, td {{ border-bottom: 1px solid #223455; text-align: left; padding: 8px; vertical-align: top; }}
-ul {{ margin-top: 8px; }}
-.muted {{ color: #9fb3d9; }}
-</style></head><body>
+<style>{report_css()}</style></head><body>
 <div class="card">
 <h1>Dynamic Analysis Report</h1>
 <p class="muted">Case: {esc(case_home.name)}</p>

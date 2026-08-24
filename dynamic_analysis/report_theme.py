@@ -3,6 +3,76 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from design_tokens import (
+    ACCENT,
+    ACCENT_DEEP,
+    ACCENT_TEXT,
+    BG,
+    BG_ALT,
+    BORDER,
+    BORDER_STRONG,
+    CRITICAL,
+    DANGER,
+    HEADER_TOP,
+    INFO,
+    SUCCESS,
+    SURFACE,
+    TEXT,
+    TEXT_SECONDARY,
+    WARNING,
+    alpha_over,
+    lighten,
+)
+
+
+def _severity_vars() -> str:
+    """CSS custom properties for the badge ramp, from the shared palette.
+
+    **Flattened rather than `rgba()`.** Tk has no alpha channel, so the desktop
+    application already pre-computes its translucency; computing the HTML the
+    same way is what stops a badge being one colour in the window and a slightly
+    different one in the exported report. That difference is exactly the kind
+    nobody can name and everybody notices.
+    """
+    ramp = {
+        "none": SUCCESS,
+        "low": INFO,
+        "med": WARNING,
+        "high": DANGER,
+        "critical": CRITICAL,
+    }
+    lines = []
+    for name, colour in ramp.items():
+        lines.append(f"  --sev-{name}-fg: {lighten(colour, 0.55)};")
+        lines.append(f"  --sev-{name}-bg: {alpha_over(colour, SURFACE, 0.14)};")
+        lines.append(f"  --sev-{name}-border: {alpha_over(colour, SURFACE, 0.38)};")
+    return "\n".join(lines)
+
+
+#: The palette half of the stylesheet, built from `design_tokens`. Split from
+#: the rules below so the rules can stay a raw string -- CSS is mostly braces,
+#: and an f-string over the whole sheet would mean doubling every one of them.
+_ROOT = f""":root {{
+  --bg: {BG};
+  --panel: {SURFACE};
+  --panel-2: {BG_ALT};
+  --border: {BORDER};
+  --border-strong: {BORDER_STRONG};
+  --text: {TEXT};
+  --muted: {TEXT_SECONDARY};
+  --blue: {ACCENT_TEXT};
+  --blue-strong: {ACCENT};
+  --blue-deep: {ACCENT_DEEP};
+  --header-top: {HEADER_TOP};
+  --good: {SUCCESS};
+  --warn: {WARNING};
+  --bad: {DANGER};
+  --critical: {CRITICAL};
+  --shadow: 0 10px 30px rgba(0,0,0,0.35);
+{_severity_vars()}
+}}
+"""
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -60,21 +130,16 @@ def label_badge(label: str, value: Any) -> str:
 
 
 def report_css() -> str:
-    return r"""
-:root {
-  --bg: #0A0A0A;
-  --panel: #101726;
-  --panel-2: #0B1220;
-  --border: #22314F;
-  --text: #F3F6FB;
-  --muted: #A9B7D0;
-  --blue: #6EA8FF;
-  --blue-strong: #1E4ED8;
-  --good: #19C37D;
-  --warn: #F5B942;
-  --bad: #E45757;
-  --shadow: 0 10px 30px rgba(0,0,0,0.35);
-}
+    """The one report stylesheet.
+
+    There were five in this repository -- this one, two near-identical copies in
+    `gui/extension_window.py` and `gui/unified_report_window.py`, and two
+    ad-hoc sheets in `gui/dynamic_window.py` and `gui/api_window.py` with
+    entirely different palettes. Every window that exports HTML now renders
+    through this, so the application and its own reports stop reading as
+    different products.
+    """
+    return _ROOT + r"""
 * { box-sizing: border-box; }
 body {
   font-family: Segoe UI, Arial, sans-serif;
@@ -95,7 +160,7 @@ h1 {
 h2 {
   margin: 0;
   font-size: 18px;
-  color: #bfdbfe;
+  color: var(--blue);
 }
 .subtitle {
   color: var(--muted);
@@ -103,8 +168,8 @@ h2 {
   font-size: 14px;
 }
 .banner {
-  background: linear-gradient(135deg, #0A0A0A, #0F1C3F 45%, #1E4ED8 100%);
-  border: 1px solid #22314F;
+  background: linear-gradient(135deg, var(--bg), var(--header-top) 45%, var(--blue-strong) 100%);
+  border: 1px solid var(--border);
   border-radius: 18px;
   padding: 22px;
   margin-bottom: 20px;
@@ -181,7 +246,7 @@ th, td {
   font-size: 14px;
 }
 th {
-  color: #cbd5e1;
+  color: var(--muted);
   width: 35%;
   background: rgba(255,255,255,0.01);
 }
@@ -423,24 +488,48 @@ li {
   white-space: nowrap;
 }
 .sev-none {
-  background: rgba(16,185,129,0.12);
-  color: #a7f3d0;
-  border-color: rgba(16,185,129,0.35);
+  background: var(--sev-none-bg);
+  color: var(--sev-none-fg);
+  border-color: var(--sev-none-border);
 }
 .sev-low {
-  background: rgba(59,130,246,0.12);
-  color: #bfdbfe;
-  border-color: rgba(59,130,246,0.35);
+  background: var(--sev-low-bg);
+  color: var(--sev-low-fg);
+  border-color: var(--sev-low-border);
 }
 .sev-med {
-  background: rgba(245,158,11,0.12);
-  color: #fde68a;
-  border-color: rgba(245,158,11,0.35);
+  background: var(--sev-med-bg);
+  color: var(--sev-med-fg);
+  border-color: var(--sev-med-border);
 }
 .sev-high {
-  background: rgba(239,68,68,0.12);
-  color: #fecaca;
-  border-color: rgba(239,68,68,0.35);
+  background: var(--sev-high-bg);
+  color: var(--sev-high-fg);
+  border-color: var(--sev-high-border);
+}
+/* Carried over from the window-local sheets this one replaced, each of which
+   had a rule or two the others lacked. They live here now so those copies
+   could be deleted. */
+.label {
+  color: var(--muted);
+  font-weight: 700;
+}
+.sev-critical {
+  background: var(--sev-critical-bg);
+  color: var(--sev-critical-fg);
+  border-color: var(--sev-critical-border);
+}
+pre {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--text);
 }
 .footer {
   margin-top: 20px;

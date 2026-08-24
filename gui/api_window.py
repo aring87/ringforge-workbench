@@ -11,6 +11,7 @@ from typing import Any
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from dynamic_analysis.report_theme import report_css
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
 from gui.styles import apply_window_theme
@@ -1308,14 +1309,7 @@ class APIAnalysisWindow(tk.Toplevel):
 <head>
 <meta charset=\"utf-8\">
 <title>RingForge API Test Report</title>
-<style>
-body {{ background: #05070B; color: #F7FAFF; font-family: \"Segoe UI\", Arial, sans-serif; margin: 24px; }}
-.card {{ background: #0B1220; border: 1px solid #294C8E; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
-h1, h2 {{ margin-top: 0; }}
-.grid {{ display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; }}
-.label {{ color: #B8C7E6; font-weight: 700; }}
-pre {{ white-space: pre-wrap; word-break: break-word; background: #0D1A33; border: 1px solid #294C8E; border-radius: 10px; padding: 12px; overflow-x: auto; }}
-</style>
+<style>{report_css()}</style>
 </head>
 <body>
 <div class=\"card\">
