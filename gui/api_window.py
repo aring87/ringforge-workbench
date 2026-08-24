@@ -12,6 +12,7 @@ from typing import Any
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from dynamic_analysis.report_theme import report_css
+from static_triage_engine.api_response_analysis import analyze_response
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
 from gui.styles import apply_window_theme
@@ -645,133 +646,52 @@ class APIAnalysisWindow(tk.Toplevel):
         elapsed: str,
         size: str,
     ) -> str:
-        findings: list[str] = []
+        """Render what `api_response_analysis` decided.
 
-        url_l = (url or "").strip().lower()
-        headers_l = (headers or "").lower()
-        body_l = (body or "").lower()
-        raw_l = (raw or "").lower()
-        content_type_l = (content_type or "").lower()
+        **This method used to be the analysis.** It searched one lowercased
+        blob per source for a list of words, and `set-cookie` was on the
+        sensitive-value list -- so every endpoint that sets a cookie, which is
+        every login endpoint an analyst reaches for this tool to test, reported
+        the only High finding it had. `debug` and `line ` were on the
+        verbose-error list, so `{"debug": false}` read as leaked internals.
 
-        findings.append("RingForge API Response Analysis")
-        findings.append("=" * 34)
-        findings.append("")
-        findings.append(f"Method: {method or '-'}")
-        findings.append(f"URL: {url or '-'}")
-        findings.append(f"Status: {status or '-'}")
-        findings.append(f"Elapsed: {elapsed or '-'}")
-        findings.append(f"Content-Type: {content_type or '-'}")
-        findings.append(f"Size: {size or '-'}")
-        findings.append("")
+        `headers` is the response's, and `raw` is kept in the signature because
+        the window still passes it; the engine reads the body for values and the
+        headers for decisions the server made, which is the distinction that
+        makes any of these findings mean something.
+        """
+        result = analyze_response(
+            method=method,
+            url=url,
+            status=status,
+            response_headers=headers,
+            body=body or raw,
+        )
 
-        # Status review
-        try:
-            status_i = int(str(status).strip().split()[0])
-        except Exception:
-            status_i = 0
-
-        if 200 <= status_i < 300:
-            findings.append("[Info] Successful HTTP response received.")
-        elif 300 <= status_i < 400:
-            findings.append("[Low] Redirect response received. Review Location header and destination host.")
-        elif status_i in {401, 403}:
-            findings.append("[Info] Endpoint returned an authentication/authorization denial.")
-        elif 400 <= status_i < 500:
-            findings.append("[Medium] Client error response received. Review request structure, authentication, and endpoint behavior.")
-        elif status_i >= 500:
-            findings.append("[Medium] Server error response received. Check whether verbose errors or stack traces were exposed.")
-        else:
-            findings.append("[Info] HTTP status could not be classified.")
-
-        # Transport review
-        if url_l.startswith("https://"):
-            findings.append("[Info] HTTPS transport used.")
-        elif url_l.startswith("http://"):
-            findings.append("[Medium] Cleartext HTTP transport used. Sensitive data may be exposed in transit.")
-        else:
-            findings.append("[Info] URL scheme was not identified as HTTP or HTTPS.")
-
-        # Content type review
-        if "application/json" in content_type_l:
-            findings.append("[Info] JSON response detected.")
-        elif "text/html" in content_type_l:
-            findings.append("[Info] HTML response detected.")
-        elif content_type_l and content_type_l != "—":
-            findings.append(f"[Info] Response content type observed: {content_type}.")
-        else:
-            findings.append("[Info] Response content type was not provided.")
-
-        # Header checks
-        if "server:" in headers_l:
-            findings.append("[Low] Server header disclosed backend/server information.")
-
-        if "x-powered-by:" in headers_l:
-            findings.append("[Low] X-Powered-By header disclosed framework or runtime information.")
-
-        if "access-control-allow-origin: *" in headers_l:
-            findings.append("[Low] Wildcard CORS origin observed. Review whether this is expected for the endpoint.")
-
-        if "set-cookie:" in headers_l:
-            findings.append("[Medium] Set-Cookie header observed. Review cookie attributes such as Secure, HttpOnly, and SameSite.")
-
-        if "strict-transport-security:" not in headers_l and url_l.startswith("https://"):
-            findings.append("[Low] HSTS header was not observed. This may be acceptable for non-browser API endpoints but should be reviewed.")
-
-        # Verbose error checks
-        verbose_error_terms = [
-            "traceback",
-            "stack trace",
-            "exception",
-            "nullreferenceexception",
-            "sqlexception",
-            "syntaxerror",
-            "debug",
-            "line ",
-            "internal server error",
+        out = [
+            "RingForge API Response Analysis",
+            "=" * 34,
+            "",
+            f"Method: {method or '-'}",
+            f"URL: {url or '-'}",
+            f"Status: {status or '-'}",
+            f"Elapsed: {elapsed or '-'}",
+            f"Content-Type: {content_type or '-'}",
+            f"Size: {size or '-'}",
+            "",
         ]
-        if any(term in body_l or term in raw_l for term in verbose_error_terms):
-            findings.append("[Medium] Verbose error/debug content may be present in the response.")
+        out += [f"[{f['severity']}] {f['message']}" for f in result["findings"]]
 
-        # Sensitive value checks
-        sensitive_terms = [
-            "access_token",
-            "refresh_token",
-            "id_token",
-            "client_secret",
-            "api_key",
-            "apikey",
-            "password",
-            "passwd",
-            "authorization",
-            "bearer ",
-            "private_key",
-            "set-cookie",
+        counts = result["counts"]
+        out += ["", "Severity Summary:"]
+        out += [f"- {level}: {counts[level]}"
+                for level in ("High", "Medium", "Low", "Info")]
+        out += [
+            "",
+            "Note: These findings are heuristic indicators for analyst review. "
+            "They do not prove a vulnerability by themselves.",
         ]
-        if any(term in body_l or term in raw_l or term in headers_l for term in sensitive_terms):
-            findings.append("[High] Token, credential, cookie, or secret-like content may be present. Use redaction before sharing reports.")
-
-        if not findings:
-            findings.append("[Info] No response findings generated.")
-            
-        severity_counts = {
-            "High": sum(1 for x in findings if x.startswith("[High]")),
-            "Medium": sum(1 for x in findings if x.startswith("[Medium]")),
-            "Low": sum(1 for x in findings if x.startswith("[Low]")),
-            "Info": sum(1 for x in findings if x.startswith("[Info]")),
-        }
-
-        findings.append("")
-        findings.append("Severity Summary:")
-        findings.append(f"- High: {severity_counts['High']}")
-        findings.append(f"- Medium: {severity_counts['Medium']}")
-        findings.append(f"- Low: {severity_counts['Low']}")
-        findings.append(f"- Info: {severity_counts['Info']}")
-
-        findings.append("")
-        findings.append("Note: These findings are heuristic indicators for analyst review. They do not prove a vulnerability by themselves.")
-
-        return "\n".join(findings)
-
+        return "\n".join(out)
 
     def _refresh_response_analysis(self) -> None:
         method = self.method_var.get().strip()

@@ -386,7 +386,7 @@ authentication and then exempts a destructive administrative route from it —
 which also keeps the category independent of the one above, so an API with no
 auth cannot corroborate itself.
 
-**Phase 3b — extension. DONE, 24 Aug. api still to do.**
+**Phase 3b — extension and api. DONE, 24 Aug.**
 
 Not the rename this note assumed: `gui/extension_window.py` (1,743 lines) and
 `gui/api_window.py` (1,394) performed their analysis inside Tkinter windows,
@@ -421,6 +421,47 @@ because those are three views of one behaviour. Here they are not — the manife
 says what an extension *requests* and the source says what it *uses*, and an
 extension asking for nothing while its code reads cookies is exactly the case
 worth catching.
+
+*The api half.* `static_triage_engine/api_response_analysis.py`, 15 tests, four
+categories: `credential_disclosure`, `cleartext_transport`,
+`implementation_disclosure`, `permissive_sharing`.
+
+**Its only High finding fired on every endpoint that sets a cookie.** The
+sensitive-value list held `set-cookie`, `authorization` and `bearer ` and
+matched them as substrings against headers and body alike — so every login
+endpoint, which is the thing an analyst reaches for this tool to test, reported
+"Token, credential, cookie, or secret-like content may be present". So did any
+endpoint whose body merely *mentioned* authorization, such as one returning its
+own API documentation.
+
+It now matches a credential-shaped **value** — a named field with a plausible
+secret after it — rather than the appearance of a word, and treats `Set-Cookie`
+as what it is: a cookie, worth checking for its flags, not a disclosure. The
+finding that was buried is now the one worth having, that the cookie lacks
+`HttpOnly`, `Secure` or `SameSite`.
+
+Two verbose-error markers also went: `debug` matched any JSON carrying a `debug`
+field and `line ` matched most English, both tested against the body *and* the
+raw text, so `{"debug": false}` read as leaked internals.
+
+### Open: the band names are malware-shaped
+
+Worth recording rather than shipping quietly. Three modules ask *is this
+malicious* — static, dynamic, extension. Two ask *is this insecure* — spec and
+api. They share one set of band names, so a misconfigured API endpoint that
+returns a token over cleartext reports **Likely Malicious**, which is the right
+severity under the wrong noun.
+
+Nothing is wrong with the corroboration; the reasoning holds and the severity is
+right. What is wrong is the word, and it is wrong in both directions: an analyst
+reading "Likely Malicious" about their own staging API will discount it, and
+discounting it is how the next real finding gets missed.
+
+Two ways out, neither taken yet. Per-module verdict vocabularies sharing one
+severity axis — more honest, more surface. Or neutral band names across the
+board (`Strong Evidence` / `Corroborated` / `Single Observation`) — one change,
+and it costs the malware side a phrase that is genuinely useful when it is
+accurate. This wants deciding before anyone outside the bench reads a report.
 
 **Phase 4a — the combiner. DONE, 24 Aug.** 38 tests across
 `verdict/tests/test_combine.py` and `static_triage_engine/tests/test_combine_case.py`.
