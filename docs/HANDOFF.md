@@ -2837,18 +2837,34 @@ wall-clock intervals are direct readings and do not depend on it.)
   payload was still in phase 2 an hour later. That was contamination, and also
   the first evidence the payload outlives its run.
 
-### `timeout` is not the lever. `post_exit_observation_seconds` is.
+### Whichever expires first ends the run, so a long window needs both
 
-The 900-second window did nothing: `duration_seconds: 496`, `ended_because:
-post_exit_observation_complete`.
+`timeout_seconds` is the **ceiling**. `post_exit_observation_seconds` is how long
+observation continues *after the root exits*, and it runs inside that ceiling
+rather than past it. The run ends at whichever comes first.
 
-**Installer mode ends the run 120 seconds after the *root* exits.** The root
-exited at t192, so the run was over at ~t312 no matter what the timeout said.
-The field everyone reaches for cannot extend observation past that, and the run
-tore down two minutes into the lock phase with the payload still running.
+On run `f3f6da3b` the timeout was 900 and post-exit 120: the root exited at t192,
+post-exit ran out at t312, and the run ended there --
+`duration_seconds: 496`, `ended_because: post_exit_observation_complete`. Raising
+the timeout alone did nothing **because the timeout was not the binding
+constraint that run**. Raising post-exit alone would fail the same way once it
+exceeds the timeout, which the GUI warns about:
 
-To watch longer: raise `post_exit_observation_seconds`, or untick installer
-mode. Not the timeout.
+> Post-exit observation is longer than or equal to the sample observation
+> timeout ... RingForge will stop at the timeout before the full post-exit
+> observation window completes.
+
+So for a window reaching t792 -- the whole substitution phase with margin --
+**set post-exit to 600 and the timeout to 900.** Not one or the other.
+
+> **Corrected 23 Aug.** This section first read "`timeout` is not the lever,
+> `post_exit_observation_seconds` is", and suggested unticking installer mode as
+> an alternative. Both wrong. The first generalised one run in which the timeout
+> happened not to bind. The second is worse than the default: **non-installer
+> mode ends the run the moment the root exits** (`orchestrator.py`, the
+> `sample_exited` return), so it removes the post-exit window entirely. Installer
+> mode is the only thing granting any observation past the loader's exit and
+> must stay on.
 
 ### What this makes the sample
 
