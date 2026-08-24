@@ -2729,6 +2729,73 @@ it delivered the request.
 
 ---
 
+## THE ATTACKER'S WALLET, IN OUR CLIPBOARD, 576 TIMES — 23 Aug
+
+**Substitution is measured, with the real wallet, inside containment.** Run
+`bait6`, 21:49, against the payload that spawned at 14:03:41 and was still
+running -- **seven hours and forty-five minutes** after the watcher recorded it
+as exited at t192.
+
+    580 rounds, 576 substituted, 4 clipboard errors, 0 anything else
+
+    wrote  0xC0FFEE0000000000000000000000000000C0FFEE
+    read   0x0F14fc3bfAc3726172aCd08Fe4bFb79B633E76ff
+
+Every one identical. That is `$eth` from the hardcoded table, in the EIP-55 form
+the 22 Aug clipboard incident produced -- the same address, arrived at from
+inside the guest rather than through the analyst's own clipboard. **The campaign
+substitutes, it substitutes with the wallet in the table, and the wallet is
+`0x0F14fc3b`.**
+
+### This corrects two claims in the sections below
+
+**1. "The clipper writes the C2's response body verbatim." Not supported.**
+
+That came from `bait5`, where the clipboard filled with FakeNet's default HTML
+page and the served file contained exactly that. `bait6` disproves it: the
+served file now holds the 42-byte tracer, so a verbatim-body clipper would paste
+`0xC0FFEE…`. It pasted the hardcoded wallet instead, 576 times, with no HTML at
+all.
+
+    served file             clipboard received
+    HTML page   (bait5)     the HTML page
+    tracer      (bait6)     the hardcoded wallet
+
+**No mechanism here explains both**, and that is left as a stated gap rather
+than filled with a third theory -- the second one is what produced this
+correction. What is solid: late-stage substitution uses the hardcoded table and
+is matched to the format of what was copied.
+
+It also retires the framing built on the wrong claim: **"an attacker controlling
+the C2 controls what lands in every victim's clipboard" is not established.**
+The clipboard got a wallet that was compiled into the sample, not one the C2
+supplied.
+
+**2. "The clipboard is taken and never released." Wrong.**
+
+`bait5` recorded 481 consecutive failures and ended still locked, which was
+written up as terminal. `bait6` opened the clipboard on its first round and got
+576 clean reads out of 580. **The lock held at least 17 minutes and later
+released**, so phase 3 is a state the clipper passes through, not an end state.
+
+Both errors have the same shape: **the longest observation available was
+mistaken for the whole behaviour.** That is the third time on this sample, after
+the 240-second window and the 36-second "lifetime".
+
+### What the sequence actually looks like now
+
+    +8s      substitution begins, shortly after the payload spawns
+    ~197s    substituting
+    +205s    clipboard locked -- reads and writes both fail
+    ...      at least 17 minutes locked
+    +7h45m   substituting again, with the hardcoded wallet, uninterrupted
+
+Whether phases 2 and 4 differ in *mechanism* or only in what happened to be
+served is the open question, and it is answerable: serve the tracer from a clean
+detonation and watch phase 2 with it already in place. That is the run that was
+being set up when this one answered a bigger question by accident.
+
+
 ## THE CLIPPER HAS THREE PHASES, AND THE RUN ENDS INSIDE THE THIRD — 23 Aug
 
 **A complete behavioural profile, from run `f3f6da3b` with a 900-second window
@@ -2739,7 +2806,12 @@ it.
     14:03:49   substitution begins                   +8s
     14:03:58   loader powershell.exe exits           +17s   (the "root-exit" dump)
     14:07:06   clipboard LOCKED                      +205s
-    14:21:05   still locked when the bait stopped    +1044s, never released
+    14:21:05   still locked when the bait stopped    +1044s
+
+> **"Never released" was wrong, corrected the same day.** The lock held for at
+> least 17 minutes and had lifted by 21:49, when 576 of 580 rounds read cleanly.
+> See *THE ATTACKER'S WALLET, IN OUR CLIPBOARD, 576 TIMES*. The longest
+> observation available was again mistaken for the whole behaviour.
 
 796 bait rounds: **129 clean, 186 substituted, 481 locked out.**
 
@@ -2785,11 +2857,13 @@ the wild**. Its whole active window opens after the loader has exited -- the
 moment most pipelines call the run finished -- and its steady state is holding
 the clipboard open, which no dynamic report has a field for.
 
-Still untested, and now one variable: the clipper writes the C2's response body
-into the clipboard verbatim, so **an attacker controlling the C2 controls what
-lands in every victim's clipboard**. Putting a tracer address in the served file
-and re-running confirms it. The guest is characterised; this is minutes, not a
-campaign.
+> **The paragraph that stood here claimed the clipper writes the C2's response
+> body verbatim, and that an attacker controlling the C2 therefore controls
+> every victim's clipboard. Neither is supported.** Serving the tracer instead
+> of the HTML page produced the *hardcoded* wallet in the clipboard, 576 times.
+> See *THE ATTACKER'S WALLET, IN OUR CLIPBOARD, 576 TIMES*. The test proposed
+> here was run and refuted the claim it was written to confirm, which is the
+> best thing a proposed test can do.
 
 
 ## THE PAYLOAD DOES NOT EXIT AFTER 36 SECONDS. IT NEVER EXITED. — 23 Aug
