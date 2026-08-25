@@ -7,6 +7,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from dynamic_analysis.report_theme import report_css
+from static_triage_engine.verdict_report import render_verdict_report
 from gui import theme as T
 from gui.components import HeaderBar, ScrolledText
 from gui.styles import apply_window_theme
@@ -1183,6 +1184,9 @@ class UnifiedReportWindow(tk.Toplevel):
             "case_path": str(self.case_dir),
             "overall_verdict": self._derive_overall_verdict(self.detected_artifacts),
             "combined_score": combined_score,
+            # The whole verdict document, for the renderer. The flattened
+            # fields above stay because the Tk view reads individual values.
+            "verdict_json": combined_summary if isinstance(combined_summary, dict) else None,
             "combined_verdict": combined_verdict,
             "combined_severity": combined_severity,
             "combined_categories": combined_categories,
@@ -1223,154 +1227,47 @@ class UnifiedReportWindow(tk.Toplevel):
             self._bring_to_front()
 
     def _build_html_report(self, data: dict) -> str:
-        case_name = html.escape(str(data.get("case_name", "-")))
-        case_path = html.escape(str(data.get("case_path", "-")))
-        overall_verdict = html.escape(str(data.get("overall_verdict", "-")))
-        combined_score = data.get("combined_score")
-        combined_verdict = data.get("combined_verdict")
-        combined_severity = data.get("combined_severity")
-        combined_categories = data.get("combined_categories")
-        combined_coverage = data.get("combined_coverage")
-        static_score = data.get("static_score")
-        dynamic_score = data.get("dynamic_score")
-        api_score = data.get("api_score")
-        spec_score = data.get("spec_score")
-        extension_score = data.get("extension_score")
-        modules = data.get("modules", {}) or {}
-        findings = data.get("findings", {}) or {}
+        """Render the case verdict page.
 
-        def fmt_score(value, missing_label="Not run"):
-            return html.escape(missing_label) if value is None else html.escape(str(value))
-
-        def list_section(title: str, items: list[str]) -> str:
-            body = "<ul>" + "".join(
-                f"<li>{html.escape(str(x))}</li>" for x in items
-            ) + "</ul>" if items else "<p>-</p>"
-
-            return f"""
-      <section class="card">
-        <h2>{html.escape(title)}</h2>
-        {body}
-      </section>
-    """
-
-        def optional_list_section(title: str, items: list[str]) -> str:
-            clean_items = [
-                str(x).strip()
-                for x in (items or [])
-                if str(x).strip()
-            ]
-
-            if not clean_items:
-                return ""
-
-            if len(clean_items) == 1 and clean_items[0].lower() in {
-                "no detailed findings extracted.",
-                "no findings extracted.",
-                "-",
-            }:
-                return ""
-
-            rendered_items = []
-
-            for item in clean_items:
-                item_text = str(item).strip()
-                lower_item = item_text.lower().rstrip(":")
-
-                if lower_item in {"analysis findings", "severity summary", "risk notes", "top findings", "evidence"}:
-                    rendered_items.append(
-                        f"<li style='list-style:none;margin-top:10px;margin-left:-18px;'>"
-                        f"<strong>{html.escape(item_text)}</strong>"
-                        f"</li>"
-                    )
-                elif item_text.startswith("Note:"):
-                    rendered_items.append(
-                        f"<li style='list-style:none;margin-top:8px;margin-left:0;'>"
-                        f"<em>{html.escape(item_text)}</em>"
-                        f"</li>"
-                    )
-                elif item_text.startswith("["):
-                    rendered_items.append(
-                        f"<li style='margin-left:18px;'>{html.escape(item_text)}</li>"
-                    )
-                else:
-                    rendered_items.append(f"<li>{html.escape(item_text)}</li>")
-
-            body = "<ul>" + "".join(rendered_items) + "</ul>"
-
-            return f"""
-      <section class="card">
-        <h2>{html.escape(title)}</h2>
-        {body}
-      </section>
-    """
-
-        rows = []
-        for module_name, meta in modules.items():
-            found = "Yes" if meta.get("found") else "No"
-            paths = "<br>".join(html.escape(str(p)) for p in meta.get("paths", [])) or "-"
-            rows.append(
-                f"<tr><th>{html.escape(module_name)}</th><td>{found}</td><td>{paths}</td></tr>"
+        **This used to be the page.** It opened with a twelve-row key/value
+        table in which the verdict sat between the case path and five
+        per-module subscores from the retired additive model, and the evidence
+        -- the prose each category carries -- appeared nowhere. See
+        `static_triage_engine/verdict_report.py` for the order the page uses now
+        and why that order is the argument.
+        """
+        verdict = data.get("verdict_json")
+        if not isinstance(verdict, dict) or not verdict:
+            # **Not an empty report.** A case with no verdict document has not
+            # been scored, and saying so is different from rendering a page of
+            # blanks that reads like a clean result.
+            return render_verdict_report(
+                {
+                    "band": "Nothing Collected",
+                    "domain": "malware",
+                    "verdict": "Insufficient Coverage",
+                    "severity": "Unknown",
+                    "counts": {},
+                    "coverage_complete": False,
+                    "modules_run": [],
+                    "modules_absent": ["static", "dynamic", "spec", "api",
+                                       "extension"],
+                    "uncollected_categories": [],
+                    "coverage": {},
+                    "evidence": [],
+                    "score_model": "",
+                    "score": 0,
+                },
+                case_name=str(data.get("case_name", "")),
+                case_path=str(data.get("case_path", "")),
             )
 
-        rows_html = "\n".join(rows) if rows else "<tr><td colspan='3'>No module data found.</td></tr>"
-
-        return f"""<!DOCTYPE html>
-    <html lang="en">
-    <head>
-    <meta charset="utf-8">
-    <title>Unified RingForge Report</title>
-    <style>{report_css()}</style>
-    </head>
-    <body>
-    <div class="container">
-      <div class="banner">
-        <h1>Unified RingForge Report</h1>
-        <div class="subtitle">Generated by RingForge Workbench</div>
-      </div>
-
-      <section class="card">
-        <h2>Case Overview</h2>
-        <table>
-          <tr><th>Case Name</th><td>{case_name}</td></tr>
-          <tr><th>Case Path</th><td>{case_path}</td></tr>
-          <tr><th>Verdict</th><td>{fmt_score(combined_verdict, "Not generated")}</td></tr>
-          <tr><th>Severity</th><td>{fmt_score(combined_severity, "Not generated")}</td></tr>
-          <tr><th>Evidence</th><td>{fmt_score(combined_categories, "Not generated")}</td></tr>
-          <tr><th>Coverage</th><td>{fmt_score(combined_coverage, "Not generated")}</td></tr>
-          <tr><th>Context Score</th><td>{fmt_score(combined_score, "Not generated")}</td></tr>
-          <tr><th>Static Score</th><td>{fmt_score(static_score, "Not run")}</td></tr>
-          <tr><th>Dynamic Score</th><td>{fmt_score(dynamic_score, "Not run")}</td></tr>
-          <tr><th>API Analysis</th><td>{fmt_score(api_score, "Not run")}</td></tr>
-          <tr><th>Spec Score</th><td>{fmt_score(spec_score, "Not run")}</td></tr>
-          <tr><th>Browser Extension Analysis</th><td>{fmt_score(extension_score, "Not run")}</td></tr>
-          <tr><th>Overall Verdict</th><td>{overall_verdict}</td></tr>
-        </table>
-      </section>
-
-      <section class="card">
-        <h2>Detected Modules</h2>
-        <table>
-          <tr>
-            <th>Module</th>
-            <th>Found</th>
-            <th>Artifacts</th>
-          </tr>
-          {rows_html}
-        </table>
-      </section>
-
-      {optional_list_section("Combined Score Summary", findings.get("combined", []))}
-      {optional_list_section("Static Analysis Summary", findings.get("static", []))}
-      {optional_list_section("Dynamic Analysis Summary", findings.get("dynamic", []))}
-      {optional_list_section("Manual API Tester Summary", findings.get("api", []))}
-      {optional_list_section("Spec Analysis Summary", findings.get("spec", []))}
-      {optional_list_section("Browser Extension Analysis Summary", findings.get("extension", []))}
-
-      <div class="footer">Generated by RingForge Workbench • Unified Report</div>
-    </div>
-    </body>
-    </html>"""
+        return render_verdict_report(
+            verdict,
+            case_name=str(data.get("case_name", "")),
+            case_path=str(data.get("case_path", "")),
+            module_artifacts=data.get("modules") or {},
+        )
 
     def _open_report_folder(self):
         if self.case_dir is None:

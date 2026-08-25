@@ -560,16 +560,32 @@ No corpus of real HTTP responses exists locally. `benign_rates.py` reports it as
 `NOT MEASURED` rather than omitting it, because a scorer absent from a report
 reads like one with nothing to report.
 
-### 3. The unified report was rewired, not redesigned
+### 3. The unified report — **DONE, 25 Aug**
 
-Phase 4b moved the consumers onto one verdict and unified the palette. What it
-did not do is *design the page*, which was the original reason for wanting one
-verdict — a reader should meet the band, the corroboration behind it and the
-coverage before they meet a number, and the report currently leads with a table
-because that is what it led with before.
+`static_triage_engine/verdict_report.py`, 16 tests, and the window now calls it
+instead of building the page itself. 150 lines out of the Toplevel.
 
-Worth doing after (1) and (2), when there is a real case to lay out and a benign
-corpus to show what the quiet end looks like.
+**The order is the argument**, and it is close to the reverse of what was there.
+A reader meets: what we concluded, then why — every category that fired, in the
+prose its module wrote to be read aloud — then what we could not see, then what
+somebody else thinks, and only then how much happened.
+
+The page it replaces opened with a twelve-row key/value table in which the
+verdict sat between "Case Path" and five per-module subscores from the retired
+additive model. **The evidence appeared nowhere at all.** A number at the top is
+read as the finding and prose at the bottom is read as supporting material; the
+model's whole claim is that the corroboration *is* the finding and the number
+describes it, so the page has to say that first. The tests pin the ordering
+rather than the wording, because the wording will change and the order should
+not.
+
+Coverage sits above the per-module detail deliberately: a gap qualifies
+everything after it, and a reader who meets the detail first has formed a view
+by the time they learn what was missing. Every module appears even when it did
+not run, because silence about a module reads as nothing to report.
+
+A case with no verdict document renders `Insufficient Coverage` rather than a
+page of blanks — an unscored case and a clean one must not look alike.
 
 ### Standing items, neither urgent
 
