@@ -134,7 +134,16 @@ def _report(name: str, results: list[tuple[str, Any, list[Category]]],
 # extension
 # ---------------------------------------------------------------------------
 
-def measure_extensions(limit: int) -> dict[str, Any]:
+def measure_extensions(limit: int, corpus: str = "") -> dict[str, Any]:
+    """Installed extensions by default; a downloaded corpus when given one.
+
+    The installed set is fourteen on this machine -- enough to find four
+    defects, not enough to found a rate on. `scripts/extension_corpus.py`
+    builds the larger one.
+    """
+    if corpus:
+        return _measure_extension_corpus(Path(corpus), limit)
+
     results = []
     for root in _expand(EXTENSION_ROOTS):
         for manifest_path in sorted(root.glob("*/*/manifest.json")):
@@ -151,9 +160,38 @@ def measure_extensions(limit: int) -> dict[str, Any]:
             sources = scan_sources(package)
             cats, context = extension_categories(manifest, sources)
             label = str(manifest.get("name", package.parent.name))[:40]
-            results.append((label, band(cats, context_score=context), cats))
+            # The hold is lifted here too. `extension` is held context-only by
+            # decision, and this is the measurement that decision is waiting on
+            # -- banding with the hold on would report "Findings Not Scored"
+            # for every sample and measure nothing.
+            results.append((label, band(cats, context_score=context,
+                                        context_only={}), cats))
     return _report("extension", results,
                    "(installed browser extensions, presumed benign)")
+
+
+def _measure_extension_corpus(root: Path, limit: int) -> dict[str, Any]:
+    results = []
+    for manifest_path in sorted(root.glob("*/manifest.json")):
+        if len(results) >= limit:
+            break
+        try:
+            manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        package = manifest_path.parent
+        cats, context = extension_categories(manifest, scan_sources(package))
+        label = str(manifest.get("name", package.name))[:40]
+        results.append((label, band(cats, context_score=context,
+                                    # The hold is lifted: this measures what the
+                                    # categories say, which is the question the
+                                    # hold is waiting on an answer to.
+                                    context_only={}), cats))
+    return _report("extension", results,
+                   f"(downloaded corpus, {root.name}, presumed benign)")
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--module", default="all",
                         choices=("all", "extension", "static", "spec", "api"))
     parser.add_argument("--limit", type=int, default=250)
+    parser.add_argument("--corpus", default="",
+                        help="a directory of unpacked extensions from "
+                             "scripts/extension_corpus.py")
     parser.add_argument("--specs", default="",
                         help="directory of specification files to measure")
     parser.add_argument("--unsigned", action="store_true",
@@ -257,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out: list[dict[str, Any]] = []
     if args.module in ("all", "extension"):
-        out.append(measure_extensions(args.limit))
+        out.append(measure_extensions(args.limit, args.corpus))
     if args.module in ("all", "static"):
         out.append(measure_static(args.limit, signed=not args.unsigned))
     if args.module in ("all", "spec"):
