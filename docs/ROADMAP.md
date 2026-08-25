@@ -535,44 +535,68 @@ That halved the top band, 8 to 4. **It did not fix it**, and the tuning stopped
 there deliberately -- fitting five thresholds to fourteen samples is the
 additive model's failure in new clothes.
 
-#### What remains is structural, not a threshold
+#### What looked structural was a biased sample — corrected 25 Aug
 
-The five extension categories are not independent kinds of evidence. They are
-facets of one property -- *this extension is capable* -- and capable extensions
-have several. Corroboration across facets of a single thing is not
-corroboration, and no threshold repairs that.
+The conclusion recorded above was that the five extension categories are facets
+of one property, that corroboration across facets is not corroboration, and that
+no threshold repairs it. **That was drawn from fourteen extensions installed on
+this bench, and it was wrong.**
 
-Two ways forward, and this wants deciding rather than tuning:
+The extensions on a working machine are the ones somebody chose to install. That
+population skews hard toward the capable — ad blockers, a password-adjacent
+tool, `debugger` for one of them — which is exactly the property the categories
+fire on. Measured against **394 extensions sampled at random from the store's own
+sitemap**:
 
-- **Re-author the categories around genuinely independent claims.** What an
-  extension *asks for*, what its code *does*, where it is *distributed from*,
-  and who can *drive it* are closer to independent than the current five.
-- **Record the module context-only by decision**, the way gap 4's detector was
-  on the dynamic side -- reported, never banded, until the categories earn it.
+    band                       count    rate
+    ─────────────────────────  ─────   ──────
+    No Evidence                  287    72.8%
+    Single Observation            79    20.1%
+    Corroborated                  24     6.1%
+    Strongly Corroborated          4     1.0%
 
-**Both are held context-only as of 25 Aug**, in `verdict.CONTEXT_ONLY`, with the
-reason recorded beside each. The dynamic side reached this state first -- gap 4's
-detector is *"recorded context-only by decision rather than left awaiting
-calibration"* -- and expressed it in prose that nothing enforced. It is code now.
+    category                  present  emphatic
+    broad_host_access           20.1%      --
+    credential_surface           7.4%     2.8%
+    external_control_surface     3.0%     0.0%
+    high_risk_permission         2.5%     1.5%
+    dynamic_code_execution       2.0%     1.0%
 
-A held module still runs, still emits its whole category set, still appears in
-coverage, and its findings still reach the page under *Reported, not counted*.
-What it cannot do is move a band.
+**The four at the top band do not read as false positives.** One holds `debugger`
+with `cookies` across every site; another is exam-proctoring software with
+`desktopCapture`, `browsingData` and `history`. Those are the extensions that
+should attract attention. And "presumed benign" is a presumption — the store is
+known to carry malicious extensions, so a 1% top band is not automatically a 1%
+error rate.
 
-Two properties make that honest rather than convenient. A case where **only**
-held modules found anything reports `Findings Not Scored` at severity Unknown,
-because banding on the counted categories alone would give `No Evidence` -- which
-reads as clean, about a case where observations were made and could not be
-weighed. And a held module cannot **veto** a calibrated one: a clean, complete
-detonation beside an uncounted extension finding is still a clean detonation.
+#### The correction went further: I had over-corrected
 
-The hold is overridable per call, and the tests that exercise what these
-categories *say* lift it. A deployment decision about calibration must not
-silently rewrite what a categoriser test asserts.
+Fixing the four defects was right — `update_url` being universal, the double-
+counted native messaging, the standard blocking APIs, `eval(` in vendor bundles.
+Those were correctness. **Cutting the `strong` conditions was calibration, and it
+was calibrated to the biased sample.** Measured on 394:
 
-**Removing an entry is a claim that the module now meets the standard** -- that
-its categories have been measured against a population and separate it. That is
-what the corpus is for, and it is the next real task in this section.
+    condition                          on 14      on 394
+    ─────────────────────────────────  ────────   ───────
+    content scripts on every site       43%        12.7%   correctly retired
+    debugger or nativeMessaging         21%         1.5%   restored
+    cookies + broad host                43%         2.8%   restored
+    permissive CSP + eval in source     21%         1.0%   restored
+
+Both conditions that survived the first cut fire in **none** of the 394. A
+condition that never fires is not calibrated, it is absent.
+
+Three are restored. The band distribution barely moved — three extensions from
+Single Observation to Corroborated, the top band unchanged at four — which is
+what an emphatic condition should do: separate within a band without inflating
+it.
+
+**`extension` is no longer held context-only.** `api` still is, and has no
+corpus.
+
+The lesson is not about extensions. **A rate measured on a convenience sample is
+not a rate**, and the convenience sample here was three hundred metres from a
+real one: the store publishes its whole catalogue in `robots.txt`.
 
 #### The api scorer is unmeasured, and named as such
 

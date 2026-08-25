@@ -96,17 +96,26 @@ STRONGLY_CORROBORATED = "Strongly Corroborated"
 #: that its categories have been measured against a population and separate it.
 #: Nothing scores that has not been measured.
 CONTEXT_ONLY: dict[str, str] = {
-    "extension": (
-        "Measured 25 Aug against 14 real installed extensions: 4 reached the "
-        "top band after four defects were fixed, and the five categories are "
-        "facets of one property -- the extension is capable -- rather than "
-        "independent kinds of evidence. Corroboration across facets of a single "
-        "thing is not corroboration. Needs re-authoring against a corpus large "
-        "enough to calibrate on, or the categories confirmed against one."),
     "api": (
         "Never measured. No corpus of real HTTP responses exists on this bench, "
         "so its false-positive rate is unknown in both directions."),
 }
+
+#: **`extension` was here and is not any more, 25 Aug.** It was held on a
+#: measurement against the fourteen extensions installed on this bench, which
+#: reported 4 of 14 at the top band and led to the conclusion that the five
+#: categories were facets of one property rather than independent evidence.
+#:
+#: That conclusion was drawn from a biased sample. The extensions on a working
+#: machine are the ones somebody chose to install, and that population skews
+#: hard toward the capable. Measured against 394 randomly sampled store
+#: extensions the distribution is 72.8% No Evidence, 20.1% Single Observation,
+#: 6.1% Corroborated and **1.0% Strongly Corroborated** -- and the four at the
+#: top band hold `debugger` with cookies across every site, or `desktopCapture`
+#: with browsing history. None of them reads as a false positive.
+#:
+#: Kept as a comment rather than deleted because the mistake is the useful part:
+#: a rate measured on a convenience sample is not a rate.
 
 #: Modules that assess whether an artifact is hostile, and modules that assess
 #: whether a service is exposed. The distinction decides which sentence a reader

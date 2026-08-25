@@ -19,6 +19,23 @@ verdict at all.
 The fix is not a reweighting. Counting occurrences is what a corroboration model
 does not do: **a pattern fires once however many files contain it**, and the
 file count goes in `detail` where a reader can weigh it.
+
+**Calibrated against 394 random store extensions, 25 Aug**, sampled from the
+store's own sitemap. An earlier pass used the fourteen extensions installed on
+this bench and drew a wrong conclusion from them: those are the ones somebody
+chose to install, which skews hard toward the capable, and the categories fired
+at two to four times their real rate. The `strong` conditions were cut to almost
+nothing on that basis, and three are restored here.
+
+    category                  present   emphatic
+    broad_host_access           20.1%       --      too common to be emphatic
+    credential_surface           7.4%      2.8%
+    external_control_surface     3.0%      0.0%
+    high_risk_permission         2.5%      1.5%
+    dynamic_code_execution       2.0%      1.0%
+
+    bands   No Evidence 72.8%  |  Single Observation 20.8%
+            Corroborated 5.3%  |  Strongly Corroborated 1.0%
 """
 
 from __future__ import annotations
@@ -229,12 +246,11 @@ def extension_categories(
         module="extension",
         collected=manifest_ran,
         present=broad,
-        # **Never strong, measured 25 Aug.** This fired on 8 of 14 real
-        # installed extensions and was emphatic on 6 of them. Access to every
-        # site is the price of admission for whole legitimate categories --
-        # blockers, password managers, translators, readers -- and a category
-        # that is emphatic on 43% of an ordinary population cannot carry a
-        # band. It corroborates.
+        # **Never strong, and the corpus agreed.** Content scripts on every
+        # site appear in 12.7% of 394 random store extensions -- the one retired
+        # condition the larger sample confirmed. Access to every site is the
+        # price of admission for whole legitimate categories: blockers,
+        # password managers, translators, readers. It corroborates.
         strong=False,
         detail=", ".join(sorted(set(broad_hosts + broad_scripts))) if broad else "",
         reason=(
@@ -252,13 +268,19 @@ def extension_categories(
         module="extension",
         collected=manifest_ran,
         present=manifest_ran and bool(high),
-        # **Two, not one, measured 25 Aug.** `nativeMessaging` alone appeared
-        # in 3 of 14 ordinary extensions -- password managers and PDF tools use
-        # it to reach a helper binary -- so standing alone made it emphatic on a
-        # fifth of the population. Two of this set together is rare and stayed
-        # rare: one extension in the corpus, holding `debugger` *and*
-        # `nativeMessaging`.
-        strong=len(high) >= 2,
+        # **Restored after the corpus, 25 Aug.** Cut to "two or more" against
+        # the fourteen installed extensions, where `nativeMessaging` alone
+        # appeared in three. Across 394 random store extensions it appears in
+        # 1.5%, and "two or more" fires in **none** of them -- a condition that
+        # never fires is not calibrated, it is absent.
+        #
+        # `debugger` attaches to the browser's own debugging protocol and
+        # `nativeMessaging` runs a program outside the sandbox. Either is
+        # emphatic, and at 1.5% of the population saying so costs almost
+        # nothing.
+        strong=bool(high) and (len(high) >= 2
+                               or "debugger" in high
+                               or "nativeMessaging" in high),
         detail=", ".join(high),
         reason=(
             f"The manifest requests {', '.join(high)} -- capability the browser "
@@ -285,12 +307,14 @@ def extension_categories(
         present=credential,
         # Cookies plus access to every site is the shape of a session stealer.
         # Either alone is ordinary.
-        # **Never strong, measured 25 Aug.** The `cookies` permission appears
-        # in 5 of 14 ordinary extensions and broad host access in 8; cookie
-        # access across every site is what a password manager does. Let the
-        # corroboration do that work -- combining two common facts inside one
-        # category is pre-empting the thing the model is for.
-        strong=False,
+        # **Restored after the corpus, 25 Aug.** Cut against the fourteen
+        # installed extensions, where cookies appeared in 5 and broad host
+        # access in 8, which made the pair look ordinary. Across 394 random
+        # store extensions the pair appears in **2.8%**. Cookie access across
+        # every site is the shape of a session stealer, and it is rare enough
+        # to say so.
+        strong=credential and broad and bool(
+            {"cookies"} & set(credential_perms) or credential_code),
         detail=", ".join(credential_perms + ([where("credential")]
                                              if credential_code else [])),
         reason=(
@@ -319,10 +343,11 @@ def extension_categories(
         module="extension",
         collected=dynamic_ran,
         present=dynamic,
-        # **Never strong, measured 25 Aug.** A permissive CSP with matching
-        # source calls appeared in 3 of 14 ordinary extensions -- 21% is not a
-        # rate that can carry a band on its own. It corroborates.
-        strong=False,
+        # **Restored after the corpus, 25 Aug.** 3 of 14 installed extensions
+        # carried a permissive policy with matching source calls; across 394
+        # random store extensions it is **1.0%**. A policy permitting runtime
+        # code *and* source that uses it is a decision the author made twice.
+        strong=bool(facts["csp_unsafe_eval"] and dynamic_code),
         detail=("unsafe-eval in CSP" if facts["csp_unsafe_eval"] else "")
         + ((" | " if facts["csp_unsafe_eval"] and dynamic_code else "")
            + where("dynamic_code") if dynamic_code else ""),

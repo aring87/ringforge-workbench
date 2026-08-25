@@ -165,18 +165,22 @@ class CapabilityTheBrowserReserves(unittest.TestCase):
 
         self.assertTrue(_named(cats, "high_risk_permission").strong)
 
-    def test_native_messaging_alone_is_not(self) -> None:
-        # **Measured, 25 Aug.** It appeared alone in 3 of 14 ordinary
-        # extensions -- password managers and PDF tools use it to reach a helper
-        # binary -- so standing alone made it emphatic on a fifth of the
-        # population.
+    def test_native_messaging_alone_is_emphatic_after_all(self) -> None:
+        # **This assertion was the opposite yesterday, and a bigger corpus
+        # overruled it.** Against the fourteen extensions installed on this
+        # bench, `nativeMessaging` alone appeared in three -- a fifth of the
+        # population -- so it was cut. Against 394 randomly sampled store
+        # extensions it appears in **1.5%**, and the narrowed "two or more"
+        # condition fires in *none* of them.
+        #
+        # The first measurement was not wrong about its sample; it was wrong
+        # about the population. Installed extensions are the ones somebody
+        # chose to install.
         manifest = _ordinary_manifest()
         manifest["permissions"] = ["nativeMessaging"]
         _, cats = _verdict(manifest, {})
 
-        category = _named(cats, "high_risk_permission")
-        self.assertTrue(category.present)
-        self.assertFalse(category.strong)
+        self.assertTrue(_named(cats, "high_risk_permission").strong)
 
     def test_the_standard_content_blocking_apis_claim_nothing(self) -> None:
         # `declarativeNetRequest` is MV3's sanctioned replacement for
@@ -208,20 +212,18 @@ class CapabilityTheBrowserReserves(unittest.TestCase):
 
 
 class ReachIntoUserData(unittest.TestCase):
-    def test_cookies_across_every_site_is_not_emphatic_by_itself(self) -> None:
-        # **Measured, 25 Aug.** The `cookies` permission appears in 5 of 14
-        # ordinary extensions and broad host access in 8. Cookie access across
-        # every site is what a password manager does; combining two common
-        # facts inside one category pre-empts the corroboration the model exists
-        # to measure, and lets one category do the work of two.
+    def test_cookies_across_every_site_is_emphatic_after_all(self) -> None:
+        # **Also reversed by the corpus.** Cookies appeared in 5 of 14 installed
+        # extensions and broad host access in 8, which made the pair look
+        # ordinary. Across 394 store extensions the pair appears in **2.8%**.
+        # Cookie access on every site is the shape of a session stealer and is
+        # rare enough to say so.
         manifest = _ordinary_manifest()
         manifest["permissions"] = ["cookies"]
         manifest["host_permissions"] = ["<all_urls>"]
         _, cats = _verdict(manifest, {})
 
-        category = _named(cats, "credential_surface")
-        self.assertTrue(category.present)
-        self.assertFalse(category.strong)
+        self.assertTrue(_named(cats, "credential_surface").strong)
 
     def test_cookies_on_one_site_is_not(self) -> None:
         manifest = _ordinary_manifest()
