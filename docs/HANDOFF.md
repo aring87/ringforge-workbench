@@ -355,14 +355,10 @@ day -- see `docs/SCORING.md`. What remains:
    an archive node or an explorer API key. A binary search on `eth_getCode`
    across blocks would find the creation block on an archive node --
    `scripts/`-adjacent code for it was drafted and never run.
-2. **Why `bait6` produced the hardcoded wallet — age is ruled out, 24 Aug.**
-   Arm A ran and missed its target: the RPC handler could not load, so the
-   `eth_call` was refused nine times and the tracer was never served. A *fresh*
-   payload with no usable C2 answer substituted 664 times with the hardcoded
-   wallet anyway. See *Arm A missed its target*. The live hypothesis is now that
-   the wallet is the **no-C2 fallback**, which fits all four observations; it
-   rests on one observation of the failure branch and the corrected run is
-   specified in that section.
+2. **Why `bait6` produced the hardcoded wallet. CLOSED, 25 Aug.** It is the
+   C2, not the age. The same served value produced the hardcoded wallet with no
+   C2 and produced itself with one, across a fresh payload and a seven-hour-old
+   one. See *`bait6` is explained*.
 3. **The FakeNet shim for `beacon_responder.py`.** Built and tested, never
    wired: it needs FakeNet's custom-response matching keys
    (`sample_custom_response.ini`, `docs/CustomResponse.md` in the FakeNet
@@ -484,6 +480,84 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
   the next VBoxManage call and disk images are untouched. `vm_snapshot.ps1` now
   waits for the state to settle before each step, so the script no longer
   causes this — but a manual VBoxManage command still can.
+
+---
+
+## `bait6` IS EXPLAINED: IT IS THE C2, NOT THE AGE — 25 Aug
+
+Arm A, re-run properly after the first attempt lost its RPC handler. Same served
+value as `bait6`, fresh payload, **live C2 this time**.
+
+    846 rounds, 633 substituted, 34 clipboard errors
+    every substitution identical:  0xC0FFEE0000000000000000000000000000C0FFEE
+
+    baited     0xBA1700000000000000000000000000000000BA17
+    served     0xC0FFEE0000000000000000000000000000C0FFEE
+    received   0xC0FFEE0000000000000000000000000000C0FFEE
+
+The served body, verbatim. And the beacon is on the wire carrying what the
+victim copied:
+
+    method=send&guid=4814CF26358FE5E4F8A1F9B0F4980910&address=0xBA17...BA17
+
+640 requests to `c0ffee-sink.ringforge.test`, one `method=refresh` and 633
+`method=send`. Same victim GUID and `Authorization` credential as 22 Aug.
+
+### The variable is isolated
+
+Three cells of a 2x2, and the fourth is not needed:
+
+    payload      C2        clipboard receives          run
+    ─────────    ──────    ────────────────────────    ──────────────────
+    fresh        live      the served body             25 Aug, 24 Aug, bait5
+    fresh        dead      the hardcoded wallet        Arm A, first attempt
+    7h45m old    dead      the hardcoded wallet        bait6
+
+**Age varies while the outcome is held constant; C2 availability varies with
+the outcome.** `bait6` was not about a payload having run for seven hours -- it
+was about a payload that had outlived its own run's FakeNet and had nothing to
+ask. The hardcoded `$eth` wallet is the **fallback when the C2 does not answer**,
+and the served content is irrelevant: `0xC0FFEE...C0FFEE` produced the wallet
+with no C2 and produced itself with one.
+
+That closes the last open behavioural question on `0bw`. It also restores the
+24 Aug framing without qualification: **whoever controls the C2 controls what
+lands in the victim's clipboard**, and when nobody does, the campaign falls back
+to its own wallet rather than doing nothing.
+
+> **`method=send` is not new here.** It has been on the wire since 22 Aug, run
+> `clip`. The "never observed" line lives in an older *What is left* section
+> that this supersedes; it was read as current while writing this up and it is
+> not. Six hundred of them in one run is corroboration, not a first.
+
+### The first real verdict under `corroboration-v1`
+
+The guest was pulled to `9c87060` and re-frozen before this run, so this is the
+first case scored by the unified model on real data rather than on synthetic
+contract-test inputs:
+
+    score_model            corroboration-v1
+    band                   Strongly Corroborated
+    domain                 malware
+    verdict                Likely Malicious
+    severity               High
+    counts                 3 present, 3 strong, 0 unknown
+    coverage_complete      true
+    modules_run            dynamic
+    modules_absent         static, spec, api, extension
+
+    evidence   external_contact STRONG
+               packed_payload STRONG
+               process_injection STRONG
+
+All seven dynamic categories reported as collected, none unknown, and the four
+modules that did not run are named rather than silently absent. The neutral band
+and the domain-worded verdict both behaved as designed.
+
+**`modules_run` is dynamic alone**, because the case was created by a detonation
+with no static pass. That is correct and it is worth reading as a limitation:
+this verdict rests on one module, and the model says so where the additive one
+would have reported a number.
 
 ---
 
