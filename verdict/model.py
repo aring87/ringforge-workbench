@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 #: Bumped when the *meaning* of a band changes, not when a category is added.
 #: `combined_score.json` carries it so a reader can tell which model produced a
@@ -79,6 +79,34 @@ NO_EVIDENCE = "No Evidence"
 SINGLE_OBSERVATION = "Single Observation"
 CORROBORATED = "Corroborated"
 STRONGLY_CORROBORATED = "Strongly Corroborated"
+
+#: Modules whose categories are **reported but not counted**, by decision.
+#:
+#: This is the honest middle state between *built* and *calibrated*, and the
+#: dynamic side reached it first: gap 4's detector is "recorded context-only by
+#: decision rather than left awaiting calibration". That was written in prose
+#: and enforced by nobody. This is the same decision, in code.
+#:
+#: A module here still runs, still emits its whole category set, still appears
+#: in coverage, and its findings still reach the page. What it cannot do is move
+#: a band. The reason is recorded beside it because "why is this not counted"
+#: is the first question anyone reading a report will ask.
+#:
+#: **Removing an entry is a claim that the module now meets the standard** --
+#: that its categories have been measured against a population and separate it.
+#: Nothing scores that has not been measured.
+CONTEXT_ONLY: dict[str, str] = {
+    "extension": (
+        "Measured 25 Aug against 14 real installed extensions: 4 reached the "
+        "top band after four defects were fixed, and the five categories are "
+        "facets of one property -- the extension is capable -- rather than "
+        "independent kinds of evidence. Corroboration across facets of a single "
+        "thing is not corroboration. Needs re-authoring against a corpus large "
+        "enough to calibrate on, or the categories confirmed against one."),
+    "api": (
+        "Never measured. No corpus of real HTTP responses exists on this bench, "
+        "so its false-positive rate is unknown in both directions."),
+}
 
 #: Modules that assess whether an artifact is hostile, and modules that assess
 #: whether a service is exposed. The distinction decides which sentence a reader
@@ -193,6 +221,14 @@ class Verdict:
     coverage_complete: bool
     modules_run: tuple[str, ...] = field(default_factory=tuple)
     modules_absent: tuple[str, ...] = field(default_factory=tuple)
+    #: Modules that ran and reported findings which did not count toward the
+    #: band. Empty is the ordinary case; non-empty must be visible wherever the
+    #: verdict is, or the page is quietly hiding observations.
+    modules_context_only: tuple[str, ...] = field(default_factory=tuple)
+    #: How many of their categories fired. Reported so a reader can see that
+    #: "no evidence" meant "no *counted* evidence".
+    context_only_present: int = 0
+    context_only_names: tuple[str, ...] = field(default_factory=tuple)
     severity_floor_applied: bool = False
     severity_floor_reason: str = ""
     dissent_floor_applied: bool = False
@@ -249,6 +285,7 @@ def band(
     categories: Sequence[Category],
     context_score: int = 0,
     third_party_dissent: bool = False,
+    context_only: Mapping[str, str] | None = None,
 ) -> Verdict:
     """Turn a set of categories into a band.
 
@@ -263,7 +300,16 @@ def band(
     categories = list(categories)
     _check_unique(categories)
 
-    present = [c for c in categories if c.present]
+    # **Reported, not counted.** Their categories stay in the list -- coverage,
+    # the evidence section and the module roll-call all still see them -- and
+    # they are removed from exactly one thing: the corroboration the band is
+    # computed from.
+    uncounted = dict(CONTEXT_ONLY if context_only is None else context_only)
+    counted = [c for c in categories if c.module not in uncounted]
+    context_cats = [c for c in categories
+                    if c.module in uncounted and c.present]
+
+    present = [c for c in counted if c.present]
     strong = [c for c in present if c.strong]
     unknown = [c for c in categories if not c.collected]
     collected_any = any(c.collected for c in categories)
@@ -280,6 +326,9 @@ def band(
     score = (context
              + len(present) * CATEGORY_POINTS
              + len(strong) * STRONG_CATEGORY_BONUS)
+
+    modules_context_only = tuple(sorted({c.module for c in categories
+                                         if c.module in uncounted}))
 
     # --- The bands. Corroboration, not volume. -----------------------------
     #
@@ -333,7 +382,21 @@ def band(
               else "malware")
     verdict = DOMAIN_VERDICTS[domain][band_name]
 
-    if band_name == NO_EVIDENCE:
+    if band_name == NO_EVIDENCE and context_cats and not counted:
+        # **The case this mechanism would otherwise get wrong.** If the *only*
+        # module that ran is context-only and it found five things, banding on
+        # the counted categories alone gives "No Evidence" -- which reads as
+        # clean, about a case where observations were made and could not be
+        # weighed. That is worse than the problem being solved.
+        #
+        # `not counted` is the important half. A clean, complete detonation
+        # alongside one uncounted extension finding is still a clean detonation:
+        # a module that *does* meet the standard looked and found nothing, and
+        # downgrading that to Unknown would let an uncalibrated module veto a
+        # calibrated one.
+        severity = "Unknown"
+        verdict = "Findings Not Scored"
+    elif band_name == NO_EVIDENCE:
         if unknown:
             # **A clean headline is not available while a detector was dark.**
             # Nothing fired, and nothing firing is not a finding -- but the
@@ -362,6 +425,9 @@ def band(
         coverage_complete=not unknown,
         modules_run=modules_run,
         modules_absent=modules_absent,
+        modules_context_only=modules_context_only,
+        context_only_present=len(context_cats),
+        context_only_names=tuple(sorted(c.name for c in context_cats)),
         severity_floor_applied=severity_floor_applied,
         severity_floor_reason=severity_floor_reason,
         dissent_floor_applied=dissent_floor_applied,

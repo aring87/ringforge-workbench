@@ -17,7 +17,18 @@ from static_triage_engine.api_response_analysis import (
     analyze_response,
     api_categories,
 )
-from verdict import band
+from verdict import band as _band
+
+
+def band(cats, **kw):
+    """`api` is held context-only by decision, and these test the categoriser.
+
+    See `verdict.CONTEXT_ONLY`. The hold is about whether the module has been
+    measured against a population, which is a different question from whether
+    its categories say the right thing.
+    """
+    kw.setdefault("context_only", {})
+    return _band(cats, **kw)
 
 
 def _codes(result):

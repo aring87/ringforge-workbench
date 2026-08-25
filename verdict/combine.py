@@ -23,7 +23,13 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
-from verdict.model import SCORE_MODEL, Category, band, coverage
+from verdict.model import (
+    CONTEXT_ONLY,
+    SCORE_MODEL,
+    Category,
+    band,
+    coverage,
+)
 
 
 class Contribution:
@@ -135,6 +141,15 @@ def combine(
         "subscores": subscores,
         "modules_run": list(result.modules_run),
         "modules_absent": list(result.modules_absent),
+        # Reported but not counted -- see `CONTEXT_ONLY`. Non-empty means the
+        # page must show these findings and say they did not move the band.
+        "modules_context_only": list(result.modules_context_only),
+        "context_only": {
+            "present": result.context_only_present,
+            "names": list(result.context_only_names),
+            "reasons": {m: CONTEXT_ONLY[m] for m in result.modules_context_only
+                        if m in CONTEXT_ONLY},
+        },
         "counts": {
             "categories_present": result.categories_present,
             "categories_strong": result.categories_strong,

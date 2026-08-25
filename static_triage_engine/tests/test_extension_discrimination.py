@@ -39,8 +39,17 @@ def _named(cats, name):
 
 
 def _verdict(manifest=None, sources=None):
+    """Band the categories with the context-only hold lifted.
+
+    `extension` is held context-only by decision -- see `verdict.CONTEXT_ONLY`
+    -- so in production its categories are reported and never counted. That is a
+    deployment decision about calibration, not a property of the categoriser,
+    and these tests are about the categoriser. Passing `context_only={}` tests
+    what the categories *say*; flipping the hold must not silently rewrite what
+    this file asserts.
+    """
     cats, context = extension_categories(manifest, sources)
-    return band(cats, context_score=context), cats
+    return band(cats, context_score=context, context_only={}), cats
 
 
 def _tree(**files) -> Path:

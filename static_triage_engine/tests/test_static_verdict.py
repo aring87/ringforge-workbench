@@ -164,7 +164,9 @@ class EveryBandHasAdvice(unittest.TestCase):
                  cat("c", module, present=True)],
             ]
             for cats in scenarios:
-                result = band(cats)
+                # The hold is lifted here: this asks which bands the model can
+                # reach, not which modules are currently allowed to reach them.
+                result = band(cats, context_only={})
                 out.add((result.domain, result.band))
         return out
 
@@ -203,6 +205,29 @@ class EveryBandHasAdvice(unittest.TestCase):
                                    NOTHING_COLLECTED, "malware"), r"collector|bench")
         self.assertRegex(next_step("Insufficient Coverage",
                                    NOTHING_COLLECTED, "posture"), r"parse|read")
+
+    def test_every_verdict_override_has_advice(self) -> None:
+        # The overrides narrow a band without changing it, so the (domain, band)
+        # check above cannot see them -- a new one would fall through to the
+        # default silently, which is the failure that check exists to prevent.
+        from static_triage_engine.verdict_rationale import (
+            _DEFAULT_NEXT_STEP,
+            _VERDICT_OVERRIDE,
+        )
+
+        for verdict in _VERDICT_OVERRIDE:
+            with self.subTest(verdict=verdict):
+                advice = next_step(verdict, NO_EVIDENCE, "malware")
+                self.assertNotEqual(advice, _DEFAULT_NEXT_STEP)
+                self.assertGreater(len(advice), 40)
+
+    def test_findings_not_scored_does_not_read_as_safe(self) -> None:
+        # It is the one verdict where observations exist and none were weighed.
+        # Advice that sounded reassuring would be the worst thing on the page.
+        advice = next_step("Findings Not Scored", NO_EVIDENCE, "malware")
+
+        self.assertIn("nothing here is a statement that the artifact is safe",
+                      advice.lower())
 
     def test_a_clean_baseline_and_a_dark_detector_do_not_share_advice(self) -> None:
         self.assertNotEqual(

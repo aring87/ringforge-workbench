@@ -550,9 +550,29 @@ Two ways forward, and this wants deciding rather than tuning:
 - **Record the module context-only by decision**, the way gap 4's detector was
   on the dynamic side -- reported, never banded, until the categories earn it.
 
-Until one of those happens the extension module should not contribute to a case
-verdict. It is the one place in this repo where a scorer is known not to meet
-the standard, and knowing that is worth more than the number was.
+**Both are held context-only as of 25 Aug**, in `verdict.CONTEXT_ONLY`, with the
+reason recorded beside each. The dynamic side reached this state first -- gap 4's
+detector is *"recorded context-only by decision rather than left awaiting
+calibration"* -- and expressed it in prose that nothing enforced. It is code now.
+
+A held module still runs, still emits its whole category set, still appears in
+coverage, and its findings still reach the page under *Reported, not counted*.
+What it cannot do is move a band.
+
+Two properties make that honest rather than convenient. A case where **only**
+held modules found anything reports `Findings Not Scored` at severity Unknown,
+because banding on the counted categories alone would give `No Evidence` -- which
+reads as clean, about a case where observations were made and could not be
+weighed. And a held module cannot **veto** a calibrated one: a clean, complete
+detonation beside an uncounted extension finding is still a clean detonation.
+
+The hold is overridable per call, and the tests that exercise what these
+categories *say* lift it. A deployment decision about calibration must not
+silently rewrite what a categoriser test asserts.
+
+**Removing an entry is a claim that the module now meets the standard** -- that
+its categories have been measured against a population and separate it. That is
+what the corpus is for, and it is the next real task in this section.
 
 #### The api scorer is unmeasured, and named as such
 

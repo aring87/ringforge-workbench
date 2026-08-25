@@ -7,6 +7,7 @@ to change.
 
 from verdict.model import (
     CATEGORY_POINTS,
+    CONTEXT_ONLY,
     MAX_CONTEXT_SCORE,
     MODULES,
     SCORE_MODEL,
@@ -20,6 +21,7 @@ from verdict.model import (
 
 __all__ = [
     "CATEGORY_POINTS",
+    "CONTEXT_ONLY",
     "MAX_CONTEXT_SCORE",
     "MODULES",
     "SCORE_MODEL",

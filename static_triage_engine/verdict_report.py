@@ -53,6 +53,14 @@ _BAND_MEANING = {
             "No collector produced anything. This is a statement about the "
             "bench, not about the sample.",
     },
+    # Not a band -- a verdict that overrides one. Keyed here so the sentence
+    # beneath the verdict is never blank.
+    "_verdict": {
+        "Findings Not Scored":
+            "Observations were made, and every module that made them is held "
+            "context-only by decision -- reported, but not yet shown to "
+            "separate a real population. Nothing here has been weighed.",
+    },
     "posture": {
         "Strongly Corroborated":
             "Three or more independent weaknesses, or two serious enough to "
@@ -82,7 +90,8 @@ def _verdict_block(verdict: Mapping[str, Any]) -> str:
     domain = str(verdict.get("domain", "malware"))
     severity = str(verdict.get("severity", ""))
     counts = verdict.get("counts", {}) or {}
-    meaning = _BAND_MEANING.get(domain, {}).get(band, "")
+    meaning = (_BAND_MEANING["_verdict"].get(str(verdict.get("verdict", "")))
+               or _BAND_MEANING.get(domain, {}).get(band, ""))
 
     # The badge colour comes from the shared mapper, so the desktop window and
     # this page cannot disagree about what High looks like.
@@ -200,6 +209,46 @@ def _coverage_block(verdict: Mapping[str, Any]) -> str:
       </section>"""
 
 
+def _context_only_block(verdict: Mapping[str, Any]) -> str:
+    """Findings from modules that are reported but not counted.
+
+    **The section exists so the mechanism cannot hide anything.** A module held
+    context-only still observes things, and a page that quietly drops its
+    findings would be worse than one that over-counted them -- at least the
+    over-counting was visible.
+
+    The reason each module is uncounted is printed with it, because "why does
+    this not affect the verdict" is the first question a reader will have and
+    the answer is a decision somebody made, not a property of the file.
+    """
+    modules = list(verdict.get("modules_context_only", []) or [])
+    if not modules:
+        return ""
+
+    block = verdict.get("context_only", {}) or {}
+    names = list(block.get("names", []) or [])
+    reasons = block.get("reasons", {}) or {}
+
+    found = (f"<p><strong>{len(names)} finding(s) reported and not counted:</strong> "
+             + ", ".join(_e(n) for n in names) + ".</p>") if names else             ("<p class='muted'>These modules ran and reported nothing.</p>")
+
+    why = "".join(
+        f"<div class='card-alert'><div class='section-head'>{_e(m)}</div>"
+        f"<p class='muted'>{_e(reasons.get(m, 'held context-only by decision'))}</p></div>"
+        for m in modules)
+
+    return f"""
+      <section class="card">
+        <h2>Reported, not counted</h2>
+        {found}
+        <p class="muted">These modules are held <em>context-only by decision</em>
+        -- built, running, and not yet shown to separate a real population. They
+        cannot move the band. Removing that hold is a claim that the module has
+        been measured, not that it looks right.</p>
+        {why}
+      </section>"""
+
+
 def _third_party_block(third_party: Sequence[str] | None) -> str:
     if not third_party:
         return ""
@@ -255,6 +304,7 @@ def render_verdict_report(
   {_verdict_block(verdict)}
   {_evidence_block(verdict)}
   {_coverage_block(verdict)}
+  {_context_only_block(verdict)}
   {_third_party_block(third_party)}
   {artifacts}
 

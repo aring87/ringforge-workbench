@@ -95,6 +95,12 @@ _VERDICT_OVERRIDE = {
     "Low Suspicion": (
         "Nothing reached a category. The activity volume is worth a glance, "
         "then treat as unremarkable unless provenance says otherwise."),
+    "Findings Not Scored": (
+        "Read the findings below and judge them yourself. Every module that "
+        "produced them is held context-only by decision -- built, running, and "
+        "not yet shown to separate a real population -- so the model declines "
+        "to weigh them rather than weighing them badly. Nothing here is a "
+        "statement that the artifact is safe."),
 }
 
 _DEFAULT_NEXT_STEP = (
