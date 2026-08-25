@@ -121,13 +121,21 @@ class AccessToEverySite(unittest.TestCase):
 
         self.assertFalse(_named(cats, "broad_host_access").strong)
 
-    def test_content_scripts_on_every_site_are_emphatic(self) -> None:
+    def test_content_scripts_on_every_site_are_still_not_emphatic(self) -> None:
+        # **Measured, 25 Aug.** This asserted `strong` until a corpus of 14 real
+        # installed extensions put the category at 57% present and 43%
+        # emphatic. Access to every site is the price of admission for whole
+        # legitimate categories -- blockers, password managers, translators --
+        # and a claim that is emphatic on nearly half an ordinary population
+        # cannot carry a band alone.
         manifest = _ordinary_manifest()
         manifest["content_scripts"] = [{"matches": ["<all_urls>"]}]
         result, cats = _verdict(manifest, {})
 
-        self.assertTrue(_named(cats, "broad_host_access").strong)
-        self.assertEqual(result.verdict, "Elevated Attention")
+        category = _named(cats, "broad_host_access")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
+        self.assertEqual(result.verdict, "Needs Review")
 
     def test_manifest_v2_host_patterns_in_permissions_are_found(self) -> None:
         # v2 puts host patterns in `permissions`; v3 separates them. Missing
@@ -139,19 +147,38 @@ class AccessToEverySite(unittest.TestCase):
 
 
 class CapabilityTheBrowserReserves(unittest.TestCase):
-    def test_debugger_stands_alone(self) -> None:
+    def test_two_reserved_permissions_together_are_emphatic(self) -> None:
+        # Two of this set together stayed rare under measurement: one extension
+        # in fourteen, holding `debugger` *and* `nativeMessaging`.
         manifest = _ordinary_manifest()
-        manifest["permissions"] = ["storage", "debugger"]
+        manifest["permissions"] = ["debugger", "nativeMessaging"]
         _, cats = _verdict(manifest, {})
 
         self.assertTrue(_named(cats, "high_risk_permission").strong)
 
-    def test_native_messaging_stands_alone(self) -> None:
+    def test_native_messaging_alone_is_not(self) -> None:
+        # **Measured, 25 Aug.** It appeared alone in 3 of 14 ordinary
+        # extensions -- password managers and PDF tools use it to reach a helper
+        # binary -- so standing alone made it emphatic on a fifth of the
+        # population.
         manifest = _ordinary_manifest()
         manifest["permissions"] = ["nativeMessaging"]
         _, cats = _verdict(manifest, {})
 
-        self.assertTrue(_named(cats, "high_risk_permission").strong)
+        category = _named(cats, "high_risk_permission")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
+
+    def test_the_standard_content_blocking_apis_claim_nothing(self) -> None:
+        # `declarativeNetRequest` is MV3's sanctioned replacement for
+        # `webRequest`. Both were in the reserved set and put two ordinary ad
+        # blockers at the top band.
+        manifest = _ordinary_manifest()
+        manifest["permissions"] = ["declarativeNetRequestWithHostAccess",
+                                   "webRequestBlocking"]
+        _, cats = _verdict(manifest, {})
+
+        self.assertFalse(_named(cats, "high_risk_permission").present)
 
     def test_one_ordinary_elevated_permission_is_not_emphatic(self) -> None:
         manifest = _ordinary_manifest()
@@ -172,13 +199,20 @@ class CapabilityTheBrowserReserves(unittest.TestCase):
 
 
 class ReachIntoUserData(unittest.TestCase):
-    def test_cookies_across_every_site_is_emphatic(self) -> None:
+    def test_cookies_across_every_site_is_not_emphatic_by_itself(self) -> None:
+        # **Measured, 25 Aug.** The `cookies` permission appears in 5 of 14
+        # ordinary extensions and broad host access in 8. Cookie access across
+        # every site is what a password manager does; combining two common
+        # facts inside one category pre-empts the corroboration the model exists
+        # to measure, and lets one category do the work of two.
         manifest = _ordinary_manifest()
         manifest["permissions"] = ["cookies"]
         manifest["host_permissions"] = ["<all_urls>"]
         _, cats = _verdict(manifest, {})
 
-        self.assertTrue(_named(cats, "credential_surface").strong)
+        category = _named(cats, "credential_surface")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
 
     def test_cookies_on_one_site_is_not(self) -> None:
         manifest = _ordinary_manifest()
@@ -198,24 +232,30 @@ class ReachIntoUserData(unittest.TestCase):
 
 
 class CodeBuiltWhileRunning(unittest.TestCase):
-    def test_a_permissive_csp_and_code_using_it_is_emphatic(self) -> None:
+    def test_the_policy_decides_and_the_source_does_not(self) -> None:
+        # **Measured, 25 Aug.** Scanning for `eval(` fired on 7 of 14 ordinary
+        # extensions, because it appears in almost any minified vendor bundle.
+        # Under Manifest V3 the default policy forbids `unsafe-eval` outright,
+        # so that code *cannot execute* -- reporting it is reporting dead
+        # branches in somebody else's library.
         manifest = _ordinary_manifest()
-        manifest["content_security_policy"] = "script-src 'self' 'unsafe-eval'"
         _, cats = _verdict(manifest,
                            {"dynamic_code": {"patterns": ["eval("],
-                                             "files": ["a.js"], "file_count": 1}})
+                                             "files": ["vendor/jquery.min.js"],
+                                             "file_count": 1}})
 
-        self.assertTrue(_named(cats, "dynamic_code_execution").strong)
+        self.assertFalse(_named(cats, "dynamic_code_execution").present)
 
-    def test_either_half_alone_is_not(self) -> None:
-        # A copied CSP, or a bundled library's dead branch. Both have innocent
-        # explanations; together they are an intent.
+    def test_a_permissive_policy_is_the_claim(self) -> None:
+        # A policy permitting runtime code is a decision the author made.
         manifest = _ordinary_manifest()
         manifest["content_security_policy"] = "script-src 'self' 'unsafe-eval'"
         _, cats = _verdict(manifest, {})
 
         category = _named(cats, "dynamic_code_execution")
         self.assertTrue(category.present)
+        # Not emphatic: 3 of 14 ordinary extensions carried a permissive policy
+        # with matching source calls.
         self.assertFalse(category.strong)
 
 
@@ -275,6 +315,9 @@ class TheBandsSeparateTheReferencePackages(unittest.TestCase):
         }
         result, _ = _verdict(manifest, sources)
 
+        # Still the top band, now on **count** rather than on four categories
+        # each declaring itself emphatic. That is the intended shape: five
+        # independent claims agreeing, not one claim asserting hard enough.
         self.assertEqual(result.verdict, "Likely Malicious")
         self.assertEqual(result.categories_present, 5)
 

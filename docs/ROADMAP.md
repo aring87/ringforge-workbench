@@ -483,21 +483,82 @@ Read the first real verdict as sceptically as anything else this bench produces.
 A model that has only ever been tested against inputs its author wrote is a
 model whose first real disagreement is still ahead of it.
 
-### 2. Nothing scores that has not been measured — except the four new scorers
+### 2. Benign rates — measured 25 Aug, and one scorer failed
 
-The dynamic side's two scored detectors have measured benign rates: module
-integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 across
-35 real crashes. That standard is quoted at the top of this file.
+`scripts/benign_rates.py` runs each categoriser over locally available software
+and reports how often each category fires. Every corpus is *presumed* benign
+rather than verified, and that is stated in the tool's own output: a category
+firing is a finding to investigate before it is a false positive.
 
-Static, spec, extension and api now have categories and **no benign corpus at
-all**. The extension one is the sharpest case, because the scorer it replaced
-was saturated: it is now known to rate a synthetic jQuery bundle `Low`, and not
-known to rate fifty real store extensions anything in particular.
+    module      corpus                                  result
+    ─────────   ─────────────────────────────────────   ────────────────────
+    static      300 System32 executables, signed        0 categories. PASS
+    spec        9 local fixtures, 5 clean by label      0 on the clean 5. PASS
+    extension   14 real installed browser extensions    4 at the top band. FAIL
+    api         none                                    NOT MEASURED
 
-This needs no detonation and no samples that are hard to get — the Chrome Web
-Store is a benign corpus that anyone can download, and any signed installer on
-this host exercises the static side. It is the cheapest remaining way to find
-out whether today's work holds.
+**Static is clean across 300 binaries**, every one `No Evidence`. Three of its
+six categories were exercised; the three needing capa, YARA and IOC extraction
+were passed `None` and came back `unknown`, which is the honest partial report
+the contract is for.
+
+**The extension scorer failed, and finding out cost four defects.** On first
+measurement **8 of 14 ordinary extensions rated `Strongly Corroborated`** --
+Likely Malicious -- and one category fired on 14 of 14. The replacement for a
+saturated scorer was itself saturated, one band lower.
+
+Two were plain bugs:
+
+- **`update_url` is universal.** Every store install has one; it is how updates
+  are delivered. `external_control_surface` fired on all fourteen. Only an
+  *off-store* update URL is a signal now.
+- **Native messaging was counted twice** -- as a source string in
+  `external_control_surface` and as a permission in `high_risk_permission`.
+  Two categories firing on one fact is manufactured corroboration, which the
+  model exists to prevent.
+
+Two were miscalibration:
+
+- **`declarativeNetRequestWithHostAccess` and `webRequestBlocking`** were in the
+  reserved-capability set. They are MV3's *standard* content-blocking APIs and
+  put two ordinary ad blockers at the top band.
+- **`eval(` in vendor bundles** fired `dynamic_code_execution` on 7 of 14. Under
+  MV3 the default policy forbids `unsafe-eval`, so that code cannot execute --
+  the policy is the claim now and the source corroborates it.
+
+And the broader miscalibration: **`strong` was set far too freely.** Four of
+five categories could be emphatic on modest evidence, in a population where
+broad access is ordinary. Only two conditions survived: two reserved
+permissions together (1 of 14) and a broad `externally_connectable` (2 of 14).
+
+That halved the top band, 8 to 4. **It did not fix it**, and the tuning stopped
+there deliberately -- fitting five thresholds to fourteen samples is the
+additive model's failure in new clothes.
+
+#### What remains is structural, not a threshold
+
+The five extension categories are not independent kinds of evidence. They are
+facets of one property -- *this extension is capable* -- and capable extensions
+have several. Corroboration across facets of a single thing is not
+corroboration, and no threshold repairs that.
+
+Two ways forward, and this wants deciding rather than tuning:
+
+- **Re-author the categories around genuinely independent claims.** What an
+  extension *asks for*, what its code *does*, where it is *distributed from*,
+  and who can *drive it* are closer to independent than the current five.
+- **Record the module context-only by decision**, the way gap 4's detector was
+  on the dynamic side -- reported, never banded, until the categories earn it.
+
+Until one of those happens the extension module should not contribute to a case
+verdict. It is the one place in this repo where a scorer is known not to meet
+the standard, and knowing that is worth more than the number was.
+
+#### The api scorer is unmeasured, and named as such
+
+No corpus of real HTTP responses exists locally. `benign_rates.py` reports it as
+`NOT MEASURED` rather than omitting it, because a scorer absent from a report
+reads like one with nothing to report.
 
 ### 3. The unified report was rewired, not redesigned
 

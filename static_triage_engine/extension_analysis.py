@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 from verdict import MAX_CONTEXT_SCORE, Category
 
@@ -39,13 +40,32 @@ BROAD_HOSTS = frozenset({"<all_urls>", "*://*/*", "http://*/*", "https://*/*"})
 #: scorer charged 1, 2 and 3 points for them, which is a rounding error that
 #: still moved a saturating total, and every extension in the store has them.
 HIGH_RISK_PERMISSIONS = frozenset({
-    "debugger", "nativeMessaging", "proxy", "webRequestBlocking",
-    "management", "desktopCapture", "declarativeNetRequestWithHostAccess",
+    "debugger", "nativeMessaging", "proxy", "management", "desktopCapture",
 })
+
+#: **Removed after measurement, 25 Aug.** `declarativeNetRequestWithHostAccess`
+#: and `webRequestBlocking` were in the set above and are the *standard* content
+#: blocking APIs -- `declarativeNetRequest` is MV3's sanctioned replacement for
+#: `webRequest`, and every ad blocker on both stores requests one of them. They
+#: put two ordinary blockers at `Strongly Corroborated` in a corpus of fourteen
+#: real installed extensions.
+_RETIRED_HIGH_RISK = frozenset({
+    "webRequestBlocking", "declarativeNetRequestWithHostAccess",
+})
+
+#: The official store update endpoints. **Every extension installed from a store
+#: carries `update_url`** -- it is how updates are delivered -- so its presence
+#: is a store requirement and not a signal. Measured at 14 of 14. What *is* a
+#: signal is an update URL pointing somewhere else: off-store distribution.
+STORE_UPDATE_HOSTS = (
+    "clients2.google.com",
+    "edge.microsoft.com",
+    "clients2.googleusercontent.com",
+)
 
 #: Permissions that reach the user's data rather than the browser's machinery.
 CREDENTIAL_PERMISSIONS = frozenset({
-    "cookies", "clipboardRead", "history", "webRequest",
+    "cookies", "clipboardRead", "history",
 })
 
 #: Source patterns, grouped by the claim they support. The old list carried a
@@ -100,6 +120,25 @@ def scan_sources(root: str | Path) -> dict[str, dict[str, Any]]:
     return found
 
 
+def _is_offstore_update(update_url: Any) -> bool:
+    """Does `update_url` point somewhere other than an official store?
+
+    Presence alone is meaningless -- every store install has one. A URL pointing
+    elsewhere means the author distributes and updates outside the store, which
+    is where sideloaded extensions get their persistence.
+    """
+    if not update_url:
+        return False
+    try:
+        host = (urlparse(str(update_url)).hostname or "").lower()
+    except ValueError:
+        return True
+    if not host:
+        return True
+    return not any(host == known or host.endswith("." + known)
+                   for known in STORE_UPDATE_HOSTS)
+
+
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -146,6 +185,7 @@ def manifest_facts(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
         "external_matches": external_matches,
         "broad_external": sorted({m for m in external_matches if m in BROAD_HOSTS}),
         "update_url": manifest.get("update_url") or "",
+        "offstore_update_url": _is_offstore_update(manifest.get("update_url")),
         "background": bool(manifest.get("background")),
         "web_accessible_resources": _as_list(manifest.get("web_accessible_resources")),
     }
@@ -189,11 +229,13 @@ def extension_categories(
         module="extension",
         collected=manifest_ran,
         present=broad,
-        # **Strong only when code actually runs there.** A host permission is
-        # the right to make requests; a content script matching the same
-        # pattern is code executing inside every page the user opens, which is
-        # a different order of access.
-        strong=broad and bool(broad_scripts),
+        # **Never strong, measured 25 Aug.** This fired on 8 of 14 real
+        # installed extensions and was emphatic on 6 of them. Access to every
+        # site is the price of admission for whole legitimate categories --
+        # blockers, password managers, translators, readers -- and a category
+        # that is emphatic on 43% of an ordinary population cannot carry a
+        # band. It corroborates.
+        strong=False,
         detail=", ".join(sorted(set(broad_hosts + broad_scripts))) if broad else "",
         reason=(
             "The extension requests access to every site the user visits"
@@ -210,12 +252,13 @@ def extension_categories(
         module="extension",
         collected=manifest_ran,
         present=manifest_ran and bool(high),
-        # `debugger` and `nativeMessaging` each stand alone: one attaches to
-        # the browser's own debugging protocol, the other executes a program
-        # outside the sandbox entirely.
-        strong=bool(high) and (len(high) >= 2
-                               or "debugger" in high
-                               or "nativeMessaging" in high),
+        # **Two, not one, measured 25 Aug.** `nativeMessaging` alone appeared
+        # in 3 of 14 ordinary extensions -- password managers and PDF tools use
+        # it to reach a helper binary -- so standing alone made it emphatic on a
+        # fifth of the population. Two of this set together is rare and stayed
+        # rare: one extension in the corpus, holding `debugger` *and*
+        # `nativeMessaging`.
+        strong=len(high) >= 2,
         detail=", ".join(high),
         reason=(
             f"The manifest requests {', '.join(high)} -- capability the browser "
@@ -242,8 +285,12 @@ def extension_categories(
         present=credential,
         # Cookies plus access to every site is the shape of a session stealer.
         # Either alone is ordinary.
-        strong=credential and broad and bool(
-            {"cookies"} & set(credential_perms) or credential_code),
+        # **Never strong, measured 25 Aug.** The `cookies` permission appears
+        # in 5 of 14 ordinary extensions and broad host access in 8; cookie
+        # access across every site is what a password manager does. Let the
+        # corroboration do that work -- combining two common facts inside one
+        # category is pre-empting the thing the model is for.
+        strong=False,
         detail=", ".join(credential_perms + ([where("credential")]
                                              if credential_code else [])),
         reason=(
@@ -255,18 +302,27 @@ def extension_categories(
     ))
 
     # --- Code assembled at runtime ------------------------------------------
+    # **The CSP decides, and the source corroborates.** `eval(` and
+    # `new Function(` appear in almost any minified vendor bundle, so scanning
+    # for them alone fired on 7 of 14 ordinary extensions. Under Manifest V3 the
+    # default policy forbids `unsafe-eval` outright -- so that code *cannot
+    # execute*, and reporting it is reporting dead branches in somebody else's
+    # library.
+    #
+    # A policy that permits runtime code is a decision the author made. That is
+    # the claim; the source is what shows they meant it.
     dynamic_code = group("dynamic_code")
     dynamic_ran = manifest_ran and sources_ran
-    dynamic = dynamic_ran and bool(facts["csp_unsafe_eval"] or dynamic_code)
+    dynamic = dynamic_ran and bool(facts["csp_unsafe_eval"])
     cats.append(Category(
         name="dynamic_code_execution",
         module="extension",
         collected=dynamic_ran,
         present=dynamic,
-        # A CSP that permits it and code that uses it are two halves of the
-        # same intent. Either alone has innocent explanations -- a copied CSP,
-        # a bundled library's dead branch.
-        strong=bool(facts["csp_unsafe_eval"] and dynamic_code),
+        # **Never strong, measured 25 Aug.** A permissive CSP with matching
+        # source calls appeared in 3 of 14 ordinary extensions -- 21% is not a
+        # rate that can carry a band on its own. It corroborates.
+        strong=False,
         detail=("unsafe-eval in CSP" if facts["csp_unsafe_eval"] else "")
         + ((" | " if facts["csp_unsafe_eval"] and dynamic_code else "")
            + where("dynamic_code") if dynamic_code else ""),
@@ -281,20 +337,20 @@ def extension_categories(
     ))
 
     # --- Control from outside the browser ------------------------------------
-    native_code = group("native")
-    external_present = manifest_ran and bool(
-        facts["externally_connectable"] or facts["update_url"])
-    external = external_present or bool(native_code)
+    # **Native messaging is deliberately not here.** It is a permission, and
+    # `high_risk_permission` already claims it -- counting the same fact in two
+    # categories manufactures the corroboration the model is built to measure.
+    # It was doing so through a source-string match, which fired on 4 of 14
+    # ordinary extensions.
+    external = manifest_ran and bool(
+        facts["externally_connectable"] or facts["offstore_update_url"])
     parts = []
     if facts["externally_connectable"]:
         parts.append("externally_connectable"
                      + (f" ({', '.join(facts['broad_external'])})"
                         if facts["broad_external"] else ""))
-    if facts["update_url"]:
-        parts.append(f"update_url {facts['update_url']}")
-    if native_code:
-        parts.append(f"native messaging in {where('native')}")
-
+    if facts["offstore_update_url"]:
+        parts.append(f"off-store update_url {facts['update_url']}")
     cats.append(Category(
         name="external_control_surface",
         module="extension",
