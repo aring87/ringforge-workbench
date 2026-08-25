@@ -339,6 +339,93 @@ showed.
 
 ---
 
+## Pick up here — 26 Aug
+
+**Every scorer in this repo is now measured against a real population, except
+one.** That sentence was not true two days ago and it is the shortest summary of
+where the work is.
+
+    module      corpus                              band distribution
+    ─────────   ─────────────────────────────────   ──────────────────────
+    static      300 System32 executables            100% No Evidence
+    dynamic     the reference module, gap-proven    (its own ledger)
+    spec        9 local fixtures, 5 clean           0 on the clean five
+    extension   394 random store extensions         72.8% No Evidence, 1.0% top
+    api         NONE                                NOT MEASURED
+
+`api` is the only module still held context-only, and it is held for the one
+honest reason: nothing has ever measured it.
+
+### 1. A corpus for `spec` — the cheapest thing on this list
+
+Nine fixtures, five of them clean, is the same shape of sample the extension
+scorer was nearly ruined by. **APIs.guru publishes a few thousand real OpenAPI
+specifications** as a public, versioned directory with no key and no scraping —
+the direct analogue of the store sitemap, and the same script shape applies.
+
+`scripts/extension_corpus.py` is the template: fetch an index, sample randomly
+with a fixed seed, download politely, measure. `benign_rates.py --module spec
+--specs <dir>` already takes a directory.
+
+Expect it to find something. `unauthenticated_sensitive_endpoint` fired on 4 of
+9 fixtures, and the fixtures were *written to be* a mix — a real population will
+say whether the category separates it or merely describes it.
+
+### 2. A corpus for `api` — the last unmeasured scorer, and the hardest
+
+Harder because a response corpus has to come from somewhere, and the honest
+options each cost something:
+
+- **Call public APIs.** Real responses, real headers, real `Set-Cookie` flags.
+  Costs a decision about what to call and how often.
+- **Replay the `spec` corpus.** Every APIs.guru entry names its servers; hitting
+  a documented health or version endpoint yields a genuine response.
+- **Synthesise from the categories.** Cheapest and worth the least — a corpus
+  written by whoever wrote the scorer measures the author's imagination, which
+  is the failure the extension corpus just corrected.
+
+The first two are worth the trouble. The third is what the fourteen installed
+extensions were.
+
+### 3. Static's other three categories
+
+The 300-binary measurement exercised `stripped_metadata`, `invalid_signature`
+and `deceptive_file_identity`. The three needing capa, YARA and IOC extraction
+came back `unknown` — the honest partial report, and still a gap.
+
+Closing it means running the whole static engine over a corpus rather than the
+cheap fields. Hours rather than minutes, and the corpus already exists in
+`%SystemRoot%\System32`.
+
+### 4. Small, and none of them blocking
+
+- **The `0bw` deployer.** `testnet.bscscan.com/address/0x4E31128a13AcBD1cF1909D67F072460c853F87f7`
+  in a browser shows the creator and creation transaction. The API needs a paid
+  plan for chain 97 and no free node has full archive state — six were probed.
+  A manual read, thirty seconds, and `scripts/chain_history.py` carries both
+  automated routes for whenever one becomes available.
+- **The stale CA.** `6CDD5E8D…` (21 Aug) sits beside the live `141C8310…` in the
+  guest's Root store — the re-mint bug's fingerprint. Untidy rather than broken.
+  Remove it on the new baseline, where a mistake costs one revert.
+- **The guest is at `40e19f8`.** Everything from the scoring rewrite onward is
+  host-only. The next detonation that wants `corroboration-v1` needs a pull and
+  a re-take first; the procedure was run twice on 24 Aug and is written down.
+- **The CRX unpacker exists twice**, in `gui/extension_window._extract_crx` and
+  in `scripts/extension_corpus.unpack_crx`. Only the second guards its paths.
+  One of them should move into the engine and the other should call it.
+
+### 5. Larger, when there is appetite
+
+- **A bigger extension corpus.** 394 gives a rate; 2,000 gives a rate with
+  confidence at the tail, which is where the 1% lives. Costs only time — the
+  script resumes, and `_sample.json` records the seed.
+- **Known-malicious extensions.** Every rate here is a *false positive* rate.
+  Nothing has measured whether the categories fire when they should, and no
+  benign corpus can answer that. It is the mirror of the standard this file
+  opens with, and it is unaddressed.
+
+---
+
 ## After dynamic — the roadmap from 24 Aug
 
 The 13 Aug note below this heading read, in full:
