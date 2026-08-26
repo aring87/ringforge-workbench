@@ -183,5 +183,98 @@ class TheCategories(unittest.TestCase):
         self.assertEqual(result.categories_strong, 0)
 
 
+class WhatTheReplayedServersTaught(unittest.TestCase):
+    """108 GETs against the servers named in the spec corpus, 103 answered.
+
+    The first measurement `api` has ever had, and it read 22.3% No Evidence --
+    three quarters of ordinary public API traffic produced a band. Four defects
+    were behind it and each has a test here. After them: 72.8% No Evidence,
+    6.8% Corroborated, nothing at the top band.
+    """
+
+    def test_a_bare_server_name_is_not_a_disclosure(self) -> None:
+        # `Server:` fired on 68.9% of 103 responses. The values were
+        # `cloudflare` 27 times and `nginx` 11 -- what most of the internet
+        # sends, disclosing nothing a caller could not guess.
+        for value in ("cloudflare", "nginx", "Apache", "Fastly", "AmazonS3",
+                      "Layer7-API-Gateway", "istio-envoy", "Kestrel"):
+            with self.subTest(server=value):
+                result = analyze_response(url="https://api.example.com/v1",
+                                          status=200,
+                                          response_headers={"Server": value})
+                self.assertNotIn("server_header", _codes(result))
+
+    def test_a_server_version_is(self) -> None:
+        # These name the version to look up, which is the claim the category
+        # was always meant to make.
+        for value in ("nginx/1.10.3 (Ubuntu)", "Microsoft-IIS/10.0",
+                      "Apache/2.4.37 (CentOS Stream)", "awselb/2.0"):
+            with self.subTest(server=value):
+                result = analyze_response(url="https://api.example.com/v1",
+                                          status=200,
+                                          response_headers={"Server": value})
+                self.assertEqual(_codes(result)["server_header"], "Low")
+
+    def test_a_wildcard_origin_alone_does_not_band(self) -> None:
+        # `Access-Control-Allow-Origin: *` is how an API meant for any caller is
+        # built. 23 of the 26 wildcards in the corpus carried no credentials.
+        result = analyze_response(
+            url="https://api.example.com/v1", status=200,
+            response_headers={"Access-Control-Allow-Origin": "*"})
+        cats, _ = api_categories(result)
+
+        self.assertEqual(_codes(result)["wildcard_cors"], "Low")
+        self.assertFalse(_named(cats, "permissive_sharing").present)
+
+    def test_a_wildcard_with_credentials_does(self) -> None:
+        # Browsers refuse this pair outright, so it means a policy somebody
+        # configured cannot work. Stripe and spoonacular both send it.
+        result = analyze_response(
+            url="https://api.example.com/v1", status=401,
+            response_headers={"Access-Control-Allow-Origin": "*",
+                              "Access-Control-Allow-Credentials": "true"})
+        cats, _ = api_categories(result)
+
+        self.assertTrue(_named(cats, "permissive_sharing").present)
+        self.assertTrue(_named(cats, "permissive_sharing").strong)
+
+    def test_a_schema_describing_a_token_is_not_a_leaked_token(self) -> None:
+        # One replayed endpoint served its own OpenAPI document. `\s*` spanning
+        # the newline made `description` the credential.
+        body = "\n".join([
+            "    refresh_token:",
+            '      description: "Refresh token value for refresh grants"',
+        ])
+        result = analyze_response(url="https://api.example.com/", status=200,
+                                  body=body)
+
+        self.assertNotIn("credential_in_body", _codes(result))
+
+    def test_a_key_beside_its_field_still_is(self) -> None:
+        # The finding that survived: a live ContentStack delivery key in a
+        # public 200 response, which is what the category exists to catch.
+        body = '{"ContentStack":{"parameters":{"api_key":"blte410e3b15535c144"}}}'
+        result = analyze_response(url="https://api.example.com/Settings/",
+                                  status=200, body=body)
+
+        self.assertEqual(_codes(result)["credential_in_body"], "High")
+
+    def test_every_cookie_is_read_not_only_the_last(self) -> None:
+        # 8 of 103 responses repeat `Set-Cookie`, and 6 have a non-final cookie
+        # missing a flag. A `dict` keeps the last one, so those were scored on
+        # their best cookie.
+        pairs = [("Set-Cookie", "first=1; path=/"),
+                 ("Set-Cookie", "second=2; HttpOnly; Secure; SameSite=Lax")]
+        result = analyze_response(url="https://api.example.com/v1", status=200,
+                                  response_headers=pairs)
+
+        self.assertEqual(_codes(result)["set_cookie"], "Medium")
+        self.assertIn("2 cookies", result["findings"][-1]["message"])
+
+
+def _named(cats, name):
+    return next(c for c in cats if c.name == name)
+
+
 if __name__ == "__main__":
     unittest.main()

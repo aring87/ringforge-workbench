@@ -341,9 +341,17 @@ showed.
 
 ## Pick up here — 26 Aug
 
-**Every scorer in this repo is now measured against a real population, except
-one.** That sentence was not true two days ago and it is the shortest summary of
-where the work is. `spec` joined the list on 26 Aug; `api` is what is left.
+**Every scorer in this repo is now measured against a real population.** That
+sentence was not true three days ago, it lost its "except one" twice on 26 Aug,
+and it is the shortest summary of where the work is.
+
+Each of the four corpora was drawn at random from a population nobody here
+curated, with the seed recorded, and **each one disagreed with the intuition
+formed before it.** That is the whole argument for the expense: the extension
+categories were nearly cut on a sample of fourteen, `spec` reported a rate that
+turned out to be a fact about documentation practice, and `api` read three
+quarters of ordinary public traffic as a finding until 103 real responses said
+so.
 
     module      corpus                              band distribution
     ─────────   ─────────────────────────────────   ──────────────────────
@@ -351,10 +359,11 @@ where the work is. `spec` joined the list on 26 Aug; `api` is what is left.
     dynamic     the reference module, gap-proven    (its own ledger)
     spec        300 random APIs.guru specs          54.0% No Evidence, 0% top
     extension   394 random store extensions         72.8% No Evidence, 1.0% top
-    api         NONE                                NOT MEASURED
+    api         103 replayed spec servers           72.8% No Evidence, 0% top
 
-`api` is the only module still held context-only, and it is held for the one
-honest reason: nothing has ever measured it.
+`api` is still held context-only in `verdict.CONTEXT_ONLY`, and the reason
+recorded there -- "Never measured" -- is now out of date. Lifting it is a
+decision, not a consequence; see section 2.
 
 ### 1. A corpus for `spec` — done 26 Aug
 
@@ -444,23 +453,96 @@ a different condition from a rate somebody finds uncomfortable. The decision is
 recorded beside `CONTEXT_ONLY` in `verdict/model.py` and pinned by
 `test_only_the_unmeasured_module_is_held`.
 
-### 2. A corpus for `api` — the last unmeasured scorer, and the hardest
+### 2. A corpus for `api` — done 26 Aug
 
-Harder because a response corpus has to come from somewhere, and the honest
-options each cost something:
+`scripts/api_corpus.py`, seed `20260826`, 108 GETs, 103 answered, `G:\api-corpus`.
 
-- **Call public APIs.** Real responses, real headers, real `Set-Cookie` flags.
-  Costs a decision about what to call and how often.
-- **Replay the `spec` corpus.** Every APIs.guru entry names its servers; hitting
-  a documented health or version endpoint yields a genuine response. Cheaper
-  than it was on 25 Aug: `G:\spec-corpus` now holds 300 of them, sampled over
-  300 distinct providers, and `_sample.json` records the seed.
-- **Synthesise from the categories.** Cheapest and worth the least — a corpus
-  written by whoever wrote the scorer measures the author's imagination, which
-  is the failure the extension corpus just corrected.
+A response corpus cannot be collected, only *caused*, and that is what made
+this the hardest of the four. The route taken is the one section 2 called
+second: **replay the servers the spec corpus already names.** 300 specs yield
+108 documented, parameterless GETs against 108 distinct public hosts — one
+request per organisation, less load than one person opening the docs.
 
-The first two are worth the trouble. The third is what the fourteen installed
-extensions were.
+The rules the script follows are in its docstring and none are configurable:
+GET only, never a path the document says needs a parameter, never a verb-shaped
+path (`/logout` and `/reset` are routed through GET by real APIs), no redirects
+followed, no credential ever sent, and a host that resolves inside the network
+is not contacted at all. 41 of the 300 specs were dropped on that last rule —
+27 placeholder names that do not resolve, 11 `.local`, 3 loopback.
+
+    band                       before      after
+    ─────────────────────────  ────────   ────────
+    No Evidence                  22.3%      72.8%
+    Single Observation           48.5%      20.4%
+    Corroborated                 27.2%       6.8%
+    Strongly Corroborated         1.9%       0.0%
+
+    category                     before      after
+    implementation_disclosure     72.8%      16.5%
+    permissive_sharing            31.1%      11.7%   (2.9% emphatic)
+    cleartext_transport            2.9%       2.9%
+    credential_disclosure          1.9%       1.0%   (1.0% emphatic)
+
+**The first measurement said three quarters of ordinary public API traffic
+produces a band.** That is the saturation the extension scorer was replaced for,
+and it is exactly what the hold on `api` existed to prevent shipping. Four
+defects were behind it.
+
+**A `Server:` header is not a disclosure; a version is.** It fired on 68.9% of
+103 responses, and the values are `cloudflare` 27 times, `nginx` 11, then
+`Apache`, `Fastly`, `Heroku`, `Kestrel`. A bare product name is what most of the
+internet sends. `nginx/1.10.3 (Ubuntu)` and `Microsoft-IIS/10.0` are a different
+claim — they name the version to look up. The category's own comment already
+said a `Server:` header is "a default, not a decision"; that reasoning stopped
+it being emphatic and should have stopped it firing.
+
+**A wildcard CORS origin on a public API is the configuration, not the fault.**
+`Access-Control-Allow-Origin: *` fired on 25.2%, and 23 of those 26 carried no
+credentials — which is how an API meant for any caller is built. The finding is
+the wildcard *with* `Allow-Credentials: true`, a pair browsers refuse outright,
+so its presence means somebody configured a policy that cannot work. The
+analyser already graded that pair Medium; the category now follows the grading
+instead of firing on the header. **Stripe and spoonacular both send it.**
+
+**A schema describing a token was read as a leaked token.** One replayed
+endpoint serves its own OpenAPI document, in which `refresh_token:` is followed
+on the *next line* by `description:`. The credential regex joined them with
+`\s*`, so the word `description` became the secret. That is the defect this
+module was rewritten to remove — a word where a value should be — in a new
+place. The gap may no longer cross a line, and a value that is a bare schema
+keyword is not a secret.
+
+**A `dict` of the headers keeps one `Set-Cookie` out of however many were
+sent.** This one was mine, in the recorder, and it hid real findings rather than
+inventing them: 8 of 103 responses repeat the header, and 6 have a *non-final*
+cookie missing a flag — including one with no `HttpOnly`, `Secure` or `SameSite`
+at all, sent first and overwritten by a well-formed one. The corpus records
+header *pairs* now and the analyser grades every cookie on the worst of them,
+which recovered two findings the collapsed version could not see.
+
+#### What survived, and it is not noise
+
+**The one `credential_disclosure` is real.** `https://www.bungie.net/Platform/Settings/`
+returns 200 to an unauthenticated GET carrying `"ApiKey":"blte410e3b15535c144"`
+and a ContentStack delivery token. That is the category doing precisely what it
+exists for, on the first real population it was ever pointed at.
+
+The three cleartext endpoints are three specs that declare an `http://` server
+and answer on it. The emphatic `permissive_sharing` cases are Stripe and
+spoonacular's credentialed wildcards, and Jira's XSRF cookie without `HttpOnly`.
+None of the seven Corroborated samples reads as a false positive.
+
+#### The hold on `api` is now a decision rather than a fact
+
+`verdict.CONTEXT_ONLY` records the reason as *"Never measured. No corpus of real
+HTTP responses exists on this bench, so its false-positive rate is unknown in
+both directions."* That sentence is no longer true, and the standard written
+beside the list is explicit: **removing an entry is a claim that the module has
+been measured against a population and separates it.** At 72.8% No Evidence,
+6.8% Corroborated, nothing at the top band and a genuine credential at 1.0%, it
+does. Lifting it is a one-line change and it has not been made, because the same
+question was put and answered for `spec` on 26 Aug and this one belongs to
+whoever is reading rather than to whoever measured.
 
 ### 3. Static's other three categories
 

@@ -3,14 +3,21 @@
 **Nothing scores that has not been measured.** That standard is quoted at the
 top of `docs/ROADMAP.md` and the dynamic side meets it -- module integrity at 0
 mismatches across 300 modules in 12 programs, the WER check at 0 across 35 real
-crashes. The four scorers rewritten on 24 Aug meet it nowhere: static, spec,
-extension and api have categories and no benign corpus at all.
+crashes. The four scorers rewritten on 24 Aug met it nowhere. As of 26 Aug all
+four have a corpus, and every one of them is a random sample from a population
+nobody here curated, with the seed recorded:
 
-That gap is sharpest for the extension scorer, because the one it replaced was
-*saturated* -- every non-trivial extension rated `Critical`. The replacement is
-known to rate a synthetic jQuery bundle `Low`. It is not known to rate real
-store extensions anything in particular, and those are two very different
-claims.
+    static      300 System32 executables      (local)
+    extension   394 store extensions          scripts/extension_corpus.py
+    spec        300 APIs.guru specifications  scripts/spec_corpus.py
+    api         103 replayed spec servers     scripts/api_corpus.py
+
+**Each corpus disagreed with the intuition formed before it.** The extension
+categories were nearly cut on a sample of fourteen installed extensions; `spec`
+reported a rate that turned out to be a fact about how API documentation is
+written; `api` read three quarters of ordinary public traffic as a finding
+until 103 real responses said so. A rate measured on a convenience sample is
+not a rate, and that lesson cost more than all four scripts put together.
 
 **A false positive here is the expensive kind.** A missed detection on this
 bench gets caught by the next module or the next run; a category that fires on
@@ -43,6 +50,10 @@ from typing import Any, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from static_triage_engine.api_response_analysis import (  # noqa: E402
+    analyze_response,
+    api_categories,
+)
 from static_triage_engine.categories import spec_categories, static_categories  # noqa: E402
 from static_triage_engine.extension_analysis import (  # noqa: E402
     extension_categories,
@@ -289,6 +300,56 @@ def measure_specs(paths: list[Path], note: str = "") -> dict[str, Any]:
                    note or "(local specification fixtures, mixed)")
 
 
+# ---------------------------------------------------------------------------
+# api
+# ---------------------------------------------------------------------------
+
+def measure_api(root: Path) -> dict[str, Any]:
+    """Recorded HTTP responses from `scripts/api_corpus.py`.
+
+    **The last unmeasured scorer.** `api` is the only module still in
+    `verdict.CONTEXT_ONLY`, held there because nothing had ever measured it --
+    not because anything was wrong with it. This is the measurement that hold
+    was waiting on.
+    """
+    results = []
+    errors = 0
+    for path in sorted(root.glob("*.response.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("error") or "status" not in record:
+            # A request that never arrived is not a response. Counted so the
+            # corpus size and the sample size stay the same number.
+            errors += 1
+            continue
+        analysis = analyze_response(
+            method=str(record.get("method", "GET")),
+            url=str(record.get("url", "")),
+            status=record.get("status", 0),
+            # Pairs when the recording has them: a `dict` of the headers keeps
+            # one `Set-Cookie` out of however many the server sent.
+            response_headers=([tuple(p) for p in record["header_pairs"]]
+                              if isinstance(record.get("header_pairs"), list)
+                              else record.get("headers") or {}),
+            body=str(record.get("body", "")),
+        )
+        cats, context = api_categories(analysis)
+        label = str(record.get("title") or record.get("spec") or path.stem)[:40]
+        # The hold is lifted here, exactly as it is for `extension`: banding
+        # with it on reports "Findings Not Scored" for every sample and
+        # measures nothing.
+        results.append((label, band(cats, context_score=context,
+                                    context_only={}), cats))
+    note = f"(replayed spec servers, {root.name}, presumed benign)"
+    if errors:
+        note += f" [{errors} request(s) never arrived, excluded]"
+    return _report("api", results, note)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--module", default="all",
@@ -299,6 +360,9 @@ def main(argv: list[str] | None = None) -> int:
                              "scripts/extension_corpus.py")
     parser.add_argument("--specs", default="",
                         help="directory of specification files to measure")
+    parser.add_argument("--responses", default="",
+                        help="a directory of recorded HTTP responses from "
+                             "scripts/api_corpus.py")
     parser.add_argument("--unsigned", action="store_true",
                         help="do not assert a valid signature on System32")
     parser.add_argument("--out", default="")
@@ -329,7 +393,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.module in ("all", "api"):
         # **Named, not skipped.** An unmeasured scorer that is simply absent
         # from the report reads like one with nothing to report.
-        out.append(_report("api", [], "(no corpus of real HTTP responses)"))
+        responses = Path(args.responses) if args.responses else None
+        out.append(measure_api(responses) if responses and responses.is_dir()
+                   else _report("api", [], "(no --responses directory given)"))
 
     print()
     print("Every corpus here is *presumed* benign, not verified. A category")

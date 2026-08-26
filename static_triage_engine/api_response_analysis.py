@@ -56,36 +56,84 @@ CREDENTIAL_FIELDS = (
     "api_key", "apikey", "private_key", "secret_key", "session_token",
 )
 
+#: Words that are a *type* or a *description*, never a secret. An API serving
+#: its own OpenAPI document declares `refresh_token:` and then describes it, and
+#: the description is made of these.
+NON_SECRET_VALUES = frozenset({
+    "description", "string", "integer", "boolean", "number", "object", "array",
+    "example", "examples", "required", "optional", "nullable", "properties",
+    "format", "default", "readonly", "writeonly", "deprecated", "reference",
+    "password", "credentials", "undefined", "unknown", "redacted", "changeme",
+})
+
+#: `[ \t]` rather than `\s`. **The gap must not cross a line.** A JSON or YAML
+#: document writes `"api_key": "abc123..."` on one line; a *schema* writes
+#:
+#:     refresh_token:
+#:       description: "Refresh token value for refresh token grants"
+#:
+#: and `\s*` spanning that newline made `description` the credential. One of
+#: 103 replayed responses is an API serving its own specification, and this is
+#: how it reported a leaked refresh token. It is the same defect the module was
+#: rewritten to remove -- a word where a value should be -- in a new place.
 _FIELD_RE = re.compile(
-    r"[\"']?(" + "|".join(CREDENTIAL_FIELDS) + r")[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9._\-/+]{8,}",
+    r"[\"']?(" + "|".join(CREDENTIAL_FIELDS)
+    + r")[\"']?[ \t]*[:=][ \t]*[\"']?(?P<value>[A-Za-z0-9._\-/+]{8,})",
     re.IGNORECASE)
 
 #: A bearer token in a response body, rather than in the request the analyst
 #: composed.
 _BEARER_RE = re.compile(r"\bbearer\s+[A-Za-z0-9._\-]{16,}", re.IGNORECASE)
 
+#: A dotted version number -- `nginx/1.18.0`, `Microsoft-IIS/10.0`, `PHP/7.3.25`.
+#: `AmazonS3` and `Layer7-API-Gateway` carry a digit and no version, so a bare
+#: `\d` is not the test.
+_VERSION_RE = re.compile(r"\d+\.\d+")
+
 
 def _lower(value: Any) -> str:
     return str(value or "").lower()
 
 
-def _header_present(response_headers: Mapping[str, str] | str | None, name: str) -> bool:
-    if isinstance(response_headers, Mapping):
-        return any(key.lower() == name for key in response_headers)
-    return f"{name}:" in _lower(response_headers)
+#: What a response's headers may arrive as. The pair sequence is the only one
+#: that survives a repeated header, and `Set-Cookie` is the header that repeats.
+Headers = Mapping[str, str] | Sequence[tuple[str, str]] | str | None
 
 
-def _header_value(response_headers: Mapping[str, str] | str | None, name: str) -> str:
+def _header_values(response_headers: Headers, name: str) -> list[str]:
+    """**Every** value sent under this name, in order.
+
+    A response that sets three cookies sends three `Set-Cookie` headers, and a
+    `dict` keeps one of them. Across 108 replayed responses, 8 repeat the
+    header and 6 of those have a *non-final* cookie missing a flag -- including
+    one with no `HttpOnly`, `Secure` or `SameSite` at all, sent first and
+    overwritten by a well-formed one. Reading a single value scored those
+    responses on their best cookie.
+    """
     if isinstance(response_headers, Mapping):
-        for key, value in response_headers.items():
-            if key.lower() == name:
-                return str(value)
-        return ""
-    text = _lower(response_headers)
-    marker = f"{name}:"
-    if marker not in text:
-        return ""
-    return text.split(marker, 1)[1].splitlines()[0].strip()
+        return [str(v) for k, v in response_headers.items() if k.lower() == name]
+    if isinstance(response_headers, str):
+        marker = f"{name}:"
+        return [line.split(":", 1)[1].strip()
+                for line in response_headers.splitlines()
+                if line.lower().startswith(marker)]
+    if response_headers is None:
+        return []
+    out = []
+    for pair in response_headers:
+        if (isinstance(pair, (list, tuple)) and len(pair) == 2
+                and str(pair[0]).lower() == name):
+            out.append(str(pair[1]))
+    return out
+
+
+def _header_present(response_headers: Headers, name: str) -> bool:
+    return bool(_header_values(response_headers, name))
+
+
+def _header_value(response_headers: Headers, name: str) -> str:
+    values = _header_values(response_headers, name)
+    return values[0] if values else ""
 
 
 def analyze_response(
@@ -93,7 +141,7 @@ def analyze_response(
     method: str = "",
     url: str = "",
     status: Any = 0,
-    response_headers: Mapping[str, str] | str | None = None,
+    response_headers: Headers = None,
     body: str = "",
 ) -> dict[str, Any]:
     """Findings about the response, keyed by severity.
@@ -139,10 +187,19 @@ def analyze_response(
             "in transit.")
 
     # --- Headers the server chose to send ------------------------------------
-    if _header_present(response_headers, "server"):
+    # **A version, not a name.** This used to fire on any `Server:` header at
+    # all, which is 68.9% of 103 replayed responses -- and the values are
+    # `cloudflare` 27 times, `nginx` 11, `Apache`, `Fastly`, `Heroku`. A bare
+    # product name is what the whole internet sends and it discloses nothing a
+    # caller could not guess. `nginx/1.10.3 (Ubuntu)` and `Microsoft-IIS/10.0`
+    # are a different claim: they name the version to look up. The comment on
+    # the category below already said a `Server:` header is "a default, not a
+    # decision" -- that reasoning stopped the category being emphatic, and it
+    # should have stopped it firing.
+    server = _header_value(response_headers, "server")
+    if server and _VERSION_RE.search(server):
         add("Low", "server_header",
-            f"Server header disclosed backend information: "
-            f"{_header_value(response_headers, 'server')}.")
+            f"Server header disclosed backend version: {server}.")
     if _header_present(response_headers, "x-powered-by"):
         add("Low", "powered_by_header",
             f"X-Powered-By disclosed framework or runtime: "
@@ -158,20 +215,30 @@ def analyze_response(
                "reject and which signals a misconfigured policy."
                if credentialed_cors else ". Review whether that is intended."))
 
-    set_cookie = _header_value(response_headers, "set-cookie")
-    if set_cookie:
-        missing = [flag for flag in ("httponly", "secure", "samesite")
-                   if flag not in _lower(set_cookie)]
-        add("Medium" if missing else "Info", "set_cookie",
-            "Set-Cookie observed"
-            + (f", missing {', '.join(missing)}." if missing
+    # **Every cookie, graded on the worst.** One well-formed cookie does not
+    # excuse the one sent beside it, and reading a single value meant the last
+    # cookie spoke for all of them.
+    cookies = _header_values(response_headers, "set-cookie")
+    if cookies:
+        worst: list[str] = []
+        for cookie in cookies:
+            missing = [flag for flag in ("httponly", "secure", "samesite")
+                       if flag not in _lower(cookie)]
+            if len(missing) > len(worst):
+                worst = missing
+        count = f"{len(cookies)} cookies" if len(cookies) > 1 else "Set-Cookie"
+        add("Medium" if worst else "Info", "set_cookie",
+            f"{count} observed"
+            + (f", one missing {', '.join(worst)}." if worst
                else " with HttpOnly, Secure and SameSite set."))
 
     # --- What the body gave away ---------------------------------------------
     #
     # Body only. A credential the analyst *sent* is not a disclosure, and
     # treating it as one is what made this finding meaningless.
-    leaked_fields = sorted({m.group(1).lower() for m in _FIELD_RE.finditer(body or "")})
+    leaked_fields = sorted({
+        m.group(1).lower() for m in _FIELD_RE.finditer(body or "")
+        if m.group("value").lower() not in NON_SECRET_VALUES})
     leaked_bearer = bool(_BEARER_RE.search(body or ""))
     if leaked_fields or leaked_bearer:
         add("High", "credential_in_body",
@@ -260,9 +327,20 @@ def api_categories(
             name="permissive_sharing",
             module="api",
             collected=ran,
-            present=has("wildcard_cors") or (
-                has("set_cookie")
-                and codes.get("set_cookie", {}).get("severity") == "Medium"),
+            # **A wildcard origin on a public API is the configuration, not a
+            # fault.** `Access-Control-Allow-Origin: *` is how an API meant for
+            # any caller is built, and it fired on 25.2% of 103 replayed
+            # responses -- 23 of the 26 without credentials. What is a finding
+            # is the wildcard *together with* `Allow-Credentials: true`, which
+            # browsers refuse outright and which therefore means somebody
+            # configured a policy that cannot work. `analyze_response` already
+            # grades that pair Medium; this now follows the grading instead of
+            # firing on the header.
+            present=(
+                (has("wildcard_cors")
+                 and codes.get("wildcard_cors", {}).get("severity") == "Medium")
+                or (has("set_cookie")
+                    and codes.get("set_cookie", {}).get("severity") == "Medium")),
             strong=has("wildcard_cors")
             and codes.get("wildcard_cors", {}).get("severity") == "Medium",
             detail="; ".join(codes[c]["message"] for c in
