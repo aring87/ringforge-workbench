@@ -96,6 +96,7 @@ def combine(
     contributions: Mapping[str, Any],
     third_party_dissent: bool = False,
     dissent_detail: str = "",
+    context_only: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Pool every module's categories and band once.
 
@@ -107,6 +108,13 @@ def combine(
     `third_party_dissent` is decided by the caller. This module does not know
     what VirusTotal is, and keeping it that way is what stops a third-party
     threshold from being quietly tuned until it moves verdicts.
+
+    `context_only` overrides the default registry the same way `band` allows,
+    and for the same reason: the hold is a deployment decision rather than a
+    property of the categoriser. `CONTEXT_ONLY` is empty as of 26 Aug, so
+    without this the reported-but-not-counted path through the combiner could
+    only be exercised by editing the registry -- which is testing the registry
+    rather than the mechanism.
     """
     pooled: list[Category] = []
     subscores: dict[str, int] = {}
@@ -117,7 +125,9 @@ def combine(
         subscores[module] = contribution.context_score
 
     result = band(pooled, context_score=sum(subscores.values()),
-                  third_party_dissent=third_party_dissent)
+                  third_party_dissent=third_party_dissent,
+                  context_only=context_only)
+    held = dict(CONTEXT_ONLY if context_only is None else context_only)
 
     present = [c for c in pooled if c.present]
     strong = [c for c in present if c.strong]
@@ -147,8 +157,8 @@ def combine(
         "context_only": {
             "present": result.context_only_present,
             "names": list(result.context_only_names),
-            "reasons": {m: CONTEXT_ONLY[m] for m in result.modules_context_only
-                        if m in CONTEXT_ONLY},
+            "reasons": {m: held[m] for m in result.modules_context_only
+                        if m in held},
         },
         "counts": {
             "categories_present": result.categories_present,

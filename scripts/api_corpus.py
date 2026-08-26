@@ -1,9 +1,10 @@
 """Build a corpus of real HTTP responses, so `api` can be measured.
 
-`api` is the last scorer on this bench that has never been measured, and it is
-held context-only in `verdict.CONTEXT_ONLY` for that one reason. The other
-three corpora are collections of *files*; this one cannot be, because an HTTP
-response only exists if somebody sends a request.
+`api` was the last scorer on this bench never to have been measured, and it was
+held context-only in `verdict.CONTEXT_ONLY` for that one reason -- released on
+26 Aug once this corpus answered. The other three corpora are collections of
+*files*; this one cannot be, because an HTTP response only exists if somebody
+sends a request.
 
 **The specs already name their servers.** `scripts/spec_corpus.py` fetched 300
 OpenAPI documents across 300 distinct providers, and every one of them declares

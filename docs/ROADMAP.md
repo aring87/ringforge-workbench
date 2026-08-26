@@ -361,9 +361,11 @@ so.
     extension   394 random store extensions         72.8% No Evidence, 1.0% top
     api         103 replayed spec servers           72.8% No Evidence, 0% top
 
-`api` is still held context-only in `verdict.CONTEXT_ONLY`, and the reason
-recorded there -- "Never measured" -- is now out of date. Lifting it is a
-decision, not a consequence; see section 2.
+**`verdict.CONTEXT_ONLY` is empty**, and empty is a claim rather than a default:
+every module in it has been released against a measured population, `api` last
+on 26 Aug. The mechanism stays and so do its tests — a module goes back on the
+list the moment one is rewritten, or a category set changes enough that its
+measured rate is no longer its rate.
 
 ### 1. A corpus for `spec` — done 26 Aug
 
@@ -532,17 +534,30 @@ and answer on it. The emphatic `permissive_sharing` cases are Stripe and
 spoonacular's credentialed wildcards, and Jira's XSRF cookie without `HttpOnly`.
 None of the seven Corroborated samples reads as a false positive.
 
-#### The hold on `api` is now a decision rather than a fact
+#### The hold is lifted, and `CONTEXT_ONLY` is now empty
 
-`verdict.CONTEXT_ONLY` records the reason as *"Never measured. No corpus of real
-HTTP responses exists on this bench, so its false-positive rate is unknown in
-both directions."* That sentence is no longer true, and the standard written
-beside the list is explicit: **removing an entry is a claim that the module has
-been measured against a population and separates it.** At 72.8% No Evidence,
-6.8% Corroborated, nothing at the top band and a genuine credential at 1.0%, it
-does. Lifting it is a one-line change and it has not been made, because the same
-question was put and answered for `spec` on 26 Aug and this one belongs to
-whoever is reading rather than to whoever measured.
+`verdict.CONTEXT_ONLY` recorded the reason as *"Never measured. No corpus of
+real HTTP responses exists on this bench, so its false-positive rate is unknown
+in both directions."* That sentence stopped being true when the corpus answered,
+and the standard written beside the list is explicit: **removing an entry is a
+claim that the module has been measured against a population and separates it.**
+At 72.8% No Evidence, 6.8% Corroborated, nothing at the top band and the one
+`credential_disclosure` being a real key, it does. Released 26 Aug.
+
+That empties the list, which is the first time it has been empty and is itself a
+claim: nothing on this bench is reported-but-not-counted, because nothing is
+waiting on a measurement. `test_nothing_is_held_and_that_is_a_claim` asserts it,
+deliberately — so that adding a module without a corpus fails a test rather than
+passing quietly.
+
+**The mechanism did not go anywhere.** Its tests hold a module explicitly rather
+than reading the registry, which is why emptying the registry cost one test
+change and not a rewrite. `combine()` gained the `context_only` override `band()`
+already had, because otherwise the reported-but-not-counted path could only be
+exercised by editing the registry — testing the registry rather than the
+mechanism. A module goes back on the list the moment one is rewritten, or a
+category set changes enough that its measured rate is no longer its rate. That
+is the ordinary case, not an exceptional one.
 
 ### 3. Static's other three categories
 
@@ -835,8 +850,8 @@ Single Observation to Corroborated, the top band unchanged at four — which is
 what an emphatic condition should do: separate within a band without inflating
 it.
 
-**`extension` is no longer held context-only.** `api` still is, and has no
-corpus.
+**`extension` is no longer held context-only.** `api` followed it off the
+list on 26 Aug, which emptied it.
 
 The lesson is not about extensions. **A rate measured on a convenience sample is
 not a rate**, and the convenience sample here was three hundred metres from a

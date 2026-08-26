@@ -113,15 +113,20 @@ class TheDecisionIsRecordedWithItsReason(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertGreater(len(reason), 60)
 
-    def test_only_the_unmeasured_module_is_held(self) -> None:
-        # **The bar is measured, not quiet.** `spec` was considered for this
-        # list on 26 Aug -- `unauthenticated_sensitive_endpoint` is present on
-        # 32% of 300 APIs.guru specifications -- and deliberately stays out. A
-        # rate that is known in the population is the condition for banding;
-        # `api` is held because nothing has ever measured it, which is a
-        # different thing from a rate somebody dislikes.
-        self.assertEqual(set(CONTEXT_ONLY), {"api"})
-        self.assertNotIn("spec", CONTEXT_ONLY)
+    def test_nothing_is_held_and_that_is_a_claim(self) -> None:
+        # **The bar is measured, not quiet.** Empty as of 26 Aug, when `api`
+        # was released on 103 replayed responses -- the last of the four to get
+        # a corpus. `spec` was considered for the list the same day and stayed
+        # out at 32% present, because a rate that is *known* in the population
+        # is the condition for banding, not a rate somebody likes.
+        #
+        # This asserts the registry, deliberately, unlike everything above it.
+        # The claim "every module has been measured" is worth failing a test
+        # over when somebody adds a module and skips the corpus.
+        from verdict.model import MODULES
+
+        self.assertEqual(CONTEXT_ONLY, {})
+        self.assertTrue(MODULES)
 
     def test_the_held_modules_are_ones_that_exist(self) -> None:
         from verdict.model import MODULES
@@ -129,11 +134,16 @@ class TheDecisionIsRecordedWithItsReason(unittest.TestCase):
         self.assertFalse(set(CONTEXT_ONLY) - set(MODULES))
 
     def test_the_combiner_carries_the_reasons_through(self) -> None:
-        result = combine({"api": ([_cat("c0", "api", present=True)], 0)})
+        # Explicitly held, like everything else here. This used to hold `api`
+        # by reading the registry, and the registry emptied on 26 Aug -- at
+        # which point the test would have passed by asserting nothing.
+        result = combine({"extension": ([_cat("c0", "extension", present=True)], 0)},
+                         context_only=HELD)
 
-        self.assertEqual(result["modules_context_only"], ["api"])
+        self.assertEqual(result["modules_context_only"], ["extension"])
         self.assertEqual(result["context_only"]["present"], 1)
-        self.assertIn("api", result["context_only"]["reasons"])
+        self.assertEqual(result["context_only"]["reasons"]["extension"],
+                         HELD["extension"])
 
     def test_an_unheld_case_says_nothing_about_it(self) -> None:
         result = combine({"dynamic": ([_cat("c0", "dynamic", present=True)], 0)})

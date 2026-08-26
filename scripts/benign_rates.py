@@ -171,10 +171,10 @@ def measure_extensions(limit: int, corpus: str = "") -> dict[str, Any]:
             sources = scan_sources(package)
             cats, context = extension_categories(manifest, sources)
             label = str(manifest.get("name", package.parent.name))[:40]
-            # The hold is lifted here too. `extension` is held context-only by
-            # decision, and this is the measurement that decision is waiting on
-            # -- banding with the hold on would report "Findings Not Scored"
-            # for every sample and measure nothing.
+            # **`context_only={}` always, whatever the registry says.** A
+            # held module bands as "Findings Not Scored" for every sample,
+            # which measures nothing -- and this is the measurement a hold
+            # waits on, so it must not depend on whether one is in force.
             results.append((label, band(cats, context_score=context,
                                         context_only={}), cats))
     return _report("extension", results,
@@ -196,10 +196,9 @@ def _measure_extension_corpus(root: Path, limit: int) -> dict[str, Any]:
         package = manifest_path.parent
         cats, context = extension_categories(manifest, scan_sources(package))
         label = str(manifest.get("name", package.name))[:40]
+        # Independent of the registry, as above: this measures what the
+        # categories say, which is the question a hold waits on an answer to.
         results.append((label, band(cats, context_score=context,
-                                    # The hold is lifted: this measures what the
-                                    # categories say, which is the question the
-                                    # hold is waiting on an answer to.
                                     context_only={}), cats))
     return _report("extension", results,
                    f"(downloaded corpus, {root.name}, presumed benign)")
@@ -307,10 +306,10 @@ def measure_specs(paths: list[Path], note: str = "") -> dict[str, Any]:
 def measure_api(root: Path) -> dict[str, Any]:
     """Recorded HTTP responses from `scripts/api_corpus.py`.
 
-    **The last unmeasured scorer.** `api` is the only module still in
+    **The last unmeasured scorer.** `api` was the only module left in
     `verdict.CONTEXT_ONLY`, held there because nothing had ever measured it --
     not because anything was wrong with it. This is the measurement that hold
-    was waiting on.
+    was waiting on, and it released it on 26 Aug.
     """
     results = []
     errors = 0

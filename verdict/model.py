@@ -95,11 +95,35 @@ STRONGLY_CORROBORATED = "Strongly Corroborated"
 #: **Removing an entry is a claim that the module now meets the standard** --
 #: that its categories have been measured against a population and separate it.
 #: Nothing scores that has not been measured.
-CONTEXT_ONLY: dict[str, str] = {
-    "api": (
-        "Never measured. No corpus of real HTTP responses exists on this bench, "
-        "so its false-positive rate is unknown in both directions."),
-}
+#: **Empty as of 26 Aug, and empty is a claim.** Every module in `MODULES` has
+#: now been measured against a random sample of a population nobody here
+#: curated, with the seed recorded. Nothing is being reported-but-not-counted,
+#: because nothing is waiting on a measurement any more.
+#:
+#: The mechanism stays, and so do its tests. A module is added here the moment
+#: one is rewritten, or a category set is changed enough that its rate is no
+#: longer the rate that was measured -- which is the ordinary case, not an
+#: exceptional one. `band(..., context_only=...)` takes an explicit map, so a
+#: caller can hold a module without editing this file.
+CONTEXT_ONLY: dict[str, str] = {}
+
+#: **`api` was here and is not any more, 26 Aug.** It was held on the only
+#: honest ground there is -- nothing had ever measured it -- and no corpus
+#: existed because an HTTP response cannot be collected, only caused.
+#:
+#: 108 documented parameterless GETs, replayed against the servers named in the
+#: spec corpus, answered 103 times. The first reading was 22.3% No Evidence:
+#: three quarters of ordinary public API traffic produced a band, which is the
+#: saturation this hold existed to keep out of a report. Four defects were
+#: behind it -- a `Server:` header counted as a disclosure when 27 of them said
+#: `cloudflare`, a wildcard CORS origin counted as a fault when it is how a
+#: public API is built, a schema describing `refresh_token` read as a leaked
+#: one, and a `dict` of the headers keeping one `Set-Cookie` of several.
+#:
+#: After them: 72.8% No Evidence, 6.8% Corroborated, nothing at the top band,
+#: and the single `credential_disclosure` is a live ContentStack key returned
+#: by `bungie.net/Platform/Settings/` to an unauthenticated GET. That is the
+#: category doing its job on the first real population it was pointed at.
 
 #: **`extension` was here and is not any more, 25 Aug.** It was held on a
 #: measurement against the fourteen extensions installed on this bench, which
