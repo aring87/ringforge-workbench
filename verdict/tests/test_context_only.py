@@ -113,6 +113,16 @@ class TheDecisionIsRecordedWithItsReason(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertGreater(len(reason), 60)
 
+    def test_only_the_unmeasured_module_is_held(self) -> None:
+        # **The bar is measured, not quiet.** `spec` was considered for this
+        # list on 26 Aug -- `unauthenticated_sensitive_endpoint` is present on
+        # 32% of 300 APIs.guru specifications -- and deliberately stays out. A
+        # rate that is known in the population is the condition for banding;
+        # `api` is held because nothing has ever measured it, which is a
+        # different thing from a rate somebody dislikes.
+        self.assertEqual(set(CONTEXT_ONLY), {"api"})
+        self.assertNotIn("spec", CONTEXT_ONLY)
+
     def test_the_held_modules_are_ones_that_exist(self) -> None:
         from verdict.model import MODULES
 

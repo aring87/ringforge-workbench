@@ -431,10 +431,18 @@ is the thing to check.
 **The banding is deliberately untouched.** 32% present and 4% emphatic on a
 `posture` domain is a category reporting an omission that is really there, and
 yesterday's lesson was that cutting conditions firing at a few percent on a
-real population is the error, not the fix. What is left is a decision rather
-than a defect: whether "the document omits a control" belongs in a band at all,
-or whether `spec` should join `api` in `verdict.CONTEXT_ONLY`. Nothing measured
-here settles that, and it should not be settled by tuning.
+real population is the error, not the fix.
+
+**`spec` stays banded — decided 26 Aug.** The open question was whether "the
+document omits a control" belongs in a band at all, or whether `spec` should
+join `api` in `verdict.CONTEXT_ONLY`. It does belong, and the reason is what
+that list is for: the bar is *measured*, not *quiet*. The rate is now known in
+the population, the wording claims the document rather than the service, and a
+single category bands at Single Observation — the correct weight for a
+documentation gap. `api` is held because nothing has ever measured it, which is
+a different condition from a rate somebody finds uncomfortable. The decision is
+recorded beside `CONTEXT_ONLY` in `verdict/model.py` and pinned by
+`test_only_the_unmeasured_module_is_held`.
 
 ### 2. A corpus for `api` — the last unmeasured scorer, and the hardest
 

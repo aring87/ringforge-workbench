@@ -117,6 +117,24 @@ CONTEXT_ONLY: dict[str, str] = {
 #: Kept as a comment rather than deleted because the mistake is the useful part:
 #: a rate measured on a convenience sample is not a rate.
 
+#: **`spec` was considered for this list on 26 Aug and deliberately stays out.**
+#: Measured against 300 specifications sampled from APIs.guru across 300
+#: distinct providers, `unauthenticated_sensitive_endpoint` is present on 32.0%
+#: and emphatic on 4.0%. Of the twelve reaching the emphatic form, the members
+#: include JIRA, Magento B2B, Yodlee Core APIs and Datto Autotask -- all
+#: authenticated products whose published specification omits the scheme. So the
+#: category is true about the document and false about the service, which is an
+#: argument for holding it.
+#:
+#: It is not held, and the reason is what this list is for. The bar here is
+#: *measured*, not *quiet*. `spec` has been measured: the rate is known in the
+#: population, the wording was corrected to claim the document rather than the
+#: service, and one category alone bands at Single Observation -- which is the
+#: correct weight for "this document omits a control". A module whose findings
+#: are true and calibrated belongs in the band even when the truth it reports is
+#: uncomfortable. `api` is held because nothing has ever measured it, and that
+#: is a different condition entirely.
+
 #: Modules that assess whether an artifact is hostile, and modules that assess
 #: whether a service is exposed. The distinction decides which sentence a reader
 #: is shown; it changes nothing the model computes.
