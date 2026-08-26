@@ -236,6 +236,47 @@ def _version_info(path: Path) -> dict[str, Any] | None:
     return {"version_info": table}
 
 
+def measure_static_cases(root: Path) -> dict[str, Any]:
+    """Case directories from `scripts/static_corpus.py`, read as production does.
+
+    **The whole scorer, not the cheap half.** `measure_static` below passes
+    `None` for the three collectors that cost real time, so
+    `known_malware_signature`, `dangerous_capability` and
+    `embedded_network_indicators` came back `unknown` and were never measured
+    at all. These cases have YARA, capa, the API analysis and the IOC pass
+    actually run, and they are read through `static_verdict_for_case` -- the
+    same function `engine.run_case` calls -- rather than a reimplementation.
+    """
+    from static_triage_engine.combine_case import (
+        case_home,
+        load_case,
+        static_categories_for_case,
+    )
+
+    results = []
+    unreadable = 0
+    for case in sorted(p for p in root.glob("*") if p.is_dir()):
+        try:
+            home = case_home(case)
+            loaded = load_case(home)
+            cats, context = static_categories_for_case(
+                home, **{k: loaded[k] for k in
+                         ("summary", "iocs", "pe_meta", "api_analysis",
+                          "yara_results", "signing")})
+        except Exception:
+            unreadable += 1
+            continue
+        if not cats:
+            unreadable += 1
+            continue
+        results.append((case.name, band(cats, context_score=context), cats))
+
+    note = f"(full engine over {root.parent.name}, signed Microsoft binaries)"
+    if unreadable:
+        note += f" [{unreadable} case(s) unreadable, excluded]"
+    return _report("static", results, note)
+
+
 def measure_static(limit: int, signed: bool) -> dict[str, Any]:
     """**A deliberately partial measurement, and it says so.**
 
@@ -362,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--responses", default="",
                         help="a directory of recorded HTTP responses from "
                              "scripts/api_corpus.py")
+    parser.add_argument("--cases", default="",
+                        help="a directory of engine case dirs from "
+                             "scripts/static_corpus.py; measures the whole "
+                             "static scorer rather than the cheap fields")
     parser.add_argument("--unsigned", action="store_true",
                         help="do not assert a valid signature on System32")
     parser.add_argument("--out", default="")
@@ -371,7 +416,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.module in ("all", "extension"):
         out.append(measure_extensions(args.limit, args.corpus))
     if args.module in ("all", "static"):
-        out.append(measure_static(args.limit, signed=not args.unsigned))
+        cases = Path(args.cases) if args.cases else None
+        out.append(measure_static_cases(cases) if cases and cases.is_dir()
+                   else measure_static(args.limit, signed=not args.unsigned))
     if args.module in ("all", "spec"):
         specs: list[Path] = []
         note = ""

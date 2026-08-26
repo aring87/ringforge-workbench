@@ -157,6 +157,36 @@ def load_case(case_dir: str | Path) -> dict[str, Any]:
     }
 
 
+def static_categories_for_case(
+    home: Path,
+    summary: dict[str, Any] | None,
+    iocs: dict[str, Any] | None,
+    pe_meta: dict[str, Any] | None,
+    api_analysis: dict[str, Any] | None,
+    yara_results: dict[str, Any] | None,
+    signing: dict[str, Any] | None,
+) -> tuple[list[Any], int]:
+    """The static categories for one case, from files on disk.
+
+    **One place that knows how to feed `static_categories`.** This assembly --
+    the technique extraction, and counting `"matches"` in whichever of two
+    locations holds `capa.json` -- existed twice, in `combine_case` and in
+    `static_verdict_for_case`, and the corpus measurement wanted it a third
+    time. Three copies of a lookup is how the copies start disagreeing about
+    which collector ran.
+    """
+    capa_path = next((p for p in (home / "static_analysis" / "capa.json",
+                                  home / "capa.json") if p.exists()), None)
+    return static_categories(
+        summary=summary, iocs=iocs, pe_meta=pe_meta,
+        api_analysis=api_analysis, yara_results=yara_results, signing=signing,
+        techniques=_extract_techniques(summary) if summary is not None else None,
+        capa_match_count=(
+            capa_path.read_text(encoding="utf-8", errors="replace").count('"matches"')
+            if capa_path else None),
+    )
+
+
 def combine_case(
     case_dir: str | Path,
     write_output: bool = True,
@@ -177,16 +207,7 @@ def combine_case(
                      ("summary", "iocs", "pe_meta", "api_analysis",
                       "yara_results", "signing")}
     if any(v is not None for v in static_inputs.values()):
-        techniques = (_extract_techniques(loaded["summary"])
-                      if loaded["summary"] is not None else None)
-        capa_path = home / "static_analysis" / "capa.json"
-        if not capa_path.exists():
-            capa_path = home / "capa.json"
-        capa_count = (
-            capa_path.read_text(encoding="utf-8", errors="replace").count('"matches"')
-            if capa_path.exists() else None)
-        contributions["static"] = static_categories(
-            **static_inputs, techniques=techniques, capa_match_count=capa_count)
+        contributions["static"] = static_categories_for_case(home, **static_inputs)
 
     # --- Dynamic ------------------------------------------------------------
     #
@@ -288,21 +309,10 @@ def static_verdict_for_case(
     if not isinstance(api_analysis, dict) or not api_analysis:
         api_analysis = newest("api_analysis.json")
 
-    capa_path = next((p for p in (home / "static_analysis" / "capa.json",
-                                  home / "capa.json") if p.exists()), None)
-
-    cats, context = static_categories(
-        summary=summary,
-        iocs=iocs,
-        pe_meta=pe_meta,
-        api_analysis=api_analysis,
-        yara_results=newest("yara_results.json"),
-        signing=newest("signing.json"),
-        techniques=_extract_techniques(summary) if summary is not None else None,
-        capa_match_count=(
-            capa_path.read_text(encoding="utf-8", errors="replace").count('"matches"')
-            if capa_path else None),
-    )
+    cats, context = static_categories_for_case(
+        home, summary=summary, iocs=iocs, pe_meta=pe_meta,
+        api_analysis=api_analysis, yara_results=newest("yara_results.json"),
+        signing=newest("signing.json"))
 
     dissent, dissent_detail = virustotal_dissent(summary)
     result = combine({"static": (cats, context)},
@@ -327,4 +337,15 @@ def static_verdict_for_case(
             "Coverage incomplete: "
             + ", ".join(result["uncollected_categories"])
             + " could not be checked.")
+    # **This assignment was missing from 6684981 until 26 Aug.** The list was
+    # built and dropped, so the key never existed -- and `engine.run_case`
+    # reads `static["suspicious"], static["benign"]` on the line that writes
+    # the summary. Every full engine run since the scoring rewrite has died
+    # there with `KeyError: 'benign'`, on every sample.
+    #
+    # Nothing caught it because nothing ran `run_case`. The tests reach
+    # `static_verdict_for_case` and `combine_case` directly, which is where the
+    # interesting logic is and is exactly why the seam above them was the part
+    # left uncovered. `test_engine_run_case.py` now runs the real thing.
+    result["benign"] = benign
     return result
