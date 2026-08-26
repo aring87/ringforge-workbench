@@ -184,11 +184,24 @@ def main(argv: list[str] | None = None) -> int:
     tasks = [(str(p), str(corpus), args.capa_timeout) for p in todo]
     started = time.time()
     failures = 0
+    # **`as_completed`, not `map`.** `pool.map` yields results *in order*, so one
+    # slow binary -- capa on something large is minutes -- holds back every
+    # result behind it. Observed: 12 cases finished on disk while the ledger
+    # still said 3. Two costs, and the second is the real one: the progress line
+    # lies, and an interrupted run loses every finished analysis that was
+    # queued behind the straggler, because resume reads the ledger.
     try:
         with done_path.open("a", encoding="utf-8") as ledger:
             with concurrent.futures.ProcessPoolExecutor(
                     max_workers=max(1, args.workers)) as pool:
-                for index, result in enumerate(pool.map(analyse, tasks), 1):
+                futures = {pool.submit(analyse, task): task[0] for task in tasks}
+                for index, future in enumerate(
+                        concurrent.futures.as_completed(futures), 1):
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        result = {"file": Path(futures[future]).name, "ok": False,
+                                  "error": f"{type(error).__name__}: {error}"}
                     ledger.write(json.dumps(result) + "\n")
                     ledger.flush()
                     if not result.get("ok"):
