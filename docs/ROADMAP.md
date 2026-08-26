@@ -355,7 +355,7 @@ so.
 
     module      corpus                              band distribution
     ─────────   ─────────────────────────────────   ──────────────────────
-    static      300 System32 executables            100% No Evidence
+    static      300 System32, whole engine          64.0% No Evidence, 2.7% Corrob.
     dynamic     the reference module, gap-proven    (its own ledger)
     spec        300 random APIs.guru specs          54.0% No Evidence, 0% top
     extension   394 random store extensions         72.8% No Evidence, 1.0% top
@@ -559,15 +559,92 @@ mechanism. A module goes back on the list the moment one is rewritten, or a
 category set changes enough that its measured rate is no longer its rate. That
 is the ordinary case, not an exceptional one.
 
-### 3. Static's other three categories
+### 3. Static's other three categories — done 26 Aug, and they were the ones that fire
 
-The 300-binary measurement exercised `stripped_metadata`, `invalid_signature`
-and `deceptive_file_identity`. The three needing capa, YARA and IOC extraction
-came back `unknown` — the honest partial report, and still a gap.
+`scripts/static_corpus.py`, seed `20260826`, 300 System32 executables sampled at
+random, the **whole** engine per binary — capa, YARA, FLOSS, the API analysis
+and the IOC pass. 9.3 core-hours, 53s median, 292 complete.
 
-Closing it means running the whole static engine over a corpus rather than the
-cheap fields. Hours rather than minutes, and the corpus already exists in
-`%SystemRoot%\System32`.
+**The old "100% No Evidence" was measuring the three categories that never
+fire.** `benign_rates.measure_static` passed `None` for iocs, api_analysis,
+yara_results and capa, so half the scorer came back `unknown` and the half that
+was measured reported a clean sweep. That number was true and it was not about
+the static scorer; it was about `stripped_metadata`, `invalid_signature` and
+`deceptive_file_identity`, which are still 0.0% and still fine.
+
+**The old sample was also alphabetical.** `sorted(glob("*.exe"))[:300]` out of
+654 is `a` through `MSchedExe` — the defect the extension and spec corpora were
+built to avoid, sitting in the corpus that was supposed to be the easy one.
+
+    category                     fired  strong  unknown    rate
+    dangerous_capability            99       7        8   33.9%
+    known_malware_signature          2       0        8    0.7%
+    embedded_network_indicators      0       0        8    0.0%
+    deceptive_file_identity          0       0        8    0.0%
+    invalid_signature                0       0        8    0.0%
+    stripped_metadata                0       0        8    0.0%
+
+    band                     count    rate
+    No Evidence                192   64.0%
+    Single Observation          92   30.7%
+    Corroborated                 8    2.7%
+    Nothing Collected            8    2.7%
+
+#### `dangerous_capability` fires on a third of Microsoft's own tools
+
+99 of 292, and **86 of those 99 are T1059** — Command and Scripting Interpreter,
+which is in `HIGH_SIGNAL_TECH_PREFIXES`. capa maps T1059 onto anything that can
+launch a process or interpret a command, and on System32 that is most of it.
+`T1543.003` (Windows Service) accounts for another 18, on binaries whose job is
+to be a Windows service.
+
+The seven that reach *emphatic* are `winlogon`, `msconfig`, `VSSVC`,
+`SearchIndexer`, `DWWIN`, `SensorDataService` and `ttdinject`. Signed, Microsoft,
+and exactly what a service binary looks like: `strong` needs three high-signal
+techniques, and T1059 + T1543.003 + T1547.001 is an ordinary Tuesday for a
+service.
+
+This is the same shape as the `Server:` header at 68.9% and the wildcard CORS
+origin at 25.2% — a marker that is ubiquitous in the benign population being
+read as evidence.
+
+**It is deliberately not fixed yet, and the reason is a corpus that does not
+exist for one more day.** The obvious change is to drop T1059 from the
+high-signal set. But the same category was already suspected of the *opposite*
+defect: on this bench's own clipper it stayed silent while capa reported
+`reference Base58 string` and `reference analysis tools strings`, because it
+reads the ATT&CK mapping and the API chains and discards capa's capability list
+entirely. So the honest reading is that the category is keyed to the wrong
+evidence — noisy on one side and blind on the other — and **tuning the
+false-positive side while blind to the false-negative side is the error this
+file has already recorded twice.** The known-malicious corpus is being built;
+this waits for it.
+
+#### The two YARA hits are third-party rules working as designed
+
+`rundll32` matched `Suspicious_Size_rundll32_exe` and `spoolsv` matched
+`Suspicious_Size_spoolsv_exe` — on the genuine binaries, at their genuine paths.
+Those rules exist to catch a file *masquerading* as `rundll32.exe`, so they
+assume the thing being scanned had no business being there. Pointed at the real
+one they are a false positive by construction.
+
+Not this repo's code, and worth knowing anyway: **a rule set written for
+arbitrary samples behaves differently when aimed at a system directory.** A
+detection rate for `known_malware_signature` is largely a fact about
+signature-base, not about anything here.
+
+#### Two contract behaviours, observed rather than asserted
+
+The 8 incomplete cases band as **Nothing Collected**, not No Evidence — the
+distinction the whole category contract exists for, and the first time it has
+been seen on a corpus rather than in a test. They failed on `WinError 1224`,
+which is Windows refusing to copy a file with a mapped section open, left over
+from two runs colliding.
+
+`embedded_network_indicators` at 0.0% across 292 binaries with the IOC pass
+actually running is the strongest single number here: the category that reads
+extracted strings for URLs, domains and IPs does not fire on ordinary signed
+software at all.
 
 ### 4. Small, and none of them blocking
 
