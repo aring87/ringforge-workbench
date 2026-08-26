@@ -150,14 +150,33 @@ def main(argv: list[str] | None = None) -> int:
         print(f"plan written to {corpus / '_sample.json'}; nothing run")
         return 0
 
+    # **One run at a time.** Two of these against the same corpus is not slow,
+    # it is wrong: both pools open the same binaries and Windows answers with
+    # `WinError 1224` -- "cannot be performed on a file with a user-mapped
+    # section open" -- so samples fail for a reason that has nothing to do with
+    # the sample. That happened, and the failures looked like data.
+    lock = corpus / "_running.lock"
+    if lock.exists():
+        age = time.time() - lock.stat().st_mtime
+        print(f"failed: {lock} exists ({age/60:.0f} min old). Another run is "
+              f"using this corpus. Delete the file if you are sure it is not.")
+        return 1
+    lock.write_text(str(os.getpid()), encoding="utf-8")
+
     done_path = corpus / "_runs.jsonl"
     already = set()
     if done_path.exists():
         for line in done_path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
-                already.add(json.loads(line)["file"])
+                entry = json.loads(line)
             except Exception:
                 continue
+            # **Only successes count as done.** Recording a failure and then
+            # treating it as complete means a sample that failed once can never
+            # be retried, and the corpus quietly shrinks by exactly the samples
+            # something went wrong on -- which are the ones worth rerunning.
+            if entry.get("ok"):
+                already.add(entry.get("file"))
     todo = [p for p in sample if p.name not in already]
     print(f"{len(already)} already run, {len(todo)} to go, "
           f"{args.workers} worker(s)")
@@ -165,20 +184,23 @@ def main(argv: list[str] | None = None) -> int:
     tasks = [(str(p), str(corpus), args.capa_timeout) for p in todo]
     started = time.time()
     failures = 0
-    with done_path.open("a", encoding="utf-8") as ledger:
-        with concurrent.futures.ProcessPoolExecutor(
-                max_workers=max(1, args.workers)) as pool:
-            for index, result in enumerate(pool.map(analyse, tasks), 1):
-                ledger.write(json.dumps(result) + "\n")
-                ledger.flush()
-                if not result.get("ok"):
-                    failures += 1
-                    print(f"  ! {result['file']}: {result.get('error', '')}")
-                if index % 10 == 0 or index == len(tasks):
-                    rate = (time.time() - started) / index
-                    left = (len(tasks) - index) * rate / 60
-                    print(f"  {index}/{len(tasks)}  {rate:4.1f}s each, "
-                          f"~{left:.0f} min left, {failures} failed")
+    try:
+        with done_path.open("a", encoding="utf-8") as ledger:
+            with concurrent.futures.ProcessPoolExecutor(
+                    max_workers=max(1, args.workers)) as pool:
+                for index, result in enumerate(pool.map(analyse, tasks), 1):
+                    ledger.write(json.dumps(result) + "\n")
+                    ledger.flush()
+                    if not result.get("ok"):
+                        failures += 1
+                        print(f"  ! {result['file']}: {result.get('error', '')}")
+                    if index % 10 == 0 or index == len(tasks):
+                        rate = (time.time() - started) / index
+                        left = (len(tasks) - index) * rate / 60
+                        print(f"  {index}/{len(tasks)}  {rate:4.1f}s each, "
+                              f"~{left:.0f} min left, {failures} failed")
+    finally:
+        lock.unlink(missing_ok=True)
 
     print()
     print(f"corpus: {len(list((corpus / 'cases').glob('*')))} cases in {corpus}")

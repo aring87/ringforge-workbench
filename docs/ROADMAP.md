@@ -591,10 +591,84 @@ cheap fields. Hours rather than minutes, and the corpus already exists in
 - **A bigger extension corpus.** 394 gives a rate; 2,000 gives a rate with
   confidence at the tail, which is where the 1% lives. Costs only time — the
   script resumes, and `_sample.json` records the seed.
-- **Known-malicious extensions.** Every rate here is a *false positive* rate.
-  Nothing has measured whether the categories fire when they should, and no
-  benign corpus can answer that. It is the mirror of the standard this file
-  opens with, and it is unaddressed.
+- **Known-malicious anything.** See the section below: scoped 26 Aug, and it is
+  blocked on a decision rather than on effort.
+
+### 6. The true-positive gap — scoped 26 Aug, blocked on a decision
+
+**Every rate in this file is a false-positive rate.** Four corpora, roughly
+1,100 samples, all *presumed benign*. That answers "does this cry wolf" and
+cannot answer "does this notice a wolf", and no benign corpus ever will. It is
+the mirror of the standard this file opens with.
+
+Scoped rather than done, because the honest version of it needs something the
+bench will not currently give.
+
+#### The ground truth here cannot found a rate, for two reasons
+
+The artifact drive holds this project's own chain — the stage 2 assembly,
+stage 3 native, the stage 4 credential stealer, and carved regions from
+`c14cb5b6`. Re-scored under `corroboration-v1`, the carved payload reaches
+**Corroborated / Elevated Attention / High**, so the scorer is not silent on
+known-malicious material.
+
+It still proves very little.
+
+- **It is one family.** Six or seven artifacts from a single chain is the
+  convenience-sample problem in detection form, and this file has already paid
+  for that lesson three times.
+- **The rules that fire were written from these samples.** The two YARA hits are
+  `RingForge_EtherHiding_eth_call` and `RingForge_Clipper…`, authored on this
+  bench from this sample. A detection rate measured against rules derived from
+  the corpus measures the derivation. That is the same circularity as a corpus
+  written by the author of the scorer, and it is worth naming because it is much
+  harder to see.
+
+#### The blocker is Bitdefender, and it is not a bug
+
+A real static true-positive corpus means live malware on disk where the engine
+runs, which is the host. **Bitdefender deletes plain samples here** — it removed
+three copies of the stage 2 assembly on 07 Aug, which is why everything on the
+artifact drive is XOR-wrapped with a repeating `RINGFORGE` key in the first
+place. A few hundred downloaded samples would be fought file by file, and a
+corpus that shrinks while it is measured is worse than no corpus.
+
+So it needs one of:
+
+- **An AV exclusion on the corpus directory.** A system security setting, on the
+  primary machine, so it is not a change to make casually or on somebody's
+  behalf.
+- **Run the static engine on the guest.** Architecturally the right answer —
+  contained, already holds samples, already reverts. Costs a guest pull, a
+  re-take, and a way to get case directories back out.
+- **Keep the corpus wrapped and unwrap per sample into memory.** Cheapest, and
+  it does not work: `run_case` takes a path.
+
+The second is the real option. It is not a large amount of work and it is not a
+decision this file should make.
+
+#### Two things the re-scoring did settle
+
+**The unknown contract works, and it is worth seeing it work.** The same file
+scores Corroborated/High in one case and Single Observation/Medium in the other.
+The difference is that the older case's YARA scan died on a malformed rule file
+in `neo23x0-signature-base`, so `known_malware_signature` came back `unknown` —
+**not "no match"**. The band dropped and the coverage line said why. That is
+precisely the behaviour the category contract exists for, observed rather than
+asserted.
+
+**`dangerous_capability` reads two of the three things capa produces.** It fires
+on high-signal ATT&CK techniques or high-severity API chains. On the clipper,
+capa's technique mapping was `T1027` — not in `HIGH_SIGNAL_TECH_PREFIXES` — and
+a carved region has no imports, so no chains. Meanwhile capa's *capability* list
+said `reference Base58 string` and `reference analysis tools strings`. Base58 is
+how a crypto address is encoded and this is a clipper; the second is
+anti-analysis. Both were discarded, and the category stayed silent.
+
+That is a candidate false negative and it is **not** being fixed on one sample.
+Tuning a category against a single known-bad file is the same error as tuning it
+against fourteen installed extensions, run in the other direction. It is written
+down here so the corpus above has something specific to answer.
 
 ---
 
