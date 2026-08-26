@@ -286,5 +286,89 @@ class TheBandsSeparateTheReferenceSpecs(unittest.TestCase):
         self.assertEqual(result.domain, "posture")
 
 
+class WhatTheCorpusTaught(unittest.TestCase):
+    """300 real specifications from APIs.guru, seed 20260826.
+
+    `unauthenticated_sensitive_endpoint` fired on 41.3% of them, which is not a
+    finding rate -- it is a description of how API documentation is written.
+    Three defects were behind nine points of it, and each has a test here. The
+    remaining 32% is left alone deliberately: it is a true statement about the
+    documents, and no threshold repairs a category that is telling the truth.
+    """
+
+    def test_auth_documented_as_a_parameter_is_still_auth(self) -> None:
+        # 32 of 300 declared no `securitySchemes` block and documented an
+        # `Authorization` or `X-API-Key` parameter on every operation instead.
+        spec = _authenticated_spec()
+        spec["auth_summary"] = ["parameter"]
+        spec["security_schemes"] = []
+        spec["summary"] = {"endpoint_count": 2, "auth_scheme_count": 1}
+        _, cats = _verdict(spec)
+
+        self.assertFalse(_named(cats, "unauthenticated_sensitive_endpoint").present)
+
+    def test_an_unrecognised_scheme_is_missing_data_not_a_finding(self) -> None:
+        # The removed `no_auth_detected` branch was `not auth_summary`, which is
+        # true of a spec whose scheme the summariser failed to parse. Three of
+        # 300 declare Swagger 2.0's `type: basic`; reviving that branch would
+        # have called all three unauthenticated.
+        spec = _authenticated_spec()
+        spec["auth_summary"] = []
+        spec["security_schemes"] = [{"type": "basic", "name": "basicAuth"}]
+        spec["no_auth_detected"] = True
+        _, cats = _verdict(spec)
+
+        self.assertFalse(_named(cats, "unauthenticated_sensitive_endpoint").present)
+
+    def test_the_reason_claims_the_document_not_the_service(self) -> None:
+        # Of the twelve specs reaching the strong form, the members include
+        # JIRA, Magento B2B and Yodlee Core APIs -- authenticated products whose
+        # published spec omits the scheme. The old wording said those routes
+        # were ones "anyone reaching the service can call", which is false about
+        # every one of them.
+        spec = {
+            "returncode": 0,
+            "servers": ["https://api.example.com"],
+            "endpoints": [_endpoint("/v1/admin/users", admin=True)],
+            "auth_summary": [],
+            "security_schemes": [],
+            "summary": {"endpoint_count": 1, "auth_scheme_count": 0},
+        }
+        _, cats = _verdict(spec)
+        reason = _named(cats, "unauthenticated_sensitive_endpoint").reason
+
+        self.assertIn("declares no authentication scheme", reason)
+        self.assertNotIn("anyone reaching the service", reason)
+        self.assertIn("specification", reason)
+
+
+class CredentialParameterNames(unittest.TestCase):
+    """The tails that matter, and the words that only look like them.
+
+    The corpus is where both halves came from: 473 `Authorization` headers and
+    75 `X-API-Key` ones, beside `author`, `authorFontColor`, `tokenAmount` and
+    `token_ids` -- a crypto API listing tokens, not authenticating with them.
+    A substring test passes all eight.
+    """
+
+    def test_real_credential_parameters(self) -> None:
+        from static_triage_engine.api_spec_analysis import _is_credential_parameter
+
+        for name in ("Authorization", "X-API-Key", "x-api-key", "Token",
+                     "accessKey", "ev-access-token", "x-tyk-authorization",
+                     "Ocp-Apim-Subscription-Key", "X-App-Token", "api_key",
+                     "refresh_psd2_auth"):
+            with self.subTest(name=name):
+                self.assertTrue(_is_credential_parameter(name))
+
+    def test_words_that_merely_contain_one(self) -> None:
+        from static_triage_engine.api_spec_analysis import _is_credential_parameter
+
+        for name in ("author", "authorFont", "authorFontColor", "tokenAmount",
+                     "token_ids", "token_names", "token_symbols"):
+            with self.subTest(name=name):
+                self.assertFalse(_is_credential_parameter(name))
+
+
 if __name__ == "__main__":
     unittest.main()

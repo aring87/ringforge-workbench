@@ -434,9 +434,20 @@ def spec_categories(
     # to authenticate. Gating on this is what stops an empty document scoring.
     described = ran and endpoint_count > 0
 
+    # **`no_auth_detected` is gone from this condition, and it was never in
+    # it.** The analyser writes that flag under `result["scoring"]`; this read
+    # it from the top level, where it has always been `None`. So the OR-branch
+    # has never once run, and the corpus is what made that visible.
+    #
+    # It is removed rather than repaired, because repairing it would make the
+    # category *worse*. The flag is `not auth_summary` -- true of a spec whose
+    # scheme the summariser did not recognise, which is missing data rather
+    # than a finding. Three of 300 specifications declare Swagger 2.0's
+    # `type: basic`, and reviving the flag would have called all three
+    # unauthenticated. The condition beside it asks the stricter and correct
+    # question: the document names no scheme *anywhere*.
     no_auth = described and (
-        bool(spec_result.get("no_auth_detected"))
-        or (auth_scheme_count == 0 and not auth_summary and not security_schemes)
+        auth_scheme_count == 0 and not auth_summary and not security_schemes
     )
 
     admin_routes = [ep for ep in endpoints
@@ -468,10 +479,12 @@ def spec_categories(
 
     plaintext = [s for s in servers
                  if str(s).lower().startswith("http://") and not _is_local_host(s)]
-    if spec_result.get("http_server_detected") and not servers:
-        # The analyser flagged it without listing the URL. Take its word, but
-        # there is no host to exempt.
-        plaintext = ["(server URL not recorded)"]
+    # The fallback that used to sit here -- trust `http_server_detected` when
+    # no server URL was listed -- was dead twice over. It read the flag from
+    # the top level, where the analyser does not write it, and the flag is
+    # computed from `server_entries`, which is the same list `servers` is
+    # derived from: it cannot be true while `servers` is empty. A branch that
+    # cannot run is worse than no branch, because it reads as coverage.
 
     cats: list[Category] = [
         Category(
@@ -486,12 +499,25 @@ def spec_categories(
             detail=(f"{endpoint_count} endpoint(s), no authentication scheme"
                     + (f", {len(admin_routes)} admin-like"
                        if admin_routes else "")) if no_auth else "",
+            # **The claim is about the document, and the wording now says so.**
+            # This used to end "...administrative route(s) that anyone reaching
+            # the service can call", which is a statement about the running
+            # service that a specification cannot support. The corpus proved it
+            # false: of the twelve specs reaching the strong form across 300,
+            # the members include JIRA, Magento B2B, Yodlee Core APIs and Datto
+            # Autotask -- all certainly authenticated products whose published
+            # specification simply omits the scheme. An undocumented control is
+            # a gap in the document first, and the reader is the one who gets to
+            # decide whether it is also a gap in the API.
             reason=(
                 f"The specification describes {endpoint_count} endpoint(s) and "
-                f"no authentication scheme"
-                + (f", including {len(admin_routes)} administrative route(s) "
-                   f"that anyone reaching the service can call."
+                f"declares no authentication scheme"
+                + (f", including {len(admin_routes)} administrative route(s)."
                    if admin_routes else ".")
+                + " This is what the document omits, not what the service was "
+                  "observed to allow: an API may authenticate by a mechanism it "
+                  "never wrote down. The gap is in the specification, and "
+                  "whether it is also a gap in the API is the thing to check."
             ) if no_auth else "",
         ),
         Category(

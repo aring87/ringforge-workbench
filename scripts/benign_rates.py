@@ -265,20 +265,28 @@ def measure_static(limit: int, signed: bool) -> dict[str, Any]:
 # spec
 # ---------------------------------------------------------------------------
 
-def measure_specs(paths: list[Path]) -> dict[str, Any]:
+def measure_specs(paths: list[Path], note: str = "") -> dict[str, Any]:
     from static_triage_engine.api_spec_analysis import analyze_api_spec
     import tempfile
 
     results = []
+    unreadable = 0
     for path in paths:
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 spec = analyze_api_spec(path, tmp)
         except Exception:
+            # **Counted, not swallowed.** A file the analyser could not open is
+            # not a clean sample; dropping it silently shrinks the corpus
+            # without shrinking the number the corpus is reported as.
+            unreadable += 1
             continue
         cats, context = spec_categories(spec)
         results.append((path.name, band(cats, context_score=context), cats))
-    return _report("spec", results, "(local specification fixtures, mixed)")
+    if unreadable:
+        note = (note + f" [{unreadable} file(s) unreadable, excluded]").strip()
+    return _report("spec", results,
+                   note or "(local specification fixtures, mixed)")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -303,11 +311,20 @@ def main(argv: list[str] | None = None) -> int:
         out.append(measure_static(args.limit, signed=not args.unsigned))
     if args.module in ("all", "spec"):
         specs: list[Path] = []
+        note = ""
         if args.specs:
             root = Path(args.specs)
             for pattern in ("*.json", "*.yaml", "*.yml"):
-                specs += sorted(root.glob(pattern))
-        out.append(measure_specs(specs) if specs
+                # `_sample.json` is the manifest `scripts/spec_corpus.py`
+                # writes beside the corpus. It parses, it has no `paths`, and
+                # it would otherwise be measured as one more clean spec.
+                specs += [p for p in sorted(root.glob(pattern))
+                          if not p.name.startswith("_")]
+            note = f"(downloaded corpus, {root.name}, presumed benign)"
+        # No `--limit` here, unlike the other modules: the specs directory is
+        # one the caller built deliberately with a recorded seed, and silently
+        # measuring 250 of it would report a rate over a sample nobody chose.
+        out.append(measure_specs(specs, note) if specs
                    else _report("spec", [], "(no --specs directory given)"))
     if args.module in ("all", "api"):
         # **Named, not skipped.** An unmeasured scorer that is simply absent

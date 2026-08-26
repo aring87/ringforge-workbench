@@ -121,6 +121,74 @@ def _extract_server_entries(spec: dict[str, Any]) -> list[dict[str, str]]:
     return deduped
 
 
+#: Trailing name segments that make a header or query parameter a credential.
+#: Matched against the *last* one or two segments, never as a substring: 300
+#: real specifications contain `author`, `authorFontColor`, `tokenAmount` and
+#: `token_ids`, none of which authenticate anything, and all of which contain
+#: `auth` or `token`.
+CREDENTIAL_PARAM_TAILS = {
+    ("authorization",), ("auth",), ("apikey",), ("token",), ("session",),
+    ("bearer",), ("jwt",), ("credentials",),
+    ("api", "key"), ("api", "token"), ("access", "token"), ("access", "key"),
+    ("auth", "token"), ("auth", "key"), ("app", "token"), ("app", "key"),
+    ("session", "token"), ("refresh", "token"), ("subscription", "key"),
+    ("secret", "key"), ("private", "key"), ("client", "secret"),
+}
+
+#: `X-API-Key` -> x, api, key. `accessKey` -> access, key. Splitting on both
+#: separators and case transitions is what lets the tail be matched exactly.
+_SEGMENT_SPLIT = re.compile(r"[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _parameter_segments(name: str) -> list[str]:
+    return [s.lower() for s in _SEGMENT_SPLIT.split(str(name or "")) if s]
+
+
+def _is_credential_parameter(name: str) -> bool:
+    """Does this parameter name carry a credential?
+
+    **Measured, not guessed.** Across 300 APIs.guru specifications, 32 of them
+    document their authentication as an ordinary header or query parameter --
+    `Authorization`, `X-API-Key`, `Ocp-Apim-Subscription-Key` -- and declare no
+    `securitySchemes` block at all. Reading only the schemes block called every
+    one of those "no authentication scheme", which is a statement the document
+    contradicts on its own face.
+    """
+    segments = _parameter_segments(name)
+    if not segments:
+        return False
+    return (tuple(segments[-1:]) in CREDENTIAL_PARAM_TAILS
+            or tuple(segments[-2:]) in CREDENTIAL_PARAM_TAILS)
+
+
+def _credential_parameters(paths: dict[str, Any]) -> list[str]:
+    """Header and query parameters across the spec that name a credential.
+
+    Only `header` and `query`. A credential in the path or the body is not how
+    any of the 300 specifications expressed one, and widening the search would
+    buy noise rather than coverage.
+    """
+    found: dict[str, None] = {}
+    for item in (paths or {}).values():
+        if not isinstance(item, dict):
+            continue
+        groups = [item.get("parameters")]
+        groups += [op.get("parameters") for op in item.values()
+                   if isinstance(op, dict)]
+        for group in groups:
+            if not isinstance(group, list):
+                continue
+            for param in group:
+                if not isinstance(param, dict):
+                    continue
+                if str(param.get("in", "")).lower() not in {"header", "query"}:
+                    continue
+                name = str(param.get("name", "") or "")
+                if name and _is_credential_parameter(name):
+                    found.setdefault(name, None)
+    return sorted(found)
+
+
 def _extract_security_schemes(spec: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     components = spec.get("components", {})
@@ -265,6 +333,11 @@ def _summarize_auth(security_schemes: list[dict[str, Any]], spec_text: str = "")
         elif t == "http" and scheme == "bearer":
             found.append("bearer")
         elif t == "http" and scheme == "basic":
+            found.append("basic")
+        elif t == "basic":
+            # Swagger 2.0 spells it `type: basic` with no `scheme`. Three of
+            # 300 real specifications do, and every one of them was summarised
+            # as having declared no authentication at all.
             found.append("basic")
         elif t == "oauth2":
             found.append("oauth2")
@@ -599,6 +672,7 @@ def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str,
         "server_entries": [],
         "auth_summary": [],
         "security_schemes": [],
+        "credential_parameters": [],
         "endpoints": [],
         "top_risky_endpoints": [],
         "unauthenticated_risky_endpoints": [],
@@ -662,7 +736,17 @@ def analyze_api_spec(spec_path: str | Path, output_dir: str | Path) -> dict[str,
 
         security_schemes = _extract_security_schemes(spec)
         result["security_schemes"] = security_schemes
-        result["auth_summary"] = _summarize_auth(security_schemes, "")
+
+        # **Auth the spec documents, not only auth the spec declares.** A
+        # `securitySchemes` block is the correct place for it and 32 of 300
+        # real specifications put it somewhere else -- a required `Authorization`
+        # or `X-API-Key` parameter on every operation. Recorded separately so a
+        # reader can see the difference between declared and inferred.
+        credential_params = _credential_parameters(paths)
+        result["credential_parameters"] = credential_params
+        result["auth_summary"] = sorted(set(
+            _summarize_auth(security_schemes, "")
+            + (["parameter"] if credential_params else [])))
 
         endpoints: list[dict[str, Any]] = []
         method_counts = {"GET": 0, "POST": 0, "PUT": 0, "PATCH": 0, "DELETE": 0}

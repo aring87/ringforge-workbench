@@ -343,33 +343,98 @@ showed.
 
 **Every scorer in this repo is now measured against a real population, except
 one.** That sentence was not true two days ago and it is the shortest summary of
-where the work is.
+where the work is. `spec` joined the list on 26 Aug; `api` is what is left.
 
     module      corpus                              band distribution
     ─────────   ─────────────────────────────────   ──────────────────────
     static      300 System32 executables            100% No Evidence
     dynamic     the reference module, gap-proven    (its own ledger)
-    spec        9 local fixtures, 5 clean           0 on the clean five
+    spec        300 random APIs.guru specs          54.0% No Evidence, 0% top
     extension   394 random store extensions         72.8% No Evidence, 1.0% top
     api         NONE                                NOT MEASURED
 
 `api` is the only module still held context-only, and it is held for the one
 honest reason: nothing has ever measured it.
 
-### 1. A corpus for `spec` — the cheapest thing on this list
+### 1. A corpus for `spec` — done 26 Aug
 
-Nine fixtures, five of them clean, is the same shape of sample the extension
-scorer was nearly ruined by. **APIs.guru publishes a few thousand real OpenAPI
-specifications** as a public, versioned directory with no key and no scraping —
-the direct analogue of the store sitemap, and the same script shape applies.
+`scripts/spec_corpus.py`, seed `20260826`, 300 specifications, `G:\spec-corpus`.
 
-`scripts/extension_corpus.py` is the template: fetch an index, sample randomly
-with a fixed seed, download politely, measure. `benign_rates.py --module spec
---specs <dir>` already takes a directory.
+**The directory is not flat, and sampling it flat would have repeated the
+extension mistake in a new shape.** APIs.guru publishes 2,529 entries, of which
+653 are `azure.com` and the top ten providers are 62% of the total — machine
+output from four toolchains. A uniform sample of 300 would have been a quarter
+Azure Resource Manager and the rate would have described Microsoft's generator.
+The sample is drawn over *providers* instead: one entry each from 300 of the
+677 organisations.
 
-Expect it to find something. `unauthenticated_sensitive_endpoint` fired on 4 of
-9 fixtures, and the fixtures were *written to be* a mix — a real population will
-say whether the category separates it or merely describes it.
+    band                       before      after
+    ─────────────────────────  ────────   ────────
+    No Evidence                  46.7%      54.0%
+    Single Observation           42.3%      37.0%
+    Corroborated                 11.0%       9.0%
+    Strongly Corroborated         0.0%       0.0%
+
+    category                            before      after
+    unauthenticated_sensitive_endpoint   41.3%      32.0%   (4.0% emphatic)
+    plaintext_transport                   9.0%       9.0%
+    unrestricted_upload                   8.3%       8.3%
+    destructive_admin_surface             1.3%       2.0%
+
+The nine fixtures said `unauthenticated_sensitive_endpoint` fired on 4 of 9.
+300 real specifications said 41.3%, which is not a finding rate — it is a
+description of how API documentation is written. Three defects were behind nine
+points of it.
+
+**Authentication documented as a parameter was not counted as authentication.**
+32 of 300 declare no `securitySchemes` block and put an `Authorization`,
+`X-API-Key` or `Ocp-Apim-Subscription-Key` parameter on every operation
+instead. The analyser read only the schemes block, so it called all 32 "no
+authentication scheme" — a statement each document contradicts on its own face.
+`_credential_parameters` reads them now, matching the *tail* of a parameter
+name rather than a substring: the same corpus carries `author`,
+`authorFontColor`, `tokenAmount` and `token_ids`, and a substring test passes
+all four.
+
+**Two conditions in `spec_categories` read keys that do not exist at the level
+they read them.** The analyser writes `no_auth_detected` and
+`http_server_detected` under `result["scoring"]`; the categoriser read both
+from the top level, where they have always been `None`. Neither branch has ever
+run. Both are removed rather than repaired, and the reasons differ —
+
+- `no_auth_detected` is `not auth_summary`, true of a spec whose scheme the
+  summariser failed to parse. Three of 300 declare Swagger 2.0's `type: basic`,
+  which `_summarize_auth` did not recognise; reviving the flag would have
+  called all three unauthenticated. The condition beside it asks the stricter
+  and correct question — the document names no scheme *anywhere*. (The
+  `type: basic` gap is fixed regardless; it is missing data either way.)
+- The `http_server_detected` fallback was dead twice over. Besides the wrong
+  key, the flag is computed from `server_entries`, which is the list `servers`
+  is derived from — it cannot be true while `servers` is empty. A branch that
+  cannot run is worse than no branch, because it reads as coverage.
+
+#### The residual 32% is a true statement, and no threshold repairs it
+
+96 specifications genuinely express no authentication anywhere. Of the twelve
+that reach the emphatic form — admin-like routes and no declared scheme — the
+members include **JIRA 7.6.1, Magento B2B, Yodlee Core APIs and Datto Autotask
+PSA**. Those are authenticated products. Their published specifications simply
+omit the scheme.
+
+So the category is true about the document and false about the service, and the
+wording was claiming the second: administrative routes "that anyone reaching
+the service can call". That is a claim a specification cannot support, and it
+is false about every one of the twelve. The prose now says what the evidence
+says — the gap is in the specification, and whether it is also a gap in the API
+is the thing to check.
+
+**The banding is deliberately untouched.** 32% present and 4% emphatic on a
+`posture` domain is a category reporting an omission that is really there, and
+yesterday's lesson was that cutting conditions firing at a few percent on a
+real population is the error, not the fix. What is left is a decision rather
+than a defect: whether "the document omits a control" belongs in a band at all,
+or whether `spec` should join `api` in `verdict.CONTEXT_ONLY`. Nothing measured
+here settles that, and it should not be settled by tuning.
 
 ### 2. A corpus for `api` — the last unmeasured scorer, and the hardest
 
@@ -379,7 +444,9 @@ options each cost something:
 - **Call public APIs.** Real responses, real headers, real `Set-Cookie` flags.
   Costs a decision about what to call and how often.
 - **Replay the `spec` corpus.** Every APIs.guru entry names its servers; hitting
-  a documented health or version endpoint yields a genuine response.
+  a documented health or version endpoint yields a genuine response. Cheaper
+  than it was on 25 Aug: `G:\spec-corpus` now holds 300 of them, sampled over
+  300 distinct providers, and `_sample.json` records the seed.
 - **Synthesise from the categories.** Cheapest and worth the least — a corpus
   written by whoever wrote the scorer measures the author's imagination, which
   is the failure the extension corpus just corrected.
