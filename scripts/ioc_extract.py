@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ipaddress
 import re
 import json
 import csv
@@ -8,7 +9,13 @@ from urllib.parse import urlparse
 # --- Regexes ---
 RE_URL = re.compile(r'(?i)\b((?:https?|hxxps?)://[^\s"\'<>]{4,})')
 RE_DOMAIN = re.compile(r'(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}))\b')
-RE_IPV4 = re.compile(r'\b((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})\b')
+# `(?<![\d.])` and `(?![\d.])`, not `\b`. A word boundary sits happily between
+# `1` and `.`, so `\b...\b` matches `1.3.6.1` inside the OID `1.3.6.1.4.1.311`.
+# Across 292 signed System32 binaries that harvested 349 "IP addresses" that
+# were ASN.1 object identifiers out of certificate structures -- `1.3.6.1` (the
+# IANA prefix), `2.5.4.3` (X.509 commonName), `1.3.14.3`. Refusing to start or
+# end adjacent to another digit or dot rejects every one of them.
+RE_IPV4 = re.compile(r'(?<![\d.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?![\d.])')
 RE_EMAIL = re.compile(r'(?i)\b([a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{2,255}\.[a-z]{2,63})\b')
 RE_WIN_PATH = re.compile(r'(?i)\b([a-z]:\\(?:[^\\/:*?"<>|\r\n]{1,240}\\)*[^\\/:*?"<>|\r\n]{1,240})\b')
 RE_UNC_PATH = re.compile(r'(?i)\b(\\\\[a-z0-9._\-]{1,80}\\[^\s"\'<>]{1,240})\b')
@@ -55,9 +62,67 @@ def _is_asset_like_domain_or_label(s: str) -> bool:
         return True
     return False
 
+
+def _is_host_ip(text: str) -> bool:
+    """Could this dotted quad be a host somebody talks to?
+
+    **Most of them are not.** Across 292 signed System32 binaries the extractor
+    reported 349 "IP addresses", and the top one was `5.1.0.0` ninety-three
+    times -- a version string. The rest were largely X.509 OIDs that happen to
+    have four components: `2.5.4.3` (commonName), `2.5.29.17` (subjectAltName),
+    `2.5.29.19` (basicConstraints).
+
+    Four-component OIDs cannot be told from addresses by syntax alone, so this
+    rejects on what an address would have to be rather than on what an OID
+    looks like: a global unicast address that is not a network or broadcast
+    number. `2.5.x.x` and `1.x.x.x` survive that test and are left as a known
+    residue -- named in `docs/ROADMAP.md` rather than papered over.
+    """
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    if not address.is_global or address.is_multicast:
+        return False
+    octets = [int(o) for o in text.split(".")]
+    # `x.y.0.0` is a /16 network, `x.y.z.0` a /24, `.255` a broadcast. None is
+    # a host, and `5.1.0.0` is how a version string reaches this function.
+    if octets[-1] in (0, 255) or octets[2:] == [0, 0]:
+        return False
+    return True
+
+
+#: Right-hand labels that are real TLDs and, in a PE's strings, are almost
+#: always something else. `System.IO` becomes `system.io`; `paint.net` and
+#: `MyApplication.app` are a product name and a manifest identity. A domain
+#: needs more than a valid-looking suffix to be a domain.
+_NAMESPACE_TLDS = {"io", "net", "app", "sh", "ps", "com"}
+
+#: The .NET and Win32 namespace roots those labels hang off.
+_NAMESPACE_ROOTS = {
+    "system", "microsoft", "windows", "interop", "runtime", "internal",
+    "global", "my", "app", "core", "common", "shared", "default",
+}
+
+
+def _looks_like_namespace(dom: str) -> bool:
+    """`System.IO` is not a host, and neither is `paint.net`."""
+    parts = dom.split(".")
+    if len(parts) != 2:
+        return False
+    left, right = parts
+    if right not in _NAMESPACE_TLDS:
+        return False
+    # A two-label name whose left side is a namespace root, or which carries an
+    # internal capital in the original, is code rather than infrastructure.
+    return left in _NAMESPACE_ROOTS or len(left) <= 3
+
+
 def _is_valid_domain(dom: str) -> bool:
     dom = dom.lower().strip().rstrip(".")
     if dom in DOMAIN_DENYLIST:
+        return False
+    if _looks_like_namespace(dom):
         return False
 
     # quick asset suppression
@@ -149,11 +214,11 @@ def extract_from_strings(strings_text: str) -> dict:
             if len(local) > 1 and _is_valid_domain(dom):
                 emails.add(m)
 
-        # IPs (filtered: drop placeholders like x.0.0.0)
+        # IPs. See `_is_host_ip` -- a dotted quad in a PE is more often an OID
+        # or a version number than an address.
         for m in RE_IPV4.findall(line):
-            if m.endswith(".0.0.0"):
-                continue
-            ips.add(m)
+            if _is_host_ip(m):
+                ips.add(m)
 
         # Paths/registry (keep; can still be noisy but useful)
         for m in RE_WIN_PATH.findall(line):

@@ -130,12 +130,41 @@ CONTEXT_ONLY: dict[str, str] = {}
 #: this bench's own clipper had `reference Base58 string` and `reference
 #: analysis tools strings` while the category stayed silent. Rebuilding it to
 #: read that list is the fix; until then it makes no claim it can support.
+#: **`embedded_network_indicators` joined on 27 Aug, and its story is the
+#: stranger one.** For the whole life of this scorer it read 0.0% on every
+#: corpus -- 829 samples, including 229 pieces of real malware that between them
+#: yielded zero domains, zero URLs and zero IPs. That was not a measurement.
+#: `step_strings` shelled out to `strings`, which is not installed on Windows,
+#: wrote the empty output anyway, and `step_iocs` reported success on it. The
+#: category had never been able to fire.
+#:
+#: Once collection worked it fired on 84.6% of signed System32 binaries. Three
+#: extraction defects accounted for most of that -- ASN.1 OIDs read as IP
+#: addresses, `.NET` namespaces read as domains, and certificate-revocation
+#: hosts that Authenticode embeds in every signed file -- and fixing them took
+#: System32 to 9.9%.
+#:
+#: **Program Files is 77.0%, and that is not a bug.** Ordinary third-party
+#: software contains update endpoints, telemetry hosts, support links and
+#: documentation URLs. The category asks whether a file contains a network
+#: indicator, and for real software the answer is usually yes. No amount of
+#: parsing precision changes that; the question itself does not discriminate.
+#:
+#: Held rather than deleted because the *collection* is now genuinely working
+#: and worth having in a report -- an analyst wants the extracted hosts -- and
+#: because the malicious side has not been measured since the fix. What it
+#: cannot do meanwhile is move a band.
 CONTEXT_ONLY_CATEGORIES: dict[str, str] = {
     "dangerous_capability": (
         "Inverted on measurement: 33.9% on benign System32 against 13.2% and "
         "1.0% on two malware corpora. It reads capa's ATT&CK mapping, where "
         "T1059 describes ordinary system utilities, rather than capa's "
         "capability list. Reported until it is rebuilt on the latter."),
+    "embedded_network_indicators": (
+        "Fires on 77.0% of third-party software in Program Files, because "
+        "ordinary software contains update endpoints, telemetry hosts and "
+        "documentation URLs. Containing a network indicator does not "
+        "discriminate. Reported until the category asks a narrower question."),
 }
 
 #: **`api` was here and is not any more, 26 Aug.** It was held on the only

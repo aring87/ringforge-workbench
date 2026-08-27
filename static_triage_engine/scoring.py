@@ -32,8 +32,45 @@ HIGH_SIGNAL_TECH_PREFIXES = {
 LOW_SIGNAL_TECH_PREFIXES = {"T1027", "T1033", "T1082", "T1083", "T1087", "T1129", "T1497", "T1564.003"}
 TRUST_OVERRIDE_TECH_PREFIXES = {"T1055", "T1003", "T1105", "T1071", "T1041", "T1218", "T1574"}
 
+#: Hosts that appear in ordinary binaries *by construction* rather than by
+#: intent, so finding one says nothing about the file.
+#:
+#: **This held only digicert, and the cost was 84.6%.** Once `strings` was fixed
+#: and `embedded_network_indicators` could run for the first time, it fired on
+#: 247 of 292 signed System32 binaries. The three biggest contributors were
+#: `schemas.microsoft.com` (102), `crl.microsoft.com` (71) and
+#: `www.microsoft.com` (69) -- an XML namespace, a certificate revocation
+#: endpoint, and the PKI root URL that Authenticode embeds in every signed file
+#: on the machine.
+#:
+#: Two classes, and neither is a network destination in any meaningful sense:
+#:
+#: - **PKI.** CRL, OCSP and CA-certificate URLs are part of a signature. Every
+#:   signed binary carries them, malicious ones included, so they cannot
+#:   discriminate.
+#: - **XML namespaces.** `schemas.microsoft.com/SMI/2005/WindowsSettings` is an
+#:   identifier in a manifest. Nothing ever resolves it.
+#:
+#: A suffix match does mean C2 hosted on one of these domains would be
+#: suppressed. That is a real cost, accepted deliberately: the alternative is a
+#: category that fires on five out of six benign files and is therefore ignored.
 KNOWN_BENIGN_DOMAIN_SUFFIXES = {
-    "digicert.com", "ocsp.digicert.com", "crl3.digicert.com", "crl4.digicert.com", "cacerts.digicert.com",
+    # Certificate infrastructure -- embedded by signing, not by the program.
+    "digicert.com", "ocsp.digicert.com", "crl3.digicert.com",
+    "crl4.digicert.com", "cacerts.digicert.com",
+    "verisign.com", "symcb.com", "symcd.com", "thawte.com",
+    "globalsign.com", "globalsign.net", "sectigo.com", "usertrust.com",
+    "comodoca.com", "entrust.net", "identrust.com", "letsencrypt.org",
+    "certum.pl", "quovadisglobal.com", "amazontrust.com", "sca1b.amazontrust.com",
+    # Microsoft PKI and update infrastructure.
+    "microsoft.com", "crl.microsoft.com", "www.microsoft.com",
+    "go.microsoft.com", "windowsupdate.com", "msftconnecttest.com",
+    "digicert.cn", "microsoft.net", "windows.com", "msn.com",
+    # XML namespaces and standards URIs. Identifiers, never fetched.
+    "schemas.microsoft.com", "schemas.openxmlformats.org",
+    "schemas.xmlsoap.org", "w3.org", "www.w3.org", "purl.org",
+    "oasis-open.org", "iana.org", "ietf.org", "rfc-editor.org",
+    "openoffice.org", "docs.oasis-open.org",
 }
 KNOWN_BENIGN_IPS = {"8.8.8.8", "8.8.4.4", "1.1.1.1", "9.9.9.9"}
 
