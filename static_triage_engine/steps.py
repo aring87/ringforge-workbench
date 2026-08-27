@@ -59,24 +59,37 @@ def sha_hash(path: Path, algo: str, show_progress: bool = True) -> str:
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, timeout: int = 900) -> dict[str, Any]:
+    """Run a tool and be certain it is over when this returns.
+
+    **Via `proc.run_bounded`, because `subprocess.run(timeout=)` is not enough
+    here.** `capa.exe` is a PyInstaller launcher whose grandchild inherits the
+    output pipes; killing the launcher on timeout leaves that grandchild alive
+    holding them, and the drain then blocks forever. See `static_triage_engine/
+    proc.py` -- FLOSS was caught doing exactly this for 74 minutes against a
+    180-second limit.
+    """
+    from .proc import run_bounded
+
     start = time.time()
     try:
-        p = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        outcome = run_bounded(cmd, timeout=timeout, cwd=cwd)
+        if not outcome["timed_out"]:
+            return {
+                "cmd": cmd,
+                "returncode": outcome["returncode"],
+                "duration_sec": outcome["duration_sec"],
+                "stdout": outcome["stdout"],
+                "stderr": outcome["stderr"],
+            }
         return {
             "cmd": cmd,
-            "returncode": p.returncode,
-            "duration_sec": round(time.time() - start, 3),
-            "stdout": p.stdout or "",
-            "stderr": p.stderr or "",
+            "returncode": -1,
+            "duration_sec": outcome["duration_sec"],
+            "stdout": outcome["stdout"],
+            "stderr": (outcome["stderr"] + "\n"
+                       + f"[timeout after {timeout}s; "
+                       + f"{outcome['killed']} process(es) killed]"),
+            "timed_out": True,
         }
     except subprocess.TimeoutExpired as e:
         stdout = e.stdout if isinstance(e.stdout, str) else ""

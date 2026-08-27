@@ -122,15 +122,15 @@ def run_floss(
 
     cmd = [floss_path, "-j", "--only", "decoded", "--", str(sample_path)]
 
-    try:
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+    # **`run_bounded`, not `subprocess.run`.** FLOSS is a PyInstaller launcher
+    # that spawns a grandchild holding the stdout pipe. `subprocess.run` kills
+    # only what it started and then blocks in `communicate()` waiting for a
+    # pipe the orphan keeps open -- observed as a FLOSS process alive for 74
+    # minutes against this 180-second timeout, with the caller frozen behind it.
+    from .proc import run_bounded
+
+    outcome = run_bounded(cmd, timeout=timeout_seconds)
+    if outcome["timed_out"]:
         return FlossRunResult(
             enabled=True,
             available=True,
@@ -138,38 +138,27 @@ def run_floss(
             command=cmd,
             return_code=None,
             timed_out=True,
-            error=f"FLOSS timed out after {timeout_seconds}s",
+            error=(f"FLOSS timed out after {timeout_seconds}s "
+                   f"({outcome['killed']} process(es) killed)"),
             json_path=None,
             text_path=None,
             decoded_count=0,
             tool_path=floss_path,
         )
-    except Exception as exc:
-        return FlossRunResult(
-            enabled=True,
-            available=True,
-            success=False,
-            command=cmd,
-            return_code=None,
-            timed_out=False,
-            error=f"FLOSS execution failed: {exc}",
-            json_path=None,
-            text_path=None,
-            decoded_count=0,
-            tool_path=floss_path,
-        )
+    # `run_bounded` reports a launch failure as returncode -1 with the reason
+    # on stderr, so there is nothing left to catch here.
+    stdout = outcome["stdout"]
+    stderr = outcome["stderr"]
+    returncode = outcome["returncode"]
 
-    stdout = completed.stdout or ""
-    stderr = completed.stderr or ""
-
-    if completed.returncode != 0:
+    if returncode != 0:
         text_path.write_text(stderr or stdout, encoding="utf-8", errors="replace")
         return FlossRunResult(
             enabled=True,
             available=True,
             success=False,
             command=cmd,
-            return_code=completed.returncode,
+            return_code=returncode,
             timed_out=False,
             error=(stderr.strip() or stdout.strip() or "Unknown FLOSS error"),
             json_path=None,
@@ -189,7 +178,7 @@ def run_floss(
         available=True,
         success=True,
         command=cmd,
-        return_code=completed.returncode,
+        return_code=returncode,
         timed_out=False,
         error=None,
         json_path=str(json_path),
