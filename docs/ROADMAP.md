@@ -778,6 +778,76 @@ None of these were visible on benign binaries, and all of them cost hours:
 - **`static_corpus.py` globbed `*.exe`** and silently dropped every DLL — 17 of
   100 in corpus A, a composition bias in the direction that matters.
 
+#### The joins: no family is missed, and one category is doing all the work
+
+Corpus B carries abuse.ch family labels and corpus A carries capture dates, so
+both join to their results by sha256. `benign_rates.py --per-sample` exists
+because `rates.json` is an aggregate and an aggregate cannot be joined to a
+label.
+
+**Every family bands on every sample.** Thirteen families, 129 samples, zero at
+No Evidence. What varies is how far they get:
+
+    family            n   >= Corroborated        family            n   >= Corroborated
+    Stealc           10        80%               AgentTesla       10        20%
+    GuLoader         10        60%               Amadey           10        20%
+    njrat            10        60%               RedLineStealer   10        20%
+    Vidar             9        44%               XWorm            10        20%
+    AsyncRAT         10        40%               DCRat            10        20%
+    RemcosRAT        10        30%               Formbook         10        10%
+                                                 SnakeKeylogger   10        10%
+
+That looks like a working scorer. It is one category:
+
+    band on `stripped_metadata` alone     corpus B  61%     corpus A  77%
+    `stripped_metadata` present at all    corpus B 100%     corpus A  95%
+
+**Remove that single category and detection collapses** — 79 of 129 and 82 of
+100 fall to No Evidence:
+
+    without stripped_metadata     No Evidence   Single   Corroborated
+    corpus B (129)                     79          28         22
+    corpus A (100)                     82          10          8
+
+So the headline "100% of malware bands" is really "100% of malware has
+incomplete version-info fields", and **the false-positive rate for that claim
+was measured on Microsoft-signed System32** — the most flattering benign
+population available, where every version field is populated by policy. Ordinary
+third-party software strips metadata routinely.
+
+**A `Program Files` corpus is now the highest-value measurement on this bench.**
+Not because the current number is wrong, but because the entire malware result
+rests on one category whose false-positive rate against realistic benign
+software is unknown. If third-party software strips metadata at 40%, this result
+means very little. That is a cheap corpus to build and nothing should lean on
+`static` until it exists.
+
+#### YARA ages out, on a small sample
+
+Corpus A spans six years, and `known_malware_signature` tracks it:
+
+    year   n    stripped   yara   invalid_sig
+    2020   25      100%     16%       8%
+    2021   35       97%      9%       3%
+    2022   15      100%     20%       7%
+    2023    5       80%     40%       0%
+    2024    5      100%      0%       0%
+    2025   10       80%      0%      20%
+    2026    5       80%      0%       0%
+
+**Zero YARA matches on anything from 2024 onward** — 0 of 20. Directionally
+exactly what a static ruleset against evolving threats should do, and the per-
+year cells are 5 to 35 samples, so this is a signal to confirm on a bigger
+corpus rather than a rate. It is worth stating because it bears on how
+`known_malware_signature` should be read at all: a detection rate for it is a
+fact about the age of `signature-base` relative to the sample, not about this
+repo.
+
+The five No Evidence samples in corpus A are ParallaxRAT (2021), an
+unattributed DLL (2023), ValleyRAT and one unattributed (2025), and one
+unattributed (2026) — four of five from 2023 or later, consistent with the same
+drift.
+
 #### What is not done
 
 `extension`, `spec` and `api` still have only false-positive rates. For `spec`
