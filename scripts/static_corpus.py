@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import random
@@ -72,6 +73,22 @@ def _config(corpus: Path, name: str):
     return cfg
 
 
+def case_name_for(path: Path) -> str:
+    """A case directory name unique to the *file*, not to its basename.
+
+    **A recursive corpus repeats names constantly.** 49 of 300 files sampled
+    across `Program Files` shared a basename with another -- five `AacHal_x86.dll`,
+    four `Uninstall.exe`, three `setup.exe`. Keyed on `path.stem`, those 49 would
+    have collapsed into 21 case directories, different binaries overwriting each
+    other's results, with the resume ledger treating them as one sample.
+
+    System32 is flat and every name there is unique, which is why this never
+    showed until the corpus moved.
+    """
+    digest = hashlib.sha1(str(path).encode("utf-8", "replace")).hexdigest()[:8]
+    return f"{path.stem}_{digest}"
+
+
 def analyse(args: tuple[str, str, int]) -> dict[str, Any]:
     """One binary, all the way through the real engine. Never raises.
 
@@ -84,21 +101,28 @@ def analyse(args: tuple[str, str, int]) -> dict[str, Any]:
     try:
         from static_triage_engine.engine import run_case
 
-        cfg = _config(corpus, path.stem)
+        name = case_name_for(path)
+        cfg = _config(corpus, name)
         summary = run_case(
-            str(path), case_name=path.stem, show_progress=False, config=cfg,
+            str(path), case_name=name, show_progress=False, config=cfg,
             # **The parent binary is the sample.** Payload extraction triages
             # files carved *out* of it, which are a different population and
             # would quietly enlarge the corpus with things nobody sampled.
             enable_payload_extraction=False, triage_extracted_pes=False,
             capa_timeout=capa_timeout, skip_lief=not with_lief,
         )
-        return {"file": path.name, "case": summary.get("case_dir", ""),
+        return {"file": path.name, "path": str(path),
+                "case": summary.get("case_dir", ""),
                 "seconds": round(time.time() - started, 1), "ok": True}
     except Exception as error:
-        return {"file": path.name, "ok": False,
+        # `WinError 1224` on a DLL mapped by a running process is permanent, not
+        # transient -- Program Files is full of libraries something has loaded.
+        # Labelled so a resume can tell it from a crash worth retrying.
+        text = f"{type(error).__name__}: {error}"
+        return {"file": path.name, "path": str(path), "ok": False,
                 "seconds": round(time.time() - started, 1),
-                "error": f"{type(error).__name__}: {error}",
+                "in_use": "1224" in text,
+                "error": text,
                 "traceback": traceback.format_exc()[-1500:]}
 
 
@@ -253,8 +277,11 @@ def main(argv: list[str] | None = None) -> int:
             # be retried, and the corpus quietly shrinks by exactly the samples
             # something went wrong on -- which are the ones worth rerunning.
             if entry.get("ok"):
-                already.add(entry.get("file"))
-    todo = [p for p in sample if p.name not in already]
+                # Path when recorded, basename for ledgers written before
+                # names were known to collide.
+                already.add(entry.get("path") or entry.get("file"))
+    todo = [p for p in sample
+            if str(p) not in already and p.name not in already]
     print(f"{len(already)} already run, {len(todo)} to go, "
           f"{args.workers} worker(s)")
 
