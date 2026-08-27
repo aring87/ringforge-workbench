@@ -120,6 +120,54 @@ def _parse_match(match: Any) -> Dict[str, Any]:
     return parsed
 
 
+#: Compiled rule sets, keyed by the rule files they were built from. Lives for
+#: the life of the process.
+#:
+#: **A corpus run recompiles the whole rule set once per sample without this,
+#: and pays the fallback every time.** If a single file of 1,545 fails to
+#: build, the bulk compile throws and the recovery below compiles each file
+#: individually to find the bad one -- 1,546 compiles, per sample. On a corpus
+#: that is pure CPU with almost no disk I/O and no visible progress, which is
+#: exactly how it presented: two workers at 100% for nine hours and fewer than
+#: ten samples finished.
+#:
+#: Keyed on the rule files rather than the directory, so adding or removing a
+#: rule rebuilds rather than silently serving a stale set.
+_COMPILED: Dict[tuple, tuple[Any, List[Dict[str, str]]]] = {}
+
+#: Declarations only. `yara.compile` needs the names and types present; the
+#: real per-sample values are supplied to `match()`, which is what keeps one
+#: compiled set usable for every sample.
+_EXTERNAL_DECL = {"filepath": "", "filename": "", "extension": "",
+                  "filetype": "", "owner": ""}
+
+
+def _cache_key(filepaths: Dict[str, str], rules_root: Path) -> tuple:
+    return (str(rules_root), tuple(sorted(filepaths.items())))
+
+
+def _cached_rules(filepaths: Dict[str, str],
+                  rules_root: Path) -> tuple[Any, List[Dict[str, str]]] | None:
+    return _COMPILED.get(_cache_key(filepaths, rules_root))
+
+
+def _remember(filepaths: Dict[str, str], rules_root: Path, compiled: Any,
+              skipped: List[Dict[str, str]]) -> None:
+    _COMPILED[_cache_key(filepaths, rules_root)] = (compiled, skipped)
+
+
+def _scan_with(result: Dict[str, Any], compiled_rules: Any, sample: Path,
+               externals: Dict[str, Any], timeout: int) -> Dict[str, Any]:
+    """Match, with this sample's external values, against pre-compiled rules."""
+    try:
+        matches = compiled_rules.match(str(sample), timeout=timeout,
+                                       externals=externals)
+    except Exception as exc:
+        result["error"] = f"YARA scan failed: {exc}"
+        return result
+    return _record_matches(result, matches)
+
+
 def run_yara_scan(
     sample_path: str | Path,
     rules_dir: str | Path,
@@ -167,15 +215,22 @@ def run_yara_scan(
     externals = _externals_for(sample)
     skipped: List[Dict[str, str]] = []
 
+    cached = _cached_rules(filepaths, rules_root)
+    if cached is not None:
+        compiled_rules, skipped = cached
+        result["rules_compiled"] = len(filepaths) - len(skipped)
+        result["rules_skipped"] = skipped
+        return _scan_with(result, compiled_rules, sample, externals, timeout)
+
     try:
-        compiled_rules = yara.compile(filepaths=filepaths, externals=externals)
+        compiled_rules = yara.compile(filepaths=filepaths, externals=_EXTERNAL_DECL)
     except Exception as bulk_exc:
         # A single unbuildable rule file must not zero out the whole corpus.
         # Fall back to identifying the bad ones and compiling the rest.
         usable: Dict[str, str] = {}
         for namespace, rule_path in filepaths.items():
             try:
-                yara.compile(filepath=rule_path, externals=externals)
+                yara.compile(filepath=rule_path, externals=_EXTERNAL_DECL)
             except Exception as file_exc:
                 skipped.append({"file": rule_path, "error": str(file_exc)})
                 continue
@@ -191,20 +246,19 @@ def run_yara_scan(
             return result
 
         try:
-            compiled_rules = yara.compile(filepaths=usable, externals=externals)
+            compiled_rules = yara.compile(filepaths=usable, externals=_EXTERNAL_DECL)
         except Exception as retry_exc:
             result["error"] = f"YARA compile failed after skipping bad files: {retry_exc}"
             return result
 
     result["rules_compiled"] = len(filepaths) - len(skipped)
     result["rules_skipped"] = skipped
+    _remember(filepaths, rules_root, compiled_rules, skipped)
 
-    try:
-        matches = compiled_rules.match(str(sample), timeout=timeout)
-    except Exception as exc:
-        result["error"] = f"YARA scan failed: {exc}"
-        return result
+    return _scan_with(result, compiled_rules, sample, externals, timeout)
 
+
+def _record_matches(result: Dict[str, Any], matches: Any) -> Dict[str, Any]:
     parsed_matches: List[Dict[str, Any]] = [_parse_match(m) for m in matches]
 
     result["matched"] = len(parsed_matches) > 0

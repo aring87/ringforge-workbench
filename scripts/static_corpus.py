@@ -78,7 +78,7 @@ def analyse(args: tuple[str, str, int]) -> dict[str, Any]:
     A crash on one sample must cost that sample and not the run -- this is
     hours of work and it resumes, but only if it gets to the end.
     """
-    path_str, corpus_str, capa_timeout = args
+    path_str, corpus_str, capa_timeout, with_lief = args
     path, corpus = Path(path_str), Path(corpus_str)
     started = time.time()
     try:
@@ -91,7 +91,7 @@ def analyse(args: tuple[str, str, int]) -> dict[str, Any]:
             # files carved *out* of it, which are a different population and
             # would quietly enlarge the corpus with things nobody sampled.
             enable_payload_extraction=False, triage_extracted_pes=False,
-            capa_timeout=capa_timeout,
+            capa_timeout=capa_timeout, skip_lief=not with_lief,
         )
         return {"file": path.name, "case": summary.get("case_dir", ""),
                 "seconds": round(time.time() - started, 1), "ok": True}
@@ -117,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-mb", type=int, default=64,
                         help="skip the handful of very large binaries; capa on "
                              "a 218 MB image is its own afternoon")
+    parser.add_argument("--with-lief", action="store_true",
+                        help="run the LIEF metadata step. Off by default: it "
+                             "feeds no category and averaged 1,253s per sample "
+                             "on real malware against capa's 111s")
     parser.add_argument("--list-only", action="store_true")
     args = parser.parse_args(argv)
 
@@ -181,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(already)} already run, {len(todo)} to go, "
           f"{args.workers} worker(s)")
 
-    tasks = [(str(p), str(corpus), args.capa_timeout) for p in todo]
+    tasks = [(str(p), str(corpus), args.capa_timeout, args.with_lief)
+             for p in todo]
     started = time.time()
     failures = 0
     # **`as_completed`, not `map`.** `pool.map` yields results *in order*, so one

@@ -834,6 +834,7 @@ def run_case(
     strings_lite: bool = False,
     capa_timeout: int = 1800,
     capa_max_size_mb: int = 100,
+    skip_lief: bool = False,
 ) -> dict[str, Any]:
     cfg = config or TriageConfig()
     total_start = time.time()
@@ -987,7 +988,19 @@ def run_case(
         summary["payload_extraction"] = {"attempted": False, "success": False, "notes": "disabled"}
 
     runlog["pe_meta"] = _run_step("pe_meta", lambda: step_pe_metadata(sample_case, case_dir))
-    runlog["lief_meta"] = _run_step("lief_meta", lambda: step_lief_metadata(sample_case, case_dir))
+    if skip_lief:
+        # **It costs 91% of a corpus run and feeds no category.** Measured over
+        # 47 malware samples: `lief_meta` averaged 1,253s each against capa's
+        # 111s, because LIEF grinds on the malformed and packed PE structures
+        # that are ordinary in real samples -- the `TLS template corrupted` and
+        # `Failed to parse COFF string table` messages are it complaining.
+        # `static_categories` reads summary, iocs, pe_meta, api_analysis,
+        # yara_results, signing, techniques and the capa count. LIEF is in none
+        # of them, so skipping changes no verdict.
+        runlog["lief_meta"] = {"returncode": 0, "skipped": True,
+                               "duration_sec": 0.0, "stdout": "", "stderr": ""}
+    else:
+        runlog["lief_meta"] = _run_step("lief_meta", lambda: step_lief_metadata(sample_case, case_dir))
     runlog["file"] = _run_step("file", lambda: step_file(sample_case, case_dir))
 
     if skip_strings:
