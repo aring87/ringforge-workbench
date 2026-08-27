@@ -88,9 +88,40 @@ def _expand(paths: Iterable[str]) -> list[Path]:
     return out
 
 
+#: Set by `main` when `--per-sample` is given. Every `_report` call appends its
+#: rows, so one flag covers every module.
+_PER_SAMPLE: list[dict[str, Any]] | None = None
+
+
+def _rows_for(name: str, results: list[tuple[str, Any, list[Category]]]) -> list[dict[str, Any]]:
+    """One row per sample: what banded, and which categories did it.
+
+    **An aggregate cannot be joined to anything.** `rates.json` carries totals
+    and five example labels per category, which is enough to report a rate and
+    not enough to ask the question a labelled corpus exists for -- *which
+    families does this miss*. These rows join to `_sample.json` on the sample
+    name, which is the sha256 for both malware corpora.
+    """
+    rows = []
+    for label, verdict, cats in results:
+        rows.append({
+            "module": name,
+            "sample": label,
+            "band": verdict.band,
+            "verdict": verdict.verdict,
+            "severity": verdict.severity,
+            "present": sorted(c.name for c in cats if c.collected and c.present),
+            "strong": sorted(c.name for c in cats if c.collected and c.present and c.strong),
+            "unknown": sorted(c.name for c in cats if not c.collected),
+        })
+    return rows
+
+
 def _report(name: str, results: list[tuple[str, Any, list[Category]]],
             note: str = "") -> dict[str, Any]:
     """Rates per category and the band distribution, printed and returned."""
+    if _PER_SAMPLE is not None:
+        _PER_SAMPLE.extend(_rows_for(name, results))
     fired = collections.Counter()
     strong = collections.Counter()
     unknown = collections.Counter()
@@ -413,7 +444,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unsigned", action="store_true",
                         help="do not assert a valid signature on System32")
     parser.add_argument("--out", default="")
+    parser.add_argument("--per-sample", default="",
+                        help="write one row per sample here, so results can be "
+                             "joined to a corpus manifest by family or by date")
     args = parser.parse_args(argv)
+
+    global _PER_SAMPLE
+    if args.per_sample:
+        _PER_SAMPLE = []
 
     out: list[dict[str, Any]] = []
     if args.module in ("all", "extension"):
@@ -453,6 +491,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps(out, indent=2), encoding="utf-8")
         print(f"written: {args.out}")
+    if args.per_sample and _PER_SAMPLE is not None:
+        Path(args.per_sample).write_text(
+            json.dumps(_PER_SAMPLE, indent=2), encoding="utf-8")
+        print(f"written: {args.per_sample} ({len(_PER_SAMPLE)} rows)")
     return 0
 
 
