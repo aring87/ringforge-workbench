@@ -117,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-mb", type=int, default=64,
                         help="skip the handful of very large binaries; capa on "
                              "a 218 MB image is its own afternoon")
+    parser.add_argument("--ext", default="exe,dll,sys,scr",
+                        help="file extensions to treat as samples")
     parser.add_argument("--with-lief", action="store_true",
                         help="run the LIEF metadata step. Off by default: it "
                              "feeds no category and averaged 1,253s per sample "
@@ -132,9 +134,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"failed: {root} is not a directory")
         return 1
 
-    every = sorted(p for p in root.glob("*.exe") if p.is_file())
+    # **Not just `*.exe`.** `malware_corpus.py` writes `.exe`, `.dll`, `.sys`
+    # and `.scr`, and this globbed one of them -- so 17 of 100 datalake samples
+    # were dropped silently, with the run reporting "83 executables" as though
+    # that were the corpus. DLLs are an ordinary malware delivery format and
+    # their absence would have been a bias nobody declared.
+    #
+    # The 26 Aug System32 corpus was built when this was `*.exe` only; its
+    # `_sample.json` records the exact file list, which is what makes that run
+    # reproducible rather than this default.
+    wanted = {"." + e.strip().lower().lstrip(".")
+              for e in args.ext.split(",") if e.strip()}
+    every = sorted(p for p in root.glob("*")
+                   if p.is_file() and p.suffix.lower() in wanted)
     sized = [p for p in every if p.stat().st_size <= args.max_mb * 1024 * 1024]
-    print(f"{root}: {len(every)} executables, "
+    print(f"{root}: {len(every)} samples matching {sorted(wanted)}, "
           f"{len(sized)} at or under {args.max_mb} MB")
 
     # **Random, not the head.** The old corpus was `sorted(...)[:300]`, which is
