@@ -113,14 +113,18 @@ CONTEXT_ONLY: dict[str, str] = {}
 #: working ones.
 #:
 #: **`dangerous_capability` is here because its evidence points backwards.**
-#: Measured 27 Aug across three corpora:
+#: Measured 27 Aug, counting only samples where capa actually ran:
 #:
-#:     benign System32   33.9%   (292 signed Microsoft binaries)
-#:     malware, family   13.2%   (129 stratified across 13 families)
-#:     malware, 6 years   1.0%   (100 sampled from 2020-2026)
+#:     benign System32       35.1%   (99 of 282)
+#:     benign Program Files  22.0%   (55 of 250)
+#:     malware, family        2.9%   (1 of 35)
 #:
-#: It fires roughly three times more often on Microsoft's own tools than on
-#: real malware. 86 of the 99 benign firings were `T1059` -- Command and
+#: **Twelve times more likely to fire on Microsoft's own tools than on real
+#: malware.** The first published figures -- 33.9% benign against 13.2% malware
+#: -- were right in direction and wrong in size: the malware denominator
+#: included 94 samples on which capa had failed and produced nothing, so the
+#: category could not have fired on them. Corrected, the gap is four times
+#: wider than reported. 86 of the 99 benign firings were `T1059` -- Command and
 #: Scripting Interpreter -- which capa maps onto anything that can launch a
 #: process, and on System32 that is most of it.
 #:
@@ -156,10 +160,11 @@ CONTEXT_ONLY: dict[str, str] = {}
 #: cannot do meanwhile is move a band.
 CONTEXT_ONLY_CATEGORIES: dict[str, str] = {
     "dangerous_capability": (
-        "Inverted on measurement: 33.9% on benign System32 against 13.2% and "
-        "1.0% on two malware corpora. It reads capa's ATT&CK mapping, where "
-        "T1059 describes ordinary system utilities, rather than capa's "
-        "capability list. Reported until it is rebuilt on the latter."),
+        "Inverted on measurement: 35.1% on benign System32 and 22.0% on "
+        "Program Files against 2.9% on malware, counting only samples where "
+        "capa ran. It reads capa's ATT&CK mapping, where T1059 describes "
+        "ordinary system utilities, rather than capa's capability list. "
+        "Reported until it is rebuilt on the latter."),
     "embedded_network_indicators": (
         "Fires on 68.2% of malware against 77.0% of third-party software in "
         "Program Files -- less often on the malicious side. Ordinary software "

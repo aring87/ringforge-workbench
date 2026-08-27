@@ -109,6 +109,7 @@ def static_categories(
     signing: dict[str, Any] | None = None,
     techniques: Sequence[str] | None = None,
     capa_match_count: int | None = None,
+    capa_ok: bool | None = None,
 ) -> tuple[list[Category], int]:
     """Every category static analysis can author, present or not.
 
@@ -281,7 +282,16 @@ def static_categories(
     # observation seen twice, and counting it twice would manufacture
     # corroboration out of a single claim.
     api_ok = api_analysis is not None and int((api_analysis or {}).get("returncode", 0) or 0) == 0
-    capability_ran = api_ok or techniques is not None
+    # **A collector that failed did not find nothing.** `techniques` is `[]`
+    # both when capa ran and matched nothing and when capa was never found --
+    # and capa is missing far more often than anyone assumed. On 229 malware
+    # samples it failed on 194 of them, 182 with `WinError 2` because
+    # `capa.exe` lives in a venv that a fresh shell had not activated. The
+    # category reported `collected=True, present=False` for every one: a clean
+    # answer from a tool that never ran, which is the exact failure this
+    # contract exists to prevent. `capa_ok=False` makes it say `unknown`.
+    capa_failed = capa_ok is False
+    capability_ran = (api_ok or techniques is not None) and not capa_failed
 
     api_analysis = api_analysis or {}
     chains = api_analysis.get("chain_findings") if isinstance(api_analysis.get("chain_findings"), list) else []

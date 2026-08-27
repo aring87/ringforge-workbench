@@ -157,6 +157,31 @@ def load_case(case_dir: str | Path) -> dict[str, Any]:
     }
 
 
+
+def capa_succeeded(home: Path) -> bool | None:
+    """Did capa actually run for this case? `None` when the run log is absent.
+
+    Read from `runlog.json`, which is the only place that distinguishes "capa
+    matched nothing" from "capa was not installed". Both leave the same empty
+    `capa.json`-shaped hole everywhere else.
+    """
+    for candidate in (home / "runlog.json",
+                      home / "static_analysis" / "runlog.json"):
+        if not candidate.exists():
+            continue
+        try:
+            entry = json.loads(candidate.read_text(
+                encoding="utf-8", errors="replace")).get("capa")
+        except (ValueError, OSError):
+            return None
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("skipped"):
+            return None
+        return int(entry.get("returncode", 0) or 0) == 0
+    return None
+
+
 def static_categories_for_case(
     home: Path,
     summary: dict[str, Any] | None,
@@ -178,6 +203,7 @@ def static_categories_for_case(
     capa_path = next((p for p in (home / "static_analysis" / "capa.json",
                                   home / "capa.json") if p.exists()), None)
     return static_categories(
+        capa_ok=capa_succeeded(home),
         summary=summary, iocs=iocs, pe_meta=pe_meta,
         api_analysis=api_analysis, yara_results=yara_results, signing=signing,
         techniques=_extract_techniques(summary) if summary is not None else None,
