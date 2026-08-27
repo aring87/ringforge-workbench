@@ -1,3 +1,16 @@
+#
+#               (needs a compiler on Windows, which is why it is not pinned)
+#               browser instead
+#   ssdeep      fuzzy hash; steps._best_effort_ssdeep returns None without it
+#   tlsh        fuzzy hash; steps._best_effort_tlsh returns None without it
+#   tqdm        progress bars only; steps.py falls back to None
+#   weasyprint  direct PDF output; without it, print the HTML report from a
+# above -- those two were undeclared for a while and each silently cost the
+# Every one of these has a working degradation path, unlike lief and PyYAML
+# Genuinely optional, and deliberately left uninstalled.
+# Listed here so "not installed" stays a decision on record rather than a gap
+# nobody noticed.
+# pipeline a capability (a scoring input, and half the accepted spec formats).
 altgraph==0.17.4
 certifi==2025.1.31
 charset-normalizer==3.4.1
@@ -14,13 +27,14 @@ pillow==12.1.1
 psutil==6.1.1
 pyarrow==21.0.0
 pyasn1==0.6.1
-pyinstaller==6.15.0
 pyinstaller-hooks-contrib==2025.8
+pyinstaller==6.15.0
 PySimpleGUI==5.0.8.3
 python-dateutil==2.9.0.post0
 pytz==2025.2
 pywin32-ctypes==0.2.3
 PyYAML==6.0.3
+pyzipper==0.3.6
 requests==2.32.3
 rsa==4.9.1
 scikit-learn==1.7.1
@@ -31,18 +45,3 @@ threadpoolctl==3.6.0
 tzdata==2025.2
 urllib3==2.3.0
 yara-python==4.5.1
-
-# Genuinely optional, and deliberately left uninstalled.
-#
-# Every one of these has a working degradation path, unlike lief and PyYAML
-# above -- those two were undeclared for a while and each silently cost the
-# pipeline a capability (a scoring input, and half the accepted spec formats).
-# Listed here so "not installed" stays a decision on record rather than a gap
-# nobody noticed.
-#
-#   tqdm        progress bars only; steps.py falls back to None
-#   tlsh        fuzzy hash; steps._best_effort_tlsh returns None without it
-#   ssdeep      fuzzy hash; steps._best_effort_ssdeep returns None without it
-#               (needs a compiler on Windows, which is why it is not pinned)
-#   weasyprint  direct PDF output; without it, print the HTML report from a
-#               browser instead
