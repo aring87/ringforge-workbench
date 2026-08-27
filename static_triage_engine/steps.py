@@ -214,22 +214,73 @@ def _truncate_lines(path: Path, max_lines: int) -> None:
         pass
 
 
+#: Printable ASCII, and the UTF-16LE form Windows binaries are full of. Missing
+#: the second is missing most of a PE's interesting text.
+_ASCII_RUN = re.compile(rb"[\x20-\x7e]{4,}")
+_UTF16_RUN = re.compile(rb"(?:[\x20-\x7e]\x00){4,}")
+
+#: A cap, because a strings dump of a large binary is mostly noise and the IOC
+#: regexes downstream are the expensive part.
+_STRINGS_READ_CAP = 96 * 1024 * 1024
+
+
+def extract_strings(sample: Path, min_len: int = 6) -> list[str]:
+    """Printable runs out of a file, in Python.
+
+    **This used to shell out to `strings`, which is not installed on Windows.**
+    `run_cmd` returned `WinError 2 -- cannot find the file specified`,
+    `step_strings` wrote the empty stdout to `strings.txt` anyway, and
+    `step_iocs` then read that empty file, extracted nothing and reported
+    success. So `embedded_network_indicators` came back `collected=True,
+    present=False` -- a clean bill from a tool that was never there -- across
+    829 samples on four corpora, including 229 pieces of real malware that
+    between them yielded zero domains, URLs and IPs.
+
+    A native implementation has no dependency to be missing, which is the whole
+    point: this is the failure mode `verdict/model.py` names in its own
+    docstring, and the fix that stops it recurring is not having the external
+    tool at all.
+    """
+    try:
+        with sample.open("rb") as handle:
+            data = handle.read(_STRINGS_READ_CAP)
+    except OSError:
+        return []
+
+    found: list[str] = []
+    for match in _ASCII_RUN.finditer(data):
+        text = match.group().decode("ascii", "replace")
+        if len(text) >= min_len:
+            found.append(text)
+    for match in _UTF16_RUN.finditer(data):
+        text = match.group().decode("utf-16-le", "replace")
+        if len(text) >= min_len:
+            found.append(text)
+    return found
+
+
 def step_strings(sample: Path, case_dir: Path, lite: bool = False) -> dict[str, Any]:
     """
     lite=False: full strings
     lite=True : faster/smaller strings output
     """
     out = case_dir / "strings.txt"
+    start = time.time()
+    min_len = 8 if lite else 6
+    try:
+        found = extract_strings(sample, min_len=min_len)
+    except Exception as error:
+        return {"returncode": 2, "stdout": "", "stderr": str(error),
+                "output_file": str(out), "lite": bool(lite),
+                "duration_sec": round(time.time() - start, 3)}
+
+    safe_write(out, chr(10).join(found))
     if lite:
-        res = run_cmd(["strings", "-a", "-n", "8", str(sample)], cwd=case_dir, timeout=180)
-        safe_write(out, res.get("stdout", ""))
         _truncate_lines(out, max_lines=20000)
-    else:
-        res = run_cmd(["strings", "-a", "-n", "6", str(sample)], cwd=case_dir, timeout=300)
-        safe_write(out, res.get("stdout", ""))
-    res["output_file"] = str(out)
-    res["lite"] = bool(lite)
-    return res
+    return {"returncode": 0, "stdout": "", "stderr": "",
+            "output_file": str(out), "lite": bool(lite),
+            "string_count": len(found),
+            "duration_sec": round(time.time() - start, 3)}
     
 def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int = 1800, max_size_mb: int = 100) -> dict[str, Any]:
     sample_size = sample.stat().st_size if sample.exists() else 0
@@ -500,8 +551,15 @@ def step_iocs(case_dir: Path) -> dict[str, Any]:
     strings_path = case_dir / "strings.txt"
     capa_json_path = case_dir / "capa.json"
 
-    if not strings_path.exists():
-        return {"returncode": 2, "stderr": "strings.txt missing; cannot extract IOCs"}
+    # **Empty counts as missing.** Writing `iocs.json` with no observables from
+    # an empty strings dump is what turned a dead collector into a clean
+    # verdict: the category saw a valid file, reported `collected=True,
+    # present=False`, and said nothing was found when nothing had been looked
+    # at. Returning non-zero without writing the file leaves `iocs` absent, so
+    # the category reports `unknown` -- which is the contract.
+    if not strings_path.exists() or strings_path.stat().st_size == 0:
+        return {"returncode": 2,
+                "stderr": "strings.txt missing or empty; cannot extract IOCs"}
 
     iocs = build_iocs(strings_path, capa_json_path if capa_json_path.exists() else None)
     iocs = _sanitize_iocs(iocs)
