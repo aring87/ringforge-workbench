@@ -161,10 +161,11 @@ CONTEXT_ONLY_CATEGORIES: dict[str, str] = {
         "T1059 describes ordinary system utilities, rather than capa's "
         "capability list. Reported until it is rebuilt on the latter."),
     "embedded_network_indicators": (
-        "Fires on 77.0% of third-party software in Program Files, because "
-        "ordinary software contains update endpoints, telemetry hosts and "
-        "documentation URLs. Containing a network indicator does not "
-        "discriminate. Reported until the category asks a narrower question."),
+        "Fires on 68.2% of malware against 77.0% of third-party software in "
+        "Program Files -- less often on the malicious side. Ordinary software "
+        "contains update endpoints, telemetry hosts and documentation URLs, so "
+        "containing a network indicator is a property of software rather than "
+        "of malice. Reported until the category asks a narrower question."),
 }
 
 #: **`api` was here and is not any more, 26 Aug.** It was held on the only
