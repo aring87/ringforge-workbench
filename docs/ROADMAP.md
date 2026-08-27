@@ -360,7 +360,7 @@ so.
 
     module      corpus                              band distribution
     ─────────   ─────────────────────────────────   ──────────────────────
-    static      300 System32 + 229 malware          96.7% / 0% No Evidence
+    static      600 benign + 229 malware          measured both directions
     dynamic     the reference module, gap-proven    (its own ledger)
     spec        300 random APIs.guru specs          54.0% No Evidence, 0% top
     extension   394 random store extensions         72.8% No Evidence, 1.0% top
@@ -821,6 +821,51 @@ rests on one category whose false-positive rate against realistic benign
 software is unknown. If third-party software strips metadata at 40%, this result
 means very little. That is a cheap corpus to build and nothing should lean on
 `static` until it exists.
+
+#### The Program Files corpus: `stripped_metadata` survives, at 10.3%
+
+The category carrying the entire malware result had its false-positive rate
+measured on System32, where Microsoft populates every version field by policy.
+300 binaries across **55 third-party vendors**, capped at 6 each, `--per-vendor`
+existing because a uniform random 300 over both Program Files trees came out 95
+`dotnet` and roughly 40% Microsoft — the corpus built to stop measuring
+Microsoft, measuring Microsoft.
+
+    category                    System32   Program Files   malware B   malware A
+    stripped_metadata               0.0%          10.3%       100.0%       95.0%
+    dangerous_capability           33.9%          18.3%        13.2%        1.0%
+    known_malware_signature         0.7%           0.3%        16.3%       12.0%
+    invalid_signature               0.0%           0.0%        17.8%        6.0%
+    embedded_network_indicators     0.0%           0.0%         0.0%        0.0%
+    deceptive_file_identity         0.0%           0.0%         0.0%        0.0%
+
+    bands, Program Files:  No Evidence 89.3%, Single Observation 10.7%,
+                           Corroborated 0.0%
+
+**It holds.** 10.3% against 97% is roughly nine-fold separation, so the category
+is not simply detecting "software Microsoft did not write". But 0% was the
+flattering number and 10.3% is the honest one, and anything resting on this
+category should quote the second.
+
+**The false positives are clustered, not diffuse.** All 31 fall in 9 of the 55
+vendors, and they are one recognisable class:
+
+    7-Zip        6/6      Microsoft.NET   5/5      PDFgear   1/6
+    GnuWin32     6/6      GIMP 2          5/6      ENE       1/6
+    Git          5/6      Canon           1/2      Mozilla Maintenance  1/2
+
+GNU and MinGW toolchains do not populate Windows version resources. That makes
+the category's error mode predictable rather than random — useful to a reader,
+and a reason the rate should not be read as a uniform 1-in-10 chance on any
+given binary.
+
+**And a third corpus confirms the demotion.** `dangerous_capability` fires on
+18.3% of Program Files — more than on either malware corpus — spread across 29
+vendors. Benign at 33.9% and 18.3%; malicious at 13.2% and 1.0%. It points the
+wrong way on every population it has been shown.
+
+The single `known_malware_signature` hit is `firefox.exe`, joining `rundll32`
+and `spoolsv` as third-party signature-base false positives.
 
 #### YARA ages out, on a small sample
 

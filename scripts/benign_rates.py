@@ -286,7 +286,23 @@ def measure_static_cases(root: Path) -> dict[str, Any]:
 
     results = []
     unreadable = 0
+    incomplete = 0
     for case in sorted(p for p in root.glob("*") if p.is_dir()):
+        # **A case that never finished is not a sample.** An aborted run leaves
+        # directories behind, and Windows will not always let them be deleted
+        # afterwards -- six survived here, from a run killed for an unrelated
+        # bug. Measured, they contribute `unknown` to every category and inflate
+        # the denominator by samples nobody drew. `CASE_DONE` is the engine's
+        # own end-of-run marker.
+        log = case / "analysis.log"
+        try:
+            done = log.exists() and "CASE_DONE" in log.read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            done = False
+        if not done:
+            incomplete += 1
+            continue
         try:
             home = case_home(case)
             loaded = load_case(home)
@@ -308,6 +324,8 @@ def measure_static_cases(root: Path) -> dict[str, Any]:
     note = f"(full engine over {root.parent.name})"
     if unreadable:
         note += f" [{unreadable} case(s) unreadable, excluded]"
+    if incomplete:
+        note += f" [{incomplete} case(s) never completed, excluded]"
     return _report("static", results, note)
 
 
