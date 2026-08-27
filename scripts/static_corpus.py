@@ -102,11 +102,57 @@ def analyse(args: tuple[str, str, int]) -> dict[str, Any]:
                 "traceback": traceback.format_exc()[-1500:]}
 
 
+def _vendor_of(path: Path, roots: list[Path]) -> str:
+    """The top-level folder under whichever root contains this file."""
+    for root in roots:
+        try:
+            return path.relative_to(root).parts[0]
+        except (ValueError, IndexError):
+            continue
+    return path.parent.name
+
+
+def _over_vendors(files: list[Path], roots: list[Path], count: int,
+                  per_vendor: int, rng: random.Random) -> list[Path]:
+    r"""Sample over publishers, not over files.
+
+    **A uniform pick measures whoever ships the most DLLs.** Across
+    `C:\Program Files` and its x86 twin, a straight random 300 came out 95
+    `dotnet`, 15 `Microsoft`, 14 `Microsoft Office` -- roughly 40% Microsoft, in
+    the corpus built specifically to stop measuring Microsoft. It is the same
+    defect as azure.com owning a quarter of the APIs.guru directory, and the
+    same fix: draw from vendors, then from each vendor's files.
+    """
+    groups: dict[str, list[Path]] = {}
+    for path in files:
+        groups.setdefault(_vendor_of(path, roots), []).append(path)
+
+    vendors = sorted(groups)
+    rng.shuffle(vendors)
+    picked: list[Path] = []
+    for vendor in vendors:
+        for item in rng.sample(groups[vendor],
+                               min(per_vendor, len(groups[vendor]))):
+            if len(picked) >= count:
+                return picked
+            picked.append(item)
+    return picked
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, help="corpus directory")
     parser.add_argument("--root", default=DEFAULT_ROOT,
-                        help="directory of executables to sample")
+                        help="directory of executables to sample; "
+                             "comma-separated for several")
+    parser.add_argument("--per-vendor", type=int, default=0,
+                        help="cap samples per top-level vendor folder. 0 is "
+                             "off, which is right for a flat directory like "
+                             "System32 and wrong for Program Files, where a "
+                             "uniform pick is 32%% dotnet")
+    parser.add_argument("--recursive", action="store_true",
+                        help="walk subdirectories. Needed for Program Files, "
+                             "which is nested; System32 is flat")
     parser.add_argument("--count", type=int, default=300)
     parser.add_argument("--seed", type=int, default=20260826,
                         help="fixed so the sample is reproducible; the old "
@@ -129,10 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     corpus = Path(args.out)
     corpus.mkdir(parents=True, exist_ok=True)
 
-    root = Path(os.path.expandvars(args.root))
-    if not root.is_dir():
-        print(f"failed: {root} is not a directory")
+    roots = [Path(os.path.expandvars(r.strip()))
+             for r in args.root.split(",") if r.strip()]
+    missing = [r for r in roots if not r.is_dir()]
+    if missing:
+        print("failed: not a directory: " + ", ".join(str(m) for m in missing))
         return 1
+    root = roots[0]
 
     # **Not just `*.exe`.** `malware_corpus.py` writes `.exe`, `.dll`, `.sys`
     # and `.scr`, and this globbed one of them -- so 17 of 100 datalake samples
@@ -145,21 +194,31 @@ def main(argv: list[str] | None = None) -> int:
     # reproducible rather than this default.
     wanted = {"." + e.strip().lower().lstrip(".")
               for e in args.ext.split(",") if e.strip()}
-    every = sorted(p for p in root.glob("*")
-                   if p.is_file() and p.suffix.lower() in wanted)
+    # **`rglob` when asked.** System32 is flat; Program Files is not, and a
+    # non-recursive glob there finds a handful of launchers and misses the
+    # software. A benign corpus of third-party binaries is what
+    # `stripped_metadata` needs, and it cannot be built one level deep.
+    walk = (lambda r: r.rglob("*")) if args.recursive else (lambda r: r.glob("*"))
+    every = sorted({p for r in roots for p in walk(r)
+                    if p.is_file() and p.suffix.lower() in wanted})
     sized = [p for p in every if p.stat().st_size <= args.max_mb * 1024 * 1024]
-    print(f"{root}: {len(every)} samples matching {sorted(wanted)}, "
+    where = ", ".join(str(r) for r in roots)
+    print(f"{where}: {len(every)} samples matching {sorted(wanted)}, "
           f"{len(sized)} at or under {args.max_mb} MB")
 
     # **Random, not the head.** The old corpus was `sorted(...)[:300]`, which is
     # a fact about the alphabet.
     rng = random.Random(args.seed)
-    sample = sorted(rng.sample(sized, min(args.count, len(sized))),
-                    key=lambda p: p.name.lower())
+    if args.per_vendor > 0:
+        sample = _over_vendors(sized, roots, args.count, args.per_vendor, rng)
+    else:
+        sample = rng.sample(sized, min(args.count, len(sized)))
+    sample = sorted(sample, key=lambda p: p.name.lower())
     print(f"sampled {len(sample)}, seed {args.seed}")
 
     (corpus / "_sample.json").write_text(json.dumps({
-        "root": str(root), "seed": args.seed, "pool": len(sized),
+        "roots": [str(r) for r in roots],
+        "recursive": bool(args.recursive), "seed": args.seed, "pool": len(sized),
         "pool_before_size_filter": len(every), "max_mb": args.max_mb,
         "sampled": len(sample), "files": [p.name for p in sample],
     }, indent=2), encoding="utf-8")
