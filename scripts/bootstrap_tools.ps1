@@ -90,6 +90,8 @@ param(
   [switch]$SkipFakeNet,
   [switch]$SkipProcDump,
   [switch]$SkipUpx,
+  [switch]$SkipCapa,
+  [string]$CapaRepo = "mandiant/capa",
   [switch]$SkipScriptBlockLogging,
   [string]$SysmonConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml",
   [string]$CrashDumpFolder = "C:\werdumps",
@@ -431,6 +433,144 @@ function Install-ProcDump {
     & $target -accepteula -? | Out-Null
   } catch {
     Write-Verbose "ProcDump EULA pre-accept returned: $($_.Exception.Message)"
+  }
+}
+
+function Add-MachinePathEntry {
+<#
+.SYNOPSIS
+  Put a directory on the machine PATH, and on this session's PATH.
+
+.DESCRIPTION
+  capa used to arrive only via `pip install flare-capa` into the project venv,
+  which put capa.exe in .venv\Scripts -- a directory that is on PATH only while
+  the venv is activated. A fresh PowerShell window could not see it.
+
+  That failed silently and expensively. Across a 229-sample malware corpus capa
+  failed on 194 of them, 182 with "the system cannot find the file specified",
+  and the engine recorded every one as a completed analysis: the scorer read
+  "capa found no techniques" where the truth was "capa was never started". The
+  measurement that came out of it was wrong by a factor of four.
+
+  A machine PATH entry is the fix, because it does not depend on how the shell
+  was opened.
+#>
+  param([Parameter(Mandatory=$true)][string]$Directory)
+
+  if (-not (Test-Path -LiteralPath $Directory)) {
+    New-Item -ItemType Directory -Force -Path $Directory | Out-Null
+  }
+  $resolved = (Resolve-Path -LiteralPath $Directory).Path
+
+  $current = [Environment]::GetEnvironmentVariable("Path", "Machine")
+  $entries = @($current -split ';' | Where-Object { $_ -ne '' })
+
+  if ($entries -contains $resolved) {
+    Write-Ok "Already on the machine PATH: $resolved"
+  } else {
+    [Environment]::SetEnvironmentVariable(
+      "Path", (($entries + $resolved) -join ';'), "Machine")
+    Write-Ok "Added to the machine PATH: $resolved"
+    Write-Info "New shells pick this up automatically; this one is updated below."
+  }
+
+  # The current session does not inherit a machine change, and the very next
+  # thing anyone does is run the tool.
+  if (($env:Path -split ';') -notcontains $resolved) {
+    $env:Path = "$env:Path;$resolved"
+  }
+}
+
+function Install-Capa {
+<#
+.SYNOPSIS
+  Install the standalone capa binary into tools\capa and put it on PATH.
+
+.DESCRIPTION
+  The standalone release, not `pip install flare-capa`. A pip install lands in
+  whichever Python is active and disappears when it is not; the released binary
+  has no interpreter to lose track of, and sits beside the signatures the engine
+  already expects at tools\capa\sigs.
+
+  Rules are separate. Run bootstrap_capa_rules.ps1 for those.
+#>
+  param(
+    [Parameter(Mandatory=$true)][string]$ToolsDir,
+    [Parameter(Mandatory=$true)][string]$TempDir,
+    [string]$Repo = "mandiant/capa"
+  )
+
+  Write-Step "capa"
+
+  $capaDir = Join-Path $ToolsDir "capa"
+  $target  = Join-Path $capaDir "capa.exe"
+
+  if ((Test-Path -LiteralPath $target) -and -not $Force) {
+    Write-Ok "capa already present: $target"
+    Add-MachinePathEntry -Directory $capaDir
+    return
+  }
+
+  $headers = @{ "User-Agent" = "bootstrap_tools.ps1" }
+  try {
+    $release = Invoke-RestMethod -Headers $headers `
+      -Uri ("https://api.github.com/repos/{0}/releases/latest" -f $Repo)
+  } catch {
+    Write-Warn "Could not reach the GitHub API: $($_.Exception.Message)"
+    Write-Warn "Download capa manually from https://github.com/$Repo/releases and place capa.exe in $capaDir"
+    return
+  }
+
+  $asset = @($release.assets) |
+    Where-Object { $_.name -match '(?i)windows' -and $_.name -match '(?i)\.zip$' } |
+    Select-Object -First 1
+
+  if (-not $asset) {
+    Write-Warn "No Windows asset in $Repo release $($release.tag_name)."
+    Write-Warn "Download capa manually from https://github.com/$Repo/releases and place capa.exe in $capaDir"
+    return
+  }
+
+  $zip     = Join-Path $TempDir $asset.name
+  $extract = Join-Path $TempDir "capa"
+
+  Write-Info ("Downloading {0} ({1})..." -f $asset.name, $release.tag_name)
+  try {
+    Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $zip
+    if (Test-Path -LiteralPath $extract) { Remove-Item -Recurse -Force $extract }
+    Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+  } catch {
+    Write-Warn "Download or extract failed: $($_.Exception.Message)"
+    return
+  }
+
+  $exe = Get-ChildItem -Path $extract -Recurse -Filter "capa.exe" |
+    Select-Object -First 1
+  if (-not $exe) {
+    Write-Warn "capa.exe not found inside $($asset.name)."
+    return
+  }
+
+  New-Item -ItemType Directory -Force -Path $capaDir | Out-Null
+  Copy-Item -LiteralPath $exe.FullName -Destination $target -Force
+  Write-Ok "capa installed: $target"
+
+  Add-MachinePathEntry -Directory $capaDir
+
+  # **Prove it resolves by name.** The whole failure this replaces was capa
+  # being present on disk and not findable, so "the file exists" is not the
+  # check that matters.
+  $found = Get-Command capa -ErrorAction SilentlyContinue
+  if ($found) {
+    Write-Ok "capa resolves on PATH: $($found.Source)"
+    try {
+      $version = & capa --version 2>&1 | Select-Object -First 1
+      Write-Ok "capa reports: $version"
+    } catch {
+      Write-Warn "capa is on PATH but would not run: $($_.Exception.Message)"
+    }
+  } else {
+    Write-Warn "capa.exe is installed but does not resolve by name in this session."
   }
 }
 
@@ -880,6 +1020,9 @@ try {
 
   if (-not $SkipUpx)       { Install-Upx -ToolsDir $toolsDir -TempDir $tempDir -Repo $UpxRepo }
   else                     { Write-Step "UPX"; Write-Warn "Skipped by request." }
+
+  if (-not $SkipCapa)      { Install-Capa -ToolsDir $toolsDir -TempDir $tempDir -Repo $CapaRepo }
+  else                     { Write-Step "capa"; Write-Warn "Skipped by request." }
 
   if (-not $SkipScriptBlockLogging) { Enable-ScriptBlockLogging }
   else { Write-Step "PowerShell ScriptBlock logging"; Write-Warn "Skipped by request." }

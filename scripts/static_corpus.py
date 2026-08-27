@@ -163,6 +163,67 @@ def _over_vendors(files: list[Path], roots: list[Path], count: int,
     return picked
 
 
+def preflight(force: bool = False) -> bool:
+    """Refuse to start a long unattended run with a collector missing.
+
+    **This is the check whose absence cost the most.** capa lives in a venv's
+    `Scripts` directory when installed with pip, so a shell that had not
+    activated the venv could not see it. A 229-sample malware corpus ran to
+    completion with capa failing on 194 of them -- `WinError 2`, the file not
+    found -- and every one was recorded as a finished analysis. The resulting
+    rate was wrong by a factor of four and looked entirely plausible.
+
+    Three hours of capa is not the place to discover the tool is absent, and a
+    corpus is exactly where a silent degradation does the most damage: nobody
+    reads 300 run logs.
+    """
+    import shutil
+
+    from static_triage_engine.config import TriageConfig
+
+    cfg = TriageConfig()
+    problems: list[str] = []
+
+    if shutil.which("capa") is None:
+        problems.append(
+            "capa is not on PATH. `dangerous_capability` reads it, and a run "
+            "without it records 'no capabilities found' rather than failing. "
+            "Fix with scripts/bootstrap_tools.ps1, which installs the "
+            "standalone binary machine-wide -- a pip install into a venv is "
+            "invisible to a shell that has not activated it.")
+
+    try:
+        import yara  # noqa: F401
+    except ImportError:
+        problems.append("yara-python is not importable; YARA results will be "
+                        "unknown for every sample.")
+
+    rules = len(list(cfg.yara_rules_dir.glob("**/*.yar*")))         if cfg.yara_rules_dir.exists() else 0
+    if rules == 0:
+        problems.append(f"no YARA rules under {cfg.yara_rules_dir} "
+                        f"(scripts/bootstrap_yara_rules.ps1)")
+
+    capa_rules = len(list(cfg.capa_rules.glob("**/*.yml")))         if cfg.capa_rules.exists() else 0
+    if capa_rules == 0:
+        problems.append(f"no capa rules under {cfg.capa_rules} "
+                        f"(scripts/bootstrap_capa_rules.ps1)")
+
+    if not problems:
+        print(f"preflight: capa on PATH, yara-python present, "
+              f"{rules} YARA rules, {capa_rules} capa rules")
+        return True
+
+    print("preflight failed:")
+    for problem in problems:
+        print(f"  - {problem}")
+    if force:
+        print("  --force given: continuing anyway. The affected categories "
+              "will report `unknown`, which is honest but measures nothing.")
+        return True
+    print("  Fix these, or pass --force to measure the categories that do work.")
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, help="corpus directory")
@@ -193,8 +254,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the LIEF metadata step. Off by default: it "
                              "feeds no category and averaged 1,253s per sample "
                              "on real malware against capa's 111s")
+    parser.add_argument("--force", action="store_true",
+                        help="run even if a collector is missing")
     parser.add_argument("--list-only", action="store_true")
     args = parser.parse_args(argv)
+
+    if not preflight(args.force):
+        return 1
 
     corpus = Path(args.out)
     corpus.mkdir(parents=True, exist_ok=True)
