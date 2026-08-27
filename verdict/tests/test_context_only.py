@@ -173,5 +173,62 @@ class TheHoldIsOverridable(unittest.TestCase):
                          .categories_present, 0)
 
 
+class TheHoldAlsoWorksOnOneCategory(unittest.TestCase):
+    """A module can be sound while one of its claims is not.
+
+    `dangerous_capability` was measured firing on 33.9% of signed Microsoft
+    binaries and 13.2% / 1.0% of two malware corpora -- three times more often
+    on benign software than malicious. Holding all of `static` for that would
+    have silenced five categories that separate cleanly, including
+    `stripped_metadata` at 0% benign against 100% and 95%.
+    """
+
+    HELD_CAT = {"dangerous_capability": "held for this test"}
+
+    def test_a_held_category_cannot_move_a_band(self) -> None:
+        cats = [_cat("dangerous_capability", "static", present=True),
+                _cat("other", "static", present=True)]
+        counted = band(cats, context_only_categories={})
+        held = band(cats, context_only_categories=self.HELD_CAT)
+
+        self.assertEqual(counted.band, "Corroborated")
+        self.assertEqual(held.band, "Single Observation")
+
+    def test_but_it_is_still_reported(self) -> None:
+        cats = [_cat("dangerous_capability", "static", present=True),
+                _cat("other", "static", present=True)]
+        held = band(cats, context_only_categories=self.HELD_CAT)
+
+        self.assertIn("dangerous_capability", held.context_only_names)
+        self.assertEqual(held.context_only_present, 1)
+
+    def test_its_siblings_still_count(self) -> None:
+        # The point of holding a category rather than its module.
+        cats = [_cat("dangerous_capability", "static", present=True),
+                _cat("stripped_metadata", "static", present=True),
+                _cat("known_malware_signature", "static", present=True)]
+        held = band(cats, context_only_categories=self.HELD_CAT)
+
+        self.assertEqual(held.categories_present, 2)
+        self.assertEqual(held.band, "Corroborated")
+
+    def test_the_registry_holds_it_by_default(self) -> None:
+        # Asserted deliberately, like the empty module registry above: this is
+        # a measured decision, and it should fail a test if reversed quietly.
+        from verdict import CONTEXT_ONLY_CATEGORIES
+
+        self.assertIn("dangerous_capability", CONTEXT_ONLY_CATEGORIES)
+        self.assertGreater(len(CONTEXT_ONLY_CATEGORIES["dangerous_capability"]), 60)
+
+    def test_coverage_still_sees_a_held_category(self) -> None:
+        # Held is not absent. A collector that failed on it must still report
+        # `unknown` rather than vanishing from the coverage line.
+        cats = [_cat("dangerous_capability", "static", collected=False)]
+        held = band(cats, context_only_categories=self.HELD_CAT)
+
+        self.assertFalse(held.coverage_complete)
+        self.assertIn("dangerous_capability", held.unknown_names)
+
+
 if __name__ == "__main__":
     unittest.main()

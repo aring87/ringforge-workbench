@@ -31,8 +31,18 @@ def _named(cats, name):
 
 
 def _verdict(**kwargs):
+    """Band with category holds lifted -- these test what the categoriser says.
+
+    `dangerous_capability` is held in `verdict.CONTEXT_ONLY_CATEGORIES` on
+    measurement (it fires 3x more on benign System32 than on malware). That is a
+    deployment decision about what counts, and these tests are about what the
+    categories *claim*, which is a different question. Lifting it here is the
+    same move `test_extension_discrimination` makes for the module-level hold --
+    and it means flipping the registry cannot silently rewrite what these
+    assert.
+    """
     cats, context = static_categories(**kwargs)
-    return band(cats, context_score=context), cats
+    return band(cats, context_score=context, context_only_categories={}), cats
 
 
 # --- the reference samples -------------------------------------------------

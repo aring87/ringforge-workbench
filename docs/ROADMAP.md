@@ -345,7 +345,12 @@ showed.
 sentence was not true three days ago, it lost its "except one" twice on 26 Aug,
 and it is the shortest summary of where the work is.
 
-Each of the four corpora was drawn at random from a population nobody here
+**And `static` now has the other half.** 229 known-malicious samples, measured
+27 Aug, make it the only module with both a false-positive and a true-positive
+rate -- see *The true-positive gap* below. It found the scorer's worst defect,
+which no benign corpus could have.
+
+Each of the corpora was drawn at random from a population nobody here
 curated, with the seed recorded, and **each one disagreed with the intuition
 formed before it.** That is the whole argument for the expense: the extension
 categories were nearly cut on a sample of fourteen, `spec` reported a rate that
@@ -355,7 +360,7 @@ so.
 
     module      corpus                              band distribution
     ─────────   ─────────────────────────────────   ──────────────────────
-    static      300 System32, whole engine          64.0% No Evidence, 2.7% Corrob.
+    static      300 System32 + 229 malware          96.7% / 0% No Evidence
     dynamic     the reference module, gap-proven    (its own ledger)
     spec        300 random APIs.guru specs          54.0% No Evidence, 0% top
     extension   394 random store extensions         72.8% No Evidence, 1.0% top
@@ -671,81 +676,114 @@ software at all.
 - **Known-malicious anything.** See the section below: scoped 26 Aug, and it is
   blocked on a decision rather than on effort.
 
-### 6. The true-positive gap — scoped 26 Aug, blocked on a decision
+### 6. The true-positive gap — closed for `static`, 27 Aug
 
-**Every rate in this file is a false-positive rate.** Four corpora, roughly
-1,100 samples, all *presumed benign*. That answers "does this cry wolf" and
-cannot answer "does this notice a wolf", and no benign corpus ever will. It is
-the mirror of the standard this file opens with.
+**Every rate in this file was a false-positive rate.** ~1,100 samples across
+four corpora, all presumed benign. That answers "does this cry wolf" and cannot
+answer "does this notice a wolf".
 
-Scoped rather than done, because the honest version of it needs something the
-bench will not currently give.
+`static` now has both. Two known-malicious corpora, built on the analysis guest
+where malware belongs, by `scripts/malware_corpus.py`:
 
-#### The ground truth here cannot found a rate, for two reasons
+    corpus              n     source                        spread
+    B, stratified     129     MalwareBazaar API, keyed      13 families, recent
+    A, archive        100     datalake.abuse.ch, keyless    2020-2026, 6 years
 
-The artifact drive holds this project's own chain — the stage 2 assembly,
-stage 3 native, the stage 4 credential stealer, and carved regions from
-`c14cb5b6`. Re-scored under `corroboration-v1`, the carved payload reaches
-**Corroborated / Elevated Attention / High**, so the scorer is not silent on
-known-malicious material.
+Sampled along deliberately different axes. B guarantees family coverage —
+6 stealers, 5 RATs, 2 loaders — and is clustered in time. A spreads across six
+years and was labelled afterwards by hash, which gave it families B does not
+have: Dridex, TrickBot and Heodo (Emotet), filling the banker gap left when
+`QakBot` came back `no_results`. **The two rates are kept apart.** Two
+populations sampled two ways; a combined number describes neither.
 
-It still proves very little.
+#### `dangerous_capability` fires *backwards*
 
-- **It is one family.** Six or seven artifacts from a single chain is the
-  convenience-sample problem in detection form, and this file has already paid
-  for that lesson three times.
-- **The rules that fire were written from these samples.** The two YARA hits are
-  `RingForge_EtherHiding_eth_call` and `RingForge_Clipper…`, authored on this
-  bench from this sample. A detection rate measured against rules derived from
-  the corpus measures the derivation. That is the same circularity as a corpus
-  written by the author of the scorer, and it is worth naming because it is much
-  harder to see.
+    category                       benign   malware B   malware A
+    dangerous_capability            33.9%       13.2%        1.0%
+    known_malware_signature          0.7%       16.3%       12.0%
+    invalid_signature                0.0%       17.8%        6.0%
+    stripped_metadata                0.0%      100.0%       95.0%
+    embedded_network_indicators      0.0%        0.0%        0.0%
+    deceptive_file_identity          0.0%        0.0%        0.0%
 
-#### The blocker is Bitdefender, and it is not a bug
+**It fires three times more often on Microsoft's own signed tools than on real
+malware.** 86 of its 99 benign firings were `T1059`, Command and Scripting
+Interpreter, which capa maps onto anything able to launch a process.
 
-A real static true-positive corpus means live malware on disk where the engine
-runs, which is the host. **Bitdefender deletes plain samples here** — it removed
-three copies of the stage 2 assembly on 07 Aug, which is why everything on the
-artifact drive is XOR-wrapped with a repeating `RINGFORGE` key in the first
-place. A few hundred downloaded samples would be fought file by file, and a
-corpus that shrinks while it is measured is worse than no corpus.
+That settles a question this file deliberately left open on 26 Aug. The entry
+then said the category was suspected of *opposite* defects — noisy on benign,
+silent on this bench's own clipper — and that tuning the false-positive side
+while blind to the false-negative side was the error already recorded twice. It
+is neither a threshold nor a direction: **no threshold repairs a signal that
+points the wrong way.** Turning the knob would only have changed which benign
+binaries it libelled.
 
-So it needs one of:
+**Demoted, not deleted.** `dangerous_capability` is in
+`verdict.CONTEXT_ONLY_CATEGORIES` — reported, in coverage, in the evidence
+list, and unable to move a band. That registry is new: the hold existed only at
+module level, and holding all of `static` for one bad category would have
+silenced five that work.
 
-- **An AV exclusion on the corpus directory.** A system security setting, on the
-  primary machine, so it is not a change to make casually or on somebody's
-  behalf.
-- **Run the static engine on the guest.** Architecturally the right answer —
-  contained, already holds samples, already reverts. Costs a guest pull, a
-  re-take, and a way to get case directories back out.
-- **Keep the corpus wrapped and unwrap per sample into memory.** Cheapest, and
-  it does not work: `run_case` takes a path.
+Measured on the same 300 System32 binaries, before and after:
 
-The second is the real option. It is not a large amount of work and it is not a
-decision this file should make.
+    band                    before      after
+    No Evidence            64.0%       96.7%
+    Single Observation     30.7%        0.7%
+    Corroborated            2.7%        0.0%
+    Nothing Collected       2.7%        2.7%
 
-#### Two things the re-scoring did settle
+A third of signed Microsoft binaries produced a band; now 0.7% do, and those
+two are `rundll32` and `spoolsv` matching third-party `Suspicious_Size_*` rules
+that exist to catch a masquerade and misfire on the genuine file. The cost on
+the malware side is small — the category fired on 17 of 129 and 1 of 100 —
+which is the whole point of demoting an inverted signal rather than tuning it.
 
-**The unknown contract works, and it is worth seeing it work.** The same file
-scores Corroborated/High in one case and Single Observation/Medium in the other.
-The difference is that the older case's YARA scan died on a malformed rule file
-in `neo23x0-signature-base`, so `known_malware_signature` came back `unknown` —
-**not "no match"**. The band dropped and the coverage line said why. That is
-precisely the behaviour the category contract exists for, observed rather than
-asserted.
+#### What does work, and what is still unproven
 
-**`dangerous_capability` reads two of the three things capa produces.** It fires
-on high-signal ATT&CK techniques or high-severity API chains. On the clipper,
-capa's technique mapping was `T1027` — not in `HIGH_SIGNAL_TECH_PREFIXES` — and
-a carved region has no imports, so no chains. Meanwhile capa's *capability* list
-said `reference Base58 string` and `reference analysis tools strings`. Base58 is
-how a crypto address is encoded and this is a clipper; the second is
-anti-analysis. Both were discarded, and the category stayed silent.
+`stripped_metadata` is the strongest discriminator on the bench: **0% benign
+against 100% and 95%.** `invalid_signature` and `known_malware_signature`
+separate cleanly too, the latter at 23x.
 
-That is a candidate false negative and it is **not** being fixed on one sample.
-Tuning a category against a single known-bad file is the same error as tuning it
-against fourteen installed extensions, run in the other direction. It is written
-down here so the corpus above has something specific to answer.
+Three caveats, stated rather than buried:
+
+- **`stripped_metadata`'s 0% is about Microsoft, not about benign software.**
+  System32 is signed with every version field populated — the most flattering
+  benign population available. Ordinary third-party software ships incomplete
+  version info routinely. A `Program Files` corpus is what would give this
+  category an honest false-positive rate, and nothing should lean on it until
+  that exists.
+- **`embedded_network_indicators` at 0% on malware is a false negative, not a
+  clean result.** FLOSS was the process found deadlocked, and contributed 0.0s
+  across corpus B — so the string extraction feeding IOC parsing barely ran.
+  The category is *untested*, not disproven, and the timeout fix means a re-run
+  would actually exercise it.
+- **`deceptive_file_identity` has never fired on anything**: 300 benign, 229
+  malicious, both directions unexercised.
+
+#### Four engine defects the corpora found
+
+None of these were visible on benign binaries, and all of them cost hours:
+
+- **`run_case` had crashed on every sample since 24 Aug** — `KeyError: 'benign'`
+  from a dropped assignment. 1,127 tests passed over it because nothing called
+  the real entry point.
+- **`lief_meta` was 91% of a malware corpus run** and feeds no category: 1,253s
+  mean per sample against capa's 111s, on output only the GUI reads. A
+  129-sample corpus projected to 77 hours.
+- **The timeouts fired and then hung.** `subprocess.run(timeout=)` kills the
+  launcher; `capa.exe` and `floss.exe` spawn a grandchild that inherits the
+  pipes, and the drain then waits on an end-of-file that never comes. A FLOSS
+  process was found alive for 74 minutes against a 180-second limit. Three
+  separate "the run is stuck" investigations were all this one bug.
+- **`static_corpus.py` globbed `*.exe`** and silently dropped every DLL — 17 of
+  100 in corpus A, a composition bias in the direction that matters.
+
+#### What is not done
+
+`extension`, `spec` and `api` still have only false-positive rates. For `spec`
+and `api` a "true positive" means a real exposure found in the wild, which is a
+different kind of sourcing problem; for `extension` the malicious samples are
+delisted and hard to obtain. Recorded as open rather than solved.
 
 ---
 

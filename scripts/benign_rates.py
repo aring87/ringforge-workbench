@@ -271,7 +271,10 @@ def measure_static_cases(root: Path) -> dict[str, Any]:
             continue
         results.append((case.name, band(cats, context_score=context), cats))
 
-    note = f"(full engine over {root.parent.name}, signed Microsoft binaries)"
+    # **Do not assert what the corpus is.** This said "signed Microsoft
+    # binaries" unconditionally, and printed that over a corpus of live malware
+    # -- a label that would have survived into the JSON and out into a report.
+    note = f"(full engine over {root.parent.name})"
     if unreadable:
         note += f" [{unreadable} case(s) unreadable, excluded]"
     return _report("static", results, note)

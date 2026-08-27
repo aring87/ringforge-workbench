@@ -25,6 +25,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from verdict.model import (
     CONTEXT_ONLY,
+    CONTEXT_ONLY_CATEGORIES,
     SCORE_MODEL,
     Category,
     band,
@@ -159,6 +160,11 @@ def combine(
             "names": list(result.context_only_names),
             "reasons": {m: held[m] for m in result.modules_context_only
                         if m in held},
+            # Category-level holds, same contract one level down: the finding
+            # is on the page and it did not move the band.
+            "category_reasons": {n: CONTEXT_ONLY_CATEGORIES[n]
+                                 for n in result.context_only_names
+                                 if n in CONTEXT_ONLY_CATEGORIES},
         },
         "counts": {
             "categories_present": result.categories_present,

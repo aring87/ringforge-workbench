@@ -107,6 +107,37 @@ STRONGLY_CORROBORATED = "Strongly Corroborated"
 #: caller can hold a module without editing this file.
 CONTEXT_ONLY: dict[str, str] = {}
 
+#: The same decision, one level down: categories that are reported and do not
+#: count toward corroboration. A module can be sound while one of its claims is
+#: not, and holding the whole module for one bad category would silence five
+#: working ones.
+#:
+#: **`dangerous_capability` is here because its evidence points backwards.**
+#: Measured 27 Aug across three corpora:
+#:
+#:     benign System32   33.9%   (292 signed Microsoft binaries)
+#:     malware, family   13.2%   (129 stratified across 13 families)
+#:     malware, 6 years   1.0%   (100 sampled from 2020-2026)
+#:
+#: It fires roughly three times more often on Microsoft's own tools than on
+#: real malware. 86 of the 99 benign firings were `T1059` -- Command and
+#: Scripting Interpreter -- which capa maps onto anything that can launch a
+#: process, and on System32 that is most of it.
+#:
+#: **No threshold repairs a signal that points the wrong way**, which is why
+#: this is a hold rather than a tuning. The category reads capa's ATT&CK
+#: mapping and its API chains, and discards capa's *capability* list -- where
+#: this bench's own clipper had `reference Base58 string` and `reference
+#: analysis tools strings` while the category stayed silent. Rebuilding it to
+#: read that list is the fix; until then it makes no claim it can support.
+CONTEXT_ONLY_CATEGORIES: dict[str, str] = {
+    "dangerous_capability": (
+        "Inverted on measurement: 33.9% on benign System32 against 13.2% and "
+        "1.0% on two malware corpora. It reads capa's ATT&CK mapping, where "
+        "T1059 describes ordinary system utilities, rather than capa's "
+        "capability list. Reported until it is rebuilt on the latter."),
+}
+
 #: **`api` was here and is not any more, 26 Aug.** It was held on the only
 #: honest ground there is -- nothing had ever measured it -- and no corpus
 #: existed because an HTTP response cannot be collected, only caused.
@@ -337,6 +368,7 @@ def band(
     context_score: int = 0,
     third_party_dissent: bool = False,
     context_only: Mapping[str, str] | None = None,
+    context_only_categories: Mapping[str, str] | None = None,
 ) -> Verdict:
     """Turn a set of categories into a band.
 
@@ -356,9 +388,15 @@ def band(
     # they are removed from exactly one thing: the corroboration the band is
     # computed from.
     uncounted = dict(CONTEXT_ONLY if context_only is None else context_only)
-    counted = [c for c in categories if c.module not in uncounted]
-    context_cats = [c for c in categories
-                    if c.module in uncounted and c.present]
+    uncounted_cats = dict(CONTEXT_ONLY_CATEGORIES
+                          if context_only_categories is None
+                          else context_only_categories)
+
+    def _held(c: Category) -> bool:
+        return c.module in uncounted or c.name in uncounted_cats
+
+    counted = [c for c in categories if not _held(c)]
+    context_cats = [c for c in categories if _held(c) and c.present]
 
     present = [c for c in counted if c.present]
     strong = [c for c in present if c.strong]
@@ -380,6 +418,8 @@ def band(
 
     modules_context_only = tuple(sorted({c.module for c in categories
                                          if c.module in uncounted}))
+    categories_context_only = tuple(sorted({c.name for c in categories
+                                            if c.name in uncounted_cats}))
 
     # --- The bands. Corroboration, not volume. -----------------------------
     #
