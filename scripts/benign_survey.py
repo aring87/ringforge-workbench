@@ -1,19 +1,28 @@
 """A wide, cheap benign corpus for calibrating thresholds -- not for measuring rates.
 
-**Three thresholds are currently set against 592 binaries, and each is limited
-by a different thinness in that corpus.**
+**Written on 28 Aug because three thresholds were set against 592 binaries and
+each was limited by a different thinness in that corpus. All three are now
+answered, and the answers are the reason to keep this script rather than retire
+it.**
 
-* `_ALWAYS_SIGNS` in `deceptive_file_identity` holds 8 vendors, because those
-  are the ones System32 and Program Files carry at four samples or more. A
-  bazaar sample claiming `Windows Defender` and a datalake sample claiming
-  `Avira GmbH` both go uncaught for want of a benign baseline naming them.
-* `obfuscated_managed_code` is calibrated on **39** measurable managed
-  assemblies. Commercial .NET is legitimately obfuscated -- Dotfuscator and
-  SmartAssembly are products people buy -- and 39 is far too few to say what
-  that population looks like.
-* `high_entropy_sections` sits at 7.5 partly because both corpora are
-  *installed* software and contain almost none of the installers where
-  legitimate packing lives.
+* `_ALWAYS_SIGNS` in `deceptive_file_identity` held 8 vendors. It now holds 13
+  over 1,219 samples -- and the widening turned up a *third qualifying rule*
+  rather than more vendors: `ffmpeg` passed the first two at 7 of 7 signed with
+  0 of the 7 signed by FFmpeg, so a vendor must now be shown to sign its own
+  releases. See `scripts/derive_signers.py`.
+* `obfuscated_managed_code` was calibrated on **39** measurable managed
+  assemblies and now rests on 129. Nothing benign reaches the 0.20 cut and no
+  named protector appears in any of 161 managed binaries.
+* `high_entropy_sections` sits at 7.5 because both case corpora are *installed*
+  software. A 210-binary installer corpus measured that gap on 28 Aug: 0.95% of
+  installers fire against 0.00% of installed software, which is why the
+  category is still not `strong`.
+
+**What is still open is what this cannot reach.** Adobe, Avira, Opera and
+Windows Defender are absent from `_ALWAYS_SIGNS` because none is installed on
+this bench at four samples or more, and going from 592 to 1,492 binaries added
+none of them. The bound is one machine's installed software; widening within it
+will not help again.
 
 **This does not run capa, YARA or the IOC pass, and that is the point.** None of
 the three questions above touches them, and they cost 30-85 seconds a binary
@@ -22,6 +31,15 @@ minutes; the same corpus through `static_corpus.py` is most of a day.
 
     .venv\\Scripts\\python.exe scripts\\benign_survey.py --out G:\\benign-survey.json
     .venv\\Scripts\\python.exe scripts\\benign_survey.py --report G:\\benign-survey.json
+
+`--name-glob` narrows to files whose name matches, which is how the installer
+corpus was drawn out of trees that are mostly not installers:
+
+    --root "C:\\ProgramData\\Package Cache" --root "C:\\Windows\\Installer"
+    --root "C:\\Program Files" --name-glob "*setup*.exe" --name-glob "unins*.exe"
+
+It selects on the name a publisher chose, which is a claim: an installer called
+`app.exe` is missed and a library called `installer.dll` is drawn.
 
 **It is a calibration corpus and must not be read as a category corpus.** The
 rates in `docs/ROADMAP.md` come from cases where every collector ran; nothing

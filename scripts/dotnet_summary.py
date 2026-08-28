@@ -15,6 +15,8 @@ and none of them need a decompiler:
 * how much of the `#Strings` heap is unreadable -- obfuscators rename every
   type, method and field, and benign assemblies do not
 * does it name a protector outright
+* what external methods it references, from the `MemberRef` table -- collected
+  raw, with no judgement about which of them are interesting
 
 `scripts/dotnet_meta.py` is the analyst tool for one carved payload;
 this runs over a corpus. It reuses that module's `DotNetImage` so there is one
@@ -124,6 +126,29 @@ def extract_dotnet_metadata(sample_path: Path) -> dict[str, Any]:
     folded = {n.strip().lower().lstrip(".") for n in names}
     out["protectors"] = sorted(
         {label for marker, label in _PROTECTOR_MARKERS.items() if marker in folded})
+
+    # **What the assembly calls, which is the half renaming cannot reach.**
+    # Renaming recovered 5 of the 22 samples nothing else fires on; the other 8
+    # managed ones have entirely ordinary identifiers and are invisible because
+    # nothing reads the CLR call graph at all. `MemberRef` names every external
+    # method the assembly references -- `System.Net.WebClient::DownloadString`
+    # and `System.Reflection.Assembly::Load` sit here in plain text.
+    #
+    # **Collected raw and unjudged.** No list of interesting APIs appears in
+    # this file, because a list written by reading the malware is tuned to the
+    # test set -- the same error `_ALWAYS_SIGNS` was rebuilt to avoid. What
+    # counts as unusual has to come from how rare a reference is across benign
+    # assemblies, and that is a measurement, not a constant.
+    try:
+        refs = sorted(set(image.member_refs().values()))
+    except Exception as error:
+        out["member_ref_error"] = f"{type(error).__name__}: {error}"[:160]
+        refs = []
+    out["member_ref_count"] = len(refs)
+    # Capped so one large assembly cannot dominate a case directory. 1,200 is
+    # above every benign assembly measured; `member_ref_count` records the true
+    # figure when the list is cut.
+    out["member_refs"] = refs[:1200]
     return out
 
 
