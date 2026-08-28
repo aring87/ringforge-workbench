@@ -66,7 +66,17 @@ def _describe(case: Path, cats, loaded: dict[str, Any]) -> dict[str, Any]:
     sample = (loaded.get("summary") or {}).get("sample") or {}
     observables = (loaded.get("iocs") or {}).get("observables") or {}
     version = pe.get("version_info") or {}
+    imports = [i for i in (pe.get("imports") or []) if isinstance(i, dict)]
+    dlls = [str(i.get("dll") or "").lower() for i in imports]
+    functions = sum(len(i.get("imports") or []) for i in imports)
+    # A managed binary imports the CLR shim and nothing else: the real call
+    # graph is in .NET metadata, which none of these categories reads.
+    managed = bool(dlls) and all(
+        d.startswith(("mscoree", "mscorlib")) for d in dlls)
     return {
+        "managed": managed,
+        "import_dlls": len(dlls),
+        "import_functions": functions,
         "case": case.name,
         "uncollected": sorted(c.name for c in cats if not c.collected),
         "signed": bool(signing.get("subject") or signing.get("signature_present")),
@@ -161,13 +171,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"      zero IOCs extracted            "
           f"{sum(1 for r in rows if r['iocs'] == 0):3} of {len(rows)}")
 
+    # **Both shipped on 28 Aug, so on a current corpus these must read zero** --
+    # a sample either would catch has already left the band. A non-zero count is
+    # not a finding about the samples; it means a category is not firing when it
+    # should, and this is the cheapest place that shows.
     hi = sum(1 for r in rows if r["exec_entropy"] >= _ENTROPY_STRONG)
     hi_any = sum(1 for r in rows if r["any_entropy"] >= 7.2)
-    print(f"\n  what an unshipped category would recover")
-    print(f"      exec section >= {_ENTROPY_STRONG}          {hi:3} of {len(rows)}"
-          f"   ({100.0 * hi / len(rows):.0f}% of the band)")
-    print(f"      any section >= 7.2             {hi_any:3} of {len(rows)}"
-          f"   -- the looser cut, at 3% benign cost")
+    print(f"\n  invariant -- a shipped category must not leave its own catch here")
+    print(f"      exec section >= {_ENTROPY_STRONG}          {hi:3}"
+          f"   {'OK' if hi == 0 else '<-- high_entropy_sections is not firing'}")
+    print(f"      any section >= 7.2             {hi_any:3}"
+          f"   -- the looser cut this deliberately does not use")
 
     # **Two candidate signals, and the only number that matters is the overlap.**
     # Either one alone looks like progress; if they cover the same samples,
@@ -183,14 +197,34 @@ def main(argv: list[str] | None = None) -> int:
     only_p = sum(1 for r in rows if packed(r) and not impersonates(r))
     only_i = sum(1 for r in rows if impersonates(r) and not packed(r))
     neither = sum(1 for r in rows if not packed(r) and not impersonates(r))
-    print(f"      claims a major vendor unsigned {sum(1 for r in rows if impersonates(r)):3}"
-          f" of {len(rows)}   -- 0.0%/1.3% benign cost")
-    print(f"\n  overlap of the two")
-    print(f"      packed only                    {only_p:3}")
-    print(f"      vendor claim only              {only_i:3}")
-    print(f"      both                           {both:3}")
-    print(f"      NEITHER                        {neither:3}"
-          f"   <-- the irreducible band; shipping both leaves these")
+    imp = sum(1 for r in rows if impersonates(r))
+    print(f"      claims a major vendor unsigned {imp:3}"
+          f"   {'OK' if imp == 0 else '<-- wider than the shipped _ALWAYS_SIGNS'}")
+    if only_p or only_i or both:
+        print(f"      (packed only {only_p}, vendor only {only_i}, "
+              f"both {both}, neither {neither})")
+
+    # **What is left after every shipped category has had its turn.** The band
+    # is no longer "nothing looked"; it is "everything looked and saw nothing",
+    # which is a different and more interesting claim.
+    managed = sum(1 for r in rows if r["managed"])
+    thin = sum(1 for r in rows if 0 < r["import_functions"] <= 5)
+    near = sum(1 for r in rows
+               if 7.0 <= r["exec_entropy"] < _ENTROPY_STRONG)
+    print(f"\n  why static cannot see them")
+    print(f"      managed (.NET) binaries        {managed:3} of {len(rows)}"
+          f"   -- call graph is in CLR metadata, not the import table")
+    print(f"      five or fewer imported symbols {thin:3} of {len(rows)}"
+          f"   -- APIs resolved at run time")
+    print(f"      exec entropy 7.0 to {_ENTROPY_STRONG}        {near:3} of {len(rows)}"
+          f"   -- packed, just under the measured threshold")
+    print(f"      signature verifies             "
+          f"{sum(1 for r in rows if r['trusted']):3} of {len(rows)}"
+          f"   -- a signature that verifies; nothing left to doubt statically")
+    # **No compile-year line here, on purpose.** `timestamp_epoch` is not a
+    # date: reproducible builds put a content hash in the field, and System32
+    # alone spans 1971 to 2099 because of it. Reporting that as "compiled"
+    # would publish a fake with the same confidence as a real measurement.
 
     companies = Counter(r["company"] for r in rows if r["company"])
     if companies:
