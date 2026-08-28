@@ -256,28 +256,78 @@ class SignaturesOfKnownMalware(unittest.TestCase):
         self.assertFalse(category.strong)
 
 
-class CapabilityIsOneClaimHoweverItIsSeen(unittest.TestCase):
-    def test_capa_and_the_import_table_do_not_corroborate_each_other(self) -> None:
-        # capa saying "injects code" and the import table carrying
-        # WriteProcessMemory is one observation seen twice. Counting it twice
-        # would manufacture corroboration out of a single claim.
-        sample = _signed_installer()
-        sample["techniques"] = ["T1055"]
-        sample["api_analysis"] = {"returncode": 0,
-                                  "chain_findings": [{"severity": "high"}]}
-        result, cats = _verdict(**sample)
+class CapabilityIsCountedInBehaviours(unittest.TestCase):
+    """Rebuilt 27 Aug on capa namespaces, measured over 735 samples.
 
-        self.assertEqual(result.categories_present, 1)
-        self.assertTrue(_named(cats, "dangerous_capability").present)
+    **The two tests that were here are gone, and their subject with them.** They
+    asserted that a high-signal ATT&CK technique and a high-severity API chain
+    were one claim seen twice rather than two. That was sound reasoning about a
+    signal that turned out not to be one: measured, the technique route fired on
+    35.1% of System32 and 39.3% of malware -- 1.1x, a coin. `T1059` was 86 of
+    its 99 benign firings, and capa maps it onto anything able to launch a
+    process.
 
-    def test_but_both_routes_agreeing_makes_the_one_claim_emphatic(self) -> None:
+    The category now counts distinct high-signal *behaviour namespaces*.
+    Measured: three or more fires on 2.4% of benign and 25.1% of malware, five
+    or more on 0.56% and 18.7%.
+    """
+
+    THREE = ["collection/screenshot", "load-code/shellcode",
+             "host-interaction/hardware/keyboard"]
+    FIVE = THREE + ["communication/c2/file-transfer",
+                    "anti-analysis/anti-forensic/self-deletion"]
+
+    def test_three_behaviours_is_a_claim(self) -> None:
         sample = _signed_installer()
-        sample["techniques"] = ["T1055"]
-        sample["api_analysis"] = {"returncode": 0,
-                                  "chain_findings": [{"severity": "high"}]}
+        sample["capa_namespaces"] = self.THREE
+        _, cats = _verdict(**sample)
+
+        category = _named(cats, "dangerous_capability")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
+
+    def test_five_is_emphatic(self) -> None:
+        # 0.56% of 532 benign samples reach five. That is the rate at which a
+        # category is allowed to stand on its own.
+        sample = _signed_installer()
+        sample["capa_namespaces"] = self.FIVE
         _, cats = _verdict(**sample)
 
         self.assertTrue(_named(cats, "dangerous_capability").strong)
+
+    def test_two_is_not(self) -> None:
+        # Two fires on 6.0% of benign software. The step from two to three
+        # more than halves that and costs four points of sensitivity.
+        sample = _signed_installer()
+        sample["capa_namespaces"] = self.THREE[:2]
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "dangerous_capability").present)
+
+    def test_anti_debugging_is_not_evidence(self) -> None:
+        # Measured at 41.2% benign against 12.8% malware -- inverted. Legitimate
+        # software checks for debuggers constantly, and this is the single
+        # namespace most responsible for the old category's noise.
+        sample = _signed_installer()
+        sample["capa_namespaces"] = ["anti-analysis/anti-debugging"] * 1 + [
+            "anti-analysis", "host-interaction/process/inject",
+            "persistence", "compiler", "load-code/dotnet"]
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "dangerous_capability").present)
+
+    def test_a_failed_capa_is_unknown_not_clean(self) -> None:
+        # capa failed on 194 of 229 malware samples once, and the category
+        # reported collected=True with nothing found. The rate that came out
+        # was wrong by a factor of four.
+        sample = _signed_installer()
+        sample["capa_namespaces"] = []
+        sample["capa_ok"] = False
+        _, cats = _verdict(**sample)
+
+        category = _named(cats, "dangerous_capability")
+        self.assertFalse(category.collected)
+        self.assertFalse(category.present)
 
     def test_low_signal_techniques_alone_claim_nothing(self) -> None:
         # T1082 is system information discovery. Every installer on earth does

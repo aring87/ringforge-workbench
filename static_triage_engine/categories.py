@@ -34,6 +34,9 @@ from urllib.parse import urlparse
 from verdict import MAX_CONTEXT_SCORE, Category
 
 from static_triage_engine.scoring import (
+    CAPABILITY_PRESENT_AT,
+    CAPABILITY_STRONG_AT,
+    HIGH_SIGNAL_CAPABILITIES,
     HIGH_SIGNAL_TECH_PREFIXES,
     _extract_observables,
     _has_only_known_benign_infra,
@@ -110,6 +113,7 @@ def static_categories(
     techniques: Sequence[str] | None = None,
     capa_match_count: int | None = None,
     capa_ok: bool | None = None,
+    capa_namespaces: Sequence[str] | None = None,
 ) -> tuple[list[Category], int]:
     """Every category static analysis can author, present or not.
 
@@ -294,32 +298,38 @@ def static_categories(
     capability_ran = (api_ok or techniques is not None) and not capa_failed
 
     api_analysis = api_analysis or {}
-    chains = api_analysis.get("chain_findings") if isinstance(api_analysis.get("chain_findings"), list) else []
-    high_chains = [c for c in chains
-                   if isinstance(c, dict) and str(c.get("severity", "")).lower() == "high"]
 
-    techniques = list(techniques or [])
-    high_techniques = [t for t in techniques if _prefix_in(t, HIGH_SIGNAL_TECH_PREFIXES)]
-
-    groups = (1 if high_techniques else 0) + (1 if high_chains else 0)
-    capable = capability_ran and groups > 0
+    # **Behaviour namespaces, not the ATT&CK mapping.** The previous version
+    # counted `HIGH_SIGNAL_TECH_PREFIXES` against capa's technique list and
+    # measured 35.1% on System32, 22.0% on Program Files, 39.3% and 29.7% on
+    # two malware corpora -- a lift of 1.1x, which is a coin. 86 of its 99
+    # benign firings were `T1059`, Command and Scripting Interpreter, which
+    # capa maps onto anything able to launch a process.
+    #
+    # `HIGH_SIGNAL_CAPABILITIES` was chosen by measuring 532 benign against 203
+    # malicious samples, and its members are behaviours a reader can act on:
+    # screenshots, keylogging, clipboard access, C2 file transfer, shellcode
+    # loading, self-deletion.
+    matched = sorted(set(capa_namespaces or []) & HIGH_SIGNAL_CAPABILITIES)
+    capable = capability_ran and len(matched) >= CAPABILITY_PRESENT_AT
 
     cats.append(Category(
         name="dangerous_capability",
         module="static",
         collected=capability_ran,
         present=capable,
-        # Both routes agreeing, or one of them emphatic. A single high-signal
-        # technique in an installer is ordinary; two independent readings of the
-        # binary saying the same thing is not.
-        strong=capable and (groups >= 2 or len(high_techniques) >= 3),
-        detail=f"{len(high_techniques)} high-signal technique(s), "
-               f"{len(high_chains)} high-severity API chain(s)" if capable else "",
+        # Five distinct behaviours fires on 0.56% of 532 benign samples and
+        # 18.7% of malware. That is the rate at which one category may stand
+        # alone; three is the rate at which it corroborates.
+        strong=capable and len(matched) >= CAPABILITY_STRONG_AT,
+        detail=(f"{len(matched)} high-signal capabilities: "
+                f"{', '.join(m.split('/')[-1] for m in matched[:5])}"
+                if capable else ""),
         reason=(
-            f"The binary contains code for "
-            f"{', '.join(high_techniques[:4]) if high_techniques else 'high-severity API chains'}"
-            f", which is capability rather than behaviour -- it says what the "
-            f"file can do, not that it did."
+            f"capa identified {len(matched)} distinct high-signal behaviours in "
+            f"the code -- {', '.join(m.split('/')[-1] for m in matched[:4])}. "
+            f"This is capability rather than behaviour: it says what the file "
+            f"is built to do, not that it did it."
         ) if capable else "",
     ))
 

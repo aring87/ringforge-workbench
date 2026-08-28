@@ -113,6 +113,99 @@ def _is_weak_vt_noise(vt: dict[str, Any]) -> bool:
     return vt_found and 1 <= vt_mal <= 2 and vt_susp == 0
 
 
+#: capa namespaces that separate malware from ordinary software, chosen by
+#: measurement over 532 benign and 203 malicious samples with capa output.
+#:
+#: **The category this replaces read capa's ATT&CK mapping and could not
+#: discriminate at all** -- 35.1% on System32, 22.0% on Program Files, 39.3% and
+#: 29.7% on two malware corpora. 1.1x. `T1059`, Command and Scripting
+#: Interpreter, was 86 of its 99 benign firings, and capa maps it onto anything
+#: able to launch a process.
+#:
+#: Namespaces rather than rule names: they are capa's own behaviour taxonomy,
+#: they survive rule churn, and they do not encode implementation language. That
+#: last point is load-bearing. Ranking raw rule names put "compiled to the .NET
+#: platform" at the top, because these malware corpora are .NET-heavy and
+#: System32 is native -- a real difference between the corpora and nothing to do
+#: with malice.
+#:
+#: Three things were measured and rejected despite sounding right:
+#:
+#:     anti-analysis/anti-debugging      41.2% benign, 12.8% malware -- inverted
+#:     host-interaction/process/inject    7.5% benign, 10.8% malware -- 1.4x
+#:     persistence                        5.1% benign, 21.2% malware -- 4.2x
+#:
+#: Legitimate software checks for debuggers constantly, and installers and
+#: security tools inject. Neither is evidence.
+#:
+#: The set is curated rather than purely fitted: every member is both measured
+#: discriminating *and* explicable to an analyst reading a report. An automatic
+#: selection at the same thresholds also picked `data-manipulation/xml` and
+#: `regex`, which are corpus noise wearing a lift ratio, and "fired because it
+#: parses XML" is not a sentence worth printing.
+HIGH_SIGNAL_CAPABILITIES = frozenset({
+    "anti-analysis/anti-forensic/self-deletion",
+    "anti-analysis/anti-vm",
+    "collection/screenshot",
+    "communication/c2",
+    "communication/c2/file-transfer",
+    "communication/http/client",
+    "communication/socket/receive",
+    "communication/socket/send",
+    "communication/socket/tcp",
+    "communication/tcp/client",
+    "host-interaction/clipboard",
+    "host-interaction/hardware/keyboard",
+    "host-interaction/process/list",
+    "host-interaction/thread/suspend",
+    "host-interaction/wmi",
+    "load-code/shellcode",
+    "persistence/scheduled-tasks",
+})
+
+#: Measured over the four corpora, counting only samples where capa ran:
+#:
+#:     matched   benign   malware    lift
+#:        >=2     6.00%     29.1%     4.8x
+#:        >=3     2.44%     25.1%    10.3x     <- present
+#:        >=4     1.50%     20.7%    13.8x
+#:        >=5     0.56%     18.7%    33.2x     <- strong
+#:
+#: Three because the sensitivity cost from two is small (29.1 -> 25.1) and it
+#: more than halves the false-positive rate. Five for emphatic: 0.56% on 532
+#: benign samples is the rate at which a category may stand alone.
+CAPABILITY_PRESENT_AT = 3
+CAPABILITY_STRONG_AT = 5
+
+
+def capa_namespaces(capa_json: dict | None) -> list[str]:
+    """Behaviour namespaces capa matched, with their parents included.
+
+    `persistence/registry/run` yields `persistence`, `persistence/registry` and
+    itself, so a set can be written at whatever depth reads clearly.
+
+    Library and subscope rules are skipped: they are capa's internal plumbing
+    and fire on everything built with a given toolchain.
+    """
+    out: set[str] = set()
+    rules = (capa_json or {}).get("rules")
+    if not isinstance(rules, dict):
+        return []
+    for body in rules.values():
+        if not isinstance(body, dict):
+            continue
+        meta = body.get("meta") or {}
+        if meta.get("lib") or meta.get("is_subscope_rule"):
+            continue
+        namespace = str(meta.get("namespace", "") or "")
+        if not namespace:
+            continue
+        parts = namespace.split("/")
+        for depth in range(1, len(parts) + 1):
+            out.add("/".join(parts[:depth]))
+    return sorted(out)
+
+
 def _extract_techniques(summary: dict[str, Any]) -> list[str]:
     case_dir = _get_case_dir(summary)
     capa_json_path = case_dir / "capa.json"

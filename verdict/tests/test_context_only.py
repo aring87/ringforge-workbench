@@ -212,13 +212,20 @@ class TheHoldAlsoWorksOnOneCategory(unittest.TestCase):
         self.assertEqual(held.categories_present, 2)
         self.assertEqual(held.band, "Corroborated")
 
-    def test_the_registry_holds_it_by_default(self) -> None:
-        # Asserted deliberately, like the empty module registry above: this is
-        # a measured decision, and it should fail a test if reversed quietly.
+    def test_what_is_held_says_why(self) -> None:
+        # Asserted deliberately, like the empty module registry above: these are
+        # measured decisions and should fail a test if reversed quietly.
+        # `dangerous_capability` was here and was released on 27 Aug once it was
+        # rebuilt on capa behaviour namespaces -- 1.1% and 4.0% on two benign
+        # corpora against 30.4% and 18.7% on two malware corpora, where the
+        # version it replaced managed 1.1x.
         from verdict import CONTEXT_ONLY_CATEGORIES
 
-        self.assertIn("dangerous_capability", CONTEXT_ONLY_CATEGORIES)
-        self.assertGreater(len(CONTEXT_ONLY_CATEGORIES["dangerous_capability"]), 60)
+        self.assertNotIn("dangerous_capability", CONTEXT_ONLY_CATEGORIES)
+        self.assertIn("embedded_network_indicators", CONTEXT_ONLY_CATEGORIES)
+        for name, reason in CONTEXT_ONLY_CATEGORIES.items():
+            with self.subTest(category=name):
+                self.assertGreater(len(reason), 60)
 
     def test_coverage_still_sees_a_held_category(self) -> None:
         # Held is not absent. A collector that failed on it must still report

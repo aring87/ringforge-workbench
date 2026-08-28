@@ -29,6 +29,7 @@ from verdict.combine import categories_from_json, combine
 from static_triage_engine.categories import spec_categories, static_categories
 from static_triage_engine.scoring import (
     _extract_techniques,
+    capa_namespaces,
     _is_weak_vt_noise,
     _safe_count,
     _safe_load_json,
@@ -204,6 +205,8 @@ def static_categories_for_case(
                                   home / "capa.json") if p.exists()), None)
     return static_categories(
         capa_ok=capa_succeeded(home),
+        capa_namespaces=capa_namespaces(
+            _safe_load_json(capa_path) if capa_path else None),
         summary=summary, iocs=iocs, pe_meta=pe_meta,
         api_analysis=api_analysis, yara_results=yara_results, signing=signing,
         techniques=_extract_techniques(summary) if summary is not None else None,
