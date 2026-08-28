@@ -298,18 +298,30 @@ How often each static category fires:
     ─────────────────────────    ──────   ─────────   ─────────   ─────────
     stripped_metadata              0.0%        6.0%       77.2%       60.0%
     high_entropy_sections          0.3%        0.0%       35.4%       28.0%
-    dangerous_capability           1.1%        4.0%       30.4%       18.7%
+    dangerous_capability *         1.1%        4.0%       30.4%       18.7%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     deceptive_file_identity        0.0%        0.0%        7.1%        8.0%
     obfuscated_managed_code        0.0%        0.0%        4.7%        4.0%
     embedded_network_indicators    9.9%       77.0%       71.7%       67.0%
 
+    * the benign columns do not hold for .NET applications -- see below
+
 **One of the eight does not work, and it is in the table for that reason.**
 
 `embedded_network_indicators` fires on 77.0% of third-party software and 71.7%
 of malware. Containing a URL is a property of software. It is held as context —
 reported in full, never counted toward a band.
+
+**`dangerous_capability`'s benign columns are measured on the wrong population
+for managed code.** 1.1% and 4.0% come from System32 and Program Files, which
+are overwhelmingly native and, where managed, overwhelmingly libraries. Measured
+against 124 benign .NET *applications* it fires on **17.7%**, five of them
+emphatically — roughly four times the published rate. The number in the table is
+correct for what it measured and should not be read as covering .NET.
+
+The same corpus confirms `obfuscated_managed_code` at 0.0% on all 124, which is
+the population that category was built for.
 
 `deceptive_file_identity` had never fired on 819 samples in either direction.
 Its three filename predicates are correct and remain unreachable: samples are
