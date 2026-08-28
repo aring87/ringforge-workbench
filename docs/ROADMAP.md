@@ -514,13 +514,34 @@ version block, and a managed binary is thin or uninformative in all three. The
 `five or fewer imported symbols` row is the same 13 samples plus one native
 outlier, not an independent finding.
 
-**1. Give the managed binaries a .NET-aware pass.** `scripts/dotnet_meta.py`
-already exists. This is the one item with real coverage behind it, and it is
-explicitly *not* another PE category -- adding a seventh thing that reads the
-same three structures cannot see a population defined by having nothing in
-them. Measure it on the benign corpora first: 42 of 271 System32 No Evidence
-binaries are managed too, so a careless managed-code rule has a large benign
-population to false-positive on.
+**1. The .NET collector is built; the category is not, and will not be until
+the malware side is measured.** `scripts/dotnet_summary.py` reads the CLR
+metadata, `scripts/refresh_dotnet.py` applies it to a corpus already on disk,
+and both are wired into `engine.run_case` so new runs collect it. It is
+explicitly *not* another PE category -- a seventh thing reading the import
+table, the section table or the version block cannot see a population defined
+by having nothing in them.
+
+The metric is the fraction of the `#Strings` heap that no compiler and no
+developer would emit: a character outside the identifier set, or four letters
+without a vowel. Obfuscators rename every type, method and field; benign
+assemblies do not.
+
+**The benign floor is measured, on 592 binaries.** 67 are managed, 58 IL-only,
+39 measurable at 50 identifiers or more. Highest benign fraction is 0.099 on
+`protobuf-net.Core.dll`, and **nothing fires at any cut from 0.10 upward**. No
+protector markers appear in benign at all.
+
+Two separations that had to be made rather than thresholded around. Mixed-mode
+C++/CLI carries mangled native symbols in `#Strings` -- `mfcm140u.dll` reads
+0.201 unreadable and is entirely legitimate -- so IL-only is a precondition, not
+a penalty. And a satellite resource assembly with five identifiers reads 0.200
+on a single generic name, so a 50-identifier floor separates a measurement from
+arithmetic on too few names.
+
+What is missing is the detection rate, because the malware samples are on the
+guest. Choosing a cut from the benign floor alone would be picking a number and
+calling it a measurement.
 
 **Do not lower the entropy threshold, and the reason matters more than the
 decision.** 8 of the 22 sit at executable entropy between 7.0 and 7.5, just

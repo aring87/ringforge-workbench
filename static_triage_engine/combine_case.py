@@ -144,6 +144,7 @@ def load_case(case_dir: str | Path) -> dict[str, Any]:
         "summary": newest("summary.json", "run_summary.json"),
         "iocs": newest("iocs.json"),
         "pe_meta": newest("pe_metadata.json"),
+        "dotnet_meta": newest("dotnet_metadata.json"),
         "api_analysis": newest("api_analysis.json"),
         "yara_results": newest("yara_results.json"),
         "signing": newest("signing.json"),

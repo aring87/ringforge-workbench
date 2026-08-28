@@ -23,9 +23,13 @@ from scripts.ioc_extract import build_iocs, write_iocs_json, write_iocs_csv  # t
 
 try:
     from scripts.pe_meta import extract_pe_metadata, write_pe_metadata  # type: ignore
+    from scripts.dotnet_summary import (  # type: ignore
+        extract_dotnet_metadata, write_dotnet_metadata)
 except Exception:
     extract_pe_metadata = None
     write_pe_metadata = None
+    extract_dotnet_metadata = None
+    write_dotnet_metadata = None
 
 try:
     from scripts.lief_meta import extract_lief_metadata, write_lief_metadata  # type: ignore
@@ -461,6 +465,31 @@ def step_pe_metadata(sample: Path, case_dir: Path) -> dict[str, Any]:
 
         write_pe_metadata(out, meta)
         return {"returncode": 0, "skipped": False, "output_file": str(out)}
+    except Exception as e:
+        return {"returncode": 2, "skipped": False, "stderr": str(e)}
+
+
+def step_dotnet_metadata(sample: Path, case_dir: Path) -> dict[str, Any]:
+    """CLR facts, so managed code is not invisible to every category at once.
+
+    A native binary is not a failure here: `is_managed: false` is the answer,
+    and it is written rather than skipped so the absence is a record.
+    """
+    out = case_dir / "dotnet_metadata.json"
+    if not extract_dotnet_metadata or not write_dotnet_metadata:
+        return {"returncode": 0, "skipped": True,
+                "reason": "dotnet_summary.py not available"}
+    try:
+        meta = extract_dotnet_metadata(sample)
+        write_dotnet_metadata(out, meta)
+        # A parse that failed is reported as a non-zero return so the runlog
+        # carries it; the JSON already says `collected: false`.
+        if not meta.get("collected", True):
+            return {"returncode": 2, "skipped": False,
+                    "output_file": str(out),
+                    "stderr": str(meta.get("error", ""))[:200]}
+        return {"returncode": 0, "skipped": False, "output_file": str(out),
+                "managed": bool(meta.get("is_managed"))}
     except Exception as e:
         return {"returncode": 2, "skipped": False, "stderr": str(e)}
 

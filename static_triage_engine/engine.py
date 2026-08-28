@@ -34,6 +34,7 @@ from .steps import (
     step_capa,
     step_file,
     step_iocs,
+    step_dotnet_metadata,
     step_lief_metadata,
     step_pe_metadata,
     step_strings,
@@ -988,6 +989,8 @@ def run_case(
         summary["payload_extraction"] = {"attempted": False, "success": False, "notes": "disabled"}
 
     runlog["pe_meta"] = _run_step("pe_meta", lambda: step_pe_metadata(sample_case, case_dir))
+    runlog["dotnet_meta"] = _run_step(
+        "dotnet_meta", lambda: step_dotnet_metadata(sample_case, case_dir))
     if skip_lief:
         # **It costs 91% of a corpus run and feeds no category.** Measured over
         # 47 malware samples: `lief_meta` averaged 1,253s each against capa's
@@ -1109,6 +1112,8 @@ def run_case(
                 return r
 
             sub_runlog["pe_meta"] = _sub_step(lambda: step_pe_metadata(sub_sample, sub_dir))
+            sub_runlog["dotnet_meta"] = _sub_step(
+                lambda: step_dotnet_metadata(sub_sample, sub_dir))
             sub_runlog["lief_meta"] = _sub_step(lambda: step_lief_metadata(sub_sample, sub_dir))
             sub_runlog["file"] = _sub_step(lambda: step_file(sub_sample, sub_dir))
             if skip_strings:
