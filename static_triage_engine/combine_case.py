@@ -204,7 +204,16 @@ def static_categories_for_case(
     """
     capa_path = next((p for p in (home / "static_analysis" / "capa.json",
                                   home / "capa.json") if p.exists()), None)
+    # **Read here rather than added to every caller's argument list.** Four
+    # call sites pass the same six collector outputs by name; threading a
+    # seventh through all of them is how they start disagreeing about which
+    # collector ran.
+    dotnet_path = next((p for p in (home / "dotnet_metadata.json",
+                                    home / "static_analysis" / "dotnet_metadata.json",
+                                    home / "metadata" / "dotnet_metadata.json")
+                        if p.exists()), None)
     return static_categories(
+        dotnet_meta=_safe_load_json(dotnet_path) if dotnet_path else None,
         capa_ok=capa_succeeded(home),
         capa_namespaces=capa_namespaces(
             _safe_load_json(capa_path) if capa_path else None),

@@ -74,6 +74,18 @@ _RLO = "‮"
 #: ten times the false-positive rate, which is the wrong trade for a bench
 #: whose expensive error is firing on ordinary software.
 _PACKED_ENTROPY = 7.5
+
+#: The fraction of a managed assembly's `#Strings` heap that no compiler and no
+#: developer would emit. Measured 28 Aug: benign tops out at **0.099** over 39
+#: measurable assemblies in 592 binaries, and the five No Evidence samples this
+#: recovers sit at 0.298, 0.267, 0.255, 0.239 and 0.228. Nothing in either band
+#: falls between 0.099 and 0.228, so **the threshold is not load-bearing** --
+#: any cut from 0.10 to 0.22 gives identical coverage. 0.20 is twice the benign
+#: ceiling and clears the lowest true positive by 0.028.
+#:
+#: It costs four corpus-wide detections against a cut at 0.10, all of them on
+#: samples YARA or capa already catch, and none of the unique coverage.
+_RENAMED_IDENTIFIERS = 0.20
 _IMAGE_SCN_MEM_EXECUTE = 0x20000000
 
 #: Vendors the **benign** corpora show signing at least 95% of what they ship,
@@ -167,6 +179,7 @@ def static_categories(
     capa_match_count: int | None = None,
     capa_ok: bool | None = None,
     capa_namespaces: Sequence[str] | None = None,
+    dotnet_meta: dict[str, Any] | None = None,
 ) -> tuple[list[Category], int]:
     """Every category static analysis can author, present or not.
 
@@ -267,6 +280,59 @@ def static_categories(
             f"that identifies nobody is either deliberately anonymous or was "
             f"never meant to be inspected."
         ) if stripped else "",
+    ))
+
+    # --- What the code was built out of -------------------------------------
+    #
+    # **Managed code is the module's largest blind spot, and this is one narrow
+    # window into it.** 47.6% of the malware corpora is .NET against 11.3% of
+    # benign, and 13 of the 22 samples that survived every other category are
+    # managed. A .NET assembly imports `mscoree.dll` and nothing else and keeps
+    # its call graph in CLR metadata, so the import table, the section table and
+    # the version block -- everything the other categories read -- are empty or
+    # uninformative on it.
+    #
+    # This does not fix that. It reads one property, identifier renaming, and
+    # recovers 5 of the 22. The rest of the blind spot is still open.
+    dotnet_ran = dotnet_meta is not None and bool((dotnet_meta or {}).get("collected"))
+    dotnet_meta = dotnet_meta or {}
+    # **IL-only and a floor on the count are preconditions, not thresholds.**
+    # Mixed-mode C++/CLI carries mangled native symbols in `#Strings` --
+    # `mfcm140u.dll` reads 0.201 unreadable and is entirely legitimate -- and a
+    # satellite resource assembly with five identifiers reads 0.200 on a single
+    # generic name. Both are excluded by what they are, not by where they sit.
+    renamed_fraction = float(dotnet_meta.get("unreadable_fraction") or 0.0)
+    measurable = bool(dotnet_meta.get("is_managed")) and \
+        bool(dotnet_meta.get("il_only")) and \
+        bool(dotnet_meta.get("identifiers_sufficient"))
+    obfuscated = dotnet_ran and measurable and \
+        renamed_fraction >= _RENAMED_IDENTIFIERS
+    protectors = [str(p) for p in (dotnet_meta.get("protectors") or [])]
+
+    cats.append(Category(
+        name="obfuscated_managed_code",
+        module="static",
+        # A native binary is not an absence: the collector looked and the answer
+        # is that there is no CLR metadata to read.
+        collected=dotnet_ran,
+        present=obfuscated,
+        # **Not strong, and this one is not close.** Commercial .NET is
+        # legitimately obfuscated -- Dotfuscator and SmartAssembly are products
+        # people buy -- and the benign corpora hold 39 measurable managed
+        # assemblies, which is far too few to characterise that population. 0
+        # of 39 is not a false-positive rate for protected commercial software;
+        # it is the absence of protected commercial software from the corpus.
+        strong=False,
+        detail=(f"{renamed_fraction:.0%} of identifiers renamed"
+                + (f", names {', '.join(protectors)}" if protectors else ""))
+        if obfuscated else "",
+        reason=(
+            f"{renamed_fraction:.0%} of this assembly's type, method and field "
+            f"names are ones no compiler emits"
+            + (f", and it names {', '.join(protectors)} outright" if protectors
+               else "")
+            + ". The names were replaced to stop the code being read."
+        ) if obfuscated else "",
     ))
 
     # --- How the code is stored ---------------------------------------------

@@ -39,7 +39,8 @@ def _case(**files) -> Path:
 
 class TheStaticVerdictIsABand(unittest.TestCase):
     def test_an_anonymous_binary_needs_review(self) -> None:
-        home = _case(yara_results={"matched": False, "match_count": 0},
+        home = _case(dotnet_metadata={"collected": True, "is_managed": False},
+                     yara_results={"matched": False, "match_count": 0},
                      signing={"verify_ok": False},
                      api_analysis={"returncode": 0, "chain_findings": []})
         result = static_verdict_for_case(
@@ -49,7 +50,8 @@ class TheStaticVerdictIsABand(unittest.TestCase):
         self.assertEqual(result["severity"], "Medium")
 
     def test_it_never_returns_a_retired_verdict(self) -> None:
-        home = _case(yara_results={"matched": False, "match_count": 0},
+        home = _case(dotnet_metadata={"collected": True, "is_managed": False},
+                     yara_results={"matched": False, "match_count": 0},
                      signing={"verify_ok": False},
                      api_analysis={"returncode": 0, "chain_findings": []})
         result = static_verdict_for_case(
@@ -61,7 +63,8 @@ class TheStaticVerdictIsABand(unittest.TestCase):
     def test_it_carries_the_evidence_that_produced_it(self) -> None:
         # The report renders these; a verdict arriving without its reasons is
         # the additive model's failure mode in a new shape.
-        home = _case(yara_results={"matched": False, "match_count": 0},
+        home = _case(dotnet_metadata={"collected": True, "is_managed": False},
+                     yara_results={"matched": False, "match_count": 0},
                      signing={"verify_ok": False},
                      api_analysis={"returncode": 0, "chain_findings": []})
         result = static_verdict_for_case(
@@ -73,6 +76,7 @@ class TheStaticVerdictIsABand(unittest.TestCase):
 
 class ConfidenceFollowsCoverageFirst(unittest.TestCase):
     def _verdict(self, **files):
+        files.setdefault("dotnet_metadata", {"collected": True, "is_managed": False})
         home = _case(**files)
         return static_verdict_for_case(
             home, {"sample": {"filename": "a.exe"}}, {},

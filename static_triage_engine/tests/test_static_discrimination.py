@@ -64,6 +64,8 @@ def _signed_installer():
         api_analysis={"returncode": 0, "chain_findings": []},
         techniques=[],
         capa_match_count=120,
+        # A native binary: the CLR collector ran and found no managed metadata.
+        dotnet_meta={"collected": True, "is_managed": False},
     )
 
 
@@ -304,6 +306,94 @@ class ClaimingAVendorThatSignsEverything(unittest.TestCase):
         _, cats = _verdict(**sample)
 
         self.assertFalse(_named(cats, "deceptive_file_identity").present)
+
+
+def _assembly(fraction, il_only=True, enough=True, protectors=()):
+    """A managed sample whose identifiers are `fraction` unreadable."""
+    return {"collected": True, "is_managed": True, "il_only": il_only,
+            "identifiers_sufficient": enough, "identifier_count": 800,
+            "unreadable_fraction": fraction, "protectors": list(protectors)}
+
+
+class WhatTheCodeWasBuiltOutOf(unittest.TestCase):
+    """Managed code is the module's largest blind spot; this is one window.
+
+    47.6% of the malware corpora is .NET against 11.3% of benign, and 13 of the
+    22 samples that survived every other category are managed. The threshold is
+    not load-bearing: benign tops out at 0.099 and the five samples this
+    recovers sit at 0.228 and above, with nothing in between.
+    """
+
+    def test_a_renamed_assembly_is_obfuscated(self) -> None:
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = _assembly(0.267)
+        _, cats = _verdict(**sample)
+
+        self.assertTrue(_named(cats, "obfuscated_managed_code").present)
+
+    def test_ordinary_managed_code_is_not(self) -> None:
+        # `protobuf-net.Core.dll` is the highest benign assembly measured, at
+        # 0.099 over 1,818 identifiers.
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = _assembly(0.099)
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "obfuscated_managed_code").present)
+
+    def test_mixed_mode_is_excluded_by_what_it_is(self) -> None:
+        # `mfcm140u.dll` reads 0.201 unreadable on mangled C++ symbols and is
+        # entirely legitimate. Mixed mode is a precondition, not a threshold.
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = _assembly(0.201, il_only=False)
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "obfuscated_managed_code").present)
+
+    def test_too_few_identifiers_is_arithmetic_not_a_measurement(self) -> None:
+        # A satellite resource assembly with five identifiers reads 0.200 on a
+        # single generic type name.
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = _assembly(0.200, enough=False)
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "obfuscated_managed_code").present)
+
+    def test_a_native_binary_is_answered_not_skipped(self) -> None:
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = {"collected": True, "is_managed": False}
+        _, cats = _verdict(**sample)
+
+        category = _named(cats, "obfuscated_managed_code")
+        self.assertTrue(category.collected)
+        self.assertFalse(category.present)
+
+    def test_a_collector_that_did_not_run_is_unknown(self) -> None:
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = {"collected": False, "error": "boom"}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "obfuscated_managed_code").collected)
+
+    def test_a_named_protector_does_not_fire_it_alone(self) -> None:
+        # Dotfuscator and SmartAssembly are products people buy. 0 of 39 benign
+        # managed assemblies is not a false-positive rate for protected
+        # commercial software; it is the absence of that software from the
+        # corpus. The marker explains a finding, it does not make one.
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = _assembly(0.02, protectors=("Dotfuscator",))
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "obfuscated_managed_code").present)
+
+    def test_it_never_concludes_alone(self) -> None:
+        sample = _anonymous_binary()
+        sample["dotnet_meta"] = _assembly(0.776, protectors=("ConfuserEx",))
+        _, cats = _verdict(**sample)
+
+        category = _named(cats, "obfuscated_managed_code")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
+        self.assertIn("ConfuserEx", category.detail)
 
 
 class HowTheCodeIsStored(unittest.TestCase):

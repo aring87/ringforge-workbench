@@ -42,6 +42,9 @@ def _clean_static():
         yara_results={"matched": False, "match_count": 0},
         iocs={"observables": {"domains": [], "urls": [], "ips": []}},
         api_analysis={"returncode": 0, "chain_findings": []},
+        # A native binary: the CLR collector ran and found no managed metadata,
+        # which is an answer rather than an absence.
+        dotnet_metadata={"collected": True, "is_managed": False},
     )
 
 

@@ -539,9 +539,38 @@ a penalty. And a satellite resource assembly with five identifiers reads 0.200
 on a single generic name, so a 50-identifier floor separates a measurement from
 arithmetic on too few names.
 
-What is missing is the detection rate, because the malware samples are on the
-guest. Choosing a cut from the benign floor alone would be picking a number and
-calling it a measurement.
+**Measured on the guest, then shipped as `obfuscated_managed_code`.** 47.6% of
+the malware corpora is managed against 11.3% of benign, but only 6.2% has
+renamed identifiers -- so managed malware here is not mostly obfuscated, it is
+invisible because nothing read CLR metadata at all. Where renaming does occur it
+separates completely:
+
+    unreadable-identifier fraction     benign(592)   malware(227)
+    ─────────────────────────────     ───────────   ────────────
+    measurable managed assemblies              39            99
+    >= 0.20                                     0            10
+    highest observed                        0.099         0.776
+    names a protector outright                  0             4
+
+**The threshold is not load-bearing.** Benign tops out at 0.099 and the five No
+Evidence samples this recovers sit at 0.298, 0.267, 0.255, 0.239 and 0.228, with
+nothing in either band between. Any cut from 0.10 to 0.22 gives identical
+coverage; 0.20 is twice the benign ceiling and clears the lowest true positive
+by 0.028. It costs four corpus-wide detections against 0.10, all on samples YARA
+or capa already catch.
+
+Two preconditions rather than thresholds: IL-only, because mixed-mode C++/CLI
+carries mangled native symbols (`mfcm140u.dll` reads 0.201 and is legitimate),
+and a 50-identifier floor, because a satellite resource assembly reads 0.200 on
+one generic name.
+
+**A named protector does not fire it alone.** Dotfuscator and SmartAssembly are
+products people buy; 0 of 39 benign managed assemblies is not a false-positive
+rate for protected commercial software, it is the absence of that software from
+the corpus. The marker explains a finding rather than making one, and the same
+reasoning keeps the category out of `strong`.
+
+Benign cost: **0.0% on both corpora**, bands unchanged at 286/4/2 and 271/28/1.
 
 **Do not lower the entropy threshold, and the reason matters more than the
 decision.** 8 of the 22 sit at executable entropy between 7.0 and 7.5, just
