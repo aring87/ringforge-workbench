@@ -478,8 +478,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.module in ("all", "extension"):
         out.append(measure_extensions(args.limit, args.corpus))
     if args.module in ("all", "static"):
+        # **A `--cases` that cannot be honoured must fail, not fall back.**
+        # This silently ran the System32 measurement when the directory did not
+        # exist, and printed `250 samples (System32 executables, signature
+        # asserted)` under a `--cases` the caller had just passed -- a plausible
+        # table of zeros for a corpus that was never built. It is the same rule
+        # the collectors follow: an answer nobody asked for must not stand in
+        # for the one they did.
         cases = Path(args.cases) if args.cases else None
-        out.append(measure_static_cases(cases) if cases and cases.is_dir()
+        if cases is not None and not cases.is_dir():
+            print(f"failed: --cases {cases} is not a directory. "
+                  f"Build it with scripts/static_corpus.py first; refusing to "
+                  f"measure something else and label it this.")
+            return 1
+        out.append(measure_static_cases(cases) if cases
                    else measure_static(args.limit, signed=not args.unsigned))
     if args.module in ("all", "spec"):
         specs: list[Path] = []
