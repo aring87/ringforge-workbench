@@ -607,13 +607,44 @@ would be fitting the test set with a straight face.
 signature *verifies*. Either a clean file that arrived in a malware corpus, or
 something signed with a certificate that should not have signed it.
 
-**2. Widen the benign corpus, and the vendor list widens with it.**
-`_ALWAYS_SIGNS` holds 8 vendors because those are the ones the benign corpora
-contain at four samples or more. Impersonations of Adobe, Avira and Opera were
-all present in the malware and none is caught -- one of the five samples still
-uncovered in bazaar is exactly that. This is the honest price of deriving the
-list rather than reading it off the malware, and the fix is a wider benign
-corpus, never a wider read of the test set.
+**The benign corpus was widened on 28 Aug, 592 -> 1,492**, and the result is
+worth reading carefully because the headline is not the point.
+`scripts/benign_survey.py` adds 900 binaries across 105 vendors, collecting only
+signing, PE metadata and CLR -- fourteen minutes rather than most of a day,
+because none of the three questions it answers touches capa, YARA or IOCs.
+
+**What it found was a false-accusation class, not more vendors.** The wider
+corpus qualified `ffmpeg` on the two existing rules at 7 of 7 signed -- and 0 of
+the 7 signed by FFmpeg. OBS Project, Chengdu Yiwo Tech and Microsoft 3rd Party
+had signed them, because FFmpeg is redistributed far more than it is shipped;
+listing it would have accused every unsigned FFmpeg build, the ordinary case, of
+impersonation. `patriot`, `insecure` and `epic` failed the same way. So there is
+now a third qualifying rule -- **the vendor must sign its own releases** -- and
+the narrow corpus could not have shown it, because it contained none of them.
+
+`_ALWAYS_SIGNS` goes 8 -> 13 over 1,219 samples. Benign cost unchanged at 0.0%
+on both corpora; malware unchanged at 9 and 8. `nvidia` is a deliberate
+conservative loss, out at 91.7% self-signed once WHQL co-signing is counted.
+
+**2. Widening did not close the known misses, and cannot.** Adobe, Avira, Opera
+and Windows Defender are still absent, because none is installed on this bench
+at four samples or more -- tripling the corpus added five vendors and not one of
+them was impersonated in the malware. The bound is what a single machine has
+installed, so widening *within* it will not help again. Closing those needs a
+different source: a set of code-signing certificate subjects, or a corpus from
+another machine. Not a read of the test set.
+
+**The installer blind spot is also still open.** `high_entropy_sections` sits at
+7.5 partly because both case corpora are *installed* software, and the survey
+did not fix that -- `Downloads` was deliberately excluded as a root, since on
+this bench it holds the malware corpora and an analyst's download folder is the
+wrong place to learn what ordinary software looks like. That needs a curated
+installer set.
+
+The other two calibration questions came out clean. The managed baseline more
+than tripled, 39 measurable assemblies to 129, with nothing at or above the 0.20
+cut and no named protector in any of 161 managed binaries. Executable entropy:
+one sample of 900 above 7.0, none above 7.2.
 
 **3. The filename half of `deceptive_file_identity` is still unreachable**, and
 that is worth keeping written down even though the category now fires. The

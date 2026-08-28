@@ -23,16 +23,18 @@ impersonation.
 Prints the constant to paste into `static_triage_engine/categories.py`, and the
 vendors that just missed, because those are the interesting ones.
 
-**Microsoft is the threshold case**, at 399 of 403 -- the four exceptions are
-unsigned COM interop stubs shipped inside other vendors' installers. A strict
-100% rule would drop the single most impersonated vendor in the malware corpora
-(thirteen of the twenty impersonations seen), which is why the bar is a measured
-threshold rather than perfection.
+**Microsoft is the threshold case** on rule two, at 848 of 859 over 1,219
+samples. A strict 100% rule would drop the single most impersonated vendor in
+the malware corpora -- thirteen of the twenty impersonations seen -- which is
+why the bar is a measured threshold rather than perfection.
 
-**The list only covers vendors the benign corpora contain.** Impersonations of
-Adobe, Avira and Opera were all present in the malware and none is caught,
-because none of the three appears in benign software here often enough to earn a
-place. Widening the benign corpus widens the list; reading the malware does not.
+**The list only covers vendors the benign corpora contain, and widening did not
+change that.** Going from 592 to 1,492 binaries took it from 8 vendors to 13 and
+added none of the four the malware actually impersonated: Adobe, Avira, Opera
+and Windows Defender are not installed on this bench at four samples or more.
+The bound is what one machine has installed, so widening *within* it cannot
+help. Closing those needs a different source -- a set of code-signing subjects,
+or a corpus from elsewhere -- and never a read of the test set.
 """
 
 from __future__ import annotations
