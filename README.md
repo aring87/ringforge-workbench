@@ -280,6 +280,77 @@ Each of these was live, silent, and produced results rather than errors:
 - **The API response analyser's only High finding fired on every endpoint that
   sets a cookie** — every login endpoint an analyst would test.
 
+### Measured against 819 samples
+
+The model above claims a category should fire on malware and not on ordinary
+software. That is testable, and none of it had been tested. Four corpora now
+exist, each a random sample over the axis that matters, each with its seed
+recorded:
+
+    292   Windows System32 executables
+    300   Program Files binaries, 55 vendors
+    127   MalwareBazaar samples
+    100   samples drawn across six years
+
+How often each static category fires:
+
+    category                      Sys32   ProgFiles     family      6-year
+    ─────────────────────────    ──────   ─────────   ─────────   ─────────
+    stripped_metadata              0.0%        6.0%       77.2%       60.0%
+    dangerous_capability           1.1%        4.0%       30.4%       18.7%
+    known_malware_signature        0.7%        0.3%       16.5%       12.0%
+    invalid_signature              0.0%        0.0%       15.7%        6.0%
+    embedded_network_indicators    9.9%       77.0%       71.7%       67.0%
+    deceptive_file_identity        0.0%        0.0%        0.0%        0.0%
+
+**Two of the six do not work, and they are in the table for that reason.**
+
+`embedded_network_indicators` fires on 77.0% of third-party software and 71.7%
+of malware. Containing a URL is a property of software. It is held as context —
+reported in full, never counted toward a band.
+
+`deceptive_file_identity` has never fired on 819 samples in either direction.
+Its predicates are correct; the corpus cannot exercise them. Samples are
+acquired by hash and stored under it, so the authored filename is destroyed
+before analysis begins. A category that cannot fire is recorded as such rather
+than quietly carried.
+
+### The row that was measuring something else
+
+`stripped_metadata` was published at **100% on malware against 10.3% on
+third-party software** — the most convincing row in the table. It was measuring
+the signature check.
+
+The category asks whether a binary's version-info block names its author. No
+collector ever wrote that block. The field was read by the categoriser, produced
+by nothing, and constructed by hand only in the tests — which is exactly why
+they passed. With the block always empty, the category reduced to *is this
+signed by a trusted publisher*: a second copy of `invalid_signature`, and the
+double-counting the verdict model exists to prevent. Signing data alone
+reproduces the published row to the decimal on all four corpora.
+
+Corrected, it still separates, and better than the false version claimed. The
+false-positive rate on third-party software nearly halved, and the reason
+reverses the original reading: 7-Zip and GnuWin32 builds carry *complete*
+version info and had been firing purely for being unsigned.
+
+**The fix also cost coverage, which is the half worth publishing.** Samples with
+no evidence at all went from 0.0% to 19.7% on one malware corpus and 3.0% to
+31.0% on the other. 56 samples had been carried by a signal that did not exist.
+The rate improved and the module got weaker on the same day, and only one of
+those two facts is visible in the table above.
+
+Those 56 turn out to be a coherent population rather than a residue: malware
+carrying complete, plausible vendor metadata — seven unsigned binaries claiming
+`Microsoft Corporation`, one `Windows Defender`, one `Adobe Inc`. Two measured
+categories now in development cover 35 of them.
+
+**Nothing here was tuned to these numbers.** Each corpus disagreed with the
+intuition formed before it, and the corrections are recorded in
+`docs/ROADMAP.md` alongside the three collector failures — `strings` never
+installed, `capa` missing from a non-activated environment, FLOSS deadlocking —
+that each produced a plausible result rather than an error.
+
 ### One palette, one stylesheet
 
 The desktop application defined 40 colours and the HTML reports defined 17, and
