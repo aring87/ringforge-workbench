@@ -381,13 +381,24 @@ def static_categories(
         module="static",
         collected=entropy_ran,
         present=entropy_ran and bool(packed),
-        # **Not strong, and the corpus is the reason.** 0.3% and 0.0% on the
-        # benign corpora would ordinarily earn it -- but both are *installed*
-        # software, System32 and Program Files, and neither contains the
-        # installers and commercially protected binaries where legitimate
-        # packing actually lives. The measurement cannot see the population
-        # that would produce the false positives, so it does not get to
-        # conclude on its own. Promote it when a corpus of installers says so.
+        # **Not strong, and this was measured rather than assumed.** 0.3% and
+        # 0.0% on the two case corpora would ordinarily earn it, but both are
+        # *installed* software and neither contains the installers where
+        # legitimate packing lives. That gap was the stated reason to withhold
+        # `strong`, and on 28 Aug it was closed: a 210-binary installer corpus
+        # -- package caches, `Windows\Installer`, and installer-named files
+        # under Program Files -- fires at **0.95%** here against 0.00% for 900
+        # installed binaries.
+        #
+        # Two signed, entirely legitimate installers cross the line:
+        # `uninstall.exe` from Indigo Rose at 7.93 and `Docker Desktop
+        # Installer.exe` at 7.74. A strong category would carry both to
+        # Corroborated on their own. Non-strong they reach Single Observation,
+        # which is the right price. **The condition is answered and the answer
+        # is no** -- do not revisit it without a corpus that disagrees.
+        #
+        # It also re-confirms the 7.5 cut. At 7.2 the installer rate doubles to
+        # 1.90% as two Armoury Crate binaries (7.49, 7.46) join.
         strong=False,
         detail=", ".join(
             f"{s.get('name') or '?'} {float(s.get('entropy') or 0):.2f}"

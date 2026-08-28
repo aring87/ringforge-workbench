@@ -647,12 +647,34 @@ installed, so widening *within* it will not help again. Closing those needs a
 different source: a set of code-signing certificate subjects, or a corpus from
 another machine. Not a read of the test set.
 
-**The installer blind spot is also still open.** `high_entropy_sections` sits at
-7.5 partly because both case corpora are *installed* software, and the survey
-did not fix that -- `Downloads` was deliberately excluded as a root, since on
-this bench it holds the malware corpora and an analyst's download folder is the
-wrong place to learn what ordinary software looks like. That needs a curated
-installer set.
+**The installer blind spot was closed on 28 Aug, and it said no.**
+`high_entropy_sections` was withheld from `strong` on the stated grounds that
+both case corpora are *installed* software and contain none of the installers
+where legitimate packing lives. A 210-binary installer corpus now measures that
+population:
+
+    population              n     >=7.0     >=7.2     >=7.5
+    ─────────────────    ────    ──────    ──────    ──────
+    installed software    900     0.11%     0.00%     0.00%
+    installers            210     1.90%     1.90%     0.95%
+
+Two signed, entirely legitimate installers cross the shipped cut:
+`uninstall.exe` from Indigo Rose Corporation at 7.93 and `Docker Desktop
+Installer.exe` at 7.74. **`strong` stays off**, now for a measured reason rather
+than an assumed one -- it would carry both to Corroborated alone, where
+non-strong leaves them at Single Observation. The 7.5 cut is re-confirmed at the
+same time: at 7.2 the installer rate doubles to 1.90% as two Armoury Crate
+binaries (7.49, 7.46) join.
+
+    G:\installer-survey.json      75 from the package caches and Windows\Installer
+    G:\installer-survey-pf.json  135 installer-named under Program Files
+
+**Read it as directional, not as a rate.** `--name-glob` selects on what a
+publisher called the file, which is a claim: an installer named `app.exe` is
+missed and a library named `installer.dll` is drawn. 210 samples from one
+machine settles whether the population exists -- it does -- and not what its
+rate is. `Downloads` would roughly quadruple it and is deliberately excluded,
+because on this bench it holds the malware corpora.
 
 The other two calibration questions came out clean. The managed baseline more
 than tripled, 39 measurable assemblies to 129, with nothing at or above the 0.20

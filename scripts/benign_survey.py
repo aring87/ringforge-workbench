@@ -42,6 +42,7 @@ import random
 import sys
 import time
 from collections import defaultdict
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +74,8 @@ def _vendor_of(path: Path, root: Path) -> str:
     return rel.parts[0] if len(rel.parts) > 1 else root.name
 
 
-def _candidates(root: Path, max_depth: int) -> dict[str, list[Path]]:
+def _candidates(root: Path, max_depth: int,
+                name_globs: list[str] | None = None) -> dict[str, list[Path]]:
     by_vendor: dict[str, list[Path]] = defaultdict(list)
     root_depth = len(root.parts)
     for path in root.rglob("*"):
@@ -81,6 +83,14 @@ def _candidates(root: Path, max_depth: int) -> dict[str, list[Path]]:
             if len(path.parts) - root_depth > max_depth:
                 continue
             if path.suffix.lower() not in _EXTENSIONS or not path.is_file():
+                continue
+            # **A name filter, not a content one.** `--name-glob "*setup*.exe"`
+            # picks installers out of a tree that is mostly not installers. It
+            # selects on what the file is called, which is a claim by whoever
+            # shipped it and can be wrong -- an installer named `app.exe` is
+            # missed and a library named `installer.dll` is drawn.
+            if name_globs and not any(
+                    fnmatch(path.name.lower(), g.lower()) for g in name_globs):
                 continue
         except OSError:
             continue
@@ -127,16 +137,18 @@ def _survey_one(path: Path) -> dict[str, Any]:
 
 
 def collect(roots: list[Path], count: int, per_vendor: int, seed: int,
-            depth: int, workers: int) -> dict[str, Any]:
+            depth: int, workers: int,
+            name_globs: list[str] | None = None) -> dict[str, Any]:
     rng = random.Random(seed)
     chosen: list[Path] = []
     provenance: dict[str, Any] = {"roots": [], "seed": seed,
-                                  "per_vendor": per_vendor, "max_depth": depth}
+                                  "per_vendor": per_vendor, "max_depth": depth,
+                                  "name_globs": list(name_globs or [])}
     for root in roots:
         if not root.is_dir():
             provenance["roots"].append({"root": str(root), "present": False})
             continue
-        by_vendor = _candidates(root, depth)
+        by_vendor = _candidates(root, depth, name_globs)
         picked = 0
         for vendor, files in sorted(by_vendor.items()):
             rng.shuffle(files)
@@ -227,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", default="",
                         help="read a survey written earlier and report on it")
     parser.add_argument("--root", action="append", default=[])
+    parser.add_argument("--name-glob", action="append", default=[],
+                        help="only files whose name matches; repeatable. "
+                             "Selects on the name a publisher chose, which is "
+                             "a claim and can be wrong.")
     parser.add_argument("--count", type=int, default=1200)
     parser.add_argument("--per-vendor", type=int, default=_PER_VENDOR)
     parser.add_argument("--depth", type=int, default=6)
@@ -253,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"surveying up to {args.count} binaries, {args.per_vendor} per vendor, "
           f"seed {args.seed}")
     data = collect(roots, args.count, args.per_vendor, args.seed,
-                   args.depth, args.workers)
+                   args.depth, args.workers, args.name_glob)
     Path(args.out).write_text(json.dumps(data, indent=1), encoding="utf-8")
     print(f"written: {args.out}")
     report(data, args.min_samples, args.threshold)
