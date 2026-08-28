@@ -433,26 +433,67 @@ sections — does.
 
 ### Next, in value order
 
-**1. 56 malware samples now have no evidence at all.** 25 of 127 and 31 of 100,
-against 0 and 3 before the fix. Nothing else in the module fires on them, and
-`stripped_metadata` had been covering them on a signal that did not exist. Ask
-what they are before reaching for a new category: whether they are signed, what
-capa found, whether they cluster by family or by year. A category chosen to fill
-this gap without first characterising it is how the additive model was built,
-and the answer may be that the static module legitimately cannot see them and
-the dynamic side has to.
+**The 56 are characterised — `scripts/no_evidence.py`.** They are not a residue.
+Every one carries complete version info, 55 of 56 name a company, and only 3 are
+signed. **The band is malware that presents as legitimate software**, which is
+coherent: it is exactly the population `stripped_metadata` is defined to
+exclude, so it was never covering them on merit -- it was covering them for
+being unsigned. Only 1 of 25 and 1 of 31 have a collection gap, so the band is a
+property of the samples and not of the pipeline. That was worth ruling out.
 
-**2. Ship `high_entropy_sections`.** The strongest candidate for item 1 -- it
-fires on 35.4% and 28.0% of the two malware corpora at 0.3% and 0.0% benign
-cost, so some of it will land on those 56. Measured before shipping, for once.
-Entropy >= 7.5 in an executable section: 0.3% / 0.0% benign against 35.4% /
-28.0% malware. Low sensitivity, near-zero false positives — the right shape for
-`strong=True`. Splitting on the executable bit is what makes it: benign high
+    of the No Evidence band          family(25)   6-year(31)   both(56)
+    ─────────────────────────       ──────────   ──────────   ────────
+    exec section >= 7.5                     14            7         21
+    claims a major vendor, unsigned         12            8         20
+    both                                     5            1          6
+    NEITHER                                  4           17         21
+
+**1. Ship `high_entropy_sections` and a vendor-identity category together.**
+They are not competitors: 9 packed-only, 7 vendor-only, 5 both in bazaar. Either
+alone leaves 11 or 13 of that band; together they leave 4. Across both corpora
+the irreducible band goes 56 -> 21, from 24.7% of the malware corpus to 9.2%.
+
+Entropy: >= 7.5 in an *executable* section, 0.3% / 0.0% benign against 35.4% /
+28.0% malware. Splitting on the executable bit is what makes it -- benign high
 entropy is almost entirely `.rsrc` (compressed icons), malware's is `.text`
 (packed code). Undifferentiated `any section >= 7.2` is 2.7% / 3.0% against
-48.8% / 59.0%, which is a materially worse trade.
+48.8% / 59.0%, a materially worse trade.
 
-**3. `deceptive_file_identity` is reachable, correct, and unmeasurable *here*.**
+Vendor identity: seven unsigned binaries in bazaar claim `Microsoft
+Corporation`, one `Windows Defender`, one `Adobe Inc`; datalake adds six
+Microsoft, three `Oracle Corporation`, and an `Avira GmbH`. Benign cost 0 of 292
+System32 -- all 284 Microsoft-claiming binaries there are properly signed -- and
+4 of 300 Program Files, all four unsigned Microsoft COM stubs that
+`stripped_metadata` already fires on, so it adds **nothing** to the benign No
+Evidence band.
+
+**Do not ship the vendor rule as the substring list that measured it.** That
+list was written by looking at the malware, which is tuning to the test set, and
+`"google" in "Google Translation..."` will eventually match a real vendor. Two
+principled constructions, in order of preference: compare the claimed
+`CompanyName` against the *signature subject* where a signature exists, which
+needs no list at all; and for unsigned binaries, derive "vendors who always
+sign" from the **benign** corpora -- any vendor with N samples and 100% signed
+-- so the list is measured rather than chosen. The generic form of the rule,
+*names any company but carries no valid signature*, is not usable: roughly 17 of
+300 Program Files binaries do exactly that, honestly.
+
+**2. 21 samples resist both signals** -- 4 in bazaar, 17 in datalake, and the
+gap between those two numbers is the finding. Datalake is only 23% packed
+against bazaar's 56%, and 3 of its 31 are *validly signed* malware. That is the
+honest floor for the static module, and the right answer for some of it is that
+the dynamic side has to take them. Characterise before building a third
+category; the same discipline that produced the table above.
+
+**3. `deceptive_file_identity` should absorb the vendor-identity rule.** The two
+are the same question -- *what is this file claiming to be, and is the claim
+authored?* -- and the version block answers it where the filename cannot. Seven
+unsigned binaries claiming Microsoft is deception that had to be written by
+someone, which is the exact standard the category already sets for double
+extensions and RLO overrides. Folding it in here rather than adding a seventh
+category also keeps one claim charged once.
+
+The rest of this item stands, and explains why the category has never fired.
 Not dead code — all three predicates work. All 227 malware samples are named
 `<sha256>.exe` (100%, both corpora), and `_sample.json` shows they were already
 hash-named on disk, so the authored name was destroyed at download time,
