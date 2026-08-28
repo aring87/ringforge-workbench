@@ -345,12 +345,12 @@ showed.
 version-info block, so `_pe_string_table` returned `{}` on all 819 samples and
 the category collapsed into `not trusted_signed` — a relabelling of the
 signature check, which is already its own category. The collector now extracts
-the block and the benign columns are re-measured. The 27 Aug section this
+the block and **all four corpora are re-measured**. The 27 Aug section this
 replaces is preserved in the git history.
 
     category                      Sys32   ProgFiles     family      6-year
     ─────────────────────────    ──────   ─────────   ─────────   ─────────
-    stripped_metadata  §           0.0%        6.0%     (stale)     (stale)
+    stripped_metadata  §           0.0%        6.0%       77.2%       60.0%
     dangerous_capability           1.1%        4.0%       30.4%       18.7%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
@@ -358,13 +358,26 @@ replaces is preserved in the git history.
     deceptive_file_identity ‡      0.0%        0.0%        0.0%        0.0%
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
 
+    bands, No Evidence            98.3%       90.3%       19.7%       31.0%
+    the same, before the fix      98.3%       86.0%        0.0%        3.0%
+
     § re-measured 28 Aug with the collector fixed; was 0.0/10.3/100.0/95.0,
-      every one of which was `not trusted_signed` reproduced to the decimal.
-      The malware columns need the guest -- see below.
+      every one of which was `not trusted_signed` reproduced to the decimal
     † held in `verdict.CONTEXT_ONLY_CATEGORIES` -- fires *less* on malware
-    ‡ cannot fire on this corpus by construction -- see item 3
+    ‡ cannot fire on this corpus by construction -- see item 2
     ¶ measured 28 Aug, not yet shipped: entropy >= 7.5 in an *executable*
-      section. Bands not re-measured, since `stripped_metadata` moved.
+      section
+
+**Read the two band rows together, because they are the actual result.** The
+category is real and it discriminates -- 77.2% and 60.0% against 0.0% and 6.0%,
+a better ratio than the broken figure claimed. But it was carrying samples that
+nothing else fires on, and removing the phantom exposed that: **No Evidence on
+malware went from 0.0% to 19.7% and from 3.0% to 31.0%.** 56 of 227 malware
+samples now have no evidence at all, where before every one of them had at
+least a band. Benign moved the other way, 86.0% to 90.3% on Program Files.
+
+The module became more precise and materially less sensitive on the same day,
+and the second half of that sentence is the one to act on.
 
 ### What the collector fix changed
 
@@ -382,9 +395,13 @@ live collector agree. Cases that never completed were skipped, as were any whose
 binary or resource directory would not parse: those keep reporting `unknown`
 rather than acquiring a `collected: True` they did not earn.
 
-**The 227 malware cases now report `unknown` for this category**, which is
-correct and is the contract working — they were collected before the fix and
-their binaries are gone. That is a visible gap rather than a silent 100%.
+**The 227 malware cases were refreshed on the guest**, where the samples still
+are, using `scripts/refresh_version_info.py` — 227 of 227, no failures, twelve
+seconds rather than the two hours a full re-run costs. The predicted rate was
+published before the scorer ran (77.2% for bazaar, a 57–62% band for datalake,
+the band being the uncertainty from five trusted-signed samples) and both
+landed: 77.2% and 60.0%. Predicting first is cheap and it is the only thing
+that distinguishes a measurement from a number that arrived.
 
 The 10.3% → 6.0% drop reverses the reading in the old item 4. The false
 positives did *not* cluster in GNU/MinGW builds: Igor Pavlov (7-Zip) 6/6 and
@@ -402,22 +419,32 @@ about *those*, not about the GNU toolchain.
     C:\Users\aring\Downloads\ringforge\cases\bazaar2     127 malware cases
     C:\Users\aring\Downloads\ringforge\cases\datalake2   100 malware cases
 
-The benign corpora keep their sample binaries, which is why they could be
-re-measured on the host. **The malware corpora hold analysis output only** —
-copied under an extension allowlist, verified no `MZ` header — and
-`C:\mal-bazaar\samples` was on the guest. Version info cannot be recovered from
-what is on the host, and it is not reconstructible from `strings.txt` without
-turning a parse into a guess. 203 of 227 still have capa.json, so capability
-work continues not to need the guest.
+The benign corpora keep their sample binaries. **The host copies of the malware
+corpora hold analysis output only** — copied under an extension allowlist,
+verified no `MZ` header — so anything needing the bytes has to run on the
+guest, where both corpora and their samples live:
+
+    C:\mal-bazaar-cases\cases      127 cases   samples C:\mal-bazaar\samples
+    C:\mal-datalake-cases\cases    100 cases   samples C:\mal-datalake\samples
+
+203 of 227 still have capa.json on the host, so capability work continues not
+to need the guest. Anything reading the binary — version info, entropy,
+sections — does.
 
 ### Next, in value order
 
-**1. Re-run the malware corpora for `stripped_metadata`.** Needs the guest and
-the samples. Until then those two columns are unknown, not 100%/95%. This is the
-only way to learn whether the category discriminates once it measures what it
-claims to — and it is now the open question the module rests on.
+**1. 56 malware samples now have no evidence at all.** 25 of 127 and 31 of 100,
+against 0 and 3 before the fix. Nothing else in the module fires on them, and
+`stripped_metadata` had been covering them on a signal that did not exist. Ask
+what they are before reaching for a new category: whether they are signed, what
+capa found, whether they cluster by family or by year. A category chosen to fill
+this gap without first characterising it is how the additive model was built,
+and the answer may be that the static module legitimately cannot see them and
+the dynamic side has to.
 
-**2. Ship `high_entropy_sections`.** Measured before shipping, for once.
+**2. Ship `high_entropy_sections`.** The strongest candidate for item 1 -- it
+fires on 35.4% and 28.0% of the two malware corpora at 0.3% and 0.0% benign
+cost, so some of it will land on those 56. Measured before shipping, for once.
 Entropy >= 7.5 in an executable section: 0.3% / 0.0% benign against 35.4% /
 28.0% malware. Low sensitivity, near-zero false positives — the right shape for
 `strong=True`. Splitting on the executable bit is what makes it: benign high
@@ -444,8 +471,11 @@ benign reputation, an IP literal with no accompanying domain, URLs that do not
 match the binary's own vendor string.
 
 **5. The README section is drafted and unpublished.** It needs re-drafting
-against the numbers above, which have now moved twice. Frame as *measured*,
-never *tuned*; include the failures.
+against the numbers above, which have now moved three times. Frame as
+*measured*, never *tuned*; include the failures, and include the band rows —
+a README that publishes 77.2% without publishing that 19.7% of the corpus now
+has no evidence at all would be selecting the flattering half of the same
+measurement.
 
 **6. Other modules have false-positive rates only.** `extension`, `spec`, `api`.
 For `spec` and `api` a "true positive" means a real exposure found in the wild,
@@ -495,6 +525,15 @@ split was the most convincing number in the table, and it was measuring the
 signature check. **A category that separates suspiciously well deserves the same
 audit as one that separates suspiciously badly** — and the audit is to find the
 code that *writes* the field, not the code that reads it.
+
+**What the fix cost is the part to keep.** Corrected, the category still
+separates — 77.2% and 60.0% against 0.0% and 6.0%, a better ratio than the
+false one. It would be easy to record that and stop. But the same correction
+took 56 malware samples from *some evidence* to *none*, because a signal that
+did not exist had been the only thing covering them. The rate improved and the
+module got weaker, and only one of those two facts is visible in the category
+table. **A correction that makes every headline number look better has not
+been fully read yet** — check what it removed, not only what it fixed.
 
 ## After dynamic — the roadmap from 24 Aug
 
