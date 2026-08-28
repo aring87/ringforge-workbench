@@ -496,12 +496,60 @@ this was caught. Requiring the whole block splits them cleanly: a partial
 identity is `stripped_metadata`, a complete and false one is this. It costs
 nothing, because all 56 target samples carried four or more fields.
 
-**1. 22 samples resist everything** -- 5 in bazaar, 17 in datalake, and the gap
-between those two is the finding. Datalake is only 23% packed against bazaar's
-56%, and 3 of its 31 were *validly signed* malware. Characterise before building
-a third category, the same way `scripts/no_evidence.py` characterised the 56;
-the right answer for some of them is that the static module legitimately cannot
-see them and the dynamic side has to.
+**The 22 are characterised, and the answer is not a seventh category.**
+
+    of the remaining band            bazaar(5)   datalake(17)   both(22)
+    ─────────────────────────       ─────────   ────────────   ────────
+    managed (.NET) binaries                 4              9         13
+    five or fewer imported symbols          4             10         14
+    exec entropy 7.0 to 7.5                 2              6          8
+    signature verifies                      0              3          3
+    a collector did not run                 0              1          1
+
+**59% of what static cannot see is managed code**, and the reason is
+structural rather than a threshold anyone can move. A .NET assembly imports
+`mscoree.dll` and nothing else; its real call graph is in CLR metadata. Every
+category the module has reads the import table, the section table or the
+version block, and a managed binary is thin or uninformative in all three. The
+`five or fewer imported symbols` row is the same 13 samples plus one native
+outlier, not an independent finding.
+
+**1. Give the managed binaries a .NET-aware pass.** `scripts/dotnet_meta.py`
+already exists. This is the one item with real coverage behind it, and it is
+explicitly *not* another PE category -- adding a seventh thing that reads the
+same three structures cannot see a population defined by having nothing in
+them. Measure it on the benign corpora first: 42 of 271 System32 No Evidence
+binaries are managed too, so a careless managed-code rule has a large benign
+population to false-positive on.
+
+**Do not lower the entropy threshold, and the reason matters more than the
+decision.** 8 of the 22 sit at executable entropy between 7.0 and 7.5, just
+under the cut, and the benign curve is nearly flat -- 0.7% / 0.3% at 7.0
+against 0.3% / 0.0% at 7.5 -- so moving it would be cheap. It is still tuning:
+the justification would come from *these 22 samples*, not from the separation,
+and the curve gives no independent reason to prefer 7.0. The benign corpora
+also under-represent the installers where legitimate packing lives, so the
+conservative cut is the one whose blind spot is known. Revisit it from a corpus
+of installers, never from the band.
+
+**3 samples carry a signature that verifies.** Static analysis has nothing left
+to doubt about them and the dynamic side has to take them. That is a legitimate
+end state under the project's own standard, not a gap.
+
+**One sample is a collection gap** -- capa did not run on it. That is one
+re-run, not a category.
+
+**A false lead, recorded because it looked good.** Three of bazaar's five claim
+a `CompanyName` of random characters (`2I?F=JC22>;A8;C9D;>HAE4` and two like
+it), which reads like a cheap high-precision signal: benign software does not
+ship unpronounceable vendor names. Datalake has **none** -- its seventeen claim
+`Opera Software`, `Avira GmbH`, `NetSupport Ltd`, `Purity`, `China`. Three
+samples in one corpus is a quirk of one family, and building a category on it
+would be fitting the test set with a straight face.
+
+**Worth an eyeball:** one datalake sample claims `Microsoft Corporation` and its
+signature *verifies*. Either a clean file that arrived in a malware corpus, or
+something signed with a certificate that should not have signed it.
 
 **2. Widen the benign corpus, and the vendor list widens with it.**
 `_ALWAYS_SIGNS` holds 8 vendors because those are the ones the benign corpora
