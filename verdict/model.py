@@ -112,28 +112,34 @@ CONTEXT_ONLY: dict[str, str] = {}
 #: not, and holding the whole module for one bad category would silence five
 #: working ones.
 #:
-#: **`dangerous_capability` is here because its evidence points backwards.**
-#: Measured 27 Aug, counting only samples where capa actually ran:
+#: **`dangerous_capability` is here because it barely separates anything.**
+#: Measured 27 Aug, on a corpus where capa was verified present:
 #:
 #:     benign System32       35.1%   (99 of 282)
 #:     benign Program Files  22.0%   (55 of 250)
-#:     malware, family        2.9%   (1 of 35)
+#:     malware               39.3%   (44 of 112)
 #:
-#: **Twelve times more likely to fire on Microsoft's own tools than on real
-#: malware.** The first published figures -- 33.9% benign against 13.2% malware
-#: -- were right in direction and wrong in size: the malware denominator
-#: included 94 samples on which capa had failed and produced nothing, so the
-#: category could not have fired on them. Corrected, the gap is four times
-#: wider than reported. 86 of the 99 benign firings were `T1059` -- Command and
-#: Scripting Interpreter -- which capa maps onto anything that can launch a
-#: process, and on System32 that is most of it.
+#: 1.12x against System32. A category that fires on a third of Microsoft's own
+#: tools and two fifths of malware is not evidence of anything; it separates
+#: those populations about as well as a coin.
 #:
-#: **No threshold repairs a signal that points the wrong way**, which is why
-#: this is a hold rather than a tuning. The category reads capa's ATT&CK
-#: mapping and its API chains, and discards capa's *capability* list -- where
-#: this bench's own clipper had `reference Base58 string` and `reference
-#: analysis tools strings` while the category stayed silent. Rebuilding it to
-#: read that list is the fix; until then it makes no claim it can support.
+#: **The reason recorded here was wrong twice before this, and how is worth
+#: keeping.** It first read "inverted -- fires 3x more on benign than
+#: malicious", from 33.9% against 13.2%. That malware figure was void: capa had
+#: failed on 194 of 229 samples and the category reported `collected=True`
+#: anyway, so most of the denominator could not have fired. Corrected by
+#: excluding the failures, it read 2.9% and the claim got *stronger* -- 12x
+#: inverted -- which should have been the warning. That correction rested on the
+#: 35 samples where capa had happened to succeed inside a broken run, and those
+#: 35 were not a random 35.
+#:
+#: A re-run with capa verified on PATH put it at 39.3%. Not inverted at all --
+#: malware is slightly *more* likely to fire. The demotion survives on the far
+#: duller ground that 1.12x is not a signal, and the direction that was
+#: published twice was an artifact of a missing tool both times.
+#:
+#: The rebuild is still the right fix: read capa's capability list rather than
+#: its ATT&CK mapping, where T1059 describes anything able to launch a process.
 #: **`embedded_network_indicators` joined on 27 Aug, and its story is the
 #: stranger one.** For the whole life of this scorer it read 0.0% on every
 #: corpus -- 829 samples, including 229 pieces of real malware that between them
@@ -160,11 +166,11 @@ CONTEXT_ONLY: dict[str, str] = {}
 #: cannot do meanwhile is move a band.
 CONTEXT_ONLY_CATEGORIES: dict[str, str] = {
     "dangerous_capability": (
-        "Inverted on measurement: 35.1% on benign System32 and 22.0% on "
-        "Program Files against 2.9% on malware, counting only samples where "
-        "capa ran. It reads capa's ATT&CK mapping, where T1059 describes "
-        "ordinary system utilities, rather than capa's capability list. "
-        "Reported until it is rebuilt on the latter."),
+        "Barely separates: 35.1% on benign System32, 22.0% on Program Files "
+        "and 39.3% on malware, all with capa verified present. 1.12x against "
+        "System32 is not evidence. It reads capa's ATT&CK mapping, where T1059 "
+        "describes anything able to launch a process, rather than capa's "
+        "capability list. Reported until it is rebuilt on the latter."),
     "embedded_network_indicators": (
         "Fires on 68.2% of malware against 77.0% of third-party software in "
         "Program Files -- less often on the malicious side. Ordinary software "
