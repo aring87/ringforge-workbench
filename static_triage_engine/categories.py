@@ -174,7 +174,16 @@ def static_categories(
     # letting a third-party opinion suppress a local observation is the same
     # error as letting it raise one, and "VirusTotal is not a category" has to
     # be true in both directions to be true at all.
+    # **`collected` here means the version-info block was looked for, not that
+    # the PE parsed.** For most of this engine's life no collector wrote one,
+    # so `_pe_string_table` returned `{}` on every real sample and the category
+    # decayed into `not trusted_signed` -- reproducing the published column to
+    # the decimal across all four corpora while appearing to measure metadata.
+    # `version_info_collected` is what the collector sets once it has actually
+    # walked the resource directory. Its absence means the file was written by
+    # a build that never looked, which is `unknown`, not `clean`.
     pe_ran = pe_meta is not None
+    vi_ran = pe_ran and bool((pe_meta or {}).get("version_info_collected"))
     info = _pe_string_table(pe_meta or {})
     fields = {
         "CompanyName": (info.get("CompanyName") or "").strip(),
@@ -183,12 +192,12 @@ def static_categories(
         "OriginalFilename": (info.get("OriginalFilename") or "").strip(),
     }
     missing = sorted(k for k, v in fields.items() if not v)
-    stripped = pe_ran and bool(missing) and not trusted_signed
+    stripped = vi_ran and bool(missing) and not trusted_signed
 
     cats.append(Category(
         name="stripped_metadata",
         module="static",
-        collected=pe_ran,
+        collected=vi_ran,
         present=stripped,
         # **Never strong, even when the whole block is empty.** Go and Rust
         # binaries ship with no version info as a matter of course, as does

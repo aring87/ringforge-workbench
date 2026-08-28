@@ -264,7 +264,10 @@ def _version_info(path: Path) -> dict[str, Any] | None:
                 for key, value in st.entries.items():
                     table[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
     pe.close()
-    return {"version_info": table}
+    # The resource directory was walked; an empty `table` is an
+    # observation about the binary, not a gap in the collection.
+    return {"version_info": table, "version_info_collected": True,
+            "version_info_present": bool(table)}
 
 
 def measure_static_cases(root: Path) -> dict[str, Any]:

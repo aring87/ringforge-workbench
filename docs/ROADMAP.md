@@ -339,75 +339,113 @@ showed.
 
 ---
 
-## Pick up here — 27 Aug
+## Pick up here — 28 Aug
 
-**`static` is measured in both directions and one category was rebuilt from the
-measurement.** Everything below is the state to start from; the 26 Aug section
-it replaces is preserved in the git history at `c6dd7b9`.
+**`stripped_metadata` was never measuring metadata.** No collector ever wrote a
+version-info block, so `_pe_string_table` returned `{}` on all 819 samples and
+the category collapsed into `not trusted_signed` — a relabelling of the
+signature check, which is already its own category. The collector now extracts
+the block and the benign columns are re-measured. The 27 Aug section this
+replaces is preserved in the git history.
 
     category                      Sys32   ProgFiles     family      6-year
     ─────────────────────────    ──────   ─────────   ─────────   ─────────
-    stripped_metadata              0.0%       10.3%      100.0%       95.0%
-    dangerous_capability  *        1.1%        4.0%       30.4%       18.7%
+    stripped_metadata  §           0.0%        6.0%     (stale)     (stale)
+    dangerous_capability           1.1%        4.0%       30.4%       18.7%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
     deceptive_file_identity ‡      0.0%        0.0%        0.0%        0.0%
+    high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
 
-    bands                        98.3% NE   86.0% NE    0.0% NE     3.0% NE
-
-    * rebuilt 27 Aug on capa behaviour namespaces; was 1.1x, now 4.7-27x
+    § re-measured 28 Aug with the collector fixed; was 0.0/10.3/100.0/95.0,
+      every one of which was `not trusted_signed` reproduced to the decimal.
+      The malware columns need the guest -- see below.
     † held in `verdict.CONTEXT_ONLY_CATEGORIES` -- fires *less* on malware
-    ‡ has never fired on 819 samples, either direction
+    ‡ cannot fire on this corpus by construction -- see item 3
+    ¶ measured 28 Aug, not yet shipped: entropy >= 7.5 in an *executable*
+      section. Bands not re-measured, since `stripped_metadata` moved.
+
+### What the collector fix changed
+
+`scripts/pe_meta.py` now walks the resource directory and writes `version_info`
+alongside `version_info_collected` and `version_info_present`. The categoriser
+gates on `version_info_collected`, so a `pe_metadata.json` written before this
+change reports `unknown` rather than clean — the collector contract applied to
+our own past output.
+
+**The two benign corpora were backfilled on 28 Aug** — 592 `pe_metadata.json`
+files gained the version-info keys, read from each sample binary, no other field
+touched. Scoring them straight off disk reproduces the table above exactly
+(0.0% and 6.0%, no `unknown`), which is the check that the backfill and the
+live collector agree. Cases that never completed were skipped, as were any whose
+binary or resource directory would not parse: those keep reporting `unknown`
+rather than acquiring a `collected: True` they did not earn.
+
+**The 227 malware cases now report `unknown` for this category**, which is
+correct and is the contract working — they were collected before the fix and
+their binaries are gone. That is a visible gap rather than a silent 100%.
+
+The 10.3% → 6.0% drop reverses the reading in the old item 4. The false
+positives did *not* cluster in GNU/MinGW builds: Igor Pavlov (7-Zip) 6/6 and
+GnuWin32 5/5 carry **complete** version info and were firing purely for being
+unsigned. What survives is 18 cases of a different kind — unnamed native
+libraries (`libffi`, `libfontconfig`, `libhwy`, `libLerc`, `psl`), COM interop
+stubs with two of four fields (`stdole`, `adodb`, `msdatasrc`), and an Inno
+Setup uninstaller. A wider open-source corpus would now be answering a question
+about *those*, not about the GNU toolchain.
 
 ### Where the data is
-
-Everything needed to iterate on the static scorer is **on the host**. No guest,
-no re-download:
 
     G:\static-corpus-full\cases     292 System32 cases, full engine
     G:\pf-corpus\cases              300 Program Files cases, 55 vendors
     C:\Users\aring\Downloads\ringforge\cases\bazaar2     127 malware cases
     C:\Users\aring\Downloads\ringforge\cases\datalake2   100 malware cases
 
-The malware directories hold analysis output only -- capa.json, yara_results,
-iocs, runlog -- copied under an extension allowlist and verified to contain no
-`MZ` header. **203 of the 227 have capa.json**, which is what any further
-capability work selects from.
-
-Every corpus records its seed in `_sample.json`, so all four are rebuildable.
-`scripts/refresh_iocs.py` re-runs only strings and IOC extraction over an
-existing corpus -- a second per case rather than a minute -- which is how to
-re-measure anything that does not depend on capa.
+The benign corpora keep their sample binaries, which is why they could be
+re-measured on the host. **The malware corpora hold analysis output only** —
+copied under an extension allowlist, verified no `MZ` header — and
+`C:\mal-bazaar\samples` was on the guest. Version info cannot be recovered from
+what is on the host, and it is not reconstructible from `strings.txt` without
+turning a parse into a guess. 203 of 227 still have capa.json, so capability
+work continues not to need the guest.
 
 ### Next, in value order
 
-**1. `deceptive_file_identity` has never fired.** 819 samples, both directions,
-zero. Either its conditions are unreachable or it is dead code. Ten minutes with
-the categoriser and the malware filenames settles which, and it is the cheapest
-open item.
+**1. Re-run the malware corpora for `stripped_metadata`.** Needs the guest and
+the samples. Until then those two columns are unknown, not 100%/95%. This is the
+only way to learn whether the category discriminates once it measures what it
+claims to — and it is now the open question the module rests on.
 
-**2. `high_entropy_sections` is computed and read by nothing.** `pe_meta`
-precomputes it at >= 7.2 on every sample in half a second. Packing is one of the
-better cheap static signals and `static` currently leans hard on
-`stripped_metadata`. The corpora exist, so for once a category can be measured
-*before* it ships.
+**2. Ship `high_entropy_sections`.** Measured before shipping, for once.
+Entropy >= 7.5 in an executable section: 0.3% / 0.0% benign against 35.4% /
+28.0% malware. Low sensitivity, near-zero false positives — the right shape for
+`strong=True`. Splitting on the executable bit is what makes it: benign high
+entropy is almost entirely `.rsrc` (compressed icons), malware's is `.text`
+(packed code). Undifferentiated `any section >= 7.2` is 2.7% / 3.0% against
+48.8% / 59.0%, which is a materially worse trade.
 
-**3. `embedded_network_indicators` needs a narrower question, not a better
+**3. `deceptive_file_identity` is reachable, correct, and unmeasurable *here*.**
+Not dead code — all three predicates work. All 227 malware samples are named
+`<sha256>.exe` (100%, both corpora), and `_sample.json` shows they were already
+hash-named on disk, so the authored name was destroyed at download time,
+upstream of the corpus builder. Both recovery paths are closed:
+`OriginalFilename` appears in none of the 819 cases, and VirusTotal
+`meaningful_name` is empty everywhere (`VT_API_KEY not set`). Measuring it at
+all requires acquisition to preserve the delivered filename. One note for the
+rebuild: System32's own `AppHostRegistrationVerifier.exe` declares
+`OriginalFilename` `AppHostNameRegistrationVerifier.exe`, so a naive
+name-mismatch rule false-positives on Microsoft.
+
+**4. `embedded_network_indicators` needs a narrower question, not a better
 parser.** It fires on 71.7% of malware and 77.0% of third-party software.
 Containing a URL is a property of software. Candidate reframings: a host with no
 benign reputation, an IP literal with no accompanying domain, URLs that do not
 match the binary's own vendor string.
 
-**4. `stripped_metadata` deserves a wider benign corpus.** It carries 61% of
-corpus B alone, and its false-positive rate is 0.0% on System32 but 10.3% on
-Program Files -- clustered entirely in GNU/MinGW-built software (7-Zip 6/6,
-GnuWin32 6/6, Git 5/6). A corpus of open-source Windows builds would say whether
-10.3% is the floor or the start.
-
-**5. The README section is drafted and unpublished.** It is in the 27 Aug chat
-and needs re-drafting against the numbers above, which moved after it was
-written. Frame as *measured*, never *tuned*; include the failures.
+**5. The README section is drafted and unpublished.** It needs re-drafting
+against the numbers above, which have now moved twice. Frame as *measured*,
+never *tuned*; include the failures.
 
 **6. Other modules have false-positive rates only.** `extension`, `spec`, `api`.
 For `spec` and `api` a "true positive" means a real exposure found in the wild,
@@ -419,10 +457,16 @@ delisted.
 Each of these produced a plausible number rather than an error, which is why
 they survived:
 
-- **A collector that fails must report `unknown`, not clean.** Three instances
-  in one day: `strings` was never installed (821 cases, `strings.txt` 0 bytes),
-  capa was missing from a non-activated venv (194 of 229 malware samples), FLOSS
-  deadlocked. Each made a category say "looked, found nothing".
+- **A collector that fails must report `unknown`, not clean.** Four instances
+  now: `strings` was never installed (821 cases, `strings.txt` 0 bytes), capa
+  was missing from a non-activated venv (194 of 229 malware samples), FLOSS
+  deadlocked, and the version-info block was **never written by anything** —
+  read by the categoriser, produced by no collector, and constructed by hand
+  only in the tests, which is exactly why they passed throughout.
+- **A consumer reading a field no producer writes fails silently and
+  plausibly.** `stripped_metadata` did not error and did not report `unknown`.
+  It degraded into a second copy of `invalid_signature` and looked like the
+  strongest signal in the table. Grep for the writer, not only the reader.
 - **`subprocess.run(timeout=)` kills the launcher, not the tree.** capa.exe and
   floss.exe spawn a grandchild that inherits the pipes; the drain then blocks
   forever. `static_triage_engine/proc.py` kills the tree first. A FLOSS process
@@ -440,12 +484,17 @@ they survived:
 ### The correction worth remembering
 
 `dangerous_capability` was published as "inverted, 3x", then corrected to
-"inverted, 12x", and was finally neither -- it separated nothing at 1.1x. Both
+"inverted, 12x", and was finally neither — it separated nothing at 1.1x. Both
 earlier figures were artifacts of capa being absent. The second was the worse
 error: it repaired a broken measurement using a subset of the same broken data
 and came out **more** confident. A claim that strengthens under correction is a
-warning, not a reassurance. The right move at that point was to record the
-number as unavailable until the corpus could be re-run.
+warning, not a reassurance.
+
+`stripped_metadata` is the same lesson from the other side. Its 100%-against-0%
+split was the most convincing number in the table, and it was measuring the
+signature check. **A category that separates suspiciously well deserves the same
+audit as one that separates suspiciously badly** — and the audit is to find the
+code that *writes* the field, not the code that reads it.
 
 ## After dynamic — the roadmap from 24 Aug
 

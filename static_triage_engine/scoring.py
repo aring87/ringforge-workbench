@@ -396,7 +396,7 @@ def _pe_string_table(pe_meta: dict[str, Any]) -> dict[str, str]:
         if m:
             out[key] = m.group(1)
 
-    for k in ["version_strings", "version_info_strings", "strings"]:
+    for k in ["version_info", "version_strings", "version_info_strings", "strings"]:
         if isinstance(pe_meta, dict) and isinstance(pe_meta.get(k), dict):
             for kk, vv in pe_meta[k].items():
                 if isinstance(vv, str):

@@ -51,7 +51,7 @@ def _signed_installer():
     """A real vendor installer: signature verifies, version-info complete."""
     return dict(
         summary={"sample": {"filename": "vendor_setup.exe"}},
-        pe_meta={"version_info": {
+        pe_meta={"version_info_collected": True, "version_info": {
             "CompanyName": "Trusted Vendor Ltd",
             "ProductName": "Trusted Product",
             "FileDescription": "Trusted Product Installer",
@@ -72,7 +72,7 @@ def _anonymous_binary():
     sample = _signed_installer()
     sample.update(
         summary={"sample": {"filename": "a3f8c1e29b74d05f6a2b8c31.exe"}},
-        pe_meta={"version_info": {}},
+        pe_meta={"version_info_collected": True, "version_info": {}},
         signing={"verify_ok": False, "timestamp_verified": False},
     )
     return sample
@@ -108,7 +108,8 @@ class ASignedInstallerIsNotSuspicious(unittest.TestCase):
         # If the signature checks out, the version-info block means what it
         # says -- including when it says little.
         sample = _signed_installer()
-        sample["pe_meta"] = {"version_info": {"CompanyName": "Trusted Vendor Ltd"}}
+        sample["pe_meta"] = {"version_info_collected": True,
+                             "version_info": {"CompanyName": "Trusted Vendor Ltd"}}
         _, cats = _verdict(**sample)
 
         self.assertFalse(_named(cats, "stripped_metadata").present)
@@ -174,7 +175,8 @@ class OneClaimIsOneCategory(unittest.TestCase):
 
     def test_a_partially_filled_block_is_present_but_not_strong(self) -> None:
         sample = _anonymous_binary()
-        sample["pe_meta"] = {"version_info": {"CompanyName": "Something"}}
+        sample["pe_meta"] = {"version_info_collected": True,
+                             "version_info": {"CompanyName": "Something"}}
         _, cats = _verdict(**sample)
 
         category = _named(cats, "stripped_metadata")
