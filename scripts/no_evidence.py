@@ -90,6 +90,15 @@ def _describe(case: Path, cats, loaded: dict[str, Any]) -> dict[str, Any]:
         "managed": managed,
         "dotnet_collected": dotnet_collected,
         "renamed": renamed,
+        # Only for the population a threshold would apply to. A mixed-mode
+        # assembly reads 0.201 on mangled C++ symbols and a five-identifier
+        # satellite reads 0.200 on one generic name; printing either alongside
+        # the others would invite a threshold chosen to clear noise.
+        "unreadable_fraction": (
+            float(dotnet.get("unreadable_fraction") or 0.0)
+            if (dotnet_collected and dotnet.get("is_managed")
+                and dotnet.get("il_only")
+                and dotnet.get("identifiers_sufficient")) else None),
         "protectors": protectors,
         "import_dlls": len(dlls),
         "import_functions": functions,
@@ -244,6 +253,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"      renamed identifiers >= 0.10   {ren:3} of {len(rows)}"
               f"   <-- what a managed-obfuscation category would recover here")
         print(f"      names a protector outright    {prot:3} of {len(rows)}")
+        # **The threshold has to be chosen from the distribution, not from how
+        # many band samples it happens to cover.** Benign tops out at 0.099
+        # over 39 measurable assemblies, so where these sit decides whether a
+        # 2x margin costs coverage or is free.
+        fracs = sorted((r["unreadable_fraction"] for r in rows
+                        if r["unreadable_fraction"] is not None), reverse=True)
+        if fracs:
+            print(f"      measurable fractions here: "
+                  + ", ".join(f"{f:.3f}" for f in fracs[:12]))
     else:
         print(f"      (no dotnet_metadata.json -- run scripts/refresh_dotnet.py;"
               f" managed count above is the import-table guess)")
