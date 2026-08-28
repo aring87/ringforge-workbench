@@ -355,29 +355,39 @@ replaces is preserved in the git history.
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
-    deceptive_file_identity ‡      0.0%        0.0%        0.0%        0.0%
+    deceptive_file_identity ‡      0.0%        0.0%        7.1%        8.0%
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
 
-    bands, No Evidence            98.3%       90.3%       19.7%       31.0%
-    the same, before the fix      98.3%       86.0%        0.0%        3.0%
+    bands, No Evidence            97.9%       90.3%        3.9%       17.0%
+    before the two new categories 98.3%       90.3%       19.7%       31.0%
+    before the collector fix      98.3%       86.0%        0.0%        3.0%
 
     § re-measured 28 Aug with the collector fixed; was 0.0/10.3/100.0/95.0,
       every one of which was `not trusted_signed` reproduced to the decimal
     † held in `verdict.CONTEXT_ONLY_CATEGORIES` -- fires *less* on malware
-    ‡ cannot fire on this corpus by construction -- see item 2
-    ¶ measured 28 Aug, not yet shipped: entropy >= 7.5 in an *executable*
-      section
+    ‡ rebuilt 28 Aug on the version block. Had never fired on 819 samples in
+      either direction; the three filename predicates remain correct and
+      remain unreachable, because acquisition destroys the authored name
+    ¶ shipped 28 Aug: entropy >= 7.5 in an *executable* section
 
-**Read the two band rows together, because they are the actual result.** The
-category is real and it discriminates -- 77.2% and 60.0% against 0.0% and 6.0%,
-a better ratio than the broken figure claimed. But it was carrying samples that
-nothing else fires on, and removing the phantom exposed that: **No Evidence on
-malware went from 0.0% to 19.7% and from 3.0% to 31.0%.** 56 of 227 malware
-samples now have no evidence at all, where before every one of them had at
-least a band. Benign moved the other way, 86.0% to 90.3% on Program Files.
+**Read the three band rows together, because they are the actual result.**
+Corrected, `stripped_metadata` discriminates better than the broken figure
+claimed -- 77.2% and 60.0% against 0.0% and 6.0%. But it had been carrying
+samples nothing else fires on, and removing the phantom exposed 56 of them:
+**No Evidence on malware went 0.0% -> 19.7% and 3.0% -> 31.0%.**
 
-The module became more precise and materially less sensitive on the same day,
-and the second half of that sentence is the one to act on.
+Two categories, both measured before they shipped, then recovered 34 of the 56:
+**3.9% and 17.0%.** `high_entropy_sections` takes the packed ones,
+`deceptive_file_identity` the ones that claim a vendor they cannot be, and they
+overlap on only six samples across both corpora. Their combined cost on benign
+is one System32 binary moving from No Evidence to Single Observation; Program
+Files bands did not move at all.
+
+**22 samples remain, and they are the honest number.** The pre-fix baseline of
+3 was a phantom -- it counted samples covered by a signal that did not exist.
+Against it the module now looks worse and is in fact better, which is the whole
+lesson of this section in one row: a coverage figure is only as good as the
+category producing it.
 
 ### What the collector fix changed
 
@@ -448,52 +458,65 @@ property of the samples and not of the pipeline. That was worth ruling out.
     both                                     5            1          6
     NEITHER                                  4           17         21
 
-**1. Ship `high_entropy_sections` and a vendor-identity category together.**
-They are not competitors: 9 packed-only, 7 vendor-only, 5 both in bazaar. Either
-alone leaves 11 or 13 of that band; together they leave 4. Across both corpora
-the irreducible band goes 56 -> 21, from 24.7% of the malware corpus to 9.2%.
+**Both categories shipped on 28 Aug, and the band closed as predicted.** The
+prediction was published before either ran -- about 4 remaining in bazaar and
+about 17 in datalake -- and the result was 5 and 17.
 
-Entropy: >= 7.5 in an *executable* section, 0.3% / 0.0% benign against 35.4% /
-28.0% malware. Splitting on the executable bit is what makes it -- benign high
-entropy is almost entirely `.rsrc` (compressed icons), malware's is `.text`
-(packed code). Undifferentiated `any section >= 7.2` is 2.7% / 3.0% against
-48.8% / 59.0%, a materially worse trade.
+    of the No Evidence band          family        6-year        both
+    ─────────────────────────       ────────      ────────      ──────
+    was                                   25            31          56
+    now                                    5            17          22
 
-Vendor identity: seven unsigned binaries in bazaar claim `Microsoft
-Corporation`, one `Windows Defender`, one `Adobe Inc`; datalake adds six
-Microsoft, three `Oracle Corporation`, and an `Avira GmbH`. Benign cost 0 of 292
-System32 -- all 284 Microsoft-claiming binaries there are properly signed -- and
-4 of 300 Program Files, all four unsigned Microsoft COM stubs that
-`stripped_metadata` already fires on, so it adds **nothing** to the benign No
-Evidence band.
+`high_entropy_sections` takes the packed ones and `deceptive_file_identity` the
+ones claiming a vendor they cannot be; across both corpora they overlap on only
+six samples, which is why shipping both was worth more than shipping either.
+Neither is `strong`. Their combined benign cost is one System32 binary moving
+from No Evidence to Single Observation, and Program Files bands did not move.
 
-**Do not ship the vendor rule as the substring list that measured it.** That
-list was written by looking at the malware, which is tuning to the test set, and
-`"google" in "Google Translation..."` will eventually match a real vendor. Two
-principled constructions, in order of preference: compare the claimed
-`CompanyName` against the *signature subject* where a signature exists, which
-needs no list at all; and for unsigned binaries, derive "vendors who always
-sign" from the **benign** corpora -- any vendor with N samples and 100% signed
--- so the list is measured rather than chosen. The generic form of the rule,
-*names any company but carries no valid signature*, is not usable: roughly 17 of
-300 Program Files binaries do exactly that, honestly.
+`deceptive_file_identity` had never fired on 819 samples in either direction. It
+now fires on 7.1% and 8.0% of the malware corpora and 0.0% of both benign ones.
 
-**2. 21 samples resist both signals** -- 4 in bazaar, 17 in datalake, and the
-gap between those two numbers is the finding. Datalake is only 23% packed
-against bazaar's 56%, and 3 of its 31 are *validly signed* malware. That is the
-honest floor for the static module, and the right answer for some of it is that
-the dynamic side has to take them. Characterise before building a third
-category; the same discipline that produced the table above.
+Two things learned in the building, both recorded because they changed the
+design:
 
-**3. `deceptive_file_identity` should absorb the vendor-identity rule.** The two
-are the same question -- *what is this file claiming to be, and is the claim
-authored?* -- and the version block answers it where the filename cannot. Seven
-unsigned binaries claiming Microsoft is deception that had to be written by
-someone, which is the exact standard the category already sets for double
-extensions and RLO overrides. Folding it in here rather than adding a seventh
-category also keeps one claim charged once.
+**The signature-subject comparison does not work, and it was the construction
+this section recommended.** *Claims vendor X, signed by not-X* fires on 15.0% of
+Program Files and 1.0% of System32, because bundled software is signed by its
+distributor rather than its author -- curl and NVIDIA signed by Microsoft,
+FFmpeg by OBS Project, `@react-native-community` by Microsoft. Measuring it
+before writing it cost ten minutes. The rule that survives is the derived list,
+`scripts/derive_signers.py`, at 0.0% and 1.3%.
 
-The rest of this item stands, and explains why the category has never fired.
+**The vendor claim has to be *complete* or the two categories double-count.**
+Four Program Files binaries honestly say `Microsoft Corporation` across two of
+four fields while shipping unsigned inside someone else's installer. Firing here
+as well as in `stripped_metadata` carried all four to Corroborated on the single
+observation of being unsigned -- Program Files Corroborated went 1 to 5 before
+this was caught. Requiring the whole block splits them cleanly: a partial
+identity is `stripped_metadata`, a complete and false one is this. It costs
+nothing, because all 56 target samples carried four or more fields.
+
+**1. 22 samples resist everything** -- 5 in bazaar, 17 in datalake, and the gap
+between those two is the finding. Datalake is only 23% packed against bazaar's
+56%, and 3 of its 31 were *validly signed* malware. Characterise before building
+a third category, the same way `scripts/no_evidence.py` characterised the 56;
+the right answer for some of them is that the static module legitimately cannot
+see them and the dynamic side has to.
+
+**2. Widen the benign corpus, and the vendor list widens with it.**
+`_ALWAYS_SIGNS` holds 8 vendors because those are the ones the benign corpora
+contain at four samples or more. Impersonations of Adobe, Avira and Opera were
+all present in the malware and none is caught -- one of the five samples still
+uncovered in bazaar is exactly that. This is the honest price of deriving the
+list rather than reading it off the malware, and the fix is a wider benign
+corpus, never a wider read of the test set.
+
+**3. The filename half of `deceptive_file_identity` is still unreachable**, and
+that is worth keeping written down even though the category now fires. The
+vendor claim was folded in here rather than made a seventh category because it
+is the same question -- *what is this file claiming to be, and did someone
+author the claim?* -- and one claim should be charged once.
+
 Not dead code — all three predicates work. All 227 malware samples are named
 `<sha256>.exe` (100%, both corpora), and `_sample.json` shows they were already
 hash-named on disk, so the authored name was destroyed at download time,
@@ -511,12 +534,11 @@ Containing a URL is a property of software. Candidate reframings: a host with no
 benign reputation, an IP literal with no accompanying domain, URLs that do not
 match the binary's own vendor string.
 
-**5. The README section is drafted and unpublished.** It needs re-drafting
-against the numbers above, which have now moved three times. Frame as
-*measured*, never *tuned*; include the failures, and include the band rows —
-a README that publishes 77.2% without publishing that 19.7% of the corpus now
-has no evidence at all would be selecting the flattering half of the same
-measurement.
+**5. The README section is published and current.** Seven categories with the
+closing numbers, both halves of the `stripped_metadata` correction, and the 22
+that still resist everything stated as the number to compare against -- not the
+3 the module reported before any of this, which counted samples covered by a
+signal that did not exist. Revisit it when item 1 or 2 moves a figure.
 
 **6. Other modules have false-positive rates only.** `extension`, `spec`, `api`.
 For `spec` and `api` a "true positive" means a real exposure found in the wild,

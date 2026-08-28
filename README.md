@@ -297,23 +297,26 @@ How often each static category fires:
     category                      Sys32   ProgFiles     family      6-year
     ─────────────────────────    ──────   ─────────   ─────────   ─────────
     stripped_metadata              0.0%        6.0%       77.2%       60.0%
+    high_entropy_sections          0.3%        0.0%       35.4%       28.0%
     dangerous_capability           1.1%        4.0%       30.4%       18.7%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
+    deceptive_file_identity        0.0%        0.0%        7.1%        8.0%
     embedded_network_indicators    9.9%       77.0%       71.7%       67.0%
-    deceptive_file_identity        0.0%        0.0%        0.0%        0.0%
 
-**Two of the six do not work, and they are in the table for that reason.**
+**One of the seven does not work, and it is in the table for that reason.**
 
 `embedded_network_indicators` fires on 77.0% of third-party software and 71.7%
 of malware. Containing a URL is a property of software. It is held as context —
 reported in full, never counted toward a band.
 
-`deceptive_file_identity` has never fired on 819 samples in either direction.
-Its predicates are correct; the corpus cannot exercise them. Samples are
-acquired by hash and stored under it, so the authored filename is destroyed
-before analysis begins. A category that cannot fire is recorded as such rather
-than quietly carried.
+`deceptive_file_identity` had never fired on 819 samples in either direction.
+Its three filename predicates are correct and remain unreachable: samples are
+acquired by hash, so the authored filename is destroyed before analysis begins.
+What rebuilt it was the version block — the claim that *does* survive
+acquisition. Thirteen unsigned binaries across the two malware corpora claim to
+be Microsoft, three Oracle, one Windows Defender, one Adobe. It now fires on
+7.1% and 8.0% of malware and on neither benign corpus.
 
 ### The row that was measuring something else
 
@@ -340,10 +343,16 @@ no evidence at all went from 0.0% to 19.7% on one malware corpus and 3.0% to
 The rate improved and the module got weaker on the same day, and only one of
 those two facts is visible in the table above.
 
-Those 56 turn out to be a coherent population rather than a residue: malware
-carrying complete, plausible vendor metadata — seven unsigned binaries claiming
-`Microsoft Corporation`, one `Windows Defender`, one `Adobe Inc`. Two measured
-categories now in development cover 35 of them.
+Those 56 were a coherent population rather than a residue: malware carrying
+complete, plausible vendor metadata, unsigned. Two categories built against that
+description — `high_entropy_sections` and the rebuilt `deceptive_file_identity`
+— recovered 34 of them, taking the no-evidence share to **3.9% and 17.0%**.
+Their combined cost across 592 benign binaries is one System32 file moving from
+*No Evidence* to *Single Observation*.
+
+Twenty-two samples still resist every static category, and that is the number to
+compare against — not the 3 the module reported before any of this, which
+counted samples covered by a signal that did not exist.
 
 **Nothing here was tuned to these numbers.** Each corpus disagreed with the
 intuition formed before it, and the corrections are recorded in
