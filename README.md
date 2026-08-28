@@ -302,9 +302,10 @@ How often each static category fires:
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     deceptive_file_identity        0.0%        0.0%        7.1%        8.0%
+    obfuscated_managed_code        0.0%        0.0%        4.7%        4.0%
     embedded_network_indicators    9.9%       77.0%       71.7%       67.0%
 
-**One of the seven does not work, and it is in the table for that reason.**
+**One of the eight does not work, and it is in the table for that reason.**
 
 `embedded_network_indicators` fires on 77.0% of third-party software and 71.7%
 of malware. Containing a URL is a property of software. It is held as context —
@@ -344,15 +345,19 @@ The rate improved and the module got weaker on the same day, and only one of
 those two facts is visible in the table above.
 
 Those 56 were a coherent population rather than a residue: malware carrying
-complete, plausible vendor metadata, unsigned. Two categories built against that
-description — `high_entropy_sections` and the rebuilt `deceptive_file_identity`
-— recovered 34 of them, taking the no-evidence share to **3.9% and 17.0%**.
-Their combined cost across 592 benign binaries is one System32 file moving from
-*No Evidence* to *Single Observation*.
+complete, plausible vendor metadata, unsigned. Three categories built against
+what the band actually contained — `high_entropy_sections`, the rebuilt
+`deceptive_file_identity`, and `obfuscated_managed_code` — recovered 39 of them,
+taking the no-evidence share to **1.6% and 15.0%**. Their combined cost across
+592 benign binaries is one System32 file moving from *No Evidence* to *Single
+Observation*.
 
-Twenty-two samples still resist every static category, and that is the number to
+Seventeen samples still resist every static category, and that is the number to
 compare against — not the 3 the module reported before any of this, which
-counted samples covered by a signal that did not exist.
+counted samples covered by a signal that did not exist. Roughly half are .NET
+assemblies with entirely readable identifiers: managed code is the module's
+largest remaining blind spot, and reading one property of it does not close
+that.
 
 **Nothing here was tuned to these numbers.** Each corpus disagreed with the
 intuition formed before it, and the corrections are recorded in

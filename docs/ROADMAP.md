@@ -357,9 +357,11 @@ replaces is preserved in the git history.
     embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
     deceptive_file_identity ‡      0.0%        0.0%        7.1%        8.0%
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
+    obfuscated_managed_code ‖      0.0%        0.0%        4.7%        4.0%
 
-    bands, No Evidence            97.9%       90.3%        3.9%       17.0%
-    before the two new categories 98.3%       90.3%       19.7%       31.0%
+    bands, No Evidence            97.9%       90.3%        1.6%       15.0%
+    before obfuscated_managed     97.9%       90.3%        3.9%       17.0%
+    before entropy and identity   98.3%       90.3%       19.7%       31.0%
     before the collector fix      98.3%       86.0%        0.0%        3.0%
 
     § re-measured 28 Aug with the collector fixed; was 0.0/10.3/100.0/95.0,
@@ -369,6 +371,9 @@ replaces is preserved in the git history.
       either direction; the three filename predicates remain correct and
       remain unreachable, because acquisition destroys the authored name
     ¶ shipped 28 Aug: entropy >= 7.5 in an *executable* section
+    ‖ shipped 28 Aug: >= 20% of a managed assembly's identifiers renamed. One
+      window into managed code, not a fix for it -- 8 of the band's managed
+      samples have perfectly readable names and are still unseen
 
 **Read the three band rows together, because they are the actual result.**
 Corrected, `stripped_metadata` discriminates better than the broken figure
@@ -376,18 +381,19 @@ claimed -- 77.2% and 60.0% against 0.0% and 6.0%. But it had been carrying
 samples nothing else fires on, and removing the phantom exposed 56 of them:
 **No Evidence on malware went 0.0% -> 19.7% and 3.0% -> 31.0%.**
 
-Two categories, both measured before they shipped, then recovered 34 of the 56:
-**3.9% and 17.0%.** `high_entropy_sections` takes the packed ones,
-`deceptive_file_identity` the ones that claim a vendor they cannot be, and they
-overlap on only six samples across both corpora. Their combined cost on benign
-is one System32 binary moving from No Evidence to Single Observation; Program
-Files bands did not move at all.
+Three categories, every one measured before it shipped, then recovered 39 of
+the 56: **1.6% and 15.0%.** `high_entropy_sections` takes the packed ones,
+`deceptive_file_identity` the ones claiming a vendor they cannot be, and
+`obfuscated_managed_code` the .NET assemblies whose identifiers were renamed.
+They barely overlap -- six samples between the first two, none with the third.
+Their combined cost on benign is one System32 binary moving from No Evidence to
+Single Observation; Program Files bands did not move at all.
 
-**22 samples remain, and they are the honest number.** The pre-fix baseline of
+**17 samples remain, and they are the honest number.** The pre-fix baseline of
 3 was a phantom -- it counted samples covered by a signal that did not exist.
-Against it the module now looks worse and is in fact better, which is the whole
-lesson of this section in one row: a coverage figure is only as good as the
-category producing it.
+Against it the module still looks worse and is in fact better, which is the
+whole lesson of this section in one row: a coverage figure is only as good as
+the category producing it.
 
 ### What the collector fix changed
 
