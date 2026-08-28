@@ -567,15 +567,64 @@ benign-against-malicious**, and a library does not take screenshots or list
 processes whatever its intent. Sixteen namespaces at infinite lift is what a
 confound looks like when it is flattering.
 
-**What would actually answer it: capa over benign managed *applications*.** The
-survey holds 161 managed assemblies with paths recorded, and the managed
-population needs splitting on library-versus-application before either group is
-compared to anything. capa costs 30-85 seconds a binary, so a stratified subset
-is a few hours -- the first expensive measurement in this section, and the only
-one that makes the question answerable.
+**The confound was real, and removing it changed the answer.** 124 benign
+managed *applications* -- every managed assembly on the host with an entry point
+and no `IMAGE_FILE_DLL` flag, 124 of 3,067 executables -- were run through the
+whole engine (`G:\benign-managed-cases`, built by `scripts/stage_managed_apps.py`
+and `static_corpus.py`). capa analysed all 124 with its `dotnet` backend and
+none produced zero rules.
 
-Until then the honest position is that **the module cannot see 8 of these
-samples and no framing tried so far changes that.**
+    namespace                              libraries(51)   applications(124)
+    ─────────────────────────────────     ─────────────   ─────────────────
+    collection/keylog                        inf  (0.0%)      5.2x  (2.4%)
+    data-manipulation/encryption/aes         inf  (0.0%)     19.3x  (0.8%)
+    host-interaction/gui/window/get-text     inf  (0.0%)     10.8x  (2.4%)
+    namespaces at infinite lift                       16                  1
+
+Sixteen namespaces at infinite lift became one. Everything else landed between
+4x and 19x against a benign rate that is small but *not zero*, which is what a
+real signal looks like and what the library comparison could not show.
+
+**A genuine finding survives it, and it is not yet a change.** Six of the top
+twenty-two are already in `HIGH_SIGNAL_CAPABILITIES`. Several are not and
+discriminate anyway: `data-manipulation/encryption/aes` 19.3x,
+`data-manipulation/prng` 11.0x, `host-interaction/gui/window/get-text` 10.8x,
+`collection/keylog` 5.2x -- the last one notable because the set holds
+`host-interaction/hardware/keyboard`, its near-twin, and not it.
+
+**Do not extend the set from this table.** Two reasons, both of which have
+burned this project already. `HIGH_SIGNAL_CAPABILITIES` was fitted over *pooled*
+corpora; adding members chosen on a managed-only measurement mixes
+methodologies and is tuning to .NET. And the 124 benign applications are one
+machine's, heavily weighted to installers, uninstallers and updaters -- a
+specific population that may itself be the next confound.
+
+The measurable version: add the candidates, re-measure `dangerous_capability`
+across **all four** corpora, and keep them only if malware detection rises
+without the benign rate moving. That is the same test the original set passed,
+run again rather than a different test run once.
+
+**Two results from scoring the new corpus, and the second is a caution about a
+shipped category.**
+
+`obfuscated_managed_code` reads **0.0% on 124 managed applications**. It was
+calibrated on 39 measurable assemblies that were mostly libraries; this is the
+population it was actually built for, and it holds.
+
+`dangerous_capability` reads **17.7% on the same 124**, 5 of them `strong`,
+against the 1.1% and 4.0% published for System32 and Program Files. Its benign
+rate was established on corpora that are overwhelmingly native and, where
+managed, overwhelmingly libraries. **On .NET applications it is roughly four
+times worse than the table says**, and the bands agree: 26 of 124 benign
+managed applications carry evidence, against 2% of System32 and 10% of Program
+Files. That is not a reason to change the category today, but the published
+figure should not be read as covering managed applications, and the roadmap
+table should carry the caveat.
+
+**Meanwhile the module still cannot see 8 of these samples.** Three framings
+have been tried -- API rarity, capa-within-managed, and this -- and none has
+produced a category. That is a legitimate end state under the project's own
+standard, and better recorded than papered over.
 
 The metric is the fraction of the `#Strings` heap that no compiler and no
 developer would emit: a character outside the identifier set, or four letters
