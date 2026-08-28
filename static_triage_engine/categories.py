@@ -65,6 +65,59 @@ _DOUBLE_EXTENSION = re.compile(
 #: `txt.exe` to the eye. Nothing legitimate puts one in a filename.
 _RLO = "‮"
 
+#: A section that is executable *and* near-random is packed code. Benign high
+#: entropy is almost entirely `.rsrc` -- compressed icons and images -- so the
+#: executable bit is part of the test rather than entropy alone. Measured
+#: 28 Aug over 819 samples: **0.3% / 0.0%** on the two benign corpora against
+#: **35.4% / 28.0%** on the two malware ones. Undifferentiated `any section
+#: >= 7.2` is 2.7% / 3.0% against 48.8% / 59.0% -- more of the malware, but at
+#: ten times the false-positive rate, which is the wrong trade for a bench
+#: whose expensive error is firing on ordinary software.
+_PACKED_ENTROPY = 7.5
+_IMAGE_SCN_MEM_EXECUTE = 0x20000000
+
+#: Vendors the **benign** corpora show signing at least 95% of what they ship,
+#: over at least four samples each. **Derived, not chosen** --
+#: `scripts/derive_signers.py` regenerates it, and a list written by looking at
+#: the malware would be tuned to the test set. Microsoft is the threshold case
+#: at 399 of 403; the four exceptions are unsigned COM interop stubs shipped
+#: inside other vendors' installers, and they are the entire measured
+#: false-positive cost of this rule: 0 of 292 System32, 4 of 300 Program Files.
+#:
+#: **It only covers vendors the benign corpora contain.** Impersonations of
+#: Adobe, Avira and Opera were all seen in the malware and none is caught here,
+#: because none of the three appears in benign often enough to earn a place.
+#: Widening the benign corpus widens this list; reading the malware for it does
+#: not.
+_ALWAYS_SIGNS = frozenset({
+    "asustek", "bitdefender", "corsair", "google", "logitech", "microsoft",
+    "oracle", "simon",
+})
+
+#: Dropped before taking a vendor's first distinctive word, so that
+#: `Oracle Corporation` and `Oracle and/or its affiliates` key the same.
+_VENDOR_NOISE = frozenset({"the", "and", "or", "its", "a"})
+
+_VENDOR_SUFFIX = re.compile(
+    r"\b(inc|corp|corporation|ltd|limited|llc|gmbh|co|company|sa|ab|as|oy|"
+    r"plc|pty|bv|srl|sarl)\b", re.I)
+
+
+def _vendor_key(company: str) -> str:
+    """The first distinctive word of a company name, or "".
+
+    A three-letter token is too generic to accuse anyone over, so it is
+    discarded rather than matched.
+    """
+    text = re.sub(r"<[^>]*>", " ", (company or "").lower().strip())
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = _VENDOR_SUFFIX.sub(" ", text)
+    for token in text.split():
+        if token in _VENDOR_NOISE:
+            continue
+        return token if len(token) >= 4 else ""
+    return ""
+
 
 def _sample_name(summary: dict[str, Any]) -> str:
     info = summary.get("sample", {}) if isinstance(summary.get("sample"), dict) else {}
@@ -216,6 +269,50 @@ def static_categories(
         ) if stripped else "",
     ))
 
+    # --- How the code is stored ---------------------------------------------
+    #
+    # **Measured before it shipped, which is the first time that has been true
+    # here.** Packing is the one cheap static signal `static` was not already
+    # reading: `pe_meta` has computed section entropy on every sample since the
+    # beginning and nothing consumed it.
+    #
+    # The executable bit is what makes it work. Benign binaries carry high
+    # entropy in `.rsrc` -- a PNG is incompressible and says nothing about
+    # intent -- while malware carries it in `.text`, which is packed code.
+    sections = [s for s in (pe_meta or {}).get("sections") or []
+                if isinstance(s, dict) and (s.get("raw_size") or 0) > 0]
+    packed = [s for s in sections
+              if int(s.get("characteristics") or 0) & _IMAGE_SCN_MEM_EXECUTE
+              and float(s.get("entropy") or 0.0) >= _PACKED_ENTROPY]
+    # **The key being present is what "looked" means**, not the list being
+    # non-empty. `extract_pe_metadata` always writes `sections`; a dict without
+    # it came from something that did not parse the section table, and an empty
+    # list from something that did and found nothing worth measuring.
+    entropy_ran = pe_ran and isinstance((pe_meta or {}).get("sections"), list)
+
+    cats.append(Category(
+        name="high_entropy_sections",
+        module="static",
+        collected=entropy_ran,
+        present=entropy_ran and bool(packed),
+        # **Not strong, and the corpus is the reason.** 0.3% and 0.0% on the
+        # benign corpora would ordinarily earn it -- but both are *installed*
+        # software, System32 and Program Files, and neither contains the
+        # installers and commercially protected binaries where legitimate
+        # packing actually lives. The measurement cannot see the population
+        # that would produce the false positives, so it does not get to
+        # conclude on its own. Promote it when a corpus of installers says so.
+        strong=False,
+        detail=", ".join(
+            f"{s.get('name') or '?'} {float(s.get('entropy') or 0):.2f}"
+            for s in packed[:4]) if packed else "",
+        reason=(
+            f"{len(packed)} executable section(s) carry near-random bytes "
+            f"(entropy >= {_PACKED_ENTROPY}). Code that is unreadable until it "
+            f"runs was packed to be unreadable."
+        ) if (entropy_ran and packed) else "",
+    ))
+
     # --- What the file is pretending to be ----------------------------------
     #
     # **A hash-like filename claims nothing, and the additive model charging 6
@@ -229,13 +326,45 @@ def static_categories(
     # What survives that objection is deception that had to be authored: a
     # document extension in front of an executable one, or a right-to-left
     # override. Those are in the name because someone put them there.
+    #
+    # **The version block answers what the filename cannot.** All three name
+    # predicates were correct and none had fired on 819 samples, because this
+    # pipeline acquires by hash: every malware sample arrives as
+    # `<sha256>.exe`, and the name the author chose was destroyed before
+    # analysis began. The claim that survives acquisition is `CompanyName`, and
+    # it is claimed loudly -- of the 56 samples nothing else fired on, thirteen
+    # named Microsoft, three Oracle, one Windows Defender, one Adobe, none of
+    # them signed. Impersonating a vendor who signs everything is the same act
+    # as an RLO override: deception someone had to author.
     summary_ran = summary is not None
     name = _sample_name(summary or {})
     odd_extension = name.endswith(_SUSPICIOUS_EXTENSIONS)
     double_extension = bool(_DOUBLE_EXTENSION.search(name))
     rlo = _RLO in name
-    deceptive = summary_ran and bool(name) and (
-        odd_extension or double_extension or rlo)
+
+    company = (info.get("CompanyName") or "").strip()
+    vendor = _vendor_key(company)
+    # `vi_ran` and not `pe_ran`: a version block nobody collected cannot be
+    # read as a file claiming nothing.
+    #
+    # **The claim has to be complete, and that is what keeps the two categories
+    # from counting one fact twice.** Four Program Files binaries honestly say
+    # `Microsoft Corporation` while filling in two of the four fields and
+    # shipping unsigned inside someone else's installer. Firing here as well as
+    # in `stripped_metadata` carried all four to Corroborated on a single
+    # observation -- being unsigned -- which is the exact arithmetic this module
+    # exists to refuse.
+    #
+    # Requiring the whole block splits the two cleanly: a partial identity is
+    # `stripped_metadata`, a complete and false one is this. It costs nothing in
+    # detection, because every one of the 56 samples nothing else fired on
+    # carried four or more fields.
+    vendor_claim = bool(vi_ran and not missing and vendor in _ALWAYS_SIGNS
+                        and not trusted_signed)
+
+    name_ran = summary_ran and bool(name)
+    deceptive = (name_ran and (odd_extension or double_extension or rlo)) \
+        or vendor_claim
 
     why = []
     if double_extension:
@@ -244,17 +373,28 @@ def static_categories(
         why.append("a right-to-left override that reverses how the name reads")
     if odd_extension:
         why.append(f"the extension {name.rsplit('.', 1)[-1]}")
+    if vendor_claim:
+        why.append(f"a claim to be {company}, which is unsigned here and "
+                   f"signed on everything that vendor ships")
 
     cats.append(Category(
         name="deceptive_file_identity",
         module="static",
-        collected=summary_ran and bool(name),
+        # Either source of an identity claim counts as having looked.
+        collected=name_ran or vi_ran,
         present=deceptive,
         # A double extension or an RLO is a deliberate attempt to be misread.
         # A hash-like name is merely uninformative -- automated sample handling
         # produces those too, including ours.
+        #
+        # **The vendor claim is deliberately not strong**, though it is just as
+        # authored. Its measured cost is four Program Files binaries that
+        # honestly say `Microsoft Corporation` while shipping unsigned inside
+        # someone else's installer, and a strong category would carry those
+        # four to Corroborated on their own. An RLO has no such population.
         strong=deceptive and (double_extension or rlo),
-        detail=name if deceptive else "",
+        detail=(name if (odd_extension or double_extension or rlo)
+                else company) if deceptive else "",
         reason=(f"The filename carries {', and '.join(why)}.") if deceptive else "",
     ))
 

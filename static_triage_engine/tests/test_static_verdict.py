@@ -43,7 +43,7 @@ class TheStaticVerdictIsABand(unittest.TestCase):
                      signing={"verify_ok": False},
                      api_analysis={"returncode": 0, "chain_findings": []})
         result = static_verdict_for_case(
-            home, {"sample": {"filename": "a.exe"}}, {}, {"version_info_collected": True, "version_info": {}})
+            home, {"sample": {"filename": "a.exe"}}, {}, {"version_info_collected": True, "sections": [], "version_info": {}})
 
         self.assertEqual(result["verdict"], "Needs Review")
         self.assertEqual(result["severity"], "Medium")
@@ -53,7 +53,7 @@ class TheStaticVerdictIsABand(unittest.TestCase):
                      signing={"verify_ok": False},
                      api_analysis={"returncode": 0, "chain_findings": []})
         result = static_verdict_for_case(
-            home, {"sample": {"filename": "a.exe"}}, {}, {"version_info_collected": True, "version_info": {}})
+            home, {"sample": {"filename": "a.exe"}}, {}, {"version_info_collected": True, "sections": [], "version_info": {}})
 
         self.assertNotIn(result["verdict"].upper().replace(" ", "_"),
                          RETIRED_VERDICTS)
@@ -65,7 +65,7 @@ class TheStaticVerdictIsABand(unittest.TestCase):
                      signing={"verify_ok": False},
                      api_analysis={"returncode": 0, "chain_findings": []})
         result = static_verdict_for_case(
-            home, {"sample": {"filename": "a.exe"}}, {}, {"version_info_collected": True, "version_info": {}})
+            home, {"sample": {"filename": "a.exe"}}, {}, {"version_info_collected": True, "sections": [], "version_info": {}})
 
         self.assertTrue(result["suspicious"])
         self.assertTrue(all(text.strip() for text in result["suspicious"]))
@@ -76,7 +76,7 @@ class ConfidenceFollowsCoverageFirst(unittest.TestCase):
         home = _case(**files)
         return static_verdict_for_case(
             home, {"sample": {"filename": "a.exe"}}, {},
-            {"version_info_collected": True,
+            {"version_info_collected": True, "sections": [],
              "version_info": {"CompanyName": "V", "ProductName": "P",
                               "FileDescription": "D", "OriginalFilename": "a.exe"}})
 

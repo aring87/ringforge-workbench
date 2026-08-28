@@ -34,7 +34,7 @@ def _case(**files) -> Path:
 def _clean_static():
     return dict(
         summary={"sample": {"filename": "vendor_setup.exe"}},
-        pe_metadata={"version_info_collected": True, "version_info": {
+        pe_metadata={"version_info_collected": True, "sections": [], "version_info": {
             "CompanyName": "Vendor", "ProductName": "Product",
             "FileDescription": "Installer", "OriginalFilename": "vendor_setup.exe"}},
         signing={"verify_ok": True, "timestamp_verified": True,

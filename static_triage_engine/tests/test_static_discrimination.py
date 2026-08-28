@@ -51,7 +51,7 @@ def _signed_installer():
     """A real vendor installer: signature verifies, version-info complete."""
     return dict(
         summary={"sample": {"filename": "vendor_setup.exe"}},
-        pe_meta={"version_info_collected": True, "version_info": {
+        pe_meta={"version_info_collected": True, "sections": [], "version_info": {
             "CompanyName": "Trusted Vendor Ltd",
             "ProductName": "Trusted Product",
             "FileDescription": "Trusted Product Installer",
@@ -72,7 +72,7 @@ def _anonymous_binary():
     sample = _signed_installer()
     sample.update(
         summary={"sample": {"filename": "a3f8c1e29b74d05f6a2b8c31.exe"}},
-        pe_meta={"version_info_collected": True, "version_info": {}},
+        pe_meta={"version_info_collected": True, "sections": [], "version_info": {}},
         signing={"verify_ok": False, "timestamp_verified": False},
     )
     return sample
@@ -108,7 +108,7 @@ class ASignedInstallerIsNotSuspicious(unittest.TestCase):
         # If the signature checks out, the version-info block means what it
         # says -- including when it says little.
         sample = _signed_installer()
-        sample["pe_meta"] = {"version_info_collected": True,
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
                              "version_info": {"CompanyName": "Trusted Vendor Ltd"}}
         _, cats = _verdict(**sample)
 
@@ -175,7 +175,7 @@ class OneClaimIsOneCategory(unittest.TestCase):
 
     def test_a_partially_filled_block_is_present_but_not_strong(self) -> None:
         sample = _anonymous_binary()
-        sample["pe_meta"] = {"version_info_collected": True,
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
                              "version_info": {"CompanyName": "Something"}}
         _, cats = _verdict(**sample)
 
@@ -217,6 +217,156 @@ class WhatTheFileIsPretendingToBe(unittest.TestCase):
         _, cats = _verdict(**_signed_installer())
 
         self.assertFalse(_named(cats, "deceptive_file_identity").present)
+
+
+_EXEC = 0x20000000
+
+
+def _claiming(company):
+    """A complete version block naming `company`.
+
+    Complete, because a partial one is `stripped_metadata`'s claim rather than
+    this one -- see the categoriser.
+    """
+    return {"CompanyName": company, "ProductName": "Product",
+            "FileDescription": "Description", "OriginalFilename": "thing.exe"}
+
+
+def _section(name, entropy, executable=True, raw_size=4096):
+    return {"name": name, "entropy": entropy, "raw_size": raw_size,
+            "virtual_size": raw_size,
+            "characteristics": _EXEC if executable else 0x40000000}
+
+
+class ClaimingAVendorThatSignsEverything(unittest.TestCase):
+    """The version block answers what the filename cannot.
+
+    All three name predicates were correct and none had ever fired: this
+    pipeline acquires by hash, so the authored filename is destroyed before
+    analysis. `CompanyName` survives, and of the 56 samples nothing else fired
+    on, thirteen claimed Microsoft while unsigned.
+    """
+
+    def test_an_unsigned_binary_claiming_microsoft_is_deceptive(self) -> None:
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
+                             "version_info": _claiming("Microsoft Corporation")}
+        _, cats = _verdict(**sample)
+
+        self.assertTrue(_named(cats, "deceptive_file_identity").present)
+
+    def test_the_same_claim_signed_is_not(self) -> None:
+        # Microsoft binaries claiming Microsoft are the overwhelming majority
+        # of System32, and all 284 of them verify.
+        sample = _signed_installer()
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
+                             "version_info": _claiming("Microsoft Corporation")}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "deceptive_file_identity").present)
+
+    def test_a_vendor_that_ships_unsigned_is_not_accused(self) -> None:
+        # Igor Pavlov signs nothing -- 0 of 6 in Program Files -- so an unsigned
+        # 7-Zip binary claiming him is telling the truth. The list is derived
+        # from that fact rather than from a guess about who matters.
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
+                             "version_info": _claiming("Igor Pavlov")}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "deceptive_file_identity").present)
+
+    def test_the_claim_is_not_emphatic_on_its_own(self) -> None:
+        # Four Program Files binaries honestly say `Microsoft Corporation` while
+        # shipping unsigned inside someone else's installer. A strong category
+        # would carry those four to Corroborated alone.
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
+                             "version_info": _claiming("Microsoft Corporation")}
+        _, cats = _verdict(**sample)
+
+        category = _named(cats, "deceptive_file_identity")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
+
+    def test_a_vendor_claim_needs_a_collected_version_block(self) -> None:
+        # A block nobody collected is not a file claiming nothing.
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"sections": []}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "deceptive_file_identity").present)
+
+    def test_a_three_letter_vendor_token_is_too_generic_to_accuse(self) -> None:
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "sections": [],
+                             "version_info": _claiming("ENE Technology inc.")}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "deceptive_file_identity").present)
+
+
+class HowTheCodeIsStored(unittest.TestCase):
+    """Packing, measured before it shipped.
+
+    0.3% and 0.0% on the two benign corpora against 35.4% and 28.0% on the two
+    malware ones -- and the executable bit is what makes that true.
+    """
+
+    def test_a_near_random_executable_section_is_packed(self) -> None:
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "version_info": {},
+                             "sections": [_section(".text", 7.81)]}
+        _, cats = _verdict(**sample)
+
+        self.assertTrue(_named(cats, "high_entropy_sections").present)
+
+    def test_a_compressed_resource_section_is_not(self) -> None:
+        # A PNG is incompressible and says nothing about intent. Benign high
+        # entropy is almost entirely `.rsrc`; malware's is `.text`.
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "version_info": {},
+                             "sections": [_section(".rsrc", 7.99, executable=False)]}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "high_entropy_sections").present)
+
+    def test_ordinary_compiled_code_is_not(self) -> None:
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "version_info": {},
+                             "sections": [_section(".text", 5.84)]}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "high_entropy_sections").present)
+
+    def test_an_empty_section_carries_no_entropy(self) -> None:
+        # A section with no bytes on disk has nothing to measure; `raw_size` 0
+        # with a stored entropy would otherwise be read as a finding.
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "version_info": {},
+                             "sections": [_section(".text", 7.99, raw_size=0)]}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "high_entropy_sections").present)
+
+    def test_no_section_table_is_unknown_not_clean(self) -> None:
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "version_info": {}}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "high_entropy_sections").collected)
+
+    def test_it_never_concludes_alone(self) -> None:
+        # 0.3% would ordinarily earn `strong`, but both benign corpora are
+        # *installed* software and contain none of the installers where
+        # legitimate packing lives. The measurement cannot see the population
+        # that would produce the false positives.
+        sample = _anonymous_binary()
+        sample["pe_meta"] = {"version_info_collected": True, "version_info": {},
+                             "sections": [_section(".text", 7.99)]}
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "high_entropy_sections").strong)
 
 
 class SignaturesOfKnownMalware(unittest.TestCase):
