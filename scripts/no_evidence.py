@@ -69,12 +69,28 @@ def _describe(case: Path, cats, loaded: dict[str, Any]) -> dict[str, Any]:
     imports = [i for i in (pe.get("imports") or []) if isinstance(i, dict)]
     dlls = [str(i.get("dll") or "").lower() for i in imports]
     functions = sum(len(i.get("imports") or []) for i in imports)
-    # A managed binary imports the CLR shim and nothing else: the real call
-    # graph is in .NET metadata, which none of these categories reads.
-    managed = bool(dlls) and all(
-        d.startswith(("mscoree", "mscorlib")) for d in dlls)
+    # **The CLR metadata directory is authoritative; the import table was a
+    # guess.** `dotnet_metadata.json` exists once `scripts/refresh_dotnet.py` or
+    # a fresh run has been over the corpus. Where it does not, fall back to the
+    # heuristic and say so, rather than reporting zero managed binaries because
+    # a collector has not run.
+    dotnet = loaded.get("dotnet_meta") or {}
+    dotnet_collected = bool(dotnet) and bool(dotnet.get("collected"))
+    if dotnet_collected:
+        managed = bool(dotnet.get("is_managed"))
+    else:
+        managed = bool(dlls) and all(
+            d.startswith(("mscoree", "mscorlib")) for d in dlls)
+    renamed = (dotnet_collected and bool(dotnet.get("is_managed"))
+               and bool(dotnet.get("il_only"))
+               and bool(dotnet.get("identifiers_sufficient"))
+               and float(dotnet.get("unreadable_fraction") or 0.0) >= 0.10)
+    protectors = list(dotnet.get("protectors") or [])
     return {
         "managed": managed,
+        "dotnet_collected": dotnet_collected,
+        "renamed": renamed,
+        "protectors": protectors,
         "import_dlls": len(dlls),
         "import_functions": functions,
         "case": case.name,
@@ -216,6 +232,21 @@ def main(argv: list[str] | None = None) -> int:
           f"   -- call graph is in CLR metadata, not the import table")
     print(f"      five or fewer imported symbols {thin:3} of {len(rows)}"
           f"   -- APIs resolved at run time")
+    # **The question the .NET collector was built to answer.** Managed code is
+    # 59% of this band; renaming is the only managed signal measured so far, at
+    # 6.2% of malware and 0.0% of 592 benign binaries. If it lands here the
+    # category is worth writing. If it lands only on samples YARA and capa
+    # already catch, it buys a number and no coverage.
+    seen = sum(1 for r in rows if r["dotnet_collected"])
+    ren = sum(1 for r in rows if r["renamed"])
+    prot = sum(1 for r in rows if r["protectors"])
+    if seen:
+        print(f"      renamed identifiers >= 0.10   {ren:3} of {len(rows)}"
+              f"   <-- what a managed-obfuscation category would recover here")
+        print(f"      names a protector outright    {prot:3} of {len(rows)}")
+    else:
+        print(f"      (no dotnet_metadata.json -- run scripts/refresh_dotnet.py;"
+              f" managed count above is the import-table guess)")
     print(f"      exec entropy 7.0 to {_ENTROPY_STRONG}        {near:3} of {len(rows)}"
           f"   -- packed, just under the measured threshold")
     print(f"      signature verifies             "
