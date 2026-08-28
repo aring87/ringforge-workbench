@@ -170,35 +170,29 @@ def report(data: dict[str, Any], min_samples: int, threshold: float) -> None:
             print(f"    {entry['root']:34} {entry['vendors']:4} vendors, "
                   f"{entry['available']:6} files, {entry['picked']:5} drawn")
 
+    # **The vendor list has one derivation and it is not here.**
+    # `scripts/derive_signers.py --survey` applies all three rules, including
+    # the self-signing one this report has no business re-implementing: two
+    # copies of a qualifying rule is how the copies start disagreeing about who
+    # signs. What belongs here is how much evidence this survey adds.
     from static_triage_engine.categories import _ALWAYS_SIGNS, _vendor_key
 
     tally: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    example: dict[str, str] = {}
     for r in rows:
         key = _vendor_key(r.get("company") or "")
         if not key:
             continue
         tally[key][0] += 1
-        tally[key][1] += int(bool(r.get("verify_ok")) and bool(r.get("timestamp_verified")))
-        example.setdefault(key, r.get("company") or "")
-
-    qualified = sorted((k, n, s) for k, (n, s) in tally.items()
-                       if n >= min_samples and s / n >= threshold)
-    new = [k for k, _, _ in qualified if k not in _ALWAYS_SIGNS]
-    lost = [k for k in _ALWAYS_SIGNS
-            if k in tally and tally[k][0] >= min_samples
-            and tally[k][1] / tally[k][0] < threshold]
-    print(f"\n  vendors at >= {min_samples} samples and >= {threshold:.0%} signed: "
-          f"{len(qualified)}")
+        tally[key][1] += int(bool(r.get("verify_ok"))
+                             and bool(r.get("timestamp_verified")))
+    with_enough = [k for k, (n, _) in tally.items() if n >= min_samples]
+    print(f"\n  vendors: {len(tally)} distinct, {len(with_enough)} at "
+          f">= {min_samples} samples")
     print(f"    already in _ALWAYS_SIGNS : "
-          f"{len([k for k, _, _ in qualified if k in _ALWAYS_SIGNS])}")
-    print(f"    NEW                      : {len(new)}")
-    for key, n, s in qualified:
-        if key in new:
-            print(f"        {s:4}/{n:<4} {s / n:6.1%}  {key:<18} {example[key][:36]}")
-    if lost:
-        print(f"    would LOSE their place   : {lost}"
-              f"   <-- the wider corpus disagrees with the narrow one")
+          f"{len([k for k in with_enough if k in _ALWAYS_SIGNS])} of {len(_ALWAYS_SIGNS)}")
+    print(f"    not yet listed           : "
+          f"{sorted(k for k in with_enough if k not in _ALWAYS_SIGNS)}")
+    print(f"    -> for the list itself:  scripts/derive_signers.py --survey <this file>")
 
     managed = [r for r in rows if r.get("managed")]
     measurable = [r for r in managed if r.get("il_only")

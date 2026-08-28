@@ -88,22 +88,42 @@ _PACKED_ENTROPY = 7.5
 _RENAMED_IDENTIFIERS = 0.20
 _IMAGE_SCN_MEM_EXECUTE = 0x20000000
 
-#: Vendors the **benign** corpora show signing at least 95% of what they ship,
-#: over at least four samples each. **Derived, not chosen** --
-#: `scripts/derive_signers.py` regenerates it, and a list written by looking at
-#: the malware would be tuned to the test set. Microsoft is the threshold case
-#: at 399 of 403; the four exceptions are unsigned COM interop stubs shipped
-#: inside other vendors' installers, and they are the entire measured
-#: false-positive cost of this rule: 0 of 292 System32, 4 of 300 Program Files.
+#: Vendors the **benign** corpora show (a) shipping at least four samples,
+#: (b) signing at least 95% of them, and (c) signing them *themselves*.
+#: **Derived, not chosen** -- `scripts/derive_signers.py` regenerates it, and a
+#: list written by looking at the malware would be tuned to the test set.
 #:
-#: **It only covers vendors the benign corpora contain.** Impersonations of
-#: Adobe, Avira and Opera were all seen in the malware and none is caught here,
-#: because none of the three appears in benign often enough to earn a place.
-#: Widening the benign corpus widens this list; reading the malware for it does
-#: not.
+#: **(c) was added on 28 Aug and is the condition that matters.** A 900-binary
+#: survey qualified `ffmpeg` on the first two rules at 7 of 7 signed -- and 0 of
+#: those 7 were signed by FFmpeg. OBS Project, Chengdu Yiwo Tech and Microsoft
+#: 3rd Party had signed them, because FFmpeg is redistributed far more than it
+#: is shipped. Listing it would have accused every unsigned FFmpeg build, which
+#: is the ordinary case, of impersonation. `patriot` (signed by Creative
+#: Technology), `insecure` (by Nmap Software LLC) and `epic` (half by
+#: EasyAntiCheat) failed the same way. The narrow corpus could not show this
+#: because it contained none of them.
+#:
+#: Microsoft is the threshold case on (b), at 848 of 859 over 1,219 samples.
+#: Measured false-positive cost of the whole rule: 0 of 292 System32 and 4 of
+#: 300 Program Files, those four being unsigned COM interop stubs that
+#: `stripped_metadata` already fires on.
+#:
+#: **`nvidia` is a deliberate, conservative loss.** It qualified on the survey
+#: alone at 22 of 22 self-signed, and dropped out once the case corpora added
+#: two NVIDIA binaries signed by Microsoft Windows Hardware Compatibility.
+#: Unsigned NVIDIA binaries are almost certainly not ordinary, so this probably
+#: gives up a real detection -- but rule (c) cannot tell WHQL co-signing apart
+#: from redistribution, and a false accusation of impersonation is the more
+#: expensive error.
+#:
+#: **It still only covers vendors the benign corpora contain.** Impersonations
+#: of Adobe, Avira and Opera were seen in the malware and none is caught, and
+#: widening from 592 to 1,492 binaries did not add any of the three. Widening
+#: further widens this list; reading the malware for it does not.
 _ALWAYS_SIGNS = frozenset({
-    "asustek", "bitdefender", "corsair", "google", "logitech", "microsoft",
-    "oracle", "simon",
+    "asus", "asustek", "bitdefender", "corsair", "google", "ipvanish",
+    "logitech", "microsoft", "oracle", "overwolf", "simon", "valve",
+    "wireshark",
 })
 
 #: Dropped before taking a vendor's first distinctive word, so that

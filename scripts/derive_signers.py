@@ -6,9 +6,17 @@ everything" was established from software nobody here curated. A list written by
 reading the malware corpus for impersonated names is tuned to the test set, and
 would report a detection rate that means nothing.
 
-A vendor qualifies on two measured facts: it appears on at least `--min-samples`
-benign binaries, and at least `--threshold` of them carry a signature that
-verifies.
+A vendor qualifies on three measured facts: it appears on at least
+`--min-samples` benign binaries, at least `--threshold` of them carry a
+signature that verifies, and at least `--threshold` of those signatures name
+the vendor itself.
+
+**The third rule is the one that matters.** A 900-binary survey qualified
+`ffmpeg` on the first two at 7 of 7 signed -- and 0 of the 7 were signed by
+FFmpeg. OBS Project, Chengdu Yiwo Tech and Microsoft 3rd Party had signed them,
+because FFmpeg is redistributed far more than it is shipped. Listing it would
+have accused every unsigned FFmpeg build, which is the ordinary case, of
+impersonation.
 
     .venv\\Scripts\\python.exe scripts\\derive_signers.py
 
@@ -69,14 +77,34 @@ def _rows(root: Path):
             continue
         company = str((pe.get("version_info") or {}).get("CompanyName") or "").strip()
         signing = loaded.get("signing") or {}
-        yield company, (bool(signing.get("verify_ok"))
-                        and bool(signing.get("timestamp_verified")))
+        trusted = (bool(signing.get("verify_ok"))
+                   and bool(signing.get("timestamp_verified")))
+        yield company, trusted, str(signing.get("subject") or "").lower()
+
+
+def _survey_rows(path: Path):
+    """Rows from `scripts/benign_survey.py`, which reaches far wider than the
+    case corpora because it skips the collectors these questions do not need."""
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for row in data.get("rows", []):
+        if not row.get("version_collected"):
+            continue
+        trusted = (bool(row.get("verify_ok"))
+                   and bool(row.get("timestamp_verified")))
+        yield (str(row.get("company") or "").strip(), trusted,
+               str(row.get("subject") or "").lower())
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cases", action="append", default=[],
                         help="a benign corpus `cases` directory; repeatable")
+    parser.add_argument("--survey", action="append", default=[],
+                        help="a benign_survey.py JSON; repeatable. The shipped "
+                             "list is derived from the case corpora plus "
+                             "G:\\benign-survey.json")
     parser.add_argument("--min-samples", type=int, default=4)
     parser.add_argument("--threshold", type=float, default=0.95)
     args = parser.parse_args(argv)
@@ -88,11 +116,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"failed: {r} is not a directory")
         return 1
 
-    tally: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    # samples, verifying signatures, signatures naming the vendor itself
+    tally: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
     example: dict[str, str] = {}
     uncollected = 0
-    for root in roots:
-        for company, trusted in _rows(root):
+    sources = [_rows(root) for root in roots]
+    for survey in args.survey:
+        path = Path(survey)
+        if not path.is_file():
+            print(f"failed: {path} is not a file")
+            return 1
+        sources.append(_survey_rows(path))
+    for source in sources:
+        for company, trusted, subject in source:
             if not company:
                 continue
             key = _vendor_key(company)
@@ -100,6 +136,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             tally[key][0] += 1
             tally[key][1] += int(trusted)
+            # **Signed is not the same as self-signed.** A vendor whose
+            # binaries are signed by whoever redistributes them has not shown
+            # that it signs, and accusing an unsigned copy would be wrong.
+            tally[key][2] += int(trusted and key in subject)
             example.setdefault(key, company)
 
     if not tally:
@@ -107,14 +147,18 @@ def main(argv: list[str] | None = None) -> int:
               "run scripts/refresh_version_info.py first")
         return 1
 
-    qualified, missed = [], []
-    for key, (n, signed) in sorted(tally.items(), key=lambda kv: -kv[1][0]):
+    qualified, missed, redistributed = [], [], []
+    for key, (n, signed, own) in sorted(tally.items(), key=lambda kv: -kv[1][0]):
         if n < args.min_samples:
             continue
-        (qualified if signed / n >= args.threshold else missed).append(
-            (key, n, signed))
+        if signed / n < args.threshold:
+            missed.append((key, n, signed))
+        elif not signed or own / signed < args.threshold:
+            redistributed.append((key, n, signed, own))
+        else:
+            qualified.append((key, n, signed))
 
-    print(f"\n{sum(n for _, (n, _) in tally.items())} samples, "
+    print(f"\n{sum(v[0] for v in tally.values())} samples, "
           f"{len(tally)} distinct vendors, "
           f"{len(qualified)} qualifying at >= {args.min_samples} samples "
           f"and >= {args.threshold:.0%} signed\n")
@@ -125,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  did not qualify -- these ship unsigned, honestly:\n")
         for key, n, signed in missed:
             print(f"    {signed:4}/{n:<4} {signed / n:6.1%}  {key:<16} {example[key][:40]}")
+    if redistributed:
+        print(f"\n  signed, but not by them -- excluded, an unsigned copy is"
+              f" ordinary:\n")
+        for key, n, signed, own in redistributed:
+            print(f"    {own:4}/{signed:<4} own {key:<16} {example[key][:40]}")
 
     print("\n\n_ALWAYS_SIGNS = frozenset({")
     line = "    "
