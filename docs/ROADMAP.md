@@ -520,13 +520,26 @@ version block, and a managed binary is thin or uninformative in all three. The
 `five or fewer imported symbols` row is the same 13 samples plus one native
 outlier, not an independent finding.
 
-**1. The .NET collector is built; the category is not, and will not be until
-the malware side is measured.** `scripts/dotnet_summary.py` reads the CLR
-metadata, `scripts/refresh_dotnet.py` applies it to a corpus already on disk,
-and both are wired into `engine.run_case` so new runs collect it. It is
-explicitly *not* another PE category -- a seventh thing reading the import
-table, the section table or the version block cannot see a population defined
-by having nothing in them.
+**The .NET collector and `obfuscated_managed_code` both shipped on 28 Aug.**
+`scripts/dotnet_summary.py` reads the CLR metadata, `scripts/refresh_dotnet.py`
+applies it to a corpus already on disk, and both are wired into
+`engine.run_case`. It is explicitly *not* another PE category -- a seventh thing
+reading the import table, the section table or the version block cannot see a
+population defined by having nothing in them.
+
+**1. The eight managed samples with readable identifiers are the open item.**
+Renaming was the only managed property measured and it recovers 5 of the 22;
+roughly half of what remains is .NET whose type, method and field names are
+perfectly ordinary. Nothing in the module reads what a managed binary *does* --
+the `#US` user-string heap and the `MemberRef` table name the APIs it calls, and
+`scripts/dotnet_meta.py` already parses both for one carved payload at a time.
+Turning that into a corpus-wide collector is the next real piece of work, and it
+is larger than anything in this section.
+
+Measure it on the benign side first. The survey holds 161 managed assemblies and
+129 measurable ones; a rule over managed API references has a far bigger benign
+population to false-positive on than renaming did, because ordinary software
+also reads files, opens sockets and starts processes.
 
 The metric is the fraction of the `#Strings` heap that no compiler and no
 developer would emit: a character outside the identifier set, or four letters
