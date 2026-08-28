@@ -527,19 +527,55 @@ applies it to a corpus already on disk, and both are wired into
 reading the import table, the section table or the version block cannot see a
 population defined by having nothing in them.
 
-**1. The eight managed samples with readable identifiers are the open item.**
-Renaming was the only managed property measured and it recovers 5 of the 22;
-roughly half of what remains is .NET whose type, method and field names are
-perfectly ordinary. Nothing in the module reads what a managed binary *does* --
-the `#US` user-string heap and the `MemberRef` table name the APIs it calls, and
-`scripts/dotnet_meta.py` already parses both for one carved payload at a time.
-Turning that into a corpus-wide collector is the next real piece of work, and it
-is larger than anything in this section.
+**1. The eight managed samples with readable identifiers. Two framings tried,
+both rejected, and the second is rejected for a reason worth keeping.**
 
-Measure it on the benign side first. The survey holds 161 managed assemblies and
-129 measurable ones; a rule over managed API references has a far bigger benign
-population to false-positive on than renaming did, because ordinary software
-also reads files, opens sockets and starts processes.
+`dotnet_summary.py` now collects the `MemberRef` table -- every external method
+an assembly references -- raw and unjudged, and `dotnet_api_baseline.py`
+measured how common each is across 228 benign managed assemblies. No list of
+suspicious .NET APIs exists anywhere in either file, deliberately.
+
+**Rejected: rarity of API references.** 60.2% of benign references appear in
+exactly one assembly, so "uses rare APIs" fires on nearly everything. Scored as
+a *proportion* -- what share of an assembly's references no other benign
+assembly makes, leave-one-out so the comparison is not circular -- benign runs
+at a median of 0.146 with 44% above 0.20 and one legitimate assembly at
+**0.819**. `SQLitePCLRaw` references `SQLitePCL.*` and nobody else does. That is
+a bundled library, not a behaviour, and malware would have to clear 0.819 to
+stand out. `scripts/dotnet_api_compare.py` reproduces it.
+
+**capa is not the gap.** Worth checking before building anything: capa runs its
+`dotnet` backend on all 103 managed malware samples and every one produces
+rules. It is not falling back to a native view, so `dangerous_capability` not
+firing on them is a real answer rather than a silent collector failure -- the
+version-info hypothesis, tested and negative.
+
+**Rejected, and this is the one to remember: capa namespaces measured within
+managed code only.** `HIGH_SIGNAL_CAPABILITIES` was fitted over pooled corpora
+where benign is ~11% managed, so a namespace that discriminates inside .NET
+could plausibly have been diluted. Restricting to managed samples produced
+sixteen namespaces at **infinite lift** -- 10-26% of malware, 0.0% of benign --
+including `collection/keylog`, `host-interaction/registry/create` and
+`data-manipulation/encryption/aes`.
+
+It is an artifact. The 51 benign managed samples carrying capa are almost
+entirely *libraries and satellite resource assemblies* --
+`Microsoft.Bcl.AsyncInterfaces`, `Mapster.DependencyInjection`, six `*.resources`
+-- and only three are applications. The 103 malware samples are all
+applications. **The comparison measures library-against-application, not
+benign-against-malicious**, and a library does not take screenshots or list
+processes whatever its intent. Sixteen namespaces at infinite lift is what a
+confound looks like when it is flattering.
+
+**What would actually answer it: capa over benign managed *applications*.** The
+survey holds 161 managed assemblies with paths recorded, and the managed
+population needs splitting on library-versus-application before either group is
+compared to anything. capa costs 30-85 seconds a binary, so a stratified subset
+is a few hours -- the first expensive measurement in this section, and the only
+one that makes the question answerable.
+
+Until then the honest position is that **the module cannot see 8 of these
+samples and no framing tried so far changes that.**
 
 The metric is the fraction of the `#Strings` heap that no compiler and no
 developer would emit: a character outside the identifier set, or four letters
