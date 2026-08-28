@@ -37,6 +37,22 @@ IMAGE_SCN_MEM_EXECUTE = 0x20000000
 #: on the two benign corpora, 35.4% and 28.0% on the two malware ones.
 _ENTROPY_STRONG = 7.5
 
+#: Vendors who sign everything they ship, so their name in a version block is a
+#: claim that can be checked. Naming one without a signature that verifies is an
+#: authored act; a small open-source project naming itself is not. Measured
+#: 28 Aug: 0 of 292 System32 and 4 of 300 Program Files would fire, the four
+#: being unsigned Microsoft redistributables carried inside another installer.
+_MAJOR_VENDORS = (
+    "microsoft", "adobe", "google", "apple", "oracle", "intel", "nvidia",
+    "symantec", "mcafee", "kaspersky", "avast", "windows defender", "vmware",
+    "cisco", "dell", "hewlett", "ibm", "amazon", "meta platforms",
+)
+
+
+def _claims_major_vendor(company: str) -> bool:
+    low = company.lower()
+    return any(name in low for name in _MAJOR_VENDORS)
+
 
 def _describe(case: Path, cats, loaded: dict[str, Any]) -> dict[str, Any]:
     pe = loaded.get("pe_meta") or {}
@@ -152,6 +168,29 @@ def main(argv: list[str] | None = None) -> int:
           f"   ({100.0 * hi / len(rows):.0f}% of the band)")
     print(f"      any section >= 7.2             {hi_any:3} of {len(rows)}"
           f"   -- the looser cut, at 3% benign cost")
+
+    # **Two candidate signals, and the only number that matters is the overlap.**
+    # Either one alone looks like progress; if they cover the same samples,
+    # shipping both recovers no more of the band than shipping one.
+    def packed(r):
+        return r["exec_entropy"] >= _ENTROPY_STRONG
+
+    def impersonates(r):
+        return bool(r["company"]) and _claims_major_vendor(r["company"]) \
+            and not r["trusted"]
+
+    both = sum(1 for r in rows if packed(r) and impersonates(r))
+    only_p = sum(1 for r in rows if packed(r) and not impersonates(r))
+    only_i = sum(1 for r in rows if impersonates(r) and not packed(r))
+    neither = sum(1 for r in rows if not packed(r) and not impersonates(r))
+    print(f"      claims a major vendor unsigned {sum(1 for r in rows if impersonates(r)):3}"
+          f" of {len(rows)}   -- 0.0%/1.3% benign cost")
+    print(f"\n  overlap of the two")
+    print(f"      packed only                    {only_p:3}")
+    print(f"      vendor claim only              {only_i:3}")
+    print(f"      both                           {both:3}")
+    print(f"      NEITHER                        {neither:3}"
+          f"   <-- the irreducible band; shipping both leaves these")
 
     companies = Counter(r["company"] for r in rows if r["company"])
     if companies:
