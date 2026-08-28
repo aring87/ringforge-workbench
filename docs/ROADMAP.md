@@ -339,568 +339,113 @@ showed.
 
 ---
 
-## Pick up here — 26 Aug
-
-**Every scorer in this repo is now measured against a real population.** That
-sentence was not true three days ago, it lost its "except one" twice on 26 Aug,
-and it is the shortest summary of where the work is.
-
-**And `static` now has the other half.** 229 known-malicious samples, measured
-27 Aug, make it the only module with both a false-positive and a true-positive
-rate -- see *The true-positive gap* below. It found the scorer's worst defect,
-which no benign corpus could have.
-
-Each of the corpora was drawn at random from a population nobody here
-curated, with the seed recorded, and **each one disagreed with the intuition
-formed before it.** That is the whole argument for the expense: the extension
-categories were nearly cut on a sample of fourteen, `spec` reported a rate that
-turned out to be a fact about documentation practice, and `api` read three
-quarters of ordinary public traffic as a finding until 103 real responses said
-so.
-
-    module      corpus                              band distribution
-    ─────────   ─────────────────────────────────   ──────────────────────
-    static      600 benign + 229 malware          measured both directions
-    dynamic     the reference module, gap-proven    (its own ledger)
-    spec        300 random APIs.guru specs          54.0% No Evidence, 0% top
-    extension   394 random store extensions         72.8% No Evidence, 1.0% top
-    api         103 replayed spec servers           72.8% No Evidence, 0% top
-
-**`verdict.CONTEXT_ONLY` is empty**, and empty is a claim rather than a default:
-every module in it has been released against a measured population, `api` last
-on 26 Aug. The mechanism stays and so do its tests — a module goes back on the
-list the moment one is rewritten, or a category set changes enough that its
-measured rate is no longer its rate.
-
-### 1. A corpus for `spec` — done 26 Aug
-
-`scripts/spec_corpus.py`, seed `20260826`, 300 specifications, `G:\spec-corpus`.
-
-**The directory is not flat, and sampling it flat would have repeated the
-extension mistake in a new shape.** APIs.guru publishes 2,529 entries, of which
-653 are `azure.com` and the top ten providers are 62% of the total — machine
-output from four toolchains. A uniform sample of 300 would have been a quarter
-Azure Resource Manager and the rate would have described Microsoft's generator.
-The sample is drawn over *providers* instead: one entry each from 300 of the
-677 organisations.
-
-    band                       before      after
-    ─────────────────────────  ────────   ────────
-    No Evidence                  46.7%      54.0%
-    Single Observation           42.3%      37.0%
-    Corroborated                 11.0%       9.0%
-    Strongly Corroborated         0.0%       0.0%
-
-    category                            before      after
-    unauthenticated_sensitive_endpoint   41.3%      32.0%   (4.0% emphatic)
-    plaintext_transport                   9.0%       9.0%
-    unrestricted_upload                   8.3%       8.3%
-    destructive_admin_surface             1.3%       2.0%
-
-The nine fixtures said `unauthenticated_sensitive_endpoint` fired on 4 of 9.
-300 real specifications said 41.3%, which is not a finding rate — it is a
-description of how API documentation is written. Three defects were behind nine
-points of it.
-
-**Authentication documented as a parameter was not counted as authentication.**
-32 of 300 declare no `securitySchemes` block and put an `Authorization`,
-`X-API-Key` or `Ocp-Apim-Subscription-Key` parameter on every operation
-instead. The analyser read only the schemes block, so it called all 32 "no
-authentication scheme" — a statement each document contradicts on its own face.
-`_credential_parameters` reads them now, matching the *tail* of a parameter
-name rather than a substring: the same corpus carries `author`,
-`authorFontColor`, `tokenAmount` and `token_ids`, and a substring test passes
-all four.
-
-**Two conditions in `spec_categories` read keys that do not exist at the level
-they read them.** The analyser writes `no_auth_detected` and
-`http_server_detected` under `result["scoring"]`; the categoriser read both
-from the top level, where they have always been `None`. Neither branch has ever
-run. Both are removed rather than repaired, and the reasons differ —
-
-- `no_auth_detected` is `not auth_summary`, true of a spec whose scheme the
-  summariser failed to parse. Three of 300 declare Swagger 2.0's `type: basic`,
-  which `_summarize_auth` did not recognise; reviving the flag would have
-  called all three unauthenticated. The condition beside it asks the stricter
-  and correct question — the document names no scheme *anywhere*. (The
-  `type: basic` gap is fixed regardless; it is missing data either way.)
-- The `http_server_detected` fallback was dead twice over. Besides the wrong
-  key, the flag is computed from `server_entries`, which is the list `servers`
-  is derived from — it cannot be true while `servers` is empty. A branch that
-  cannot run is worse than no branch, because it reads as coverage.
-
-#### The residual 32% is a true statement, and no threshold repairs it
-
-96 specifications genuinely express no authentication anywhere. Of the twelve
-that reach the emphatic form — admin-like routes and no declared scheme — the
-members include **JIRA 7.6.1, Magento B2B, Yodlee Core APIs and Datto Autotask
-PSA**. Those are authenticated products. Their published specifications simply
-omit the scheme.
-
-So the category is true about the document and false about the service, and the
-wording was claiming the second: administrative routes "that anyone reaching
-the service can call". That is a claim a specification cannot support, and it
-is false about every one of the twelve. The prose now says what the evidence
-says — the gap is in the specification, and whether it is also a gap in the API
-is the thing to check.
-
-**The banding is deliberately untouched.** 32% present and 4% emphatic on a
-`posture` domain is a category reporting an omission that is really there, and
-yesterday's lesson was that cutting conditions firing at a few percent on a
-real population is the error, not the fix.
-
-**`spec` stays banded — decided 26 Aug.** The open question was whether "the
-document omits a control" belongs in a band at all, or whether `spec` should
-join `api` in `verdict.CONTEXT_ONLY`. It does belong, and the reason is what
-that list is for: the bar is *measured*, not *quiet*. The rate is now known in
-the population, the wording claims the document rather than the service, and a
-single category bands at Single Observation — the correct weight for a
-documentation gap. `api` is held because nothing has ever measured it, which is
-a different condition from a rate somebody finds uncomfortable. The decision is
-recorded beside `CONTEXT_ONLY` in `verdict/model.py` and pinned by
-`test_only_the_unmeasured_module_is_held`.
-
-### 2. A corpus for `api` — done 26 Aug
-
-`scripts/api_corpus.py`, seed `20260826`, 108 GETs, 103 answered, `G:\api-corpus`.
-
-A response corpus cannot be collected, only *caused*, and that is what made
-this the hardest of the four. The route taken is the one section 2 called
-second: **replay the servers the spec corpus already names.** 300 specs yield
-108 documented, parameterless GETs against 108 distinct public hosts — one
-request per organisation, less load than one person opening the docs.
-
-The rules the script follows are in its docstring and none are configurable:
-GET only, never a path the document says needs a parameter, never a verb-shaped
-path (`/logout` and `/reset` are routed through GET by real APIs), no redirects
-followed, no credential ever sent, and a host that resolves inside the network
-is not contacted at all. 41 of the 300 specs were dropped on that last rule —
-27 placeholder names that do not resolve, 11 `.local`, 3 loopback.
-
-    band                       before      after
-    ─────────────────────────  ────────   ────────
-    No Evidence                  22.3%      72.8%
-    Single Observation           48.5%      20.4%
-    Corroborated                 27.2%       6.8%
-    Strongly Corroborated         1.9%       0.0%
-
-    category                     before      after
-    implementation_disclosure     72.8%      16.5%
-    permissive_sharing            31.1%      11.7%   (2.9% emphatic)
-    cleartext_transport            2.9%       2.9%
-    credential_disclosure          1.9%       1.0%   (1.0% emphatic)
-
-**The first measurement said three quarters of ordinary public API traffic
-produces a band.** That is the saturation the extension scorer was replaced for,
-and it is exactly what the hold on `api` existed to prevent shipping. Four
-defects were behind it.
-
-**A `Server:` header is not a disclosure; a version is.** It fired on 68.9% of
-103 responses, and the values are `cloudflare` 27 times, `nginx` 11, then
-`Apache`, `Fastly`, `Heroku`, `Kestrel`. A bare product name is what most of the
-internet sends. `nginx/1.10.3 (Ubuntu)` and `Microsoft-IIS/10.0` are a different
-claim — they name the version to look up. The category's own comment already
-said a `Server:` header is "a default, not a decision"; that reasoning stopped
-it being emphatic and should have stopped it firing.
-
-**A wildcard CORS origin on a public API is the configuration, not the fault.**
-`Access-Control-Allow-Origin: *` fired on 25.2%, and 23 of those 26 carried no
-credentials — which is how an API meant for any caller is built. The finding is
-the wildcard *with* `Allow-Credentials: true`, a pair browsers refuse outright,
-so its presence means somebody configured a policy that cannot work. The
-analyser already graded that pair Medium; the category now follows the grading
-instead of firing on the header. **Stripe and spoonacular both send it.**
-
-**A schema describing a token was read as a leaked token.** One replayed
-endpoint serves its own OpenAPI document, in which `refresh_token:` is followed
-on the *next line* by `description:`. The credential regex joined them with
-`\s*`, so the word `description` became the secret. That is the defect this
-module was rewritten to remove — a word where a value should be — in a new
-place. The gap may no longer cross a line, and a value that is a bare schema
-keyword is not a secret.
-
-**A `dict` of the headers keeps one `Set-Cookie` out of however many were
-sent.** This one was mine, in the recorder, and it hid real findings rather than
-inventing them: 8 of 103 responses repeat the header, and 6 have a *non-final*
-cookie missing a flag — including one with no `HttpOnly`, `Secure` or `SameSite`
-at all, sent first and overwritten by a well-formed one. The corpus records
-header *pairs* now and the analyser grades every cookie on the worst of them,
-which recovered two findings the collapsed version could not see.
-
-#### What survived, and it is not noise
-
-**The one `credential_disclosure` is real.** `https://www.bungie.net/Platform/Settings/`
-returns 200 to an unauthenticated GET carrying `"ApiKey":"blte410e3b15535c144"`
-and a ContentStack delivery token. That is the category doing precisely what it
-exists for, on the first real population it was ever pointed at.
-
-The three cleartext endpoints are three specs that declare an `http://` server
-and answer on it. The emphatic `permissive_sharing` cases are Stripe and
-spoonacular's credentialed wildcards, and Jira's XSRF cookie without `HttpOnly`.
-None of the seven Corroborated samples reads as a false positive.
-
-#### The hold is lifted, and `CONTEXT_ONLY` is now empty
-
-`verdict.CONTEXT_ONLY` recorded the reason as *"Never measured. No corpus of
-real HTTP responses exists on this bench, so its false-positive rate is unknown
-in both directions."* That sentence stopped being true when the corpus answered,
-and the standard written beside the list is explicit: **removing an entry is a
-claim that the module has been measured against a population and separates it.**
-At 72.8% No Evidence, 6.8% Corroborated, nothing at the top band and the one
-`credential_disclosure` being a real key, it does. Released 26 Aug.
-
-That empties the list, which is the first time it has been empty and is itself a
-claim: nothing on this bench is reported-but-not-counted, because nothing is
-waiting on a measurement. `test_nothing_is_held_and_that_is_a_claim` asserts it,
-deliberately — so that adding a module without a corpus fails a test rather than
-passing quietly.
-
-**The mechanism did not go anywhere.** Its tests hold a module explicitly rather
-than reading the registry, which is why emptying the registry cost one test
-change and not a rewrite. `combine()` gained the `context_only` override `band()`
-already had, because otherwise the reported-but-not-counted path could only be
-exercised by editing the registry — testing the registry rather than the
-mechanism. A module goes back on the list the moment one is rewritten, or a
-category set changes enough that its measured rate is no longer its rate. That
-is the ordinary case, not an exceptional one.
-
-### 3. Static's other three categories — done 26 Aug, and they were the ones that fire
-
-`scripts/static_corpus.py`, seed `20260826`, 300 System32 executables sampled at
-random, the **whole** engine per binary — capa, YARA, FLOSS, the API analysis
-and the IOC pass. 9.3 core-hours, 53s median, 292 complete.
-
-**The old "100% No Evidence" was measuring the three categories that never
-fire.** `benign_rates.measure_static` passed `None` for iocs, api_analysis,
-yara_results and capa, so half the scorer came back `unknown` and the half that
-was measured reported a clean sweep. That number was true and it was not about
-the static scorer; it was about `stripped_metadata`, `invalid_signature` and
-`deceptive_file_identity`, which are still 0.0% and still fine.
-
-**The old sample was also alphabetical.** `sorted(glob("*.exe"))[:300]` out of
-654 is `a` through `MSchedExe` — the defect the extension and spec corpora were
-built to avoid, sitting in the corpus that was supposed to be the easy one.
-
-    category                     fired  strong  unknown    rate
-    dangerous_capability            99       7        8   33.9%
-    known_malware_signature          2       0        8    0.7%
-    embedded_network_indicators      0       0        8    0.0%
-    deceptive_file_identity          0       0        8    0.0%
-    invalid_signature                0       0        8    0.0%
-    stripped_metadata                0       0        8    0.0%
-
-    band                     count    rate
-    No Evidence                192   64.0%
-    Single Observation          92   30.7%
-    Corroborated                 8    2.7%
-    Nothing Collected            8    2.7%
-
-#### `dangerous_capability` fires on a third of Microsoft's own tools
-
-99 of 292, and **86 of those 99 are T1059** — Command and Scripting Interpreter,
-which is in `HIGH_SIGNAL_TECH_PREFIXES`. capa maps T1059 onto anything that can
-launch a process or interpret a command, and on System32 that is most of it.
-`T1543.003` (Windows Service) accounts for another 18, on binaries whose job is
-to be a Windows service.
-
-The seven that reach *emphatic* are `winlogon`, `msconfig`, `VSSVC`,
-`SearchIndexer`, `DWWIN`, `SensorDataService` and `ttdinject`. Signed, Microsoft,
-and exactly what a service binary looks like: `strong` needs three high-signal
-techniques, and T1059 + T1543.003 + T1547.001 is an ordinary Tuesday for a
-service.
-
-This is the same shape as the `Server:` header at 68.9% and the wildcard CORS
-origin at 25.2% — a marker that is ubiquitous in the benign population being
-read as evidence.
-
-**It is deliberately not fixed yet, and the reason is a corpus that does not
-exist for one more day.** The obvious change is to drop T1059 from the
-high-signal set. But the same category was already suspected of the *opposite*
-defect: on this bench's own clipper it stayed silent while capa reported
-`reference Base58 string` and `reference analysis tools strings`, because it
-reads the ATT&CK mapping and the API chains and discards capa's capability list
-entirely. So the honest reading is that the category is keyed to the wrong
-evidence — noisy on one side and blind on the other — and **tuning the
-false-positive side while blind to the false-negative side is the error this
-file has already recorded twice.** The known-malicious corpus is being built;
-this waits for it.
-
-#### The two YARA hits are third-party rules working as designed
-
-`rundll32` matched `Suspicious_Size_rundll32_exe` and `spoolsv` matched
-`Suspicious_Size_spoolsv_exe` — on the genuine binaries, at their genuine paths.
-Those rules exist to catch a file *masquerading* as `rundll32.exe`, so they
-assume the thing being scanned had no business being there. Pointed at the real
-one they are a false positive by construction.
-
-Not this repo's code, and worth knowing anyway: **a rule set written for
-arbitrary samples behaves differently when aimed at a system directory.** A
-detection rate for `known_malware_signature` is largely a fact about
-signature-base, not about anything here.
-
-#### Two contract behaviours, observed rather than asserted
-
-The 8 incomplete cases band as **Nothing Collected**, not No Evidence — the
-distinction the whole category contract exists for, and the first time it has
-been seen on a corpus rather than in a test. They failed on `WinError 1224`,
-which is Windows refusing to copy a file with a mapped section open, left over
-from two runs colliding.
-
-`embedded_network_indicators` at 0.0% across 292 binaries with the IOC pass
-actually running is the strongest single number here: the category that reads
-extracted strings for URLs, domains and IPs does not fire on ordinary signed
-software at all.
-
-### 4. Small, and none of them blocking
-
-- **The `0bw` deployer.** `testnet.bscscan.com/address/0x4E31128a13AcBD1cF1909D67F072460c853F87f7`
-  in a browser shows the creator and creation transaction. The API needs a paid
-  plan for chain 97 and no free node has full archive state — six were probed.
-  A manual read, thirty seconds, and `scripts/chain_history.py` carries both
-  automated routes for whenever one becomes available.
-- **The stale CA.** `6CDD5E8D…` (21 Aug) sits beside the live `141C8310…` in the
-  guest's Root store — the re-mint bug's fingerprint. Untidy rather than broken.
-  Remove it on the new baseline, where a mistake costs one revert.
-- **The guest is at `40e19f8`.** Everything from the scoring rewrite onward is
-  host-only. The next detonation that wants `corroboration-v1` needs a pull and
-  a re-take first; the procedure was run twice on 24 Aug and is written down.
-- **The CRX unpacker exists twice**, in `gui/extension_window._extract_crx` and
-  in `scripts/extension_corpus.unpack_crx`. Only the second guards its paths.
-  One of them should move into the engine and the other should call it.
-
-### 5. Larger, when there is appetite
-
-- **A bigger extension corpus.** 394 gives a rate; 2,000 gives a rate with
-  confidence at the tail, which is where the 1% lives. Costs only time — the
-  script resumes, and `_sample.json` records the seed.
-- **Known-malicious anything.** See the section below: scoped 26 Aug, and it is
-  blocked on a decision rather than on effort.
-
-### 6. The true-positive gap — closed for `static`, 27 Aug
-
-**Every rate in this file was a false-positive rate.** ~1,100 samples across
-four corpora, all presumed benign. That answers "does this cry wolf" and cannot
-answer "does this notice a wolf".
-
-`static` now has both. Two known-malicious corpora, built on the analysis guest
-where malware belongs, by `scripts/malware_corpus.py`:
-
-    corpus              n     source                        spread
-    B, stratified     129     MalwareBazaar API, keyed      13 families, recent
-    A, archive        100     datalake.abuse.ch, keyless    2020-2026, 6 years
-
-Sampled along deliberately different axes. B guarantees family coverage —
-6 stealers, 5 RATs, 2 loaders — and is clustered in time. A spreads across six
-years and was labelled afterwards by hash, which gave it families B does not
-have: Dridex, TrickBot and Heodo (Emotet), filling the banker gap left when
-`QakBot` came back `no_results`. **The two rates are kept apart.** Two
-populations sampled two ways; a combined number describes neither.
-
-#### `dangerous_capability` fires *backwards*
-
-    category                       benign   malware B   malware A
-    dangerous_capability            33.9%       13.2%        1.0%
-    known_malware_signature          0.7%       16.3%       12.0%
-    invalid_signature                0.0%       17.8%        6.0%
-    stripped_metadata                0.0%      100.0%       95.0%
-    embedded_network_indicators      0.0%        0.0%        0.0%
-    deceptive_file_identity          0.0%        0.0%        0.0%
-
-**It fires three times more often on Microsoft's own signed tools than on real
-malware.** 86 of its 99 benign firings were `T1059`, Command and Scripting
-Interpreter, which capa maps onto anything able to launch a process.
-
-That settles a question this file deliberately left open on 26 Aug. The entry
-then said the category was suspected of *opposite* defects — noisy on benign,
-silent on this bench's own clipper — and that tuning the false-positive side
-while blind to the false-negative side was the error already recorded twice. It
-is neither a threshold nor a direction: **no threshold repairs a signal that
-points the wrong way.** Turning the knob would only have changed which benign
-binaries it libelled.
-
-**Demoted, not deleted.** `dangerous_capability` is in
-`verdict.CONTEXT_ONLY_CATEGORIES` — reported, in coverage, in the evidence
-list, and unable to move a band. That registry is new: the hold existed only at
-module level, and holding all of `static` for one bad category would have
-silenced five that work.
-
-Measured on the same 300 System32 binaries, before and after:
-
-    band                    before      after
-    No Evidence            64.0%       96.7%
-    Single Observation     30.7%        0.7%
-    Corroborated            2.7%        0.0%
-    Nothing Collected       2.7%        2.7%
-
-A third of signed Microsoft binaries produced a band; now 0.7% do, and those
-two are `rundll32` and `spoolsv` matching third-party `Suspicious_Size_*` rules
-that exist to catch a masquerade and misfire on the genuine file. The cost on
-the malware side is small — the category fired on 17 of 129 and 1 of 100 —
-which is the whole point of demoting an inverted signal rather than tuning it.
-
-#### What does work, and what is still unproven
-
-`stripped_metadata` is the strongest discriminator on the bench: **0% benign
-against 100% and 95%.** `invalid_signature` and `known_malware_signature`
-separate cleanly too, the latter at 23x.
-
-Three caveats, stated rather than buried:
-
-- **`stripped_metadata`'s 0% is about Microsoft, not about benign software.**
-  System32 is signed with every version field populated — the most flattering
-  benign population available. Ordinary third-party software ships incomplete
-  version info routinely. A `Program Files` corpus is what would give this
-  category an honest false-positive rate, and nothing should lean on it until
-  that exists.
-- **`embedded_network_indicators` at 0% on malware is a false negative, not a
-  clean result.** FLOSS was the process found deadlocked, and contributed 0.0s
-  across corpus B — so the string extraction feeding IOC parsing barely ran.
-  The category is *untested*, not disproven, and the timeout fix means a re-run
-  would actually exercise it.
-- **`deceptive_file_identity` has never fired on anything**: 300 benign, 229
-  malicious, both directions unexercised.
-
-#### Four engine defects the corpora found
-
-None of these were visible on benign binaries, and all of them cost hours:
-
-- **`run_case` had crashed on every sample since 24 Aug** — `KeyError: 'benign'`
-  from a dropped assignment. 1,127 tests passed over it because nothing called
-  the real entry point.
-- **`lief_meta` was 91% of a malware corpus run** and feeds no category: 1,253s
-  mean per sample against capa's 111s, on output only the GUI reads. A
-  129-sample corpus projected to 77 hours.
-- **The timeouts fired and then hung.** `subprocess.run(timeout=)` kills the
-  launcher; `capa.exe` and `floss.exe` spawn a grandchild that inherits the
-  pipes, and the drain then waits on an end-of-file that never comes. A FLOSS
-  process was found alive for 74 minutes against a 180-second limit. Three
-  separate "the run is stuck" investigations were all this one bug.
-- **`static_corpus.py` globbed `*.exe`** and silently dropped every DLL — 17 of
-  100 in corpus A, a composition bias in the direction that matters.
-
-#### The joins: no family is missed, and one category is doing all the work
-
-Corpus B carries abuse.ch family labels and corpus A carries capture dates, so
-both join to their results by sha256. `benign_rates.py --per-sample` exists
-because `rates.json` is an aggregate and an aggregate cannot be joined to a
-label.
-
-**Every family bands on every sample.** Thirteen families, 129 samples, zero at
-No Evidence. What varies is how far they get:
-
-    family            n   >= Corroborated        family            n   >= Corroborated
-    Stealc           10        80%               AgentTesla       10        20%
-    GuLoader         10        60%               Amadey           10        20%
-    njrat            10        60%               RedLineStealer   10        20%
-    Vidar             9        44%               XWorm            10        20%
-    AsyncRAT         10        40%               DCRat            10        20%
-    RemcosRAT        10        30%               Formbook         10        10%
-                                                 SnakeKeylogger   10        10%
-
-That looks like a working scorer. It is one category:
-
-    band on `stripped_metadata` alone     corpus B  61%     corpus A  77%
-    `stripped_metadata` present at all    corpus B 100%     corpus A  95%
-
-**Remove that single category and detection collapses** — 79 of 129 and 82 of
-100 fall to No Evidence:
-
-    without stripped_metadata     No Evidence   Single   Corroborated
-    corpus B (129)                     79          28         22
-    corpus A (100)                     82          10          8
-
-So the headline "100% of malware bands" is really "100% of malware has
-incomplete version-info fields", and **the false-positive rate for that claim
-was measured on Microsoft-signed System32** — the most flattering benign
-population available, where every version field is populated by policy. Ordinary
-third-party software strips metadata routinely.
-
-**A `Program Files` corpus is now the highest-value measurement on this bench.**
-Not because the current number is wrong, but because the entire malware result
-rests on one category whose false-positive rate against realistic benign
-software is unknown. If third-party software strips metadata at 40%, this result
-means very little. That is a cheap corpus to build and nothing should lean on
-`static` until it exists.
-
-#### The Program Files corpus: `stripped_metadata` survives, at 10.3%
-
-The category carrying the entire malware result had its false-positive rate
-measured on System32, where Microsoft populates every version field by policy.
-300 binaries across **55 third-party vendors**, capped at 6 each, `--per-vendor`
-existing because a uniform random 300 over both Program Files trees came out 95
-`dotnet` and roughly 40% Microsoft — the corpus built to stop measuring
-Microsoft, measuring Microsoft.
-
-    category                    System32   Program Files   malware B   malware A
-    stripped_metadata               0.0%          10.3%       100.0%       95.0%
-    dangerous_capability           33.9%          18.3%        13.2%        1.0%
-    known_malware_signature         0.7%           0.3%        16.3%       12.0%
-    invalid_signature               0.0%           0.0%        17.8%        6.0%
-    embedded_network_indicators     0.0%           0.0%         0.0%        0.0%
-    deceptive_file_identity         0.0%           0.0%         0.0%        0.0%
-
-    bands, Program Files:  No Evidence 89.3%, Single Observation 10.7%,
-                           Corroborated 0.0%
-
-**It holds.** 10.3% against 97% is roughly nine-fold separation, so the category
-is not simply detecting "software Microsoft did not write". But 0% was the
-flattering number and 10.3% is the honest one, and anything resting on this
-category should quote the second.
-
-**The false positives are clustered, not diffuse.** All 31 fall in 9 of the 55
-vendors, and they are one recognisable class:
-
-    7-Zip        6/6      Microsoft.NET   5/5      PDFgear   1/6
-    GnuWin32     6/6      GIMP 2          5/6      ENE       1/6
-    Git          5/6      Canon           1/2      Mozilla Maintenance  1/2
-
-GNU and MinGW toolchains do not populate Windows version resources. That makes
-the category's error mode predictable rather than random — useful to a reader,
-and a reason the rate should not be read as a uniform 1-in-10 chance on any
-given binary.
-
-**And a third corpus confirms the demotion.** `dangerous_capability` fires on
-18.3% of Program Files — more than on either malware corpus — spread across 29
-vendors. Benign at 33.9% and 18.3%; malicious at 13.2% and 1.0%. It points the
-wrong way on every population it has been shown.
-
-The single `known_malware_signature` hit is `firefox.exe`, joining `rundll32`
-and `spoolsv` as third-party signature-base false positives.
-
-#### YARA ages out, on a small sample
-
-Corpus A spans six years, and `known_malware_signature` tracks it:
-
-    year   n    stripped   yara   invalid_sig
-    2020   25      100%     16%       8%
-    2021   35       97%      9%       3%
-    2022   15      100%     20%       7%
-    2023    5       80%     40%       0%
-    2024    5      100%      0%       0%
-    2025   10       80%      0%      20%
-    2026    5       80%      0%       0%
-
-**Zero YARA matches on anything from 2024 onward** — 0 of 20. Directionally
-exactly what a static ruleset against evolving threats should do, and the per-
-year cells are 5 to 35 samples, so this is a signal to confirm on a bigger
-corpus rather than a rate. It is worth stating because it bears on how
-`known_malware_signature` should be read at all: a detection rate for it is a
-fact about the age of `signature-base` relative to the sample, not about this
-repo.
-
-The five No Evidence samples in corpus A are ParallaxRAT (2021), an
-unattributed DLL (2023), ValleyRAT and one unattributed (2025), and one
-unattributed (2026) — four of five from 2023 or later, consistent with the same
-drift.
-
-#### What is not done
-
-`extension`, `spec` and `api` still have only false-positive rates. For `spec`
-and `api` a "true positive" means a real exposure found in the wild, which is a
-different kind of sourcing problem; for `extension` the malicious samples are
-delisted and hard to obtain. Recorded as open rather than solved.
-
----
+## Pick up here — 27 Aug
+
+**`static` is measured in both directions and one category was rebuilt from the
+measurement.** Everything below is the state to start from; the 26 Aug section
+it replaces is preserved in the git history at `c6dd7b9`.
+
+    category                      Sys32   ProgFiles     family      6-year
+    ─────────────────────────    ──────   ─────────   ─────────   ─────────
+    stripped_metadata              0.0%       10.3%      100.0%       95.0%
+    dangerous_capability  *        1.1%        4.0%       30.4%       18.7%
+    invalid_signature              0.0%        0.0%       15.7%        6.0%
+    known_malware_signature        0.7%        0.3%       16.5%       12.0%
+    embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
+    deceptive_file_identity ‡      0.0%        0.0%        0.0%        0.0%
+
+    bands                        98.3% NE   86.0% NE    0.0% NE     3.0% NE
+
+    * rebuilt 27 Aug on capa behaviour namespaces; was 1.1x, now 4.7-27x
+    † held in `verdict.CONTEXT_ONLY_CATEGORIES` -- fires *less* on malware
+    ‡ has never fired on 819 samples, either direction
+
+### Where the data is
+
+Everything needed to iterate on the static scorer is **on the host**. No guest,
+no re-download:
+
+    G:\static-corpus-full\cases     292 System32 cases, full engine
+    G:\pf-corpus\cases              300 Program Files cases, 55 vendors
+    C:\Users\aring\Downloads\ringforge\cases\bazaar2     127 malware cases
+    C:\Users\aring\Downloads\ringforge\cases\datalake2   100 malware cases
+
+The malware directories hold analysis output only -- capa.json, yara_results,
+iocs, runlog -- copied under an extension allowlist and verified to contain no
+`MZ` header. **203 of the 227 have capa.json**, which is what any further
+capability work selects from.
+
+Every corpus records its seed in `_sample.json`, so all four are rebuildable.
+`scripts/refresh_iocs.py` re-runs only strings and IOC extraction over an
+existing corpus -- a second per case rather than a minute -- which is how to
+re-measure anything that does not depend on capa.
+
+### Next, in value order
+
+**1. `deceptive_file_identity` has never fired.** 819 samples, both directions,
+zero. Either its conditions are unreachable or it is dead code. Ten minutes with
+the categoriser and the malware filenames settles which, and it is the cheapest
+open item.
+
+**2. `high_entropy_sections` is computed and read by nothing.** `pe_meta`
+precomputes it at >= 7.2 on every sample in half a second. Packing is one of the
+better cheap static signals and `static` currently leans hard on
+`stripped_metadata`. The corpora exist, so for once a category can be measured
+*before* it ships.
+
+**3. `embedded_network_indicators` needs a narrower question, not a better
+parser.** It fires on 71.7% of malware and 77.0% of third-party software.
+Containing a URL is a property of software. Candidate reframings: a host with no
+benign reputation, an IP literal with no accompanying domain, URLs that do not
+match the binary's own vendor string.
+
+**4. `stripped_metadata` deserves a wider benign corpus.** It carries 61% of
+corpus B alone, and its false-positive rate is 0.0% on System32 but 10.3% on
+Program Files -- clustered entirely in GNU/MinGW-built software (7-Zip 6/6,
+GnuWin32 6/6, Git 5/6). A corpus of open-source Windows builds would say whether
+10.3% is the floor or the start.
+
+**5. The README section is drafted and unpublished.** It is in the 27 Aug chat
+and needs re-drafting against the numbers above, which moved after it was
+written. Frame as *measured*, never *tuned*; include the failures.
+
+**6. Other modules have false-positive rates only.** `extension`, `spec`, `api`.
+For `spec` and `api` a "true positive" means a real exposure found in the wild,
+which is a different sourcing problem; `extension` malicious samples are
+delisted.
+
+### Traps this cost a day to find
+
+Each of these produced a plausible number rather than an error, which is why
+they survived:
+
+- **A collector that fails must report `unknown`, not clean.** Three instances
+  in one day: `strings` was never installed (821 cases, `strings.txt` 0 bytes),
+  capa was missing from a non-activated venv (194 of 229 malware samples), FLOSS
+  deadlocked. Each made a category say "looked, found nothing".
+- **`subprocess.run(timeout=)` kills the launcher, not the tree.** capa.exe and
+  floss.exe spawn a grandchild that inherits the pipes; the drain then blocks
+  forever. `static_triage_engine/proc.py` kills the tree first. A FLOSS process
+  was found alive for 74 minutes against a 180-second limit.
+- **`static_corpus.py --workers 4` needs 12 GB.** Four concurrent LIEF or FLOSS
+  instances on packed malware exhausted 8 GB and froze the guest.
+- **A run that finishes suspiciously fast is a symptom.** The malware corpus took
+  20 minutes when capa was silently absent and 2 hours when it worked.
+- **`preflight` in `static_corpus.py` now blocks all of the above.** Do not
+  `--force` past it without writing down why.
+- **Sample over the axis that matters.** Uniform draws gave 40% Microsoft in
+  Program Files, a quarter azure.com in APIs.guru, and `a`-through-`M` in
+  System32. Every corpus script now stratifies, and says so.
+
+### The correction worth remembering
+
+`dangerous_capability` was published as "inverted, 3x", then corrected to
+"inverted, 12x", and was finally neither -- it separated nothing at 1.1x. Both
+earlier figures were artifacts of capa being absent. The second was the worse
+error: it repaired a broken measurement using a subset of the same broken data
+and came out **more** confident. A claim that strengthens under correction is a
+warning, not a reassurance. The right move at that point was to record the
+number as unavailable until the corpus could be re-run.
 
 ## After dynamic — the roadmap from 24 Aug
 
