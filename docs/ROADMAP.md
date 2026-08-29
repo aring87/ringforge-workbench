@@ -739,10 +739,40 @@ matters here: some of the 17 the module cannot see may be samples with nothing
 to see. Every malware rate in this file is a rate over *presumed* malware, and
 should be read that way.
 
-A VirusTotal lookup on those five hashes would settle it in a minute --
-`virustotal.json` shows `status: skipped`, `VT_API_KEY not set`, so it has never
-run on this corpus. That is the cheapest open question in this section and it
-needs a key rather than a build.
+**The lookup ran on 28 Aug -- `scripts/refresh_virustotal.py` -- and the answer
+is three-two against the comfortable reading.**
+
+    VT name               signer                     detections
+    ──────────────────    ───────────────────────    ──────────
+    CALC.EXE              A-LINE PIPE TOOLS INC.             56
+    (hash-named)          a company in Wuhan                 40
+    SecureViewXLS.exe     Sahlmen Software AB                33
+    AVG Secure Browser    AVG Technologies USA                3
+    pcichek.dll           NetSupport Ltd                      1
+
+**Three are signed malware with abused certificates, not contamination.** The
+prediction offered before the run was that `A-LINE PIPE TOOLS` -- signed, zero
+capa rules, zero YARA -- would come back clean. It is the *most detected of the
+five* at 56 engines, named `CALC.EXE`, and the static module sees literally
+nothing in it. That is the clearest single example in the project of a sample
+static analysis cannot reach: no packing to measure, no metadata to doubt, a
+signature that verifies, and no capability capa recognises.
+
+**Two are effectively clean**, at 1 and 3 detections against 70-odd engines,
+which is false-positive noise: `pcichek.dll` from NetSupport and AVG's own
+browser. So the corpus does carry a little of what a submission feed carries --
+roughly 0.9% of 227 -- and the "presumed malicious" caveat above stands. But it
+explains two samples, not the band.
+
+**The reframe was half right and the half that failed is the important one.**
+Some of the band is files with nothing to detect; most of it is malware with
+nothing *statically* detectable, which is a different and harder fact. It is
+also the strongest argument in this file for the dynamic side: three of these
+would need to run before anything could be said about them.
+
+VirusTotal remains outside the verdict model -- `virustotal.json` is updated and
+no rate in this file moves, because letting a third-party opinion raise or
+suppress a local observation is the error the category set was rebuilt to avoid.
 
 **One sample is a collection gap** -- capa did not run on it. That is one
 re-run, not a category.
