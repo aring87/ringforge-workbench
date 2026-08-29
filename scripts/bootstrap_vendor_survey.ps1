@@ -172,12 +172,22 @@ if (-not (Test-Path $Work)) { throw "no working copy at $Work" }
 Push-Location $Work
 
 Step "creating the virtual environment"
-# The survey needs pefile and nothing else: signature verification goes through
-# PowerShell's Get-AuthenticodeSignature, not a Python library.
+# **pefile and requests.** Signature verification itself goes through
+# PowerShell's Get-AuthenticodeSignature rather than a Python library, but it
+# lives in `static_triage_engine.engine`, which imports `requests` at module
+# scope -- so importing the one function drags the dependency in. The first
+# version of this script installed pefile alone, and the survey died on the
+# first binary with ModuleNotFoundError inside a worker thread.
+#
+# Derived rather than remembered: parse the import graph of everything the
+# survey touches and take what is not in the standard library.
 if (-not (Test-Path ".venv")) { python -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install --quiet --upgrade pip
-.\.venv\Scripts\python.exe -m pip install --quiet pefile
-Note "pefile installed"
+.\.venv\Scripts\python.exe -m pip install --quiet pefile requests
+if ($LASTEXITCODE -ne 0) { throw "pip install failed with $LASTEXITCODE" }
+.\.venv\Scripts\python.exe -c "import pefile, requests"
+if ($LASTEXITCODE -ne 0) { throw "the venv cannot import pefile and requests" }
+Note "pefile and requests installed and importable"
 
 # --- survey -----------------------------------------------------------------
 Step "surveying installed software"
