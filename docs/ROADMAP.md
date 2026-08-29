@@ -890,11 +890,46 @@ rebuild: System32's own `AppHostRegistrationVerifier.exe` declares
 `OriginalFilename` `AppHostNameRegistrationVerifier.exe`, so a naive
 name-mismatch rule false-positives on Microsoft.
 
-**4. `embedded_network_indicators` needs a narrower question, not a better
-parser.** It fires on 71.7% of malware and 77.0% of third-party software.
-Containing a URL is a property of software. Candidate reframings: a host with no
-benign reputation, an IP literal with no accompanying domain, URLs that do not
-match the binary's own vendor string.
+**4. `embedded_network_indicators`: the narrower question was measured, and it
+needs a better parser after all.** The heading here said the opposite for a
+week.
+
+Excluding hosts by benign prevalence -- the derive-don't-choose method that
+built `_ALWAYS_SIGNS` -- takes the category from **1.0x to 2.5x**:
+
+    host seen by >= N other benign      benign   malware    lift
+    ──────────────────────────────     ───────   ───────   ─────
+    (no exclusion, as shipped)           76.7%     75.3%    1.0x
+    1, hosts only                        14.2%     35.7%    2.5x
+    1, hosts and IP literals             18.9%     41.0%    2.2x
+    2, hosts and IP literals             24.7%     42.3%    1.7x
+
+Scored leave-one-out, because the benign corpora built the prevalence table and
+crediting each sample for its own hosts reads 5.6x. **2.5x is a real
+improvement and still below this project's own bar** -- `persistence` was
+rejected at 4.2x and `host-interaction/process/inject` at 1.4x. The category
+stays in `CONTEXT_ONLY_CATEGORIES`.
+
+**What the measurement actually found is that the extractor emits things that
+were never network destinations.** The most common "domains" in every corpus:
+
+    benign    schemas.microsoft.com, crl.microsoft.com, ocsp.digicert.com,
+              cacerts.digicert.com, and `ocsp.digicert.com0a` -- ASN.1
+              trailing bytes read as part of the hostname
+    malware    myapplication.app in 50 of 127 bazaar samples, tempuri.org,
+               nsis.sf.net, www.w3.org
+
+XML namespace declarations, certificate-chain fragments, installer boilerplate
+and a framework placeholder. One Program Files sample yields
+`cn.cs.da.de.el.en.es.fi.fr.he.hu.is.it.ja.ko.nl.no` -- a language-code list
+with seventeen labels. **A category cannot be narrowed onto data this noisy**,
+and the honest order is: fix `step_iocs` to reject what is not a hostname, then
+re-ask the question against what survives.
+
+Worth noting for when it is re-asked: the malware hosts that survive prevalence
+exclusion look like real signal -- `ip-api.com` (geolocation recon),
+`discord.com` (C2 over a legitimate service), `godebugs.info`,
+`reflect.flag.ro`. The signal is there; it is buried under XML namespaces.
 
 **5. The README section is published and current.** Seven categories with the
 closing numbers, both halves of the `stripped_metadata` correction, and the 22
