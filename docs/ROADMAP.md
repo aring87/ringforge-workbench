@@ -351,7 +351,7 @@ replaces is preserved in the git history.
     category                      Sys32   ProgFiles     family      6-year
     ─────────────────────────    ──────   ─────────   ─────────   ─────────
     stripped_metadata  §           0.0%        6.0%       77.2%       60.0%
-    dangerous_capability           1.1%        4.0%       30.4%       18.7%
+    dangerous_capability ★         0.7%        2.4%       25.0%       15.4%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
@@ -359,7 +359,8 @@ replaces is preserved in the git history.
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
     obfuscated_managed_code ‖      0.0%        0.0%        4.7%        4.0%
 
-    bands, No Evidence            97.9%       90.3%        1.6%       15.0%
+    bands, No Evidence            98.3%       91.7%      (stale)     (stale)
+    at the old 3/5 thresholds     97.9%       90.3%        1.6%       15.0%
     before obfuscated_managed     97.9%       90.3%        3.9%       17.0%
     before entropy and identity   98.3%       90.3%       19.7%       31.0%
     before the collector fix      98.3%       86.0%        0.0%        3.0%
@@ -374,6 +375,12 @@ replaces is preserved in the git history.
     ‖ shipped 28 Aug: >= 20% of a managed assembly's identifiers renamed. One
       window into managed code, not a fix for it -- 8 of the band's managed
       samples have perfectly readable names and are still unseen
+    ★ thresholds re-fitted 28 Aug from 3/5 to 4/6, because the benign corpus
+      gained 124 .NET applications and the category fired on 17.7% of them at
+      the old present threshold. Was 1.1/4.0/30.4/18.7. **The malware band rows
+      need a guest re-measure**: the host copies of those corpora lack the
+      version-info and CLR collectors, so only their capa-driven rate is
+      readable here
 
 **Read the three band rows together, because they are the actual result.**
 Corrected, `stripped_metadata` discriminates better than the broken figure
@@ -648,11 +655,19 @@ low.** With managed applications in the benign side:
 
 The original choice of 3 was argued as *the sensitivity cost from two is small
 and it more than halves the false-positive rate*. Applied to this corpus the
-same argument now points at 4 or 5: going 3 -> 5 costs 6.4 points of detection
-and divides the false-positive rate by four, and on managed applications by
-more than four. **Not changed here** -- `CAPABILITY_PRESENT_AT` moves every
-published rate in this file and in the README, so it is a decision to take
-deliberately rather than a number to quietly re-fit.
+same sentence selects 4, and 5 no longer reaches the rate at which a category
+may stand alone.
+
+**Changed on 28 Aug to 4 and 6**, and every published rate re-measured with it.
+`dangerous_capability` moves from 1.1/4.0/30.4/18.7 to **0.7/2.4/25.0/15.4**,
+and on managed applications from 17.7% to 8.9%. The cost is 4.4 points of
+detection; the decision rule is the one the original fit used, applied to a
+corpus that now contains the population it was worst on.
+
+**The malware band rows still need a guest re-measure.** A stricter
+`dangerous_capability` fires on fewer samples, so No Evidence on the malware
+corpora will rise from 1.6% and 15.0% -- by how much cannot be read on the host,
+whose copies of those corpora lack the version-info and CLR collectors.
 
 **Meanwhile the module still cannot see 8 of these samples.** Three framings
 have been tried -- API rarity, capa-within-managed, and this -- and none has

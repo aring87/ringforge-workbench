@@ -509,39 +509,63 @@ class CapabilityIsCountedInBehaviours(unittest.TestCase):
     its 99 benign firings, and capa maps it onto anything able to launch a
     process.
 
-    The category now counts distinct high-signal *behaviour namespaces*.
-    Measured: three or more fires on 2.4% of benign and 25.1% of malware, five
-    or more on 0.56% and 18.7%.
+    The category counts distinct high-signal *behaviour namespaces*.
+
+    **Re-fitted 28 Aug to four and six.** The old three and five were chosen
+    against a benign corpus with no .NET applications in it; adding 124 showed
+    the category firing on 17.7% of them at three. Measured over 656 benign and
+    202 malware: four or more fires on 2.9% of benign and 20.8% of malware, six
+    or more on 0.6% and 16.8%.
     """
 
-    THREE = ["collection/screenshot", "load-code/shellcode",
-             "host-interaction/hardware/keyboard"]
-    FIVE = THREE + ["communication/c2/file-transfer",
-                    "anti-analysis/anti-forensic/self-deletion"]
+    FOUR = ["collection/screenshot", "load-code/shellcode",
+            "host-interaction/hardware/keyboard",
+            "communication/c2/file-transfer"]
+    SIX = FOUR + ["anti-analysis/anti-forensic/self-deletion",
+                  "host-interaction/clipboard"]
 
-    def test_three_behaviours_is_a_claim(self) -> None:
+    def test_four_behaviours_is_a_claim(self) -> None:
         sample = _signed_installer()
-        sample["capa_namespaces"] = self.THREE
+        sample["capa_namespaces"] = self.FOUR
         _, cats = _verdict(**sample)
 
         category = _named(cats, "dangerous_capability")
         self.assertTrue(category.present)
         self.assertFalse(category.strong)
 
-    def test_five_is_emphatic(self) -> None:
-        # 0.56% of 532 benign samples reach five. That is the rate at which a
+    def test_three_is_no_longer_enough(self) -> None:
+        # It was, until managed applications entered the benign corpus and put
+        # the rate at three to 17.7% on them.
+        sample = _signed_installer()
+        sample["capa_namespaces"] = self.FOUR[:3]
+        _, cats = _verdict(**sample)
+
+        self.assertFalse(_named(cats, "dangerous_capability").present)
+
+    def test_six_is_emphatic(self) -> None:
+        # 0.6% of 656 benign samples reach six. That is the rate at which a
         # category is allowed to stand on its own.
         sample = _signed_installer()
-        sample["capa_namespaces"] = self.FIVE
+        sample["capa_namespaces"] = self.SIX
         _, cats = _verdict(**sample)
 
         self.assertTrue(_named(cats, "dangerous_capability").strong)
 
-    def test_two_is_not(self) -> None:
-        # Two fires on 6.0% of benign software. The step from two to three
-        # more than halves that and costs four points of sensitivity.
+    def test_five_is_no_longer_emphatic(self) -> None:
         sample = _signed_installer()
-        sample["capa_namespaces"] = self.THREE[:2]
+        sample["capa_namespaces"] = self.SIX[:5]
+        _, cats = _verdict(**sample)
+
+        category = _named(cats, "dangerous_capability")
+        self.assertTrue(category.present)
+        self.assertFalse(category.strong)
+
+    def test_two_is_not(self) -> None:
+        # Two fires on 11.1% of benign software once managed applications are
+        # counted -- 33.1% of those alone. The steps up to four take that to
+        # 2.9% for 8.4 points of sensitivity.
+        sample = _signed_installer()
+        sample["capa_namespaces"] = self.FOUR[:2]
         _, cats = _verdict(**sample)
 
         self.assertFalse(_named(cats, "dangerous_capability").present)

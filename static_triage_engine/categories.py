@@ -564,9 +564,11 @@ def static_categories(
         module="static",
         collected=capability_ran,
         present=capable,
-        # Five distinct behaviours fires on 0.56% of 532 benign samples and
-        # 18.7% of malware. That is the rate at which one category may stand
-        # alone; three is the rate at which it corroborates.
+        # Six distinct behaviours fires on 0.6% of 656 benign samples and
+        # 16.8% of malware. That is the rate at which one category may stand
+        # alone; four is the rate at which it corroborates. Both were three and
+        # five until 28 Aug, when 124 benign .NET applications entered the
+        # corpus and put the old present threshold at 17.7% on them.
         strong=capable and len(matched) >= CAPABILITY_STRONG_AT,
         detail=(f"{len(matched)} high-signal capabilities: "
                 f"{', '.join(m.split('/')[-1] for m in matched[:5])}"

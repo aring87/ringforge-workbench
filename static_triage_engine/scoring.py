@@ -163,19 +163,37 @@ HIGH_SIGNAL_CAPABILITIES = frozenset({
     "persistence/scheduled-tasks",
 })
 
-#: Measured over the four corpora, counting only samples where capa ran:
+#: **Re-fitted 28 Aug, and the reason is a corpus that did not exist before.**
+#: The original 3 and 5 were chosen against 532 benign samples that are
+#: overwhelmingly native and, where managed, overwhelmingly *libraries*. Adding
+#: 124 benign .NET applications showed the category firing on **17.7%** of them
+#: at the old present threshold -- four times the published 4.0%, on a
+#: population the fit had never seen.
 #:
-#:     matched   benign   malware    lift
-#:        >=2     6.00%     29.1%     4.8x
-#:        >=3     2.44%     25.1%    10.3x     <- present
-#:        >=4     1.50%     20.7%    13.8x
-#:        >=5     0.56%     18.7%    33.2x     <- strong
+#: Measured over five corpora, 656 benign and 202 malware, counting only
+#: samples where capa ran:
 #:
-#: Three because the sensitivity cost from two is small (29.1 -> 25.1) and it
-#: more than halves the false-positive rate. Five for emphatic: 0.56% on 532
-#: benign samples is the rate at which a category may stand alone.
-CAPABILITY_PRESENT_AT = 3
-CAPABILITY_STRONG_AT = 5
+#:     matched   Sys32   ProgFiles   managed apps   benign   malware    lift
+#:        >=2     4.3%        8.0%          33.1%    11.1%     29.2%     2.6x
+#:        >=3     1.1%        4.0%          17.7%     5.3%     25.2%     4.7x
+#:        >=4     0.7%        2.4%           8.9%     2.9%     20.8%     7.2x  <- present
+#:        >=5     0.7%        0.4%           4.0%     1.2%     18.8%    15.4x
+#:        >=6     0.0%        0.4%           2.4%     0.6%     16.8%    27.6x  <- strong
+#:
+#: **The decision rule is unchanged; only the corpus moved.** Three was argued
+#: as "the sensitivity cost from two is small and it more than halves the
+#: false-positive rate". Four earns its place on exactly that sentence: 25.2 ->
+#: 20.8 costs 4.4 points of detection and nearly halves the benign rate, and
+#: halves it again on managed applications. Six for emphatic, because 0.6% is
+#: the rate at which a category may stand alone and 5 no longer reaches it once
+#: managed applications are counted.
+#:
+#: **The candidate namespaces were tested at the same time and rejected** --
+#: `scripts/capability_sweep.py`. Adding the ten that looked strong on managed
+#: applications alone doubles the benign rate and drops the lift at every
+#: threshold.
+CAPABILITY_PRESENT_AT = 4
+CAPABILITY_STRONG_AT = 6
 
 
 def capa_namespaces(capa_json: dict | None) -> list[str]:

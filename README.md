@@ -298,14 +298,15 @@ How often each static category fires:
     ─────────────────────────    ──────   ─────────   ─────────   ─────────
     stripped_metadata              0.0%        6.0%       77.2%       60.0%
     high_entropy_sections          0.3%        0.0%       35.4%       28.0%
-    dangerous_capability *         1.1%        4.0%       30.4%       18.7%
+    dangerous_capability *         0.7%        2.4%       25.0%       15.4%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     deceptive_file_identity        0.0%        0.0%        7.1%        8.0%
     obfuscated_managed_code        0.0%        0.0%        4.7%        4.0%
     embedded_network_indicators    9.9%       77.0%       71.7%       67.0%
 
-    * the benign columns do not hold for .NET applications -- see below
+    * thresholds re-fitted when .NET applications entered the benign
+      corpus -- see below
 
 **One of the eight does not work, and it is in the table for that reason.**
 
@@ -313,12 +314,19 @@ How often each static category fires:
 of malware. Containing a URL is a property of software. It is held as context —
 reported in full, never counted toward a band.
 
-**`dangerous_capability`'s benign columns are measured on the wrong population
-for managed code.** 1.1% and 4.0% come from System32 and Program Files, which
-are overwhelmingly native and, where managed, overwhelmingly libraries. Measured
-against 124 benign .NET *applications* it fires on **17.7%**, five of them
-emphatically — roughly four times the published rate. The number in the table is
-correct for what it measured and should not be read as covering .NET.
+**`dangerous_capability` was re-fitted because a new corpus showed the old
+thresholds were set against the wrong population.** Its benign rates came from
+System32 and Program Files, which are overwhelmingly native and, where managed,
+overwhelmingly libraries. Measured against 124 benign .NET *applications* it
+fired on **17.7%** — four times the published figure, on software the fit had
+never seen.
+
+The decision rule did not change; only the corpus did. The original threshold
+was argued as *the sensitivity cost is small and it more than halves the
+false-positive rate*, and on this corpus that sentence now selects four rather
+than three. Moving present from 3 to 4 and emphatic from 5 to 6 costs 4.4 points
+of detection and takes the .NET false-positive rate from 17.7% to 8.9%. The row
+above is the re-fitted measurement.
 
 The same corpus confirms `obfuscated_managed_code` at 0.0% on all 124, which is
 the population that category was built for.
