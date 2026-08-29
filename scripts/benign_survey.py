@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import random
 import sys
 import time
@@ -70,10 +71,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 #: `Downloads` is deliberately absent: on this bench it holds the malware
 #: corpora, and an analyst's download folder is the wrong place to learn what
 #: ordinary software looks like.
-_DEFAULT_ROOTS = (
-    r"C:\Program Files",
-    r"C:\Program Files (x86)",
-    r"C:\Windows\SysWOW64",
+#:
+#: **`%LOCALAPPDATA%\Programs` is here because the machine-wide roots miss a
+#: whole class of software.** Opera, Chrome, VS Code and Teams all install
+#: per-user by default. A survey of a VM with Opera freshly installed found 12
+#: vendors and no Opera at all, which read as a failed install and was a gap in
+#: this tuple.
+_DEFAULT_ROOTS = tuple(
+    p for p in (
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\Windows\SysWOW64",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
+    ) if p and not p.startswith(os.sep)
 )
 _EXTENSIONS = (".exe", ".dll")
 
