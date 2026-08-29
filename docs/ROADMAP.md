@@ -30,17 +30,26 @@ whole roadmap.
 
 ---
 
-## The build queue — one item
+## The build queue — empty
 
-**Gap 4's active detector: "read a VM artifact, then went quiet."** The
-collection path underneath it is *proven end to end* (07 Aug 14:53, 143,805
-registry reads captured, lineage resolved, hits produced, and its first contact
-with real data found the Windows-background false-positive class it needed to).
-What does not exist is the thing that reads a VM check followed by silence and
-says so.
+**Gap 4's active detector was built, and this heading was stale.** Checked on
+28 Aug: `correlate_vm_check_with_silence` in
+`dynamic_analysis/vm_artifact_reads.py` answers four ways --
+`not_collected`, `no_vm_check`, `checked_then_active`, `checked_then_quiet` --
+is wired into `orchestrator.run`, renders as a `card-alert` in the HTML report,
+and carries 14 passing tests. The section below described it as the one thing
+that did not exist.
 
-It is deliberately last. It needs a live run to show what it fires on, and
-building it before that is the mistake this project has corrected repeatedly.
+**What is missing is calibration, not code.** `QUIET_EVENT_THRESHOLD = 10` is
+labelled a placeholder in its own comment: *the right value is whatever a live
+run shows separates a bail from a pause, and no live run has shown it.* The
+detector has never fired because no run has yet produced a `vm_specific`
+registry read -- only `identity_surface` ones, which it deliberately refuses to
+count, because `SystemBiosVersion` is where a VM check looks *and* where an
+inventory agent looks.
+
+So it needs a sample that actually checks for a hypervisor, detonated with the
+registry filter that captures reads. That is a detonation, not a build.
 
 ---
 
