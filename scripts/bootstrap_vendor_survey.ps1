@@ -183,11 +183,27 @@ Note "pefile installed"
 Step "surveying installed software"
 Note "this takes roughly a second per binary"
 .\.venv\Scripts\python.exe scripts\benign_survey.py --out $Out --count $Count --per-vendor $PerVendor --workers 4
+$surveyExit = $LASTEXITCODE
 
 Pop-Location
 
+# **PowerShell does not throw when a native executable fails**, and the first
+# version of this script printed "done -- written: <path>" over a survey that
+# had never written anything. Reporting success without looking is the exact
+# failure this project keeps finding in its own collectors, and a wrapper is
+# not exempt from it.
+if ($surveyExit -ne 0) {
+    throw ("the survey exited $surveyExit and wrote nothing. Run it in the " +
+           "foreground to see why: cd $Work then " +
+           ".\.venv\Scripts\python.exe scripts\benign_survey.py --out $Out")
+}
+if (-not (Test-Path $Out)) {
+    throw ("the survey reported success but $Out does not exist. Run it in " +
+           "the foreground.")
+}
+$sizeKb = [math]::Round((Get-Item $Out).Length / 1KB)
 Step "done"
-Note "written: $Out"
+Note "written: $Out  ($sizeKb KB)"
 Note ""
 Note "Copy that one file back to the analysis host, then merge it:"
 Note "    .venv\Scripts\python.exe scripts\derive_signers.py \"
