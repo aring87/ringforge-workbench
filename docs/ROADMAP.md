@@ -719,9 +719,30 @@ also under-represent the installers where legitimate packing lives, so the
 conservative cut is the one whose blind spot is known. Revisit it from a corpus
 of installers, never from the band.
 
-**3 samples carry a signature that verifies.** Static analysis has nothing left
-to doubt about them and the dynamic side has to take them. That is a legitimate
-end state under the project's own standard, not a gap.
+**3 samples in the band carry a signature that verifies, and the reason may be
+that they are not malware.** Across both corpora five samples verify, all in
+datalake, none in bazaar. The signers are real companies: `NetSupport Ltd`,
+`AVG Technologies USA, LLC`, `Sahlmen Software AB`, `A-LINE PIPE TOOLS INC.`,
+and one in Wuhan. None matches a YARA rule, and the A-LINE one produces **zero**
+capa rules -- signed, inert, and unremarkable, which is the profile of a clean
+file rather than a quiet one.
+
+**Both corpora are `datalake.abuse.ch/malware-bazaar/daily/`** -- the same
+MalwareBazaar, by daily archive rather than API. That is a *submission* feed:
+what people uploaded believing it malicious. It legitimately contains dual-use
+tooling (NetSupport Manager is a commercial remote-control product abused in
+intrusions) and occasionally files that are simply not malware.
+
+**The reports say "presumed benign, not verified" of the benign corpora and say
+nothing of the kind about the malware ones.** That asymmetry is wrong and it
+matters here: some of the 17 the module cannot see may be samples with nothing
+to see. Every malware rate in this file is a rate over *presumed* malware, and
+should be read that way.
+
+A VirusTotal lookup on those five hashes would settle it in a minute --
+`virustotal.json` shows `status: skipped`, `VT_API_KEY not set`, so it has never
+run on this corpus. That is the cheapest open question in this section and it
+needs a key rather than a build.
 
 **One sample is a collection gap** -- capa did not run on it. That is one
 re-run, not a category.
