@@ -121,9 +121,9 @@ _IMAGE_SCN_MEM_EXECUTE = 0x20000000
 #: widening from 592 to 1,492 binaries did not add any of the three. Widening
 #: further widens this list; reading the malware for it does not.
 _ALWAYS_SIGNS = frozenset({
-    "asus", "asustek", "bitdefender", "corsair", "google", "ipvanish",
-    "logitech", "microsoft", "oracle", "overwolf", "simon", "valve",
-    "wireshark",
+    "adobe", "asus", "asustek", "avira", "bitdefender", "corsair",
+    "google", "ipvanish", "logitech", "mcafee", "microsoft", "opera",
+    "overwolf", "python", "simon", "valve", "wireshark",
 })
 
 #: Dropped before taking a vendor's first distinctive word, so that

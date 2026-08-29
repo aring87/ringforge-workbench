@@ -831,13 +831,35 @@ the narrow corpus could not have shown it, because it contained none of them.
 on both corpora; malware unchanged at 9 and 8. `nvidia` is a deliberate
 conservative loss, out at 91.7% self-signed once WHQL co-signing is counted.
 
-**2. Widening did not close the known misses, and cannot.** Adobe, Avira, Opera
-and Windows Defender are still absent, because none is installed on this bench
-at four samples or more -- tripling the corpus added five vendors and not one of
-them was impersonated in the malware. The bound is what a single machine has
-installed, so widening *within* it will not help again. Closing those needs a
-different source: a set of code-signing certificate subjects, or a corpus from
-another machine. Not a read of the test set.
+**A second machine closed three of the four misses -- 28 Aug.** The bound was
+never the method, it was one machine's installed software. A throwaway VM with
+Adobe Reader, Opera and Avira installed
+(`scripts/bootstrap_vendor_survey.ps1`), surveyed and merged with
+`derive_signers.py --survey`, takes `_ALWAYS_SIGNS` from 13 vendors to 17 over
+1,593 samples:
+
+    added     adobe, avira, mcafee, opera, python
+    removed   oracle
+
+`mcafee` arrived uninvited, bundled with Adobe Reader, and qualified on its own
+measurement. `python` qualifies at exactly 4 of 4, which is the thinnest
+possible pass and worth knowing.
+
+**Adding data removed a vendor, which is the derivation working.** `oracle` was
+12 of 12 signed on the narrow corpus and is **21 of 23** on the wide one --
+91.3%, under the bar. It comes out, and three datalake samples that claim
+`Oracle Corporation` stop being caught. A list that only ever grows is a list
+being curated rather than derived.
+
+Benign cost of the whole change: **0.0% on all three benign corpora**,
+unchanged.
+
+**Windows Defender is still missed**, and now for a reason worth fixing rather
+than a limit: it lives under `C:\Program Files\Windows Defender` and
+`C:\ProgramData\Microsoft\Windows Defender`, and the second is not a survey
+root. The per-user gap was the same shape -- Opera installs to
+`%LOCALAPPDATA%\Programs` and was invisible to every survey until 28 Aug, which
+read as a failed install rather than as a root that was never searched.
 
 **The installer blind spot was closed on 28 Aug, and it said no.**
 `high_entropy_sections` was withheld from `strong` on the stated grounds that
