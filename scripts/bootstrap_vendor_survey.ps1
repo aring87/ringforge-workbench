@@ -30,6 +30,7 @@
 .EXAMPLE
     .\bootstrap_vendor_survey.ps1 -Installers C:\installers
     .\bootstrap_vendor_survey.ps1 -SkipInstall
+    .\bootstrap_vendor_survey.ps1 -Installers C:\installers -Force
 #>
 
 [CmdletBinding()]
@@ -41,7 +42,8 @@ param(
     [int]$Count = 800,
     [int]$PerVendor = 12,
     [switch]$SkipInstall,
-    [switch]$SkipClone
+    [switch]$SkipClone,
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,11 +54,47 @@ function Note($text) { Write-Host "    $text" }
 # Matched on filename because that is what a download leaves behind. Each entry
 # is the vendor's own documented quiet switch; where a vendor documents none,
 # the entry says so rather than guessing something that half-works.
+#
+# `Installed` is the DisplayName pattern to look for before running anything.
+# `Vendor` is the CompanyName the survey will actually read, which is not always
+# the installer's: OperaSetup.exe is a 7-Zip self-extracting archive and reports
+# `Igor Pavlov`, so surveying the installer would add a spurious sample to a
+# different vendor rather than add Opera at all.
 $Silent = @(
-    @{ Match = "Reader_*install*.exe"; Args = @("/sAll", "/rs", "/msi", "EULA_ACCEPT=YES"); Name = "Adobe Reader" },
-    @{ Match = "OperaSetup*.exe";      Args = @("/silent", "/launchopera", "0", "/setdefaultbrowser", "0"); Name = "Opera" },
-    @{ Match = "avira_*.exe";          Args = @("/S"); Name = "Avira" }
+    @{ Match = "Reader_*install*.exe"; Args = @("/sAll", "/rs", "/msi", "EULA_ACCEPT=YES");
+       Name = "Adobe Reader"; Installed = "Adobe Acrobat*"; Vendor = "Adobe Inc" },
+    @{ Match = "OperaSetup*.exe";      Args = @("/silent", "/launchopera", "0", "/setdefaultbrowser", "0");
+       Name = "Opera"; Installed = "Opera*"; Vendor = "Opera Norway AS" },
+    @{ Match = "avira_*.exe";          Args = @("/S");
+       Name = "Avira"; Installed = "Avira*"; Vendor = "Avira Operations GmbH" }
 )
+
+# **Ask the machine, not the filesystem.** A vendor folder under Program Files
+# survives an uninstall often enough to be a bad signal; the uninstall registry
+# is what Windows itself considers installed. Both 64- and 32-bit views, and the
+# per-user hive, because these three install into different ones.
+$UninstallKeys = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+)
+
+function Get-InstalledNames {
+    $names = @()
+    foreach ($key in $UninstallKeys) {
+        try {
+            $names += Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
+                      Where-Object { $_.DisplayName } |
+                      Select-Object -ExpandProperty DisplayName
+        } catch { }
+    }
+    return $names
+}
+
+function Test-Installed($pattern, $names) {
+    foreach ($n in $names) { if ($n -like $pattern) { return $n } }
+    return $null
+}
 
 # --- preconditions ----------------------------------------------------------
 Step "checking the machine"
@@ -77,9 +115,20 @@ if ($SkipInstall) {
 } else {
     Step "installing vendor software from $Installers"
     Note "these flags accept each vendor's licence agreement"
+    $installedNames = Get-InstalledNames
+    Note "$($installedNames.Count) products already registered on this machine"
     foreach ($entry in $Silent) {
+        $already = Test-Installed $entry.Installed $installedNames
+        if ($already -and -not $Force) {
+            Note "$($entry.Name): already installed as '$already' -- skipping"
+            continue
+        }
         $files = @(Get-ChildItem -Path $Installers -Filter $entry.Match -ErrorAction SilentlyContinue)
-        if ($files.Count -eq 0) { Note "$($entry.Name): no installer matching $($entry.Match)"; continue }
+        if ($files.Count -eq 0) {
+            if ($already) { Note "$($entry.Name): already installed; no installer to re-run" }
+            else { Note "$($entry.Name): NOT installed and no installer matching $($entry.Match)" }
+            continue
+        }
         foreach ($file in $files) {
             Note "$($entry.Name): $($file.Name)"
             try {
@@ -95,6 +144,18 @@ if ($SkipInstall) {
     }
     Note "letting installers settle"
     Start-Sleep -Seconds 20
+
+    # **Say plainly which vendors the survey can and cannot speak for.** A
+    # vendor that did not install is not a vendor the derivation will fail to
+    # add quietly -- it is one the run cannot answer for, and that is worth
+    # knowing before the JSON is carried back rather than after.
+    Step "checking what actually installed"
+    $installedNames = Get-InstalledNames
+    foreach ($entry in $Silent) {
+        $already = Test-Installed $entry.Installed $installedNames
+        if ($already) { Note "OK      $($entry.Name) -> '$already'" }
+        else { Note "MISSING $($entry.Name) -- the survey will not add $($entry.Vendor)" }
+    }
 }
 
 # --- repo and venv ----------------------------------------------------------
