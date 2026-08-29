@@ -359,7 +359,7 @@ replaces is preserved in the git history.
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
     obfuscated_managed_code ‖      0.0%        0.0%        4.7%        4.0%
 
-    bands, No Evidence            98.3%       91.7%      (stale)     (stale)
+    bands, No Evidence            98.3%       91.7%        1.6%       16.0%
     at the old 3/5 thresholds     97.9%       90.3%        1.6%       15.0%
     before obfuscated_managed     97.9%       90.3%        3.9%       17.0%
     before entropy and identity   98.3%       90.3%       19.7%       31.0%
@@ -377,10 +377,9 @@ replaces is preserved in the git history.
       samples have perfectly readable names and are still unseen
     ★ thresholds re-fitted 28 Aug from 3/5 to 4/6, because the benign corpus
       gained 124 .NET applications and the category fired on 17.7% of them at
-      the old present threshold. Was 1.1/4.0/30.4/18.7. **The malware band rows
-      need a guest re-measure**: the host copies of those corpora lack the
-      version-info and CLR collectors, so only their capa-driven rate is
-      readable here
+      the old present threshold. Was 1.1/4.0/30.4/18.7. The trade is visible in
+      the two band rows: benign No Evidence rises 0.4 and 1.4 points, malware by
+      1.0 on one corpus and not at all on the other
 
 **Read the three band rows together, because they are the actual result.**
 Corrected, `stripped_metadata` discriminates better than the broken figure
@@ -396,7 +395,7 @@ They barely overlap -- six samples between the first two, none with the third.
 Their combined cost on benign is one System32 binary moving from No Evidence to
 Single Observation; Program Files bands did not move at all.
 
-**17 samples remain, and they are the honest number.** The pre-fix baseline of
+**18 samples remain, and they are the honest number.** The pre-fix baseline of
 3 was a phantom -- it counted samples covered by a signal that did not exist.
 Against it the module still looks worse and is in fact better, which is the
 whole lesson of this section in one row: a coverage figure is only as good as
@@ -664,10 +663,10 @@ and on managed applications from 17.7% to 8.9%. The cost is 4.4 points of
 detection; the decision rule is the one the original fit used, applied to a
 corpus that now contains the population it was worst on.
 
-**The malware band rows still need a guest re-measure.** A stricter
-`dangerous_capability` fires on fewer samples, so No Evidence on the malware
-corpora will rise from 1.6% and 15.0% -- by how much cannot be read on the host,
-whose copies of those corpora lack the version-info and CLR collectors.
+**Re-measured on the guest: 1.6% and 16.0%.** A stricter category fires on
+fewer samples, and one datalake sample lost its only evidence -- bazaar lost
+none. Against that, benign No Evidence rose 0.4 and 1.4 points. One malware
+sample for two corpora of benign accuracy is the trade, and it is a good one.
 
 **Meanwhile the module still cannot see 8 of these samples.** Three framings
 have been tried -- API rarity, capa-within-managed, and this -- and none has
@@ -750,7 +749,7 @@ intrusions) and occasionally files that are simply not malware.
 
 **The reports say "presumed benign, not verified" of the benign corpora and say
 nothing of the kind about the malware ones.** That asymmetry is wrong and it
-matters here: some of the 17 the module cannot see may be samples with nothing
+matters here: some of the 18 the module cannot see may be samples with nothing
 to see. Every malware rate in this file is a rate over *presumed* malware, and
 should be read that way.
 

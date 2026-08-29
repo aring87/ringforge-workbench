@@ -367,12 +367,12 @@ those two facts is visible in the table above.
 Those 56 were a coherent population rather than a residue: malware carrying
 complete, plausible vendor metadata, unsigned. Three categories built against
 what the band actually contained — `high_entropy_sections`, the rebuilt
-`deceptive_file_identity`, and `obfuscated_managed_code` — recovered 39 of them,
-taking the no-evidence share to **1.6% and 15.0%**. Their combined cost across
+`deceptive_file_identity`, and `obfuscated_managed_code` — recovered 38 of them,
+taking the no-evidence share to **1.6% and 16.0%**. Their combined cost across
 592 benign binaries is one System32 file moving from *No Evidence* to *Single
 Observation*.
 
-Seventeen samples still resist every static category, and that is the number to
+Eighteen samples still resist every static category, and that is the number to
 compare against — not the 3 the module reported before any of this, which
 counted samples covered by a signal that did not exist. Roughly half are .NET
 assemblies with entirely readable identifiers: managed code is the module's
