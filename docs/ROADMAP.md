@@ -621,6 +621,39 @@ Files. That is not a reason to change the category today, but the published
 figure should not be read as covering managed applications, and the roadmap
 table should carry the caveat.
 
+**The candidates were tested on all five corpora and rejected --
+`scripts/capability_sweep.py`.** Their managed-only lifts did not survive
+contact with the rest: `collection/keylog` 5.2x becomes 2.8x, `aes` 19.3x
+becomes 6.5x, `prng` 11.0x becomes 4.3x. Adding all ten makes the category
+strictly worse at every threshold.
+
+    dangerous_capability      benign   malware     lift
+    shipped set, at 3           5.3%     25.2%     4.7x
+    set + candidates, at 3     11.3%     36.6%     3.2x
+    shipped set, at 5           1.2%     18.8%    15.4x
+    set + candidates, at 5      3.7%     20.3%     5.5x
+
+Detection rises and the benign rate rises faster. That is the test the original
+set passed, run again, and the candidates fail it. **The one that looked
+strongest -- `communication/tcp` at 14.9x -- is a near-duplicate of
+`communication/tcp/client`, which is already a member.**
+
+**The threshold is a different matter and the same sweep says 3 is now too
+low.** With managed applications in the benign side:
+
+    at    Sys32   ProgFiles   managed apps   benign   malware    lift
+     3     1.1%        4.0%          17.7%     5.3%     25.2%    4.7x   <- present
+     4     0.7%        2.4%           8.9%     2.9%     20.8%    7.2x
+     5     0.7%        0.4%           4.0%     1.2%     18.8%   15.4x   <- strong
+
+The original choice of 3 was argued as *the sensitivity cost from two is small
+and it more than halves the false-positive rate*. Applied to this corpus the
+same argument now points at 4 or 5: going 3 -> 5 costs 6.4 points of detection
+and divides the false-positive rate by four, and on managed applications by
+more than four. **Not changed here** -- `CAPABILITY_PRESENT_AT` moves every
+published rate in this file and in the README, so it is a decision to take
+deliberately rather than a number to quietly re-fit.
+
 **Meanwhile the module still cannot see 8 of these samples.** Three framings
 have been tried -- API rarity, capa-within-managed, and this -- and none has
 produced a category. That is a legitimate end state under the project's own
