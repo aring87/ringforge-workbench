@@ -474,7 +474,15 @@ def _verify_authenticode_powershell(
 
     try:
         path_escaped = str(p).replace("'", "''")
+        # **Force UTF-8 out of PowerShell and decode it as UTF-8.** Certificate
+        # subjects are not ASCII -- `Sahlmen Software AB` carries an accent and
+        # a Wuhan publisher's is entirely CJK -- and the default here decoded
+        # whatever PowerShell emitted using the process locale. On a machine
+        # whose codepage is cp1252 that raises `UnicodeDecodeError` inside
+        # subprocess's reader thread, which surfaces as a traceback from a
+        # thread nobody wrote and a signing result that never arrives.
         ps_script = (
+            "[Console]::OutputEncoding = [Text.Encoding]::UTF8 ; "
             "$s = Get-AuthenticodeSignature -FilePath "
             f"'{path_escaped}' ; "
             "$o = [ordered]@{"
@@ -491,6 +499,13 @@ def _verify_authenticode_powershell(
             [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            # **A subject we cannot decode is not a reason to lose the result.**
+            # Replacement characters in a printed name cost nothing; an
+            # exception costs the whole signing verdict for that sample, and it
+            # would be recorded as "not attempted" rather than as the partial
+            # answer it is.
+            errors="replace",
             timeout=timeout_sec,
         )
         raw = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")
