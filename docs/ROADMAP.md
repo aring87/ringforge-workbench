@@ -350,6 +350,77 @@ showed.
 
 ## Pick up here — 28 Aug
 
+### Start here — the whole of 28 Aug in one screen
+
+**One correction ran through everything below.** `stripped_metadata` was
+published at 100% on malware and was measuring the signature check: no collector
+ever wrote the version-info block it reads, so it had silently become a second
+copy of `invalid_signature`. Fixing the collector exposed 56 malware samples
+that nothing could see, and the rest of the day was spent characterising them
+and building against what they actually were.
+
+    category                      Sys32   ProgFiles     family      6-year
+    ─────────────────────────    ──────   ─────────   ─────────   ─────────
+    stripped_metadata              0.0%        6.0%       77.2%       60.0%
+    high_entropy_sections          0.3%        0.0%       35.4%       28.0%
+    dangerous_capability           0.7%        2.4%       25.0%       15.4%
+    known_malware_signature        0.7%        0.3%       16.5%       12.0%
+    invalid_signature              0.0%        0.0%       15.7%        6.0%
+    deceptive_file_identity        0.0%        0.0%        8.7%        7.0%
+    obfuscated_managed_code        0.0%        0.0%        4.7%        4.0%
+    embedded_network_indicators    8.6%       77.0%       71.7%       67.0%
+
+    bands, No Evidence            98.3%       91.7%        1.6%       17.0%
+
+Three categories shipped, each measured before it shipped. `dangerous_capability`
+re-fitted from 3/5 to 4/6 once benign .NET applications entered the corpus.
+**No Evidence on malware went 56 to 19.**
+
+**Two items are open, and neither is blocked on a decision.**
+
+1. **Detonate a sample that checks for a VM.** Gap 4's detector exists, has 14
+   passing tests and has never fired; `QUIET_EVENT_THRESHOLD = 10` is a
+   placeholder its own comment declares uncalibrated. Needs the registry-capture
+   Procmon config, which has failed twice.
+2. **True positives for `extension`, `spec`, `api`.** OWASP crAPI and VAmPI are
+   downloadable; delisted malicious extensions are not.
+
+**Answered — do not reopen without new data.** Each of these was measured and
+the answer written next to the code:
+
+    entropy to `strong`?          no -- 0.95% of installers fire, 0.00% installed
+    lower the entropy cut to 7.2? no -- installer rate doubles; band unchanged
+    signature-subject matching?   no -- 15% FP; bundled software is signed by
+                                  its distributor
+    rarity of .NET API refs?      no -- 60% of benign refs appear in one assembly
+    capa namespaces within .NET?  no -- a library-vs-application confound
+    add the candidate namespaces? no -- lift falls 4.7x to 3.2x
+    narrow `embedded_network_…`?  no -- 2.7x on clean data, bar is 4.2x
+    add Windows Defender?         cannot -- real Defender binaries say
+                                  `Microsoft Corporation`
+
+**19 samples resist every category**, and `CALC.EXE` is their shape: 56
+VirusTotal detections, a signature that verifies, zero capa rules, zero YARA.
+No static category reaches it. That is the argument for the dynamic side, not
+for a ninth category.
+
+**The habit that paid, six times.** Read the existing state before writing
+anything. capa was already running on .NET; the version-info field was read but
+never written; `benign_rates` silently measured System32 under a `--cases` it
+could not honour; capa was on the host PATH after I reported it absent; Gap 4's
+detector was already built; Windows Defender was never behind a missing root.
+Every one of those looked like work to do and was a thing to check.
+
+**Where the data is.** `G:\static-corpus-full\cases` (292 System32),
+`G:\pf-corpus\cases` (300 Program Files), `G:\benign-managed-cases\cases` (124
+managed applications), `G:\benign-survey.json` + `G:\benign-survey-vm.json`
+(1,593 binaries for threshold calibration), `G:\installer-survey*.json` (210
+installers). Malware is on the guest at `C:\mal-bazaar-cases\cases` and
+`C:\mal-datalake-cases\cases`; the host copies carry analysis output only and
+report `unknown` for anything needing the binary.
+
+**Everything below this line is the working detail**, in the order it was found.
+
 **`stripped_metadata` was never measuring metadata.** No collector ever wrote a
 version-info block, so `_pe_string_table` returned `{}` on all 819 samples and
 the category collapsed into `not trusted_signed` — a relabelling of the
