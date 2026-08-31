@@ -389,8 +389,9 @@ resident and elevated for an hour and made **967 registry reads, none of them a
 VM artifact**, on a capture that demonstrably saw it. Against that, Windows
 itself makes ~450 `vm_specific` reads per ordinary boot. The surface is rare in
 the field and swamped by the OS where it appears. See *Item 1 - the logon run*;
-the collection path is proven and the one untested gate, a completed C2
-handshake on port 7372, is named there rather than left to be re-derived.
+the collection path is proven, and the one untested gate -- a completed C2
+handshake -- cannot be tested with this sample, whose C2 is hardcoded
+`127.0.0.1`.
 
 **Answered — do not reopen without new data.** Each of these was measured and
 the answer written next to the code:
@@ -1384,17 +1385,30 @@ The surface is rare in the field, and where it does appear it is swamped by the
 operating system unless lineage holds -- and the payload class most likely to
 use it is the class lineage cannot attribute.
 
-**One thread is left open rather than closed, and it is named so nobody
-re-derives it.** The check may sit behind a *completed* C2 handshake: the
-result string `"Client ... was a virtual machine!"` is operator-facing panel
-text, so the check plausibly runs while building a check-in. This run got
-closer to testing that than any before it -- FakeNet resolved the C2, a hand-run
-listener accepted the connection on **port 7372** -- and it stopped there,
-because the protocol is **server-speaks-first**: the client connected, sent
-nothing, waited, and timed out. Answering it means reversing enough of the
-protocol to send a plausible server hello. That is a project, and it is out of
-proportion to one context-only detector. If it is ever done, this is the sample
-and 7372 is the port.
+**One thread stays open, and this sample cannot close it.** The check may sit
+behind a *completed* C2 handshake: `"Client ... was a virtual machine!"` is
+operator-facing panel text, so it plausibly runs while building a check-in. Two
+things about that were measured after the run and the second corrects a claim
+made an hour earlier in this session.
+
+The protocol is **server-speaks-first**. A hand-run listener on **port 7372**
+accepted the connection; the client connected, sent nothing, waited and timed
+out. Getting past that needs enough of the protocol reversed to send a plausible
+server hello, which is a project and is out of proportion to one context-only
+detector.
+
+And **the C2 is hardcoded `127.0.0.1`, so this build has no infrastructure at
+all.** FakeNet was started to resolve the beacon's hostname and logged five DNS
+requests, all `svchost.exe` fetching digicert, bing and Microsoft telemetry --
+**the sample made none**, because it never had a name to look up. `127.0.0.1` is
+in its strings, and the only other IP-shaped strings in the file are .NET
+assembly versions. The ~200 sockets left in `Bound` were a beacon loop retrying
+loopback, and it connected the instant something listened there.
+
+So this is an unconfigured builder-default build, and it was reported here as
+having "given up its infrastructure", which it never had. Any C2-gated
+experiment on this family needs a *configured* sample; `ce0d08be...` is a dead
+end for it, and the port is the only part worth carrying forward.
 
 ### Traps this cost a day to find
 
