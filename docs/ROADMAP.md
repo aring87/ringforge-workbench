@@ -1475,6 +1475,17 @@ they survived:
   re-taken with it (the old one kept as `tooling-baseline-preprocmonfix`).
   Anything else configured on a guest -- a `git pull`, a renamed Procmon -- has
   the same lifetime, which is one revert.
+- **Clearing that field to get the default back silently disabled the
+  collection, which is the same failure through the opposite door.** The GUI
+  read it as `cfg.get("dynamic_procmon_config_path", <default>)`, and a
+  *cleared* key exists holding `""`, so the default is never reached. An empty
+  config makes the orchestrator pass `None`, and Procmon then runs on whatever
+  filter it had saved -- the state `describe_procmon_filter` reports as *"What
+  was captured cannot be read from this run."* The fix for the field that cost
+  three runs reintroduced the same class of bug within the hour. Both paths are
+  now read with `or`, so a missing key and an empty one fall back alike.
+  **"Clear it to get the default" is the obvious operator move and it was
+  wrong** -- a default only reachable through an absent key is not a default.
 
 ### The correction worth remembering
 
