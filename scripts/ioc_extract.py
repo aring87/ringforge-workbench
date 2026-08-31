@@ -113,16 +113,45 @@ def _looks_like_namespace(dom: str) -> bool:
     left, right = parts
     if right not in _NAMESPACE_TLDS:
         return False
-    # A two-label name whose left side is a namespace root, or which carries an
-    # internal capital in the original, is code rather than infrastructure.
+    # A two-label name whose left side is a namespace root is code rather than
+    # infrastructure.
     return left in _NAMESPACE_ROOTS or len(left) <= 3
 
 
-def _is_valid_domain(dom: str) -> bool:
+def _looks_like_dotted_code(original: str) -> bool:
+    """`Microsoft.CodeAnalysis.CSharp.Symbols.Metadata.PE` is not a host.
+
+    **Case is the only thing that separates these, and it was being discarded
+    before anything could look at it.** A namespace and a hostname have the same
+    shape -- dotted labels, a plausible suffix -- and both appear in the same
+    strings dump. Six-label examples from one corpus:
+
+        au-v20.events.endpoint.security.microsoft.com    a real Defender host
+        microsoft.codeanalysis.csharp.symbols.metadata.pe   a C# namespace
+
+    Nothing structural tells them apart: `.pe` is Peru and a label count that
+    rejected one would reject the other. The namespace is PascalCase in the
+    binary and the hostname is not, so the check has to run before the string
+    is folded.
+
+    Two capitalised labels rather than one, because a sentence-cased mention of
+    a real host -- `Microsoft.com` in a comment -- should not be discarded.
+    """
+    parts = original.split(".")
+    if len(parts) < 3:
+        return False
+    return sum(1 for p in parts if p[:1].isupper()) >= 2
+
+
+def _is_valid_domain(dom: str, original: str | None = None) -> bool:
+    """`original` is the match before case folding, and it carries the only
+    evidence that separates a .NET namespace from a hostname."""
     dom = dom.lower().strip().rstrip(".")
     if dom in DOMAIN_DENYLIST:
         return False
     if _looks_like_namespace(dom):
+        return False
+    if original and _looks_like_dotted_code(original.strip().rstrip(".")):
         return False
 
     # quick asset suppression
@@ -239,7 +268,10 @@ def extract_from_strings(strings_text: str) -> dict:
         # Domains outside URLs (strictly validated)
         for m in RE_DOMAIN.findall(line):
             dom = m.lower().rstrip(".")
-            if _is_valid_domain(dom):
+            # The match is passed through unfolded as well: `_is_valid_domain`
+            # cannot tell `Microsoft.CodeAnalysis.CSharp` from a hostname once
+            # the capitals are gone.
+            if _is_valid_domain(dom, original=m):
                 domains.add(dom)
 
     return {

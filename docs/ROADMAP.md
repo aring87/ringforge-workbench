@@ -967,10 +967,35 @@ with seventeen labels. **A category cannot be narrowed onto data this noisy**,
 and the honest order is: fix `step_iocs` to reject what is not a hostname, then
 re-ask the question against what survives.
 
-Worth noting for when it is re-asked: the malware hosts that survive prevalence
-exclusion look like real signal -- `ip-api.com` (geolocation recon),
-`discord.com` (C2 over a legitimate service), `godebugs.info`,
-`reflect.flag.ro`. The signal is there; it is buried under XML namespaces.
+**The parser was fixed on 28 Aug and it was a smaller bug than this said.**
+`ocsp.digicert.com0a` is already rejected by the current code -- that junk is
+stale corpus output, not a live defect. And `schemas.microsoft.com`,
+`www.w3.org` and `tempuri.org` are *correctly extracted hostnames*: the
+extractor is right that they are hosts, and the category is wrong to read an XML
+namespace declaration as a network destination. That is not a parser question.
+
+What was a real defect: a .NET namespace has the same shape as a hostname and
+the extractor folded the case away before anything could tell them apart.
+
+    au-v20.events.endpoint.security.microsoft.com       a real Defender host
+    microsoft.codeanalysis.csharp.symbols.metadata.pe   a C# namespace
+
+Six labels each, both with a real suffix -- `.pe` is Peru -- so nothing
+structural separates them. `_looks_like_namespace` handled the two-label case
+and its docstring claimed to check "an internal capital in the original", which
+it could not: the call site lowercased the match first. Now it gets the unfolded
+string, and a name with three or more labels and two or more capitalised ones is
+code. Two rather than one, so `Discord.com` in a message is still a host.
+
+It drops 18 distinct strings across the corpora and moves the firing rate by
+1.0 point on System32 and not at all elsewhere. Correct, and small.
+
+**A correction to what this section said an hour earlier.** Two of the four
+"real signal" hosts named below were Go runtime symbols: `reflect.Value.Int`
+appears in every Go binary, and it survived prevalence exclusion only because
+benign Go binaries are rare in these corpora. `ip-api.com` and `discord.com`
+stand. A host surviving an exclusion built from *this* benign population is
+evidence about the population as much as about the host.
 
 **5. The README section is published and current.** Eight categories with the
 closing numbers, both halves of the `stripped_metadata` correction, and the 19
