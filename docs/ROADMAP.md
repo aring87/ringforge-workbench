@@ -1341,8 +1341,33 @@ capture-time filter: 4.2 GB of `.pmb` in 65 minutes, a 1.67 GB `.pml`, and a
 703 MB CSV *with the registry-read filter applied at export*. That is 65 MB per
 minute, and `parse_procmon_csv` cannot hold it -- `scripts/vm_reads_from_csv.py`
 streams instead. **Boot logging is how you prove a payload stage exists; it is
-not the instrument for watching one.** A filtered capture started at logon by a
-Run key or a task of our own would cost a fraction of it.
+not the instrument for watching one.**
+
+**So the instrument was built: `dynamic_analysis/logon_capture.py` and
+`scripts/logon_capture.py`, 11 tests.** A filtered Procmon capture that is
+already running when the user logs on.
+
+The task triggers on **`ONSTART`, not `ONLOGON`**, and that is the decision the
+whole thing turns on. Racing the sample's own `ONLOGON` task is a coin toss, and
+losing it means missing the first seconds -- which is exactly where
+`ce0d08be...` did its work both times: payload up 2 seconds after the logon,
+persistence installed 12 seconds later. `ONSTART` runs as SYSTEM at boot, before
+any user session exists, so there is no ordering to get right. It takes the run's
+own filter, so a logon capture sees registry reads by default the way a
+detonation does, and the Procmon binary is a parameter because a payload stage
+that survives a logon has every opportunity to read the process list -- the CLI
+warns if the name contains `procmon`.
+
+`logon_capture.json` is written before the CSV is read: `completed: false` with a
+reason when the capture did not run, and `captures_registry_reads` from the
+*file* rather than the filename. A capture that never happened and a boot where
+nothing happened are different results, which is the failure this whole document
+keeps returning to.
+
+**Arm it outside a run's snapshot window.** Nothing excludes analyzer-owned
+tasks from `diff_tasks`, so arming between a run's before and after snapshots
+reports our own collector as persistence. Before a detonation or after one
+completes; never in the middle.
 
 **A second result, and it may matter more than the first: 448 VM-artifact reads
 on one ordinary boot, every one of them background.**
