@@ -7,7 +7,15 @@
     ... reboot, log on, wait out the window ...
 
     .venv\\Scripts\\python.exe scripts\\logon_capture.py --status
+    .venv\\Scripts\\python.exe scripts\\logon_capture.py --analyse ^
+        --out C:\\logon-capture --image ce0d08be....exe
     .venv\\Scripts\\python.exe scripts\\logon_capture.py --disarm
+
+`--analyse` runs the detonation's own passes over what was captured and writes
+`logon_analysis.json`. It needs `--image` -- the persisted payload's image name,
+which a detonation names in its dropped-files output -- because lineage is the
+only thing separating the payload from the machine's own boot, and an ordinary
+boot makes 448 VM-artifact reads of its own.
 
 `--capture` is what the scheduled task invokes and is not normally typed by
 hand. See `dynamic_analysis/logon_capture.py` for why the task is `ONSTART`
@@ -38,7 +46,56 @@ from dynamic_analysis.logon_capture import (  # noqa: E402
     run_capture,
     status,
 )
+from dynamic_analysis.logon_analysis import analyse_logon_capture  # noqa: E402
 from dynamic_analysis.procmon_config import DEFAULT_PROCMON_CONFIG_NAME  # noqa: E402
+from dynamic_analysis.procmon_parser import parse_procmon_csv  # noqa: E402
+
+
+def _analyse(args) -> int:
+    """Run the detonation passes over a finished capture.
+
+    Needs `--image`, and refuses without it rather than defaulting to something.
+    Lineage is the only thing separating the payload from the machine's own boot
+    -- 448 VM-artifact reads on an ordinary one, every one background -- so a
+    run with nothing to attribute to would report Windows as the sample.
+    """
+    if not args.out or not args.image:
+        print("--analyse needs --out and --image", file=sys.stderr)
+        return 2
+
+    out = Path(args.out)
+    csv_path = Path(args.csv) if getattr(args, "csv", None) else out / "logon_capture.csv"
+    if not csv_path.is_file():
+        print(f"no capture CSV at {csv_path}", file=sys.stderr)
+        return 2
+
+    manifest_path = out / "logon_capture.json"
+    manifest = {}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except ValueError:
+            print(f"WARNING: {manifest_path} is unreadable", file=sys.stderr)
+
+    events = parse_procmon_csv(csv_path)
+    result = analyse_logon_capture(events, args.image, manifest=manifest)
+
+    out_path = out / "logon_analysis.json"
+    out_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+
+    print(f"{result['event_count']:,} events, lineage "
+          f"{'resolved' if result['lineage_resolved'] else 'NOT resolved'}"
+          f" ({len(result['descendant_pids'])} pids)")
+    counts = result["vm_artifact_reads"]["counts"]
+    print(f"  vm_specific {counts['vm_specific']}  identity {counts['identity_surface']}"
+          f"  background {counts['background_artifact_reads']}")
+    print(f"  vm_check_and_bail: {result['vm_check_and_bail']['verdict']}")
+    for line in result["findings"].get("highlights", []):
+        print(f"  {line}")
+    if result["note"]:
+        print(f"\n{result['note']}")
+    print(f"\nwrote {out_path}")
+    return 0
 
 
 def _default_config() -> Path:
@@ -55,12 +112,18 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--disarm", action="store_true", help="remove it")
     mode.add_argument("--status", action="store_true", help="is it armed")
     mode.add_argument("--capture", action="store_true", help="run the capture (the task does this)")
+    mode.add_argument("--analyse", action="store_true", help="run the passes over a finished capture")
 
     parser.add_argument("--out", help="directory for the pml, csv and manifest")
     parser.add_argument("--procmon", help="path to Procmon; do not name it procmon")
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_SECONDS)
     parser.add_argument("--config", help=f"a .pmc; default {DEFAULT_PROCMON_CONFIG_NAME}")
+    parser.add_argument("--image", help="the persisted payload's image name, for --analyse")
+    parser.add_argument("--csv", help="a capture CSV; default <out>/logon_capture.csv")
     args = parser.parse_args(argv)
+
+    if args.analyse:
+        return _analyse(args)
 
     if args.status:
         result = status()
