@@ -364,11 +364,12 @@ replaces is preserved in the git history.
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
     embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
-    deceptive_file_identity ‡      0.0%        0.0%        7.1%        8.0%
+    deceptive_file_identity ‡      0.0%        0.0%        8.7%        7.0%
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
     obfuscated_managed_code ‖      0.0%        0.0%        4.7%        4.0%
 
-    bands, No Evidence            98.3%       91.7%        1.6%       16.0%
+    bands, No Evidence            98.3%       91.7%        1.6%       17.0%
+    at 13 vendors, before Oracle  98.3%       91.7%        1.6%       16.0%
     at the old 3/5 thresholds     97.9%       90.3%        1.6%       15.0%
     before obfuscated_managed     97.9%       90.3%        3.9%       17.0%
     before entropy and identity   98.3%       90.3%       19.7%       31.0%
@@ -851,8 +852,26 @@ possible pass and worth knowing.
 `Oracle Corporation` stop being caught. A list that only ever grows is a list
 being curated rather than derived.
 
-Benign cost of the whole change: **0.0% on all three benign corpora**,
-unchanged.
+**Measured on all five corpora, the change is close to a wash, and the
+accounting is worth stating in full.**
+
+    deceptive_file_identity      family   6-year   total
+    at 13 vendors                     9        8      17
+    at 17 vendors                    11        7      18
+
+    bands, No Evidence           family   6-year   total
+    at 13 vendors                     2       16      18
+    at 17 vendors                     2       17      19
+
+Four vendors added catches two more in bazaar; one vendor removed loses one in
+datalake, and that sample had `deceptive_file_identity` as its only evidence, so
+the band grows by one. One more detection, one more sample nobody can see.
+
+**That is not a reason to keep Oracle.** It ships unsigned 2 times in 23 -- the
+rule exists so that an unsigned copy of ordinary software is not accused, and
+Oracle's own releases are ordinary software. Keeping it because removing it
+costs a detection is how a derived list becomes a curated one, and the benign
+cost of the whole change is **0.0% on all three benign corpora**, unchanged.
 
 **Windows Defender is still missed**, and now for a reason worth fixing rather
 than a limit: it lives under `C:\Program Files\Windows Defender` and
@@ -953,8 +972,8 @@ exclusion look like real signal -- `ip-api.com` (geolocation recon),
 `discord.com` (C2 over a legitimate service), `godebugs.info`,
 `reflect.flag.ro`. The signal is there; it is buried under XML namespaces.
 
-**5. The README section is published and current.** Seven categories with the
-closing numbers, both halves of the `stripped_metadata` correction, and the 22
+**5. The README section is published and current.** Eight categories with the
+closing numbers, both halves of the `stripped_metadata` correction, and the 19
 that still resist everything stated as the number to compare against -- not the
 3 the module reported before any of this, which counted samples covered by a
 signal that did not exist. Revisit it when item 1 or 2 moves a figure.

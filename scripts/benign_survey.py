@@ -5,11 +5,12 @@ each was limited by a different thinness in that corpus. All three are now
 answered, and the answers are the reason to keep this script rather than retire
 it.**
 
-* `_ALWAYS_SIGNS` in `deceptive_file_identity` held 8 vendors. It now holds 13
-  over 1,219 samples -- and the widening turned up a *third qualifying rule*
-  rather than more vendors: `ffmpeg` passed the first two at 7 of 7 signed with
-  0 of the 7 signed by FFmpeg, so a vendor must now be shown to sign its own
-  releases. See `scripts/derive_signers.py`.
+* `_ALWAYS_SIGNS` in `deceptive_file_identity` held 8 vendors and now holds 17
+  over 1,593 samples, across two machines. Widening turned up a *third
+  qualifying rule* rather than more vendors: `ffmpeg` passed the first two at 7
+  of 7 signed with 0 of the 7 signed by FFmpeg, so a vendor must be shown to
+  sign its own releases. It also *removed* `oracle`, which ships unsigned 2
+  times in 23. See `scripts/derive_signers.py`.
 * `obfuscated_managed_code` was calibrated on **39** measurable managed
   assemblies and now rests on 129. Nothing benign reaches the 0.20 cut and no
   named protector appears in any of 161 managed binaries.
@@ -18,11 +19,16 @@ it.**
   installers fire against 0.00% of installed software, which is why the
   category is still not `strong`.
 
-**What is still open is what this cannot reach.** Adobe, Avira, Opera and
-Windows Defender are absent from `_ALWAYS_SIGNS` because none is installed on
-this bench at four samples or more, and going from 592 to 1,492 binaries added
-none of them. The bound is one machine's installed software; widening within it
-will not help again.
+**A second machine closed three of the four misses.** Adobe, Avira and Opera
+now qualify, surveyed from a throwaway VM with them installed
+(`scripts/bootstrap_vendor_survey.ps1`) and merged with `derive_signers.py
+--survey`. `mcafee` arrived with them, bundled inside Adobe Reader.
+
+**Windows Defender is still missed, and it is a root that was never searched
+rather than a limit** -- it lives partly under `C:\ProgramData\Microsoft\Windows
+Defender`. The per-user gap had the same shape: Opera installs to
+`%LOCALAPPDATA%\Programs` and was invisible to every survey until 28 Aug, which
+read as a failed install rather than as a directory nobody looked in.
 
 **This does not run capa, YARA or the IOC pass, and that is the point.** None of
 the three questions above touches them, and they cost 30-85 seconds a binary
