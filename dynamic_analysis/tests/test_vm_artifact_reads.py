@@ -174,6 +174,26 @@ class LineageTests(unittest.TestCase):
         self.assertEqual(result["background_reads"], 3)
         self.assertEqual(result["counts"]["background_artifact_reads"], 3)
 
+    def test_the_background_rows_are_returned_not_only_counted(self) -> None:
+        # A count cannot say *who*. On run `ce0d08be...` the three background
+        # artifact reads were the only lead the run produced, and the pass
+        # reported the number and threw the rows away -- so "the sample never
+        # checked" and "the copy it relaunched checked, outside the tree" read
+        # identically.
+        events = [
+            _read(GUEST_ADDITIONS, pid=612, process="svchost.exe"),
+            _read(BIOS_VERSION, pid=4021, process="ce0d08be.exe"),
+        ]
+
+        result = collect_vm_artifact_reads(events, descendant_pids={8784})
+
+        self.assertEqual(result["hits"], [])
+        self.assertEqual(result["counts"]["background_artifact_reads"], 2)
+        self.assertEqual(
+            [(h["pid"], h["process_name"], h["specificity"]) for h in result["background_hits"]],
+            [(612, "svchost.exe", "vm_specific"), (4021, "ce0d08be.exe", "identity_surface")],
+        )
+
     def test_unresolved_lineage_counts_everything(self) -> None:
         # The same degrade the findings, the PowerShell blocks and the dropped
         # files use: None means "could not resolve", not "the tree is empty".

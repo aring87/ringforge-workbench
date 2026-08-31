@@ -367,6 +367,15 @@ def collect_vm_artifact_reads(
             "windows_response_reads": len(windows_response_hits),
             "routine_subpath_reads": len(routine_hits),
         },
+        # The rows, not only the count. Run `ce0d08be...` on 31 Aug reported
+        # `background_artifact_reads: 3` and nothing else -- three reads of a VM
+        # artifact by a process outside the resolved tree, with no way to see
+        # which process or which key. That sample drops a copy and exits in
+        # eight seconds, so the process that would do the checking is exactly
+        # the one lineage does not reach, and the three rows were the answer to
+        # the run's whole question. Counted and discarded is the failure this
+        # module's own docstring warns about, applied to itself.
+        "background_hits": background_hits[:50],
         "windows_response_hits": windows_response_hits[:50],
         "routine_subpath_hits": routine_hits[:50],
         "families": families,
@@ -592,6 +601,7 @@ def empty_vm_artifact_reads(reason: str = "not collected") -> dict[str, Any]:
             "windows_response_reads": 0,
             "routine_subpath_reads": 0,
         },
+        "background_hits": [],
         "windows_response_hits": [],
         "routine_subpath_hits": [],
         "families": {},

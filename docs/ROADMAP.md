@@ -378,13 +378,15 @@ re-fitted from 3/5 to 4/6 once benign .NET applications entered the corpus.
 
 **Two items are open, and neither is blocked on a decision.**
 
-1. **Detonate `ce0d08be...` — bazaar case `b526eab6`.** The sample is chosen and
-   the prediction is written down; see *Item 1 - the sample for gap 4*. It is
-   the only one of 227 that names a VM-only registry key in its own bytes, which
-   is why the two earlier attempts saw nothing. Run Procmon under a different
-   filename: `procmon` is on this sample's own process list. The run can prove
-   the collection path and rule the placeholder threshold out; it cannot
-   calibrate it, because that needs a sample that bails.
+1. **Re-observe `ce0d08be...` across a logon.** The 31 Aug detonation ran, and
+   the collection path is proven -- 171,728 registry reads captured, markers
+   matching real data, Procmon unspotted under a renamed binary. It returned
+   `no_vm_check` because the sample installed an **`ONLOGON`** scheduled task
+   and quit: the run observed the installer, not the payload. The experiment
+   left is to log off and back on with a fresh capture running. See *Item 1 -
+   the run, and what it actually measured*. The wider version of the same
+   problem -- nothing in this pipeline observes what a persisted payload does --
+   is recorded there too.
 2. **True positives for `extension`, `spec`, `api`.** OWASP crAPI and VAmPI are
    downloadable; delisted malicious extensions are not.
 
@@ -1208,6 +1210,101 @@ the threshold**, because the threshold separates a bail from a pause and a
 sample that bails, and this corpus does not obviously hold one. Recording that
 in advance, because the temptation after a run that works is to call the
 placeholder settled.
+
+### Item 1 — the run, and what it actually measured — 31 Aug
+
+**The prediction was wrong.** Published before the run: `checked_then_active`,
+at least two `vm_specific` hits, `sample_events_after_check` in the hundreds or
+thousands. Returned: `no_vm_check`, `artifacts_read: 0`. Writing it down first
+is what makes the rest of this section a result rather than a story.
+
+**What worked, and three runs had failed at it.** The collection path is proven
+end to end for the first time in this project:
+
+    collection_available            true
+    lineage_resolved                true
+    reads_in_stream               171,728
+    sample_reads                    2,664
+    background_artifact_reads           3
+
+`dynamic_registry_reads.pmc` captured the reads, and `rf_trace64.exe` was not
+spotted — the sample ran to completion with Procmon resident. **The markers also
+matched real data**: three VM-artifact reads were classified correctly out of a
+live stream, which rules out the failure mode this package fears most, where 46
+markers were once written regex-style and matched nothing for the life of the
+project.
+
+**Three explanations were raised and all three were killed by measurement.**
+Recorded because the ruling-out is most of this session's value.
+
+*It died on startup* — no. `exit_code: 0`, no crash, 7 process creates, 82
+high-signal file writes, 23 dropped files, a persistence hit, a new autoruns
+entry, 7 memory YARA matches across 7 dumps including one memory-only rule.
+The run scored **Likely Malicious, 140, High**.
+
+*The relaunched copy fell outside the resolved lineage* — no. `708 -> cmd.exe
+9476 -> copy 10208` is an unbroken parent chain. Re-running
+`collect_vm_artifact_reads` with `descendant_pids=None`, which counts every
+process on the machine, returned the same answer: the only VM-artifact reads in
+the entire stream were three `identity_surface` reads by `svchost.exe` 3408 --
+`SystemManufacturer`, `SystemProductName`, `BIOSVersion`. Windows reading its
+own machine identity.
+
+*It short-circuited on WMI* — no. Only `wmiprvse.exe` loaded `fastprox.dll`,
+`wbemcomn.dll`, `wbemprox.dll` and `wmiutils.dll`; neither sample process loaded
+a WMI client library. And the sample's tree made **zero network events**, so it
+never reached a check-in either.
+
+**The answer was in the `schtasks` command line.**
+
+    11:16:59.3  python.exe  ->  sample (708)
+    11:17:00.7  708         ->  cmd /c "...\AppData\Roaming\Temp\cleanup_...bat"
+    11:17:07.7  cmd (9476)  ->  timeout /t 2 /nobreak
+    11:17:09.8  cmd         ->  "...\AppData\Roaming\PlatformRuntime\ce0d08be....exe" (10208)
+    11:17:09.8  cmd         ->  timeout /t 1 /nobreak      then deletes the original
+    11:17:21.8  10208       ->  schtasks /create /tn "ce0d08be..." /sc ONLOGON
+                                  /tr "...\PlatformRuntime\ce0d08be....exe" /rl HIGHEST /f
+
+`/sc ONLOGON`. The copy installed the task, went quiet, and made no network
+attempt for the remaining 880 seconds — it had finished its job. **This run
+observed the installer. The payload runs at next logon.** The stage that would
+check for a VM, and report `"Client ... was a virtual machine!"` to its operator,
+is sitting in a scheduled task waiting for a trigger a single-boot detonation
+never produces. The 900-second window was irrelevant; no amount of waiting fires
+an `ONLOGON` task.
+
+**Gap 4 is therefore not declined, and this section previously read as though it
+would be.** The sample selection was sound -- the check is in the code, and the
+sample ran -- but *names a registry key in its bytes* predicts capability, not
+execution, and that is the correction to carry forward. What is left is a cheap,
+specific, unattempted experiment that this run defined exactly:
+
+> Detonate, let it persist, then **log off and back on with a fresh capture
+> running** under `dynamic_registry_reads.pmc`. The `ONLOGON` task launches the
+> copy and the payload stage is finally observed. The sample is already
+> installed on the guest, so the expensive half is done.
+
+Two things to expect there. The orchestrator starts and stops Procmon around the
+run, so this needs a **second capture after the logon** rather than one
+continuous one -- simpler than Procmon boot logging and needs no code. And
+`/rl HIGHEST` means the task runs **elevated**, which our run was not; a
+different privilege context can change what a sample does.
+
+**The limitation this exposes is bigger than gap 4, and no report currently
+states it.** The pipeline detects persistence -- the autoruns diff and the task
+diff both caught this one -- but it cannot observe **what the persisted thing
+does**. Every detector in the dynamic side watches one boot, and a payload
+behind `ONLOGON`, a logon script, or a scheduled trigger is outside all of them.
+This run scored 140 on the installer alone, which is the good news; the payload
+was never watched, which nothing in the output says. Exit criterion 1 asks for a
+named reason wherever something is built and unproven, and for this class of
+sample the reason is the observation model rather than any individual detector.
+
+**`background_hits` is now returned from `collect_vm_artifact_reads`**, beside
+`windows_response_hits` and `routine_subpath_hits`. It was built for hypothesis
+2, which was wrong -- but a count that cannot say *which process* is a gap
+whatever the hypothesis, and returning the rows is what let this run be settled
+from disk instead of by a second detonation.
 
 ### Traps this cost a day to find
 
