@@ -1438,6 +1438,18 @@ they survived:
 - **Sample over the axis that matters.** Uniform draws gave 40% Microsoft in
   Program Files, a quarter azure.com in APIs.guru, and `a`-through-`M` in
   System32. Every corpus script now stratifies, and says so.
+- **The baseline snapshot carried the wrong Procmon config, so the trap came
+  back on every revert.** Checked 31 Aug after the logon run:
+  `tooling-baseline` held `dynamic_procmon_config_path` pointing at
+  `dynamic_default.pmc`, which captures no registry reads -- and a saved path in
+  `config.json` beats `DEFAULT_PROCMON_CONFIG_NAME`. That is the same field that
+  cost three runs, restored fresh before every detonation. **A fix applied to
+  the guest is undone by the next revert; only a fix inside the baseline
+  persists.** The field is now *cleared* rather than re-pointed, so the code
+  default applies and stays correct if it ever changes, and the baseline was
+  re-taken with it (the old one kept as `tooling-baseline-preprocmonfix`).
+  Anything else configured on a guest -- a `git pull`, a renamed Procmon -- has
+  the same lifetime, which is one revert.
 
 ### The correction worth remembering
 
