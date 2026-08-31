@@ -873,12 +873,23 @@ Oracle's own releases are ordinary software. Keeping it because removing it
 costs a detection is how a derived list becomes a curated one, and the benign
 cost of the whole change is **0.0% on all three benign corpora**, unchanged.
 
-**Windows Defender is still missed**, and now for a reason worth fixing rather
-than a limit: it lives under `C:\Program Files\Windows Defender` and
-`C:\ProgramData\Microsoft\Windows Defender`, and the second is not a survey
-root. The per-user gap was the same shape -- Opera installs to
-`%LOCALAPPDATA%\Programs` and was invisible to every survey until 28 Aug, which
-read as a failed install rather than as a root that was never searched.
+**Windows Defender cannot be added, and the reason is not a missing root.**
+This section said it was one, twice. Checked on 28 Aug: `C:\Program FilesWindows Defender` holds 40 binaries and *is already a survey root*, and every
+one of them carries `CompanyName: Microsoft Corporation`. Nothing legitimate on
+this machine claims `Windows Defender` as a company -- `windows` appears as a
+vendor key on **0 of 1,079** surveyed binaries, against 755 for `microsoft`.
+
+So the malware claiming `CompanyName: Windows Defender` is claiming a *product*
+name as a company, and `_ALWAYS_SIGNS` can never hold it: the list is derived
+from what benign software claims, and no benign software claims that. Adding the
+`ProgramData` root would have changed nothing, and the two earlier notes here
+predicting otherwise were wrong.
+
+**It is a different rule, not a longer list.** `_ALWAYS_SIGNS` asks *does this
+vendor always sign*; catching this needs *is this a vendor at all*. That is
+derivable in principle -- a company name absent from every benign corpus -- but
+so are the names of every small legitimate vendor nobody here has installed, and
+the false-positive population is unbounded. Not attempted.
 
 **The installer blind spot was closed on 28 Aug, and it said no.**
 `high_entropy_sections` was withheld from `strong` on the stated grounds that
