@@ -378,10 +378,13 @@ re-fitted from 3/5 to 4/6 once benign .NET applications entered the corpus.
 
 **Two items are open, and neither is blocked on a decision.**
 
-1. **Detonate a sample that checks for a VM.** Gap 4's detector exists, has 14
-   passing tests and has never fired; `QUIET_EVENT_THRESHOLD = 10` is a
-   placeholder its own comment declares uncalibrated. Needs the registry-capture
-   Procmon config, which has failed twice.
+1. **Detonate `ce0d08be...` — bazaar case `b526eab6`.** The sample is chosen and
+   the prediction is written down; see *Item 1 - the sample for gap 4*. It is
+   the only one of 227 that names a VM-only registry key in its own bytes, which
+   is why the two earlier attempts saw nothing. Run Procmon under a different
+   filename: `procmon` is on this sample's own process list. The run can prove
+   the collection path and rule the placeholder threshold out; it cannot
+   calibrate it, because that needs a sample that bails.
 2. **True positives for `extension`, `spec`, `api`.** OWASP crAPI and VAmPI are
    downloadable; delisted malicious extensions are not.
 
@@ -1105,6 +1108,106 @@ signal that did not exist. Revisit it when item 1 or 2 moves a figure.
 For `spec` and `api` a "true positive" means a real exposure found in the wild,
 which is a different sourcing problem; `extension` malicious samples are
 delisted.
+
+### Item 1 — the sample for gap 4, chosen by measurement — 31 Aug
+
+**The question was wrong, and that is why two detonations failed.** Both samples
+were picked for *detecting virtualisation* — FormBook by module hash, and
+`a6a86646…` because a sandbox had flagged it as reading VirtualBox ACPI keys —
+and both produced `artifacts_read: 0`. The detector counts only `vm_specific`
+*registry* reads, so the question it needs answered is not "does this sample
+detect a VM" but **"does it detect a VM through the registry"**. Those are very
+different populations, and `scripts/vm_check_candidates.py` measures how
+different over all 227 malware cases:
+
+    of 227 malware cases (226 with strings, 202 with capa)
+    ─────────────────────────────────────────────────────────
+    capa anti-VM rule fires                            49
+      ...with no VM check visible in its own bytes     38
+    names a VM-only registry key                        1   <- can exercise gap 4
+    identity keys only                                  1
+    checks by other means only (WMI, device, CPUID)    15
+
+**capa's anti-VM namespace is not a proxy for this, and reaching for it is how
+the last two samples were chosen.** 38 of the 49 show no VM check of any kind in
+their own strings — no registry key, no WMI class, no device path, no CPUID
+literal. `reference anti-VM strings targeting Xen` accounts for 22 of the 49 and
+20 of the 38: it is matching the substring. That is the same shape as the two
+"real signal" malware hosts that turned out to be Go runtime symbols — a rule
+that fires on a token every large binary happens to contain.
+
+**One sample qualifies, and it qualifies on its own code.**
+`ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1` (bazaar,
+case `b526eab6`). A 2.9 MB .NET RAT, Costura-packed, importing nothing but
+`mscoree!_CorExeMain`, `.text` at 7.808 entropy, 0 of 1,545 YARA rules. Its
+strings carry the check end to end:
+
+    method names      CheckVirtualBox, CheckVMWare, CheckRegistryKeys,
+                      OpenRegistryKey, IsSandboxie
+    VM-only keys      SOFTWARE\Oracle\VirtualBox Guest Additions
+                      SOFTWARE\VMware, Inc.\VMware Tools
+    identity keys     HARDWARE\DEVICEMAP\Scsi\Scsi Port 0\...\Logical Unit Id 0
+                      SYSTEM\ControlSet001\Services\Disk\Enum, SystemBiosVersion
+    compared against  VIRTUALBOX, VMWARE, vmware, virtual, innotek
+    and by WMI        SELECT * FROM Win32_ComputerSystem
+                      SELECT Description FROM Win32_VideoController
+    and it reports    "Client … was a virtual machine!"
+
+That last string is the reason to expect a *usable* run rather than a bail: the
+sample tells its operator it is virtualised. **This is the confirmation the plan
+asked for — "a sample confirmed by reading its code, not by a sandbox
+signature" — and it is also the sample being managed code**, which is where 59%
+of what static cannot see already lives.
+
+**Pre-flight, and the first item is the one that can waste the detonation.**
+
+1. **Run Procmon under a different filename.** `procmon` is in this sample's
+   own process-name list, alongside `taskmgr`, `procexp`, `processhacker` and
+   `perfmon`; a second list holds `x64dbg`, `windbg`, `dnSpy`, `wireshark`,
+   `fiddler` and `sbiedll.dll`. `start_procmon_capture` takes the executable
+   path as an argument, so a renamed copy costs no code change, and
+   `/Terminate` and `/OpenLog` work the same from it. Concretely: copy
+   `tools\Procmon64.exe` to something else on the guest and point
+   `dynamic_procmon_path` -- the GUI's Procmon field, saved in `config.json` --
+   at the copy. Do not run the network tools under their own names either.
+2. **Confirm the config in force is `dynamic_registry_reads.pmc`.** It is the
+   default and `describe_procmon_filter` reports `captures_registry_reads`, but
+   a saved `dynamic_procmon_config_path` still wins. Checked on the host today:
+   `dynamic_default.pmc` includes 16 operations and captures no registry read;
+   `dynamic_registry_reads.pmc` includes 18, adding `RegQueryValue` and
+   `RegOpenKey`.
+3. **The guest additions are installed, and nothing in this project removes
+   them.** `vm_hygiene.ps1` only *detects* a VM so it can refuse to run on a
+   real workstation; it disables updaters and telemetry and touches no
+   guest-additions key or service. `vm_artifact_reads.py` said the opposite in
+   a docstring and a test comment, both corrected today. So the VirtualBox read
+   is expected to return `SUCCESS` and the sample is expected to learn where it
+   is — which is the run we want, because it exercises `artifact_found: True`.
+4. **`git pull` on the guest**, as ever.
+
+**Pre-registered prediction, written before the run.**
+
+`collect_vm_artifact_reads` reports `collection_available: true` and at least
+two `vm_specific` hits attributed to the sample's own tree — the VirtualBox
+Guest Additions install key at `SUCCESS`, the VMware Tools install key at
+`NAME NOT FOUND` — plus `identity_surface` hits on `SystemBiosVersion` and the
+SCSI device map. `correlate_vm_check_with_silence` returns
+**`checked_then_active`**, with `sample_events_after_check` in the hundreds or
+thousands rather than near 10.
+
+If it comes back `checked_then_quiet` with a small count, **the first thing to
+rule out is our own Procmon**, not the sample's judgement: a blocklisted process
+name produces a bail that looks exactly like a decision about the hypervisor.
+
+**What this run can and cannot settle, said now rather than after it.** It can
+prove the collection path end to end — a `vm_specific` read reaching the
+detector for the first time — and it can rule `QUIET_EVENT_THRESHOLD = 10` out
+as too high if the active count lands where predicted. It **cannot calibrate
+the threshold**, because the threshold separates a bail from a pause and a
+`checked_then_active` run only bounds the active side. Calibration needs a
+sample that bails, and this corpus does not obviously hold one. Recording that
+in advance, because the temptation after a run that works is to call the
+placeholder settled.
 
 ### Traps this cost a day to find
 

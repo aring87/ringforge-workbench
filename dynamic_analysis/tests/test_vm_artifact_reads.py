@@ -225,9 +225,11 @@ class CollectionAvailabilityTests(unittest.TestCase):
 
 class ResultTests(unittest.TestCase):
     def test_a_missing_key_records_the_artifact_as_absent(self) -> None:
-        # `vm_hygiene.ps1` removes the guest additions, so a check for them
-        # should come back NAME NOT FOUND -- which is the hygiene holding, and
-        # worth reporting as such rather than as a failed read.
+        # A check for the guest additions on a machine that does not have them
+        # comes back NAME NOT FOUND, and that is an answer the sample acted on
+        # rather than a failed read. Not what this workbench's guest returns --
+        # nothing here removes the additions -- but the module has to report
+        # both directions, so both are asserted.
         result = collect_vm_artifact_reads(
             [_read(VBOX_SERVICE_KEY, result="NAME NOT FOUND", operation="RegOpenKey")],
             descendant_pids={8784},

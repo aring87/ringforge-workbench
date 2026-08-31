@@ -224,8 +224,16 @@ def _artifact_found(result: object) -> bool | None:
 
     Worth having in both directions. `SUCCESS` on `...\\Services\\VBoxGuest`
     means the sample was told it is on a VirtualBox guest; `NAME NOT FOUND`
-    means `vm_hygiene.ps1` held and the check came back clean. An
-    `ACCESS DENIED` says only that the sample asked.
+    means the artifact was not on that guest and the check came back clean.
+    An `ACCESS DENIED` says only that the sample asked.
+
+    **Nothing in this project removes those artifacts, and an earlier version
+    of this line said `vm_hygiene.ps1` did.** That script only *detects* a VM,
+    so it can refuse to run on a real workstation; it disables updaters and
+    telemetry and touches no guest-additions key or service. On this
+    workbench's own guest a check for the VirtualBox additions is therefore
+    expected to return `SUCCESS`, and a prediction of `NAME NOT FOUND` would
+    be predicting from a de-artifacting step that does not exist.
     """
     lowered = _lower(result)
     if lowered in NOT_FOUND_RESULTS:
