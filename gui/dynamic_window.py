@@ -206,14 +206,20 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
 
         project_root = Path(__file__).resolve().parents[1]
+        # `or`, not `cfg.get(key, default)`. A *cleared* field is a key that
+        # exists holding "", so `.get` returns the empty string and never
+        # reaches the default -- and an empty Procmon config means the
+        # orchestrator passes None and Procmon runs on whatever filter it had
+        # saved, which `describe_procmon_filter` reports as unreadable. Clearing
+        # the field to get the default back is the obvious operator move and it
+        # silently disabled the collection it was meant to restore.
         self.procmon_path_var = tk.StringVar(
-            value=cfg.get("dynamic_procmon_path", str(project_root / "tools" / "Procmon64.exe"))
+            value=cfg.get("dynamic_procmon_path")
+            or str(project_root / "tools" / "Procmon64.exe")
         )
         self.procmon_config_var = tk.StringVar(
-            value=cfg.get(
-                "dynamic_procmon_config_path",
-                str(project_root / "tools" / "procmon-configs" / DEFAULT_PROCMON_CONFIG_NAME),
-            )
+            value=cfg.get("dynamic_procmon_config_path")
+            or str(project_root / "tools" / "procmon-configs" / DEFAULT_PROCMON_CONFIG_NAME)
         )
 
         # --- Tier 1 telemetry -------------------------------------------------
