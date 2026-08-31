@@ -64,17 +64,31 @@ def find_sample(case: Path) -> Path | None:
     return best
 
 
-def refresh(case: Path) -> dict[str, Any]:
-    """Re-run strings and IOC extraction for one case. Never raises."""
+def refresh(case: Path, skip_strings: bool = False) -> dict[str, Any]:
+    """Re-run strings and IOC extraction for one case. Never raises.
+
+    `skip_strings` re-runs only the extraction, against the dump already in the
+    case. That is what a change to `ioc_extract.py` needs -- the strings are not
+    what moved -- and it means a corpus whose dumps were produced elsewhere can
+    be re-extracted on a machine with no `strings` binary at all, which is the
+    situation on this host.
+    """
     from static_triage_engine.steps import step_iocs, step_strings
 
     started = time.time()
     sample = find_sample(case)
-    if sample is None:
+    if sample is None and not skip_strings:
         return {"case": case.name, "ok": False, "reason": "no sample in case dir"}
 
     try:
-        strings_result = step_strings(sample, case)
+        if skip_strings:
+            dump = case / "strings.txt"
+            if not dump.is_file() or dump.stat().st_size == 0:
+                return {"case": case.name, "ok": False,
+                        "reason": "no strings.txt to re-extract from"}
+            strings_result = {"returncode": 0, "string_count": 0}
+        else:
+            strings_result = step_strings(sample, case)
         if int(strings_result.get("returncode", 0) or 0) != 0:
             return {"case": case.name, "ok": False,
                     "reason": f"strings failed: {strings_result.get('stderr','')[:80]}"}
@@ -103,6 +117,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="stop after this many, for a quick look")
     parser.add_argument("--out", default="",
                         help="write the per-case detail here")
+    parser.add_argument("--skip-strings", action="store_true",
+                        help="re-extract IOCs from the dump already in each "
+                             "case; needs no `strings` binary")
     args = parser.parse_args(argv)
 
     root = Path(args.cases)
@@ -118,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict[str, Any]] = []
     started = time.time()
     for index, case in enumerate(cases, 1):
-        results.append(refresh(case))
+        results.append(refresh(case, skip_strings=args.skip_strings))
         if index % 25 == 0 or index == len(cases):
             ok = sum(1 for r in results if r.get("ok"))
             found = sum(1 for r in results if r.get("observables"))

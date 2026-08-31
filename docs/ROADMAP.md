@@ -363,7 +363,7 @@ replaces is preserved in the git history.
     dangerous_capability ★         0.7%        2.4%       25.0%       15.4%
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     known_malware_signature        0.7%        0.3%       16.5%       12.0%
-    embedded_network_indicators †  9.9%       77.0%       71.7%       67.0%
+    embedded_network_indicators †  8.6%       77.0%       71.7%       67.0%
     deceptive_file_identity ‡      0.0%        0.0%        8.7%        7.0%
     high_entropy_sections ¶        0.3%        0.0%       35.4%       28.0%
     obfuscated_managed_code ‖      0.0%        0.0%        4.7%        4.0%
@@ -987,8 +987,24 @@ it could not: the call site lowercased the match first. Now it gets the unfolded
 string, and a name with three or more labels and two or more capitalised ones is
 code. Two rather than one, so `Discord.com` in a message is still a host.
 
-It drops 18 distinct strings across the corpora and moves the firing rate by
-1.0 point on System32 and not at all elsewhere. Correct, and small.
+It drops 18 distinct strings across the corpora and moves the firing rate on
+System32 from 9.9% to 8.6%, and not at all elsewhere. Correct, and small.
+
+**All five corpora were re-extracted against it and the question was re-asked
+on clean data. The answer did not change.** Prevalence exclusion goes from 2.5x
+to **2.7x** -- still far below the 4.2x at which `persistence` was rejected --
+so `embedded_network_indicators` stays in `CONTEXT_ONLY_CATEGORIES`, now for a
+measured reason rather than a suspected one.
+
+That is the honest end of this item. The noise the category drowns in is not
+mostly malformed extraction: it is `schemas.microsoft.com` and
+`ocsp.digicert.com`, real hosts named in XML namespaces and certificate chains,
+which a parser has no business rejecting. **Containing a hostname is a property
+of software**, and no amount of cleaning changes that.
+
+`scripts/refresh_iocs.py --skip-strings` re-extracts from the dump already in
+each case, which is what a change to `ioc_extract.py` needs and what let this run
+on a host with no `strings` binary at all.
 
 **A correction to what this section said an hour earlier.** Two of the four
 "real signal" hosts named below were Go runtime symbols: `reflect.Value.Int`

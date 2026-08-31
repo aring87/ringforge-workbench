@@ -303,7 +303,7 @@ How often each static category fires:
     invalid_signature              0.0%        0.0%       15.7%        6.0%
     deceptive_file_identity        0.0%        0.0%        8.7%        7.0%
     obfuscated_managed_code        0.0%        0.0%        4.7%        4.0%
-    embedded_network_indicators    9.9%       77.0%       71.7%       67.0%
+    embedded_network_indicators    8.6%       77.0%       71.7%       67.0%
 
     * thresholds re-fitted when .NET applications entered the benign
       corpus -- see below
