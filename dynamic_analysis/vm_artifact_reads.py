@@ -21,6 +21,14 @@ service read SMBIOS. So hits are attributed by lineage, and the background count
 is reported rather than dropped, because "Windows read it 400 times and the
 sample never did" is the answer, not noise to hide.
 
+**Measured 31 Aug, and it is larger than that sentence guessed: 448 VM-artifact
+reads on one ordinary boot, every one of them background.** `services.exe`
+enumerates every VBox, vmbus and vmic service key; `MpDefenderCoreService.exe`
+and `WMIADAP.EXE` probe ``\\Performance`` under each of them; Explorer, winlogon
+and three PowerShell instances hit ``VBoxSF\\NetworkProvider``. So `vm_specific`
+is **not self-sufficient** -- lineage is doing all of the work, which is exactly
+what a logon-triggered payload takes away, since it has no parent inside the run.
+
 **Markers are literals matched with `in`, so they are tested against real
 paths.** 46 markers in this package were once written regex-style and matched
 nothing for the life of the project. The tests here assert against full Procmon
@@ -154,6 +162,15 @@ VM_ARTIFACT_MARKERS: tuple[tuple[str, str, str, str], ...] = (
 #: The marker on the driver's service key stays, because a sample reading it *is*
 #: a VM check. Only the subkey Windows enumerates is set aside, and the count is
 #: reported so the narrowing stays visible.
+#:
+#: **This list is known to be too narrow, and widening it is deliberately not
+#: done yet.** The 31 Aug boot log says the real background is service-config
+#: values -- ``\Start``, ``\Type``, ``\Tag``, ``\Security``, ``\DeleteFlag``,
+#: ``\DependOn*``, ``\ObjectName`` -- and ``\Performance`` subkeys, which are
+#: SCM and WMI housekeeping and never a VM check; a VM check reads key
+#: *existence* or `Version`/`InstallDir`. Adding them can only ever hide a hit,
+#: and no run has yet produced a positive to measure that cost against. It
+#: waits for one.
 ROUTINE_SUBPATH_MARKERS = (
     "\\vboxsf\\networkprovider",
 )

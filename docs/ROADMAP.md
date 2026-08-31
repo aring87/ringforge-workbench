@@ -376,19 +376,21 @@ Three categories shipped, each measured before it shipped. `dangerous_capability
 re-fitted from 3/5 to 4/6 once benign .NET applications entered the corpus.
 **No Evidence on malware went 56 to 19.**
 
-**Two items are open, and neither is blocked on a decision.**
+**One item is open. Gap 4 closed on 31 Aug, by measurement.**
 
-1. **Re-observe `ce0d08be...` across a logon.** The 31 Aug detonation ran, and
-   the collection path is proven -- 171,728 registry reads captured, markers
-   matching real data, Procmon unspotted under a renamed binary. It returned
-   `no_vm_check` because the sample installed an **`ONLOGON`** scheduled task
-   and quit: the run observed the installer, not the payload. The experiment
-   left is to log off and back on with a fresh capture running. See *Item 1 -
-   the run, and what it actually measured*. The wider version of the same
-   problem -- nothing in this pipeline observes what a persisted payload does --
-   is recorded there too.
-2. **True positives for `extension`, `spec`, `api`.** OWASP crAPI and VAmPI are
+1. **True positives for `extension`, `spec`, `api`.** OWASP crAPI and VAmPI are
    downloadable; delisted malicious extensions are not.
+
+**Gap 4's detector is declined with a reason, and exit criterion 4 is
+satisfied.** Two detonations of `ce0d08be...` -- the only 1 of 226 malware
+samples naming a VM-only registry key in its own bytes -- watched the installer
+stage and then, across an `ONLOGON` task, the payload stage. The payload ran
+resident and elevated for an hour and made **967 registry reads, none of them a
+VM artifact**, on a capture that demonstrably saw it. Against that, Windows
+itself makes ~450 `vm_specific` reads per ordinary boot. The surface is rare in
+the field and swamped by the OS where it appears. See *Item 1 - the logon run*;
+the collection path is proven and the one untested gate, a completed C2
+handshake on port 7372, is named there rather than left to be re-derived.
 
 **Answered — do not reopen without new data.** Each of these was measured and
 the answer written next to the code:
@@ -1305,6 +1307,94 @@ sample the reason is the observation model rather than any individual detector.
 2, which was wrong -- but a count that cannot say *which process* is a gap
 whatever the hypothesis, and returning the rows is what let this run be settled
 from disk instead of by a second detonation.
+
+### Item 1 — the logon run, and gap 4 declined with a reason — 31 Aug
+
+**The payload stage was observed in full, and it does not check the registry.**
+The ONLOGON task fired at 16:22:07, the copy ran resident for over an hour
+elevated, and Procmon boot logging captured all of it. The sample's own process
+made **967 registry reads and none named a VM artifact**:
+
+    PID 3760, C:\Users\adam\AppData\Roaming\PlatformRuntime\ce0d08be....exe
+    ─────────────────────────────────────────────────────────────────────
+    RegOpenKey        509        Load Image         62
+    RegQueryValue     458        CreateFile        396
+    RegSetValue         8        Process Create      1
+    VM artifacts        0
+
+The last row is the result and the rows above it are what make it one. A zero
+from a process that produced 1,438 events, loaded 62 images and started under
+the capture is a statement about the sample; a zero from a process the capture
+never saw would have been a statement about the pipeline. That control is the
+only reason this section can be written.
+
+**Four hypotheses, all killed by measurement, across two runs.** The sample has
+`CheckVirtualBox`, `CheckVMWare` and both guest-tools install keys in its bytes,
+and never executes them. It did not die on startup; the copy did not fall
+outside the lineage; it did not short-circuit on WMI; and it is not simply the
+installer stage — that was the ONLOGON finding, and this run watched the stage
+that finding predicted.
+
+**What the logon run cost and what it produced.** Boot logging captures with no
+capture-time filter: 4.2 GB of `.pmb` in 65 minutes, a 1.67 GB `.pml`, and a
+703 MB CSV *with the registry-read filter applied at export*. That is 65 MB per
+minute, and `parse_procmon_csv` cannot hold it -- `scripts/vm_reads_from_csv.py`
+streams instead. **Boot logging is how you prove a payload stage exists; it is
+not the instrument for watching one.** A filtered capture started at logon by a
+Run key or a task of our own would cost a fraction of it.
+
+**A second result, and it may matter more than the first: 448 VM-artifact reads
+on one ordinary boot, every one of them background.**
+
+    services.exe                enumerates every VBoxGuest, VBoxSF, VBoxService,
+                                vmbus and vmicvss key -- Start, Type, ImagePath,
+                                Tag, DependOnGroup, dozens each
+    MpDefenderCoreService.exe   probes \Performance under every VM service
+    WMIADAP.EXE                 the same
+    Explorer, winlogon,         VBoxSF\NetworkProvider
+    powershell x3
+    VBoxService, VBoxTray       the Guest Additions install key, naturally
+
+`ROUTINE_SUBPATH_MARKERS` already sets aside `\vboxsf\networkprovider` after a
+run where PowerShell produced four such hits. This measures how far short of the
+real background that goes. **`vm_specific` is not self-sufficient: it carries a
+background of roughly 450 reads per boot, and lineage is doing all of the
+work** -- which is exactly the thing a logon-triggered payload takes away.
+
+The widening this justifies is specific and is **recorded, not shipped**:
+service-config values (`\Start`, `\Type`, `\Tag`, `\Security`, `\DeleteFlag`,
+`\DependOn*`, `\ObjectName`) and `\Performance` subkeys are SCM and WMI
+housekeeping and are never a VM check, which reads key *existence* or
+`Version`/`InstallDir`. Widening an exclusion list can only ever hide a hit, and
+there is no run with a known positive to measure the cost against. It waits for
+one.
+
+**Gap 4's active detector is declined, and exit criterion 4 is satisfied.** Not
+unbuilt: `correlate_vm_check_with_silence` exists, carries 14 passing tests, is
+wired into `orchestrator.run`, renders as a `card-alert`, and its collection
+path is now proven end to end -- 171,728 reads on the first run, 3.39 million on
+the second. It is declined because the input does not occur, and both halves of
+that are measured:
+
+    of 226 malware samples with strings, naming a VM-only registry key      1
+    of 3 samples detonated for this, making a vm_specific read              0
+    background vm_specific reads by Windows itself, per ordinary boot     ~450
+
+The surface is rare in the field, and where it does appear it is swamped by the
+operating system unless lineage holds -- and the payload class most likely to
+use it is the class lineage cannot attribute.
+
+**One thread is left open rather than closed, and it is named so nobody
+re-derives it.** The check may sit behind a *completed* C2 handshake: the
+result string `"Client ... was a virtual machine!"` is operator-facing panel
+text, so the check plausibly runs while building a check-in. This run got
+closer to testing that than any before it -- FakeNet resolved the C2, a hand-run
+listener accepted the connection on **port 7372** -- and it stopped there,
+because the protocol is **server-speaks-first**: the client connected, sent
+nothing, waited, and timed out. Answering it means reversing enough of the
+protocol to send a plausible server hello. That is a project, and it is out of
+proportion to one context-only detector. If it is ever done, this is the sample
+and 7372 is the port.
 
 ### Traps this cost a day to find
 
