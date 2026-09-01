@@ -20,6 +20,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dynamic_analysis.jsonrpc_responder import (
     OUTCOME_CONNECTED_SILENT,
@@ -388,6 +389,18 @@ class FindingTheInstallTheConfigBelongsTo(unittest.TestCase):
     errors. `--fakenet-config` is routinely pointed at `configs/default.ini`
     inside the install, so the walk up from the config is the path that
     actually gets used.
+
+    These passed on the host and failed in the guest, 01 Sep, and the
+    difference was the environment rather than the code. `fakenet_root_from`
+    tries the *located binary* before the config's own ancestors, deliberately:
+    the question it answers is which install will serve this config, and that
+    is whichever FakeNet runs. The host has no FakeNet, so the walk-up won by
+    default and the assertions passed for a reason unrelated to what they
+    claimed to test. The guest has one at `tools\\fakenet`, so it answered
+    first and correctly, and the tests called it a failure.
+
+    `find_fakenet` is patched now. A test whose result depends on what is
+    installed on the machine running it is not testing the function.
     """
 
     def setUp(self) -> None:
@@ -398,21 +411,37 @@ class FindingTheInstallTheConfigBelongsTo(unittest.TestCase):
         self.config.write_text("[Diverter]\n", encoding="ascii")
 
     def test_it_walks_up_from_a_config_inside_the_install(self) -> None:
-        self.assertEqual(fakenet_root_from(self.config), self.root)
+        with mock.patch("scripts.make_fakenet_config.find_fakenet", return_value=None):
+            self.assertEqual(fakenet_root_from(self.config), self.root)
 
     def test_a_config_in_the_install_root_is_found_too(self) -> None:
         loose = self.root / "default.ini"
         loose.write_text("[Diverter]\n", encoding="ascii")
 
-        self.assertEqual(fakenet_root_from(loose), self.root)
+        with mock.patch("scripts.make_fakenet_config.find_fakenet", return_value=None):
+            self.assertEqual(fakenet_root_from(loose), self.root)
 
     def test_a_config_nowhere_near_an_install_gives_none(self) -> None:
         stray = Path(tempfile.mkdtemp()) / "default.ini"
         stray.write_text("[Diverter]\n", encoding="ascii")
 
-        # Only true when no FakeNet is installed on the machine running the
-        # tests; when one is, the located binary answers first and that is the
-        # right answer, so this asserts the pair rather than the None.
-        found = fakenet_root_from(stray)
-        self.assertTrue(found is None or (found / "listeners" / "ssl_utils").is_dir())
+        # With the locator pinned, this is an assertion about the walk-up
+        # rather than about the bench. It used to accept `None` *or* a real
+        # install, which is what an untestable environment dependency looks
+        # like once it has been worked around instead of removed.
+        with mock.patch("scripts.make_fakenet_config.find_fakenet", return_value=None):
+            self.assertIsNone(fakenet_root_from(stray))
+
+    def test_the_located_binary_answers_before_the_config_s_own_install(self) -> None:
+        """The precedence the docstring claims, which nothing pinned.
+
+        On a host with no FakeNet this branch never ran, so the ordering was
+        asserted only in prose -- and prose is what the guest disagreed with.
+        """
+        other = Path(tempfile.mkdtemp()) / "fakenet"
+        (other / "listeners" / "ssl_utils").mkdir(parents=True)
+
+        with mock.patch("scripts.make_fakenet_config.find_fakenet",
+                        return_value=other / "fakenet.exe"):
+            self.assertEqual(fakenet_root_from(self.config), other)
 
