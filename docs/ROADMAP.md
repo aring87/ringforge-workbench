@@ -1576,19 +1576,27 @@ registry-read or file-read event at any configuration, so an absence there is
 not evidence about reads, and that is still exactly what the Procmon capture is
 for.
 
-**What is unproven, listed so it is not assumed a second time.**
+**What was unproven, and what the proving run answered — 01 Sep.**
 
-1. **Procmon has never been watched capturing from session 0.** Both modals
-   that blocked the first attempt are cleared before launch now, but "the
-   modals were the only problem" is a hypothesis of precisely the shape of the
-   `ONSTART` claim. `vm_gated_logon.ps1 -ProveChannel` on the clean baseline
-   answers it without a sample in the machine.
-2. **VBoxControl setting a guest property from session 0** has not been seen
-   working here either. Same run answers it.
-3. **`keyboardputstring` at a Windows 11 sign-in screen** is the least certain
-   piece: layout, the lock-screen curtain, and characters the scancode path
-   mishandles. Same run answers it, and a failure is visible in the VM window
-   rather than silent.
+1. **Procmon captures from session 0. PROVEN.** The task fired at 146 s, the
+   backing file was confirmed growing at 152 s, the 120 s window ran out, and
+   60.4 MB of backing file exported to a 26 MB CSV -- driver, capture and
+   export, all as SYSTEM with no window station. "The modals were the only
+   problem" was right. The filtered capture costs **~29 MB/min** against the
+   65 MB/min that disqualified unfiltered boot logging: a 10-minute window is
+   ~290 MB.
+2. **VBoxControl reaches the host from session 0. PROVEN.** The property
+   arrived; the host saw it 166 s after issuing the start.
+3. **`keyboardputstring` at a Windows 11 sign-in screen. STILL UNTESTED** --
+   `-ProveChannel` deliberately types nothing. Layout, the lock-screen curtain
+   and awkward characters could each defeat it, and a failure is visible in the
+   VM window rather than silent. It is the last unknown in the gated path.
+
+**And the run measured the trigger against itself.** `ONSTART` fired at 146 s
+on this boot and at 231 s on 31 Aug: **85 seconds of spread between two boots
+of the same machine, with no change in between**. That is the whole argument
+for the gate in one number. A boot-start service would have moved the mean and
+left the variance, and the variance is what loses a race.
 
 If session 0 turns out to be a wall, the gate still holds. A second local
 account puts Procmon in an interactive operator session with a desktop, while

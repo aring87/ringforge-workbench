@@ -42,14 +42,27 @@ The claim that replaces "ONSTART runs early" is checkable after every run:
 `sysmon_since_boot.py`. The second must be the larger. If it is not, the run
 says nothing about the payload's first seconds whatever it recorded.
 
-**Still unproven, and not to be assumed twice: Procmon has never been watched
-capturing from session 0.** Both modals that blocked the first attempt are
-cleared before launch now, but "the modals were the only problem" is a
-hypothesis of exactly the shape that cost the last run. Prove it on the clean
-baseline with `vm_gated_logon.ps1 -ProveChannel` before arming anything. If
-session 0 is a wall, the gate still holds -- a second local account lets
-Procmon run interactively in an operator session while the target user's logon,
-and only that logon, starts the payload.
+**Procmon does capture from session 0. Measured 01 Sep on the clean baseline**,
+with `vm_gated_logon.ps1 -ProveChannel`:
+
+    146 s   the ONSTART task fired
+    152 s   the backing file was confirmed growing, and the host was signalled
+            120 s window ran out; 60.4 MB backing, 26 MB CSV exported
+
+So "the modals were the only problem" was right, and the driver, the capture and
+the export all work as SYSTEM with no window station. The filtered capture costs
+**~29 MB/min** against the 65 MB/min that made unfiltered boot logging unusable
+as a collector -- affordable, and not free.
+
+The same run measured the trigger against itself: `ONSTART` fired at 146 s here
+and at 231 s on 31 Aug. **An 85-second spread between two boots of the same
+machine** is why that margin cannot be trusted, and why the gate exists rather
+than a better trigger.
+
+What remains untested is the last step, `keyboardputstring` at the sign-in
+screen: keyboard layout, the lock-screen curtain, and characters the scancode
+path may mishandle. A failure there is visible in the VM window rather than
+silent, and the capture is already running when it happens.
 
 **Procmon asks questions nobody in session 0 can answer.** Two modals blocked
 the first run, and `/Quiet` suppresses neither: a leftover `%WINDIR%\\Procmon.pmb`
@@ -241,14 +254,12 @@ def check_blocking_prompts(backing_file: str | Path, boot_log: Path = BOOT_LOG) 
 # be checked: the payload's start minus the capture's ready, measured on every
 # run, positive by construction or the run is void.
 #
-# **What is still unproven, and must not be assumed a second time.** Nobody has
-# yet seen Procmon capture successfully from session 0. The first attempt died
-# on two modals, both of which are now cleared before launch -- but "the modals
-# were the only problem" is a hypothesis, and it is exactly the shape of the
-# `ONSTART` claim that cost the last run. Prove it on the clean baseline before
-# arming anything. If session 0 turns out to be the wall, the gate still holds:
-# a second local account lets Procmon run interactively in an operator session
-# while the target user's logon -- and only that logon -- fires the payload.
+# **Proven on the clean baseline, 01 Sep.** The task fired at 146 s, the backing
+# file was confirmed at 152 s, and the 120 s window completed with 60.4 MB of
+# backing file and a 26 MB CSV exported -- all as SYSTEM in session 0, with the
+# modals cleared beforehand. `VBoxControl` reached the host from there too.
+# What is left untested is `keyboardputstring` at the sign-in screen, and a
+# failure there is visible in the VM window rather than silent.
 
 #: The host reads this to learn that the capture is up. A guest property rather
 #: than a file: it works from session 0, needs no shared folder mounted in a

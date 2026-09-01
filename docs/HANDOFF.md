@@ -160,15 +160,21 @@ than assumed, which is the whole point of the change:
 
 The second must be larger. If it is not, the run is void rather than negative.
 
-**Three things are unproven and are not to be assumed a second time.** Nobody
-has watched Procmon capture from session 0 -- the modals are cleared now, but
-"the modals were the only problem" is the same shape of claim as "`ONSTART`
-runs early", which is what cost the last run. Nor has VBoxControl been seen
-setting a guest property from session 0, nor `keyboardputstring` been tried at
-a Windows 11 sign-in screen. One run on the clean baseline answers all three
-and risks nothing. If session 0 is a wall, the gate still holds: a second local
-account puts Procmon in an interactive operator session while only the target
-user's logon starts the payload.
+**Two of the three unproven pieces are now measured, on the clean baseline.**
+`-ProveChannel`, 01 Sep: the `ONSTART` task fired at **146 s**, the backing file
+was confirmed at **152 s**, the 120 s window completed, and 60.4 MB of backing
+file exported to a 26 MB CSV -- **Procmon does capture from session 0**, and
+`VBoxControl` does reach the host from there. The filtered capture costs
+**~29 MB/min** against boot logging's 65.
+
+The same pair of runs measured the trigger against itself: `ONSTART` at 146 s
+here, 231 s on 31 Aug. **85 seconds of spread between two boots of one machine**
+is the reason the gate exists rather than a better trigger.
+
+**What is left untested is the typing** -- `keyboardputstring` at a Windows 11
+sign-in screen, where layout, the lock-screen curtain and awkward characters
+could each defeat it. A failure there is visible in the VM window rather than
+silent, and the capture is already running when it happens.
 
 Read, in `docs/ROADMAP.md`:
 
