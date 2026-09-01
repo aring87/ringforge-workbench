@@ -1669,6 +1669,82 @@ concrete target -- 17-second connection attempts that no current collector
 records -- and a detection idea that needs no traffic at all: a single process
 accumulating bound sockets monotonically is visible without seeing one packet.
 
+### Item 1 — the gated capture ran, and the RAT has a webcam and a microphone — 01 Sep
+
+**The persisted stage was captured by a collector that was already recording
+when it started.** Not inferred from its installer, not reconstructed from a
+boot log: watched. That is the thing this whole increment was for.
+
+    17:31:02   boot
+    17:34:03   capture ready, backing file confirmed, host signalled   (181 s)
+    17:37:28   ONLOGON payload started, PID 5432                       (+205 s)
+    17:39:31   payload's last recorded event
+    17:44:03   window closed -- 790 MB pml, 336 MB csv
+
+**The margin is measured rather than hoped for**, because the logon could not
+happen until it was allowed to. `AutoAdminLogon` at 0 meant no logon session
+existed; the sample's `ONLOGON` task had nothing to trigger on until a human
+signed in, three minutes after the capture confirmed itself.
+
+**`ONSTART` has now fired at 146, 181, 231 and 313 seconds after boot on one
+machine.** 167 seconds of spread, with nothing changed between runs. No trigger
+survives that against a payload up 2 seconds after a logon, and no boot-start
+service would have -- it moves the mean and leaves the variance.
+
+**1,341 payload events, against 1,438 from the 31 Aug boot log for the same
+stage.** Two unrelated instruments, close agreement: 459 `RegOpenKey`, 418
+`RegQueryValue`, 393 `CreateFile`, 60 `Load Image`, 8 `RegSetValue`, 1 process
+create.
+
+**Costura.Fody, and it names the capabilities.** The payload unpacks an embedded
+dependency set to `%TEMP%\Costura\43C0B7C2D694D39E487F61CFD3964734\`:
+
+    aforge.video.directshow.dll   webcam capture
+    naudio.* (eight assemblies)   audio capture, WASAPI and WinMM
+    newtonsoft.json.dll           a JSON-framed protocol, most likely the C2's
+    stuff.dll                     12 KB, the payload's own, unanalysed
+
+**None of this is in the executable's imports.** Costura carries dependencies as
+compressed resources and unpacks them at runtime, so static analysis of the
+sample could not have shown it and neither earlier detonation watched the stage
+that does it. All 21 files are on `G:\ringforge-artifacts\ce0d08be-costura-01sep`
+in a password-protected zip, with SHA-256s.
+
+**Self-healing persistence, confirmed with a command line.** At 17:39:28 the
+resident copy ran `schtasks /create /tn "ce0d08be..." /sc ONLOGON` -- re-creating
+the task that had just launched it. Deleting that task buys one boot.
+
+**Nine registry writes, every one `Internet Settings\ZoneMap`** -- `ProxyBypass`,
+`IntranetName`, `UNCAsIntranet` to 1 and `AutoDetect` to 0, written twice at
+17:39:20. That is WinINET proxy resolution initialising, which .NET does on its
+first HTTP request, and it points at HTTP rather than only the raw `7372` socket
+static analysis found.
+
+### The manifest asserted a capability the capture did not have — 01 Sep
+
+**Not one TCP event, for any process, in 600 seconds.** The filter's include
+rules list `TCP Connect`, `TCP Send`, `UDP Send` and the rest, and
+`describe_procmon_filter` reports them under `procmon_filter.operations` as
+though they describe the capture. They do not. **Include rules only filter
+events Procmon generates**, and the network event class was toggled off in the
+`.pmc`, so no network event existed to be filtered or reported.
+
+`captures_registry_reads` has exactly the same weakness. It was correct on this
+run because the registry class happened to be enabled -- correct by luck, and
+the pipeline relies on that flag to decide whether a zero means anything.
+
+**Two instruments, two unrelated blind spots, identical silence.** The same
+payload was measured this morning making a connection attempt every 17 seconds
+-- 127 leaked bound sockets, one per attempt. Sysmon missed them because its
+configuration excludes loopback and an incomplete connect raises no Event 3.
+Procmon missed them because its network class was off. Neither absence was
+evidence, and both would have read as one.
+
+**To fix:** enable the network class in the `.pmc` and make
+`describe_procmon_filter` report class enablement rather than inferring coverage
+from include rules -- or, where it cannot see the classes, say so instead of
+listing operations that imply coverage.
+
 ### Traps this cost a day to find
 
 Each of these produced a plausible number rather than an error, which is why
