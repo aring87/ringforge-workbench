@@ -19,10 +19,11 @@ disabled/unavailable status dict so a run can proceed without it.
 
 from __future__ import annotations
 
+import ctypes
 import re
 import subprocess
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -332,6 +333,12 @@ def _query(
         stats["stdout_bytes"] = len(raw)
         stats["stderr"] = (result.stderr or "").strip()[:300]
         stats["parsed_events"] = len(events)
+        # Hitting the cap on a newest-first read means the *oldest* matches
+        # were dropped. For a run window that has just ended this is harmless;
+        # for a boot window it silently removes the payload's first seconds,
+        # so the caller is told rather than left to infer it from a round
+        # number.
+        stats["capped"] = len(events) >= int(max_events)
 
     return events
 
@@ -373,7 +380,7 @@ def query_events(
     for name, xpath, count in strategies:
         record: dict[str, Any] = {
             "strategy": name, "events": 0, "error": "",
-            "stdout_bytes": 0, "parsed_events": 0, "stderr": "",
+            "stdout_bytes": 0, "parsed_events": 0, "stderr": "", "capped": False,
         }
         try:
             events = _query(xpath, count, reverse=True, stats=record)
@@ -961,3 +968,352 @@ def _diagnose_empty(
         "output for this run's window, including an unfiltered query. Verify "
         "with: wevtutil qe Microsoft-Windows-Sysmon/Operational /c:3 /f:RenderedXml"
     )
+
+
+# ---------------------------------------------------------------------------
+# The boot window
+# ---------------------------------------------------------------------------
+#
+# A payload behind an ONLOGON task runs before anything in this pipeline is
+# started, so every collector that opens at run start is looking at the wrong
+# window. `logon_capture.py` answers that for Procmon by arming a capture ahead
+# of the boot, and the trigger for it is still being built.
+#
+# Sysmon needs none of that. Its driver is boot-start and its service
+# auto-start, so it was already recording before the logon that launched the
+# payload -- on every run this project has ever done. The events are sitting in
+# the channel; nothing here starts a collector, it reads one that never
+# stopped. What Sysmon cannot give is reads: there is no registry-read or
+# file-read event in any configuration, so an absence here is not evidence
+# about reads, and the manifest says so rather than leaving a reader to assume.
+
+
+#: Beyond this, the two boot-time sources are treated as disagreeing rather
+#: than as clock granularity. Both derive from the same tick on a machine that
+#: booted cold; they part company after a save/restore, which a snapshot-driven
+#: bench does routinely.
+BOOT_TIME_TOLERANCE_SECONDS = 120
+
+
+def _boot_time_from_ticks() -> Optional[datetime]:
+    """Boot time as ``now - GetTickCount64()``.
+
+    Cheap and always available, and it *excludes time spent suspended*. A guest
+    restored from a saved state therefore reports an uptime shorter than the
+    wall-clock window, which places the boot too late and would crop the
+    beginning of the window -- the part the payload starts in.
+    """
+    try:
+        uptime_seconds = int(ctypes.windll.kernel32.GetTickCount64() // 1000)
+    except (AttributeError, OSError):
+        return None
+    return datetime.now(timezone.utc) - timedelta(seconds=uptime_seconds)
+
+
+def _boot_time_from_cim() -> Optional[datetime]:
+    """Boot time as Windows records it, via ``Win32_OperatingSystem``."""
+    command = (
+        "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime."
+        "ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.000Z')"
+    )
+    try:
+        result = _run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            timeout=60,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_event_time((result.stdout or "").strip())
+
+
+def _format_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+#: `None` is a meaningful answer from a boot-time source -- it did not answer --
+#: so it cannot double as "not supplied". Injecting `None` for one source used
+#: to fall through to querying the live machine, which made the
+#: one-source-only case untestable and, worse, silently cross-checked against
+#: whatever the bench happened to say.
+_UNSET = object()
+
+
+def resolve_boot_time(
+    ticks: Any = _UNSET,
+    cim: Any = _UNSET,
+) -> dict[str, Any]:
+    """When this boot began, from two sources that can disagree.
+
+    Returns the window start in the form `query_events` expects, plus both
+    candidates and the gap between them, because a single number here cannot be
+    checked by the reader and this one decides what the collection can see.
+
+    **The earlier candidate wins.** The two failure directions are not
+    symmetrical: a boot time that is too early collects extra background, which
+    lineage then attributes away, while a boot time that is too late drops the
+    payload's first seconds and reports the remainder as though it were the
+    whole story. One costs noise, the other costs the finding.
+
+    Both sources are injectable so the disagreement can be tested; neither is
+    reachable off Windows.
+    """
+    if ticks is _UNSET:
+        ticks = _boot_time_from_ticks()
+    if cim is _UNSET:
+        cim = _boot_time_from_cim()
+
+    candidates = [value for value in (ticks, cim) if value is not None]
+    result: dict[str, Any] = {
+        "since_utc": "",
+        "source": "",
+        "from_ticks": _format_utc(ticks) if ticks else "",
+        "from_cim": _format_utc(cim) if cim else "",
+        "disagreement_seconds": 0,
+        "uptime_seconds": 0,
+        "note": "",
+    }
+
+    if not candidates:
+        result["note"] = (
+            "Neither GetTickCount64 nor Win32_OperatingSystem could be read, so "
+            "the boot time is unknown and a boot window cannot be bounded."
+        )
+        return result
+
+    chosen = min(candidates)
+    result["since_utc"] = _format_utc(chosen)
+    result["uptime_seconds"] = int(
+        (datetime.now(timezone.utc) - chosen).total_seconds()
+    )
+
+    if ticks is not None and cim is not None:
+        gap = int(abs((ticks - cim).total_seconds()))
+        result["disagreement_seconds"] = gap
+        result["source"] = "ticks" if chosen is ticks else "cim"
+        if gap > BOOT_TIME_TOLERANCE_SECONDS:
+            result["note"] = (
+                f"GetTickCount64 and Win32_OperatingSystem disagree by {gap}s "
+                "about when this boot began. The earlier of the two is used, so "
+                "the window cannot be short; a gap this size usually means the "
+                "guest was restored from a saved state rather than booted."
+            )
+    else:
+        result["source"] = "ticks" if ticks is not None else "cim"
+        result["note"] = (
+            "Only one boot-time source answered, so nothing cross-checks it."
+        )
+
+    return result
+
+
+def _as_pid(value: object) -> Optional[int]:
+    try:
+        pid = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return pid or None
+
+
+def descendants_from_sysmon(
+    events: list[dict[str, Any]],
+    image_name: str,
+) -> Optional[set[int]]:
+    """The payload's process tree, built from Sysmon's own process creates.
+
+    A logon-triggered payload has no launched PID -- Task Scheduler started it,
+    and `svchost.exe` is its parent -- so the only handle on it is its image
+    name, exactly as `_mark_sample_lineage` handles a dropper relaunching
+    itself. Seed on every process running that image, then walk
+    ``ParentProcessId`` to a fixed point.
+
+    ``None`` means the image never appears in the window, and that is a result
+    rather than an empty one: either the persistence did not fire this boot, or
+    Sysmon was not recording when it did. Returning an empty set instead would
+    read as "the payload ran and did nothing", which is the confusion this
+    package exists to prevent.
+
+    PIDs are reused, and within a single boot window that is a real if small
+    risk. It is the same exposure the Procmon lineage carries, accepted for the
+    same reason.
+    """
+    target = _image_basename(image_name)
+    if not target:
+        return None
+
+    creates = [event for event in events if event.get("event_id") == 1]
+
+    pids: set[int] = set()
+    for event in creates:
+        data = event.get("data", {})
+        pid = _as_pid(data.get("ProcessId"))
+        if pid and _image_basename(data.get("Image")) == target:
+            pids.add(pid)
+
+    if not pids:
+        return None
+
+    # Fixed point, for the reason the Procmon walk needs one: a grandchild can
+    # be recorded before the child that connects it.
+    changed = True
+    while changed:
+        changed = False
+        for event in creates:
+            data = event.get("data", {})
+            pid = _as_pid(data.get("ProcessId"))
+            parent = _as_pid(data.get("ParentProcessId"))
+            if pid and pid not in pids and parent in pids:
+                pids.add(pid)
+                changed = True
+
+    return pids
+
+
+def payload_appearance(
+    events: list[dict[str, Any]],
+    image_name: str,
+    boot_since_utc: str,
+) -> dict[str, Any]:
+    """When the persisted payload started, measured rather than assumed.
+
+    This is the number the whole logon-capture problem turns on. `ONSTART` was
+    chosen over `ONLOGON` on an *assumption* about ordering that nobody had
+    measured, and it was wrong by nearly four minutes. Every boot window read
+    here reports the payload's own offset from boot, so the margin a capture
+    has to beat is on record before the capture is built.
+    """
+    target = _image_basename(image_name)
+    result: dict[str, Any] = {
+        "image": target,
+        "seen": False,
+        "first_seen": "",
+        "seconds_after_boot": None,
+        "process_creates": 0,
+        "pids": [],
+    }
+    if not target:
+        return result
+
+    boot = _parse_event_time(boot_since_utc)
+    first: Optional[datetime] = None
+
+    for event in events:
+        if event.get("event_id") != 1:
+            continue
+        data = event.get("data", {})
+        if _image_basename(data.get("Image")) != target:
+            continue
+        result["process_creates"] += 1
+        pid = _as_pid(data.get("ProcessId"))
+        if pid:
+            result["pids"].append(pid)
+        stamp = _parse_event_time(event.get("timestamp", ""))
+        if stamp and (first is None or stamp < first):
+            first = stamp
+
+    if first is not None:
+        result["seen"] = True
+        result["first_seen"] = _format_utc(first)
+        if boot is not None:
+            result["seconds_after_boot"] = int((first - boot).total_seconds())
+
+    return result
+
+
+def collect_since_boot(
+    evtx_path: str | Path,
+    image_name: str = "",
+    max_events: int = 20000,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Read everything Sysmon recorded this boot, and attribute it.
+
+    The counterpart to `collect` for a stage no run was watching. Same export,
+    same query, same summary -- the window is the difference, and so is the
+    attribution: there is no launched PID to seed from, so ``image_name`` is
+    what makes the events anyone's in particular.
+
+    Without it the summary counts the machine's whole boot, which on this bench
+    is a known quantity of nothing in particular: an ordinary boot makes ~450
+    VM-artifact registry reads and starts dozens of processes, none of them a
+    sample. `lineage_resolved: false` says so, and every count in the summary
+    should be distrusted when it appears.
+    """
+    status: dict[str, Any] = {"success": False, "error": "", "evtx": {}, "diagnosis": ""}
+
+    boot = resolve_boot_time()
+    status["boot_time"] = boot
+    status["window"] = "since-boot"
+    status["reads_covered"] = False
+    status["reads_note"] = (
+        "Sysmon has no registry-read or file-read event. Nothing here is "
+        "evidence about what the payload read, only about what it created, "
+        "wrote, loaded, connected to or resolved."
+    )
+
+    since_utc = boot["since_utc"]
+    if not since_utc:
+        status["error"] = "boot time could not be resolved"
+        status["diagnosis"] = boot["note"]
+        return [], summarize_sysmon_events([]), status
+
+    status["evtx"] = export_evtx(evtx_path, since_utc)
+    status["channel_records"] = channel_record_count()
+    status["elevated"] = is_elevated()
+
+    attempts: list[dict[str, Any]] = []
+    status["attempts"] = attempts
+
+    try:
+        events = query_events(since_utc, max_events=max_events, attempts_out=attempts)
+    except SysmonError as error:
+        status["error"] = str(error)
+        status["diagnosis"] = _diagnose_empty(
+            status["channel_records"], failed=True, attempts=attempts,
+            elevated=status["elevated"],
+        )
+        return [], summarize_sysmon_events([]), status
+
+    status["success"] = True
+    status["event_count"] = len(events)
+    status["first_event"] = events[0].get("timestamp", "") if events else ""
+    status["last_event"] = events[-1].get("timestamp", "") if events else ""
+
+    # A capped read is newest-first, so what it drops is the *oldest* part of
+    # the window -- the boot, the logon, and the payload's first seconds. That
+    # is the one part of a boot window nobody can afford to lose quietly.
+    capped = any(attempt.get("capped") for attempt in attempts if attempt.get("events"))
+    status["truncated"] = bool(capped)
+    if capped:
+        status["truncation_note"] = (
+            f"The query returned its cap of {max_events} events, newest first, "
+            "so the oldest events in this boot window were dropped -- including "
+            "the payload's first seconds. Coverage begins at "
+            f"{status['first_event']}, not at boot. Re-read with a higher "
+            "--max-events before drawing any conclusion from an absence."
+        )
+
+    descendants = descendants_from_sysmon(events, image_name) if image_name else None
+    status["lineage_resolved"] = descendants is not None
+    status["payload"] = payload_appearance(events, image_name, since_utc)
+
+    if not image_name:
+        status["lineage_note"] = (
+            "No payload image was given, so nothing is attributed and every "
+            "count in the summary is the whole machine's boot."
+        )
+    elif descendants is None:
+        status["lineage_note"] = (
+            f"No process running {_image_basename(image_name)} appears in this "
+            "boot window. Either the persistence did not fire, or Sysmon was "
+            "not recording when it did -- check `channel_records` and the "
+            "persistence entry before concluding the payload is inert."
+        )
+
+    if not events:
+        status["diagnosis"] = _diagnose_empty(
+            status["channel_records"], failed=False, attempts=attempts,
+            elevated=status["elevated"],
+        )
+
+    return events, summarize_sysmon_events(events, descendant_pids=descendants), status
