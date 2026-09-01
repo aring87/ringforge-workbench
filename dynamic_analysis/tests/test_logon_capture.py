@@ -27,9 +27,16 @@ REGISTRY_READS_PMC = (
 
 class TaskCommandTests(unittest.TestCase):
     def test_the_task_triggers_on_start_not_on_logon(self) -> None:
-        # The whole point. Racing the sample's own ONLOGON task is a coin toss,
-        # and losing it misses the first seconds -- which is where `ce0d08be...`
-        # did its work both times. ONSTART is running before a session exists.
+        # ONSTART, but no longer for the reason first written here. That
+        # reasoning -- "it runs before a session exists, so there is no
+        # ordering to get right" -- was measured on 31 Aug and is false: the
+        # task landed 3m51s after boot against a payload up 2s after the
+        # logon. Task Scheduler delays boot-triggered tasks.
+        #
+        # ONSTART stays because the race is now removed rather than won. The
+        # gate closes AutoAdminLogon, so the boot reaches no logon and no
+        # ONLOGON task fires until the host drives one. Being late stops
+        # mattering; being first does not.
         argv = build_arm_argv(r"C:\out\run_capture.cmd")
 
         self.assertIn("/sc", argv)

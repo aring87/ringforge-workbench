@@ -24,8 +24,32 @@ Task Scheduler delays and throttles boot-triggered tasks, and ours landed almost
 four minutes late -- against a payload that is up 2 seconds after the logon and
 finished persisting 12 seconds later. `ONSTART` is *earlier* than `ONLOGON`, it
 is not *early*. `seconds_after_boot` is now in every manifest so the margin is
-measured on each run instead of assumed, and the run that closes this gap will
-need a boot-start service or a filtered boot log, not a scheduled task.
+measured on each run instead of assumed.
+
+**The trigger is no longer the answer, because the race is gone.** The two
+candidates that followed from the failure -- a boot-start service, or a filtered
+boot log -- are both attempts to *win* the race, and either would leave a margin
+that has to be re-proven on every sample. The gate removes it instead:
+`set_autologon(False)` before the boot, so the guest stops at the sign-in screen
+and no logon session exists for the sample's `ONLOGON` task to trigger on. The
+capture starts whenever Task Scheduler gets round to it, confirms its own
+backing file, and sets `READY_PROPERTY`; `scripts/vm_gated_logon.ps1` on the
+host waits for that and types the credentials. Being late stops mattering.
+Being first does not, and it is now guaranteed rather than hoped for.
+
+The claim that replaces "ONSTART runs early" is checkable after every run:
+`ready_seconds_after_boot` here, against `payload.seconds_after_boot` from
+`sysmon_since_boot.py`. The second must be the larger. If it is not, the run
+says nothing about the payload's first seconds whatever it recorded.
+
+**Still unproven, and not to be assumed twice: Procmon has never been watched
+capturing from session 0.** Both modals that blocked the first attempt are
+cleared before launch now, but "the modals were the only problem" is a
+hypothesis of exactly the shape that cost the last run. Prove it on the clean
+baseline with `vm_gated_logon.ps1 -ProveChannel` before arming anything. If
+session 0 is a wall, the gate still holds -- a second local account lets
+Procmon run interactively in an operator session while the target user's logon,
+and only that logon, starts the payload.
 
 **Procmon asks questions nobody in session 0 can answer.** Two modals blocked
 the first run, and `/Quiet` suppresses neither: a leftover `%WINDIR%\\Procmon.pmb`
@@ -197,6 +221,187 @@ def check_blocking_prompts(backing_file: str | Path, boot_log: Path = BOOT_LOG) 
     return result
 
 
+# ---------------------------------------------------------------------------
+# The gate
+# ---------------------------------------------------------------------------
+#
+# The first proving run tried to make the capture *early*. It cannot be: Task
+# Scheduler delays boot-triggered tasks, ours landed 3m51s after boot, and the
+# payload was up 2 seconds after the logon. Nothing about the trigger fixes
+# that, because the trigger is not the problem -- the race is.
+#
+# So there is no race. `AutoAdminLogon` is turned off before the boot, which
+# means no logon happens, which means the sample's `ONLOGON` task does not
+# fire. The capture starts whenever Task Scheduler gets round to it, verifies
+# its own backing file, and only then signals the host, which types the
+# credentials at the sign-in screen. The payload starts inside a capture that
+# is already known to be running.
+#
+# The capture being late stops mattering. What replaces it is a number that can
+# be checked: the payload's start minus the capture's ready, measured on every
+# run, positive by construction or the run is void.
+#
+# **What is still unproven, and must not be assumed a second time.** Nobody has
+# yet seen Procmon capture successfully from session 0. The first attempt died
+# on two modals, both of which are now cleared before launch -- but "the modals
+# were the only problem" is a hypothesis, and it is exactly the shape of the
+# `ONSTART` claim that cost the last run. Prove it on the clean baseline before
+# arming anything. If session 0 turns out to be the wall, the gate still holds:
+# a second local account lets Procmon run interactively in an operator session
+# while the target user's logon -- and only that logon -- fires the payload.
+
+#: The host reads this to learn that the capture is up. A guest property rather
+#: than a file: it works from session 0, needs no shared folder mounted in a
+#: session that does not exist, and carries no code in either direction.
+READY_PROPERTY = "/RingForge/CaptureReady"
+
+#: Where Guest Additions puts VBoxControl. Checked in order.
+VBOXCONTROL_PATHS = (
+    r"C:\Windows\System32\VBoxControl.exe",
+    r"C:\Program Files\Oracle\VirtualBox Guest Additions\VBoxControl.exe",
+)
+
+#: `HKLM\...\Winlogon`, where automatic logon lives. `vm_hygiene.ps1` writes
+#: these; this only flips the switch and puts it back.
+WINLOGON_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+
+
+def find_vboxcontrol() -> str:
+    """Locate VBoxControl, or return an empty string.
+
+    Guest Additions is already required by this bench -- the shared folder that
+    carries files in depends on it -- so this is expected to be present. It is
+    still looked for rather than assumed, because a ready signal that silently
+    fails to send is a capture the host will never trigger, and the host would
+    wait out its timeout reporting nothing more useful than "no signal".
+    """
+    import shutil
+
+    for path in VBOXCONTROL_PATHS:
+        if Path(path).is_file():
+            return path
+    found = shutil.which("VBoxControl.exe")
+    return found or ""
+
+
+def signal_ready(value: str, property_name: str = READY_PROPERTY) -> dict[str, Any]:
+    """Tell the host the capture is up, and say plainly if it could not.
+
+    ``TRANSIENT`` so the value cannot outlive the VM's power state. The host
+    also deletes the property before it starts the machine, because a stale
+    readiness left over from a previous boot would be read as this boot's --
+    and the host would type the credentials into a machine with no capture
+    running at all, producing a run that looks perfect and proves nothing.
+    """
+    result: dict[str, Any] = {
+        "signalled": False, "property": property_name, "value": value,
+        "vboxcontrol": "", "error": "",
+    }
+
+    vboxcontrol = find_vboxcontrol()
+    result["vboxcontrol"] = vboxcontrol
+    if not vboxcontrol:
+        result["error"] = (
+            "VBoxControl.exe not found, so the host cannot be told the capture "
+            "is up. Guest Additions is required for the gated run."
+        )
+        return result
+
+    argv = [
+        vboxcontrol, "guestproperty", "set", property_name, value,
+        "--flags", "TRANSIENT",
+    ]
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except Exception as error:  # noqa: BLE001 -- the capture must not die here
+        result["error"] = f"{type(error).__name__}: {error}"
+        return result
+
+    if completed.returncode != 0:
+        result["error"] = (
+            (completed.stderr or completed.stdout or "").strip()
+            or f"VBoxControl returned {completed.returncode}"
+        )
+        return result
+
+    result["signalled"] = True
+    return result
+
+
+def read_autologon() -> dict[str, Any]:
+    """What `AutoAdminLogon` is set to now, without changing it."""
+    result: dict[str, Any] = {"readable": False, "auto_admin_logon": "", "error": ""}
+    try:
+        import winreg
+    except ImportError as error:  # not Windows
+        result["error"] = str(error)
+        return result
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINLOGON_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, "AutoAdminLogon")
+        result["readable"] = True
+        result["auto_admin_logon"] = str(value)
+    except FileNotFoundError:
+        result["readable"] = True
+        result["auto_admin_logon"] = ""
+    except OSError as error:
+        result["error"] = str(error)
+
+    return result
+
+
+
+def _write_autologon(value: str) -> str:
+    """The one call that touches HKLM. Returns an error string, or empty.
+
+    Split out so the surrounding logic -- what it was before, whether the
+    change is reported as made -- can be tested without a test suite that
+    writes to the host's own Winlogon key. A test that has to be run elevated
+    to pass is a test that gets skipped.
+    """
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, WINLOGON_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.SetValueEx(key, "AutoAdminLogon", 0, winreg.REG_SZ, value)
+    except OSError as error:
+        return f"{error}. Writing HKLM needs Administrator; run this elevated."
+    except ImportError as error:
+        return str(error)
+    return ""
+
+
+def set_autologon(enabled: bool) -> dict[str, Any]:
+    """Open or close the gate, reporting what it was before.
+
+    Only `AutoAdminLogon` is touched. `DefaultUserName` and `DefaultPassword`
+    are left exactly as `vm_hygiene.ps1` wrote them, so re-enabling is a
+    one-character change and nothing has to be re-entered -- and so a gated run
+    that is abandoned halfway leaves a machine that logs itself in again as
+    soon as the flag goes back.
+    """
+    result: dict[str, Any] = {
+        "changed": False, "previous": "", "now": "1" if enabled else "0", "error": "",
+    }
+
+    before = read_autologon()
+    result["previous"] = before["auto_admin_logon"]
+    if before["error"]:
+        result["error"] = before["error"]
+        return result
+
+    error = _write_autologon("1" if enabled else "0")
+    if error:
+        result["error"] = error
+        return result
+
+    result["changed"] = True
+    return result
+
+
 def empty_manifest(reason: str) -> dict[str, Any]:
     """The shape a capture that never happened still reports.
 
@@ -211,6 +416,9 @@ def empty_manifest(reason: str) -> dict[str, Any]:
         "window_seconds": 0,
         "seconds_after_boot": None,
         "started_at": "",
+        "ready_at": "",
+        "ready_seconds_after_boot": None,
+        "ready_signal": {},
         "ended_at": "",
         "backing_file": "",
         "backing_file_bytes": 0,
@@ -310,6 +518,23 @@ def run_capture(
                 pass
             return manifest
 
+        # The host is waiting on this, and it is sent only after the backing
+        # file has been seen growing. Signalling on "Procmon was launched"
+        # would be signalling on the exact thing that was false last time.
+        stage = "signalling the host"
+        manifest["ready_at"] = _now()
+        manifest["ready_seconds_after_boot"] = seconds_since_boot()
+        ready_value = "|".join([
+            "1",
+            str(manifest["ready_seconds_after_boot"]),
+            manifest["ready_at"],
+        ])
+        manifest["ready_signal"] = signal_ready(ready_value)
+        try:
+            (out / "logon_capture.ready").write_text(ready_value, encoding="utf-8")
+        except OSError as error:
+            manifest["ready_signal"]["marker_error"] = str(error)
+
         stage = "capturing"
         sleep(window)
 
@@ -362,7 +587,14 @@ def arm(
     config_path: str | Path | None = None,
     python_exe: str | Path | None = None,
     script_path: str | Path | None = None,
+    gate_logon: bool = False,
 ) -> dict[str, Any]:
+    """Register the task, and optionally close the gate behind it.
+
+    The gate is closed *after* the task is registered and only if it
+    registered. The other order can leave a machine that neither captures nor
+    logs anybody in, which on a VM with no console access is a reinstall.
+    """
     capture_argv = build_capture_argv(
         python_exe or sys.executable,
         script_path or Path(__file__).resolve().parent.parent / "scripts" / "logon_capture.py",
@@ -376,6 +608,7 @@ def arm(
     result["command"] = subprocess.list2cmdline(capture_argv)
     result["shim"] = str(shim)
     result["task_name"] = TASK_NAME
+    result["gate"] = set_autologon(False) if (gate_logon and result["ok"]) else {}
     return result
 
 

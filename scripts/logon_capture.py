@@ -1,10 +1,11 @@
 """Arm, disarm and run the logon capture. The guest-side entry point.
 
-    .venv\\Scripts\\python.exe scripts\\logon_capture.py --arm ^
+    .venv\\Scripts\\python.exe scripts\\logon_capture.py --arm --gate-logon ^
         --out C:\\logon-capture ^
-        --procmon C:\\...\\tools\\rf_trace64.exe --window 300
+        --procmon C:\\...\\tools\\rf_trace64.exe --window 600
 
-    ... reboot, log on, wait out the window ...
+    ... reboot; nothing logs on; the host drives the logon once the capture
+        signals, with scripts\\vm_gated_logon.ps1 ...
 
     .venv\\Scripts\\python.exe scripts\\logon_capture.py --status
     .venv\\Scripts\\python.exe scripts\\logon_capture.py --analyse ^
@@ -17,10 +18,19 @@ which a detonation names in its dropped-files output -- because lineage is the
 only thing separating the payload from the machine's own boot, and an ordinary
 boot makes 448 VM-artifact reads of its own.
 
+`--gate-logon` is what makes the ordering hold. It sets `AutoAdminLogon` to 0,
+so the boot reaches a sign-in screen and stops: no logon session, so no
+`ONLOGON` task fires, so the capture cannot be beaten to the payload however
+late Task Scheduler starts it. `--ungate` puts it back, and is the whole way
+back -- the stored user name and password are never touched.
+
+Without the flag this races the payload, and the race was measured lost by
+3m51s on 31 Aug.
+
 `--capture` is what the scheduled task invokes and is not normally typed by
-hand. See `dynamic_analysis/logon_capture.py` for why the task is `ONSTART`
-rather than `ONLOGON`, and for the ordering rule that keeps it out of the run's
-task diffs.
+hand. See `dynamic_analysis/logon_capture.py` for what ONSTART was assumed to
+do, what it actually does, and the ordering rule that keeps this task out of
+the run's task diffs.
 
 **Read `logon_capture.json` before the CSV.** `completed: false` with a reason
 means the capture did not run, and `procmon_filter.captures_registry_reads`
@@ -40,10 +50,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dynamic_analysis.logon_capture import (  # noqa: E402
     DEFAULT_WINDOW_SECONDS,
+    READY_PROPERTY,
     TASK_NAME,
     arm,
     disarm,
+    read_autologon,
     run_capture,
+    set_autologon,
     status,
 )
 from dynamic_analysis.logon_analysis import analyse_logon_capture  # noqa: E402
@@ -98,6 +111,35 @@ def _analyse(args) -> int:
     return 0
 
 
+
+def _gate(args) -> int:
+    """Close or open the gate, and say what the machine will do at next boot.
+
+    Closing it is what removes the race. With `AutoAdminLogon` at 0 the boot
+    stops at the sign-in screen, no logon session is created, and the sample's
+    `ONLOGON` task does not fire -- so the capture can be as late as Task
+    Scheduler likes and still be first.
+    """
+    enabled = bool(args.ungate)
+    before = read_autologon()
+    result = set_autologon(enabled)
+
+    if result["error"]:
+        print(f"gate: NOT changed -- {result['error']}", file=sys.stderr)
+        return 1
+
+    state = "OPEN (autologon on)" if enabled else "CLOSED (no logon at boot)"
+    print(f"gate: {state}")
+    print(f"  AutoAdminLogon {before['auto_admin_logon'] or '(unset)'} -> {result['now']}")
+
+    if not enabled:
+        print()
+        print("The machine will boot to the sign-in screen and stop there. "
+              "DefaultUserName and DefaultPassword are untouched, so --ungate "
+              "is the whole way back.")
+    return 0
+
+
 def _default_config() -> Path:
     return (
         Path(__file__).resolve().parent.parent
@@ -113,6 +155,13 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--status", action="store_true", help="is it armed")
     mode.add_argument("--capture", action="store_true", help="run the capture (the task does this)")
     mode.add_argument("--analyse", action="store_true", help="run the passes over a finished capture")
+    mode.add_argument("--gate", action="store_true", help="close the gate: AutoAdminLogon 0")
+    mode.add_argument("--ungate", action="store_true", help="open it again: AutoAdminLogon 1")
+
+    parser.add_argument(
+        "--gate-logon", action="store_true",
+        help="with --arm: close the gate too, so the boot reaches no logon",
+    )
 
     parser.add_argument("--out", help="directory for the pml, csv and manifest")
     parser.add_argument("--procmon", help="path to Procmon; do not name it procmon")
@@ -124,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.analyse:
         return _analyse(args)
+
+    if args.gate or args.ungate:
+        return _gate(args)
 
     if args.status:
         result = status()
@@ -159,13 +211,33 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(manifest, indent=2))
         return 0 if manifest["completed"] else 1
 
-    result = arm(args.out, args.procmon, args.window, config)
+    result = arm(args.out, args.procmon, args.window, config, gate_logon=args.gate_logon)
     print(f"{TASK_NAME}: {'armed' if result['ok'] else 'NOT armed'}")
     print(f"  runs: {result['command']}")
     if not result["ok"]:
         print(result["stderr"] or result["stdout"], file=sys.stderr)
         return 1
-    print("\nReboot to start the capture. Read logon_capture.json before the CSV.")
+
+    gate = result.get("gate") or {}
+    if args.gate_logon:
+        if not gate.get("changed"):
+            print(f"  gate: NOT CLOSED -- {gate.get('error') or 'unknown'}", file=sys.stderr)
+            print("  The boot would reach a logon and the payload would start "
+                  "before the capture. Fix this before rebooting.", file=sys.stderr)
+            return 1
+        print(f"  gate: CLOSED (AutoAdminLogon {gate['previous'] or '(unset)'} -> 0)")
+        print()
+        print("Reboot. Nothing will log on, so no ONLOGON task fires -- the "
+              f"sample's included. The capture signals {READY_PROPERTY} once "
+              "its backing file is confirmed, and scripts/vm_gated_logon.ps1 "
+              "on the host types the credentials from there.")
+        return 0
+
+    print()
+    print("Reboot to start the capture. Read logon_capture.json before the CSV.")
+    print("WARNING: the gate is open, so this races the payload to the logon -- "
+          "and lost by 3m51s the last time. Use --gate-logon unless you mean "
+          "to race it.")
     return 0
 
 
