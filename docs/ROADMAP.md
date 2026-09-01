@@ -1595,6 +1595,72 @@ account puts Procmon in an interactive operator session with a desktop, while
 the target user's logon -- and only that logon -- starts the payload. That
 costs an account in the baseline and answers the modal problem outright.
 
+### Item 1 — the persisted stage, watched at last, and Sysmon saw almost none of it — 01 Sep
+
+**The boot window ran against a live resident payload and it worked.** Guest
+restored to `ce0d08be-installed-onlogon-armed`, contained, booted; the `ONLOGON`
+payload started 292 s after boot as PID 1976, and the collector resolved it off
+its image name with no launched PID to seed from. Three reads over 105 minutes.
+
+**Its entire Sysmon footprint is two events.**
+
+    ProcessCreate   ...\AppData\Roaming\PlatformRuntime\ce0d08be....exe
+    ProcessCreate   schtasks /create /tn "ce0d08be..." /sc ONLOGON
+                             /tr "...\PlatformRuntime\ce0d08be....exe"
+
+**The payload re-creates its own persistence every time it runs.** The task is
+not merely installed once by the installer stage -- the resident copy re-asserts
+it at each logon, so deleting the task removes it until the next boot and no
+longer. That is self-healing persistence and it is new information; the 31 Aug
+runs saw the installer create the task and could not see this.
+
+No registry writes, no file creates, no DNS, no network, no pipes, no injection.
+Machine-wide over the same window: 361 process creates, 171 registry set-values,
+46 DNS queries -- **none of it the sample's**, which is the distinction the
+`payload_activity` split now makes and the first read did not.
+
+**And the two-event footprint is not what the payload was doing.** The socket
+table, which Sysmon's configuration never sees:
+
+    127 sockets owned by PID 1976, every one Bound, no remote endpoint
+    first     2026-09-01T15:58:10Z      (88 min after the payload started)
+    then      one gap of 2,623 s
+    then      17 s, 17, 17, 17, 18, 17, ... to the end of the series
+    CPU       1.875 s over 105 minutes
+
+**The beacon interval is 17 seconds**, uniform, with an 18 every twenty-odd
+intervals -- an aliasing pattern that puts the true period near 17.5 s. Each
+attempt leaves a bound socket that is never closed: **one leaked socket per
+beacon**, monotonic, and at that rate the default dynamic port range lasts about
+77 hours.
+
+**Sysmon recorded none of it for two compounding reasons**, and both are
+properties of the instrument rather than the sample: SwiftOnSecurity's
+configuration excludes loopback from Event 3, and a connect that never completes
+would produce no Event 3 in any case. **This is the demonstration that an
+absence in a Sysmon boot window is not evidence of inactivity** -- the payload
+was making an attempt every 17 seconds throughout the window in which the
+collector reported it had done nothing since starting.
+
+**What is not proven: the destination.** A bound socket carries no remote
+endpoint, so nothing here shows where it was connecting. The static finding of a
+hardcoded `127.0.0.1:7372` is *consistent* with this and is not evidenced by it.
+Procmon's TCP events or a loopback capture would settle it, and neither has been
+run.
+
+**The coverage gap fired as designed.** Boot 14:25:07, first Sysmon event
+14:27:58, first event being Sysmon's own service-state change: **171 seconds in
+which nothing was recorded**. The payload at 292 s cleared it by two minutes, so
+this read stands -- on margin supplied by a slow boot rather than by coverage.
+The claim that Sysmon's boot-start driver makes the logon stage free is
+therefore weaker than three documents stated it, and the margin is now measured
+on every run.
+
+**Two things this hands the next increment.** The gated Procmon capture has a
+concrete target -- 17-second connection attempts that no current collector
+records -- and a detection idea that needs no traffic at all: a single process
+accumulating bound sockets monotonically is visible without seeing one packet.
+
 ### Traps this cost a day to find
 
 Each of these produced a plausible number rather than an error, which is why

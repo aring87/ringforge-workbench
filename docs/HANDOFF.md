@@ -174,8 +174,38 @@ Read, in `docs/ROADMAP.md`:
 
     Item 1 - the race removed rather than won, and a collector that never had one
 
-**Guest state is unchanged from 31 Aug and still wants the pull and re-baseline
-described below** -- it now needs `be3f12c` and `6934ffc` as well.
+**The guest was re-baselined and the boot window has now run.** `tooling-baseline`
+was retaken at `9ed26b8` with pytest and unicorn in it -- the first baseline that
+carries them, which is why every restore since 21 Aug had been losing them. The
+old one is kept as `tooling-baseline-prelogongate`.
+
+**The persisted stage has been watched, and the headline is that Sysmon barely
+saw it.** Restored `ce0d08be-installed-onlogon-armed`, contained, booted; the
+payload came up 292 s after boot as PID 1976 and ran for 105 minutes. Its whole
+Sysmon footprint is **two events**: its own start, and a `schtasks /create`
+re-asserting its own `ONLOGON` task -- **self-healing persistence**, which no
+earlier run could see. Nothing else: no registry writes, no DNS, no network.
+
+**It was beaconing the entire time.** 127 sockets owned by that PID, every one
+`Bound` with no remote, **one leaked per attempt on a 17-second interval**
+(occasional 18; true period near 17.5 s), CPU 1.875 s. Sysmon's configuration
+excludes loopback and a connect that never completes raises no Event 3 either,
+so **an absence in a boot window is not evidence of inactivity** -- demonstrated
+rather than suspected now. Where it was connecting is *not* shown: a bound
+socket has no remote endpoint, and the hardcoded `127.0.0.1:7372` from static
+analysis is consistent with this without being evidenced by it.
+
+**And the window opened 171 s late.** First Sysmon event was its own service
+starting. The payload cleared it by two minutes on a slow boot. So Sysmon's
+boot-start driver does *not* make the logon stage free, as this file said above
+-- the margin is real but small, and is now measured on every run.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - the persisted stage, watched at last, and Sysmon saw almost none of it
+
+That gives the gated Procmon capture a concrete target: 17-second connection
+attempts that no collector currently records.
 
 ### Pick up here — 31 Aug
 
