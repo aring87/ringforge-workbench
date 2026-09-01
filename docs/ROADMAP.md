@@ -1720,6 +1720,59 @@ the task that had just launched it. Deleting that task buys one boot.
 first HTTP request, and it points at HTTP rather than only the raw `7372` socket
 static analysis found.
 
+### `stuff.dll` is the protocol core, and the magic is `0xDEADBEEF` — 01 Sep
+
+12,288 bytes, .NET Framework 4.7.2, IL-only, recovered from the Costura unpack
+directory during the gated capture. **Unobfuscated and built in Debug**, so
+`scripts/dotnet_meta.py` read it end to end and no decompiler was needed.
+
+    SHA-256   D8EE0FC96CE8DE2E37BC8FDC051DA7C1852B9A510270E663BA17281DE23F049B
+    MVID      cee53f6d-bc5f-4d2c-837a-a6b40a8ca6d5
+    PDB path  C:\Users\Cristian\source\repos\Stuff\Stuff\obj\Debug\Stuff.pdb
+
+**The build machine names its developer account.** `Cristian`, project `Stuff`.
+That and the MVID are pivotable in a way the sample's own hash is not: both are
+stable across every copy of this build.
+
+**The wire format, read from `PacketFrame.Encode`/`Decode`:**
+
+    uint32   magic           0xDEADBEEF   -- "Invalid magic" on mismatch
+    int32    payloadLength                -- compressed
+    int32    originalSize                 -- uncompressed
+    uint8    flagCompressed               -- 0 raw, 1 Deflate
+    bytes[]  payload
+    uint32   crc32                        -- "CRC mismatch" on failure
+
+Deflate applies only above `MinSizeToCompress` = 256 bytes, at
+`CompressionLevel.Fastest`. `Crc32` is a table implementation, not a framework
+call.
+
+**This is a network signature derived without any captured traffic**:
+`EF BE AD DE`, two little-endian lengths, a flag byte, a trailing CRC-32. The
+17-second beacons carry it, and it is testable the moment either instrument can
+see loopback.
+
+**The config schema, and one entry changes gap 4's reading:**
+
+    UID  Tag  Password  Website  OpenWebsite  BoxMsg
+    UAC  VM   HidProc   HideFile ProcessCritical
+
+**`VM` is an operator setting, not a hardcoded check.** So a sample that reads
+no VM artefact has not necessarily had its detection defeated -- it may have
+been built with the option off. That is consistent with everything measured
+here: 967 registry reads, zero VM artefacts, on a build whose C2 is the
+unconfigured default `127.0.0.1:7372`, and with the operator-facing panel text
+`"Client ... was a virtual machine!"` recovered earlier. **It does not reopen
+gap 4** -- the decision to decline it rested on the surface being rare and
+swamped by the OS, which this does not touch -- but it does explain why this
+particular sample was silent, which was previously an open thread.
+
+`ProcessCritical` is `RtlSetProcessIsCritical`: killing the process bugchecks
+the host. Worth knowing before anyone terminates it by hand.
+
+Full notes beside the artifact:
+`G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
+
 ### The manifest asserted a capability the capture did not have — 01 Sep
 
 **Not one TCP event, for any process, in 600 seconds.** The filter's include
