@@ -1508,6 +1508,93 @@ that reported failure -- every one of these was found because something wrote
 down what it could not do, rather than producing an empty capture that read like
 a quiet boot.
 
+### Item 1 — the race removed rather than won, and a collector that never had one — 01 Sep
+
+**This is a build increment and nothing in it has run against a guest yet.**
+Two commits, 955 tests, no detonation. The section above ends with "until one
+of those is built and *measured*", and only the first half of that is done.
+Read the rest of this with that in front.
+
+**The trigger was the wrong thing to fix.** The two candidates the failure
+suggested -- a boot-start service, or a filtered boot log -- are both attempts
+to *win* the race against an `ONLOGON` payload, and either one leaves a margin
+that has to be re-proven on every sample. The margin is the problem, so the
+race is gone instead:
+
+    AutoAdminLogon -> 0     the guest boots to the sign-in screen and stops
+    no logon session        so no ONLOGON task fires, the sample's included
+    capture starts late     and it no longer matters
+    capture verifies        256 MB backing file seen growing, not "launched"
+    guest -> host           /RingForge/CaptureReady, TRANSIENT
+    host types credentials  vm_gated_logon.ps1
+    payload starts          inside a capture already known to be running
+
+`ONSTART` stays as the trigger. It is no longer load-bearing.
+
+**The claim that replaces "ONSTART runs early" can be checked after every run**,
+which is the whole difference between this and what it replaces:
+
+    logon_capture.json   ready_seconds_after_boot
+    sysmon_boot.json     payload.seconds_after_boot
+
+The second must be the larger. If it is not, the run says nothing about the
+payload's first seconds whatever it recorded, and it is void rather than
+negative.
+
+**Two traps closed on the way, both of the "produces a plausible number" kind.**
+Guest properties survive a reboot, so a readiness left by a previous boot would
+be read as this boot's and the host would type the credentials into a machine
+with no capture running -- a run that looks perfect and proves nothing. The
+host deletes the property before starting the VM and the guest sets it
+`TRANSIENT`. And the signal fires on a *growing backing file*, never on
+"Procmon was launched": launching was true during the failed run while nothing
+was being captured, and signalling on it would have moved that same lie into a
+new place.
+
+**Sysmon needed none of this, and that is the more useful half.** Its driver is
+boot-start and its service auto-start, so it was already recording before the
+logon on every run this project has ever done -- including both `ce0d08be...`
+detonations, whose persisted stage may still be sitting in the guest's channel.
+`collect_since_boot` bounds the window at boot and runs the same export, query
+and summary as a detonation, so the two are judged by the same code.
+
+    resolve_boot_time        GetTickCount64 excludes suspended time, so a guest
+                             restored from a saved state reports the boot too
+                             LATE and crops the payload's first seconds. Both
+                             sources are read and the earlier wins
+    truncation               wevtutil is read newest-first, so a capped query
+                             drops the OLDEST events -- boot, logon, and the
+                             payload's first seconds. A round event count was
+                             the only symptom
+    descendants_from_sysmon  no launched PID exists, so lineage seeds on the
+                             image name and walks ParentProcessId. An absent
+                             image returns None -- "never appeared", not "ran
+                             and did nothing"
+
+`reads_covered: false` is in every manifest it writes. Sysmon has no
+registry-read or file-read event at any configuration, so an absence there is
+not evidence about reads, and that is still exactly what the Procmon capture is
+for.
+
+**What is unproven, listed so it is not assumed a second time.**
+
+1. **Procmon has never been watched capturing from session 0.** Both modals
+   that blocked the first attempt are cleared before launch now, but "the
+   modals were the only problem" is a hypothesis of precisely the shape of the
+   `ONSTART` claim. `vm_gated_logon.ps1 -ProveChannel` on the clean baseline
+   answers it without a sample in the machine.
+2. **VBoxControl setting a guest property from session 0** has not been seen
+   working here either. Same run answers it.
+3. **`keyboardputstring` at a Windows 11 sign-in screen** is the least certain
+   piece: layout, the lock-screen curtain, and characters the scancode path
+   mishandles. Same run answers it, and a failure is visible in the VM window
+   rather than silent.
+
+If session 0 turns out to be a wall, the gate still holds. A second local
+account puts Procmon in an interactive operator session with a desktop, while
+the target user's logon -- and only that logon -- starts the payload. That
+costs an account in the baseline and answers the modal problem outright.
+
 ### Traps this cost a day to find
 
 Each of these produced a plausible number rather than an error, which is why
