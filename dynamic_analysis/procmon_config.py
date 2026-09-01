@@ -45,6 +45,11 @@ COLUMN_OPERATION = 40055
 COLUMN_RESULT = 40056
 COLUMN_PATH = 40071
 
+#: The event-class column. Procmon's toolbar toggles write exclude rules here,
+#: and a class excluded here is not captured however the operation includes
+#: read -- which is why `describe_procmon_filter` reports it.
+COLUMN_EVENT_CLASS = 40082
+
 #: Relations. 0 is `is`, and it is the only one used for an operation include.
 RELATION_IS = 0
 RELATION_BEGINS_WITH = 4
@@ -268,11 +273,27 @@ def describe_procmon_filter(config_path: str | Path | None) -> dict[str, Any]:
 
     `captures_registry_reads` is the field that answers it. Read the *file* rather
     than trusting the filename, since a config can be renamed or edited.
+
+    **`excluded_classes` was added on 01 Sep, after this description was read as
+    more than it said.** A gated capture recorded no TCP event in 600 seconds
+    and this function's `operations` list -- which includes `TCP Connect` --
+    was cited as evidence the capture covered the network, so the silence
+    looked like a finding about the sample. It was not: the payload had simply
+    not begun beaconing, which the socket timeline had already shown starts
+    about 88 minutes in.
+
+    The list was still incomplete. Procmon's toolbar toggles are exclude rules
+    on the **event class** column (40082), and an operation include cannot
+    overcome a class exclude -- toggle Network off and `TCP Connect` still
+    appears here while nothing is captured. That is now reported rather than
+    left to be discovered, which is the difference between an absence that can
+    be reasoned about and one that cannot.
     """
     result: dict[str, Any] = {
         "config_path": str(config_path or ""),
         "readable": False,
         "operations": [],
+        "excluded_classes": [],
         "captures_registry_reads": False,
         "note": "",
     }
@@ -290,7 +311,9 @@ def describe_procmon_filter(config_path: str | Path | None) -> dict[str, Any]:
         return result
 
     try:
-        operations = included_operations(read_filter_rules(path))
+        rules = read_filter_rules(path)
+        operations = included_operations(rules)
+        excluded_classes = excluded_event_classes(rules)
     except Exception as error:
         result["note"] = f"Procmon config could not be read: {error}"
         return result
@@ -304,19 +327,47 @@ def describe_procmon_filter(config_path: str | Path | None) -> dict[str, Any]:
 
     result["readable"] = True
     result["operations"] = operations
+    result["excluded_classes"] = excluded_classes
     result["captures_registry_reads"] = bool(reads)
     result["registry_read_operations"] = reads
-    result["note"] = (
-        f"{len(operations)} operation(s) included; registry reads captured "
-        f"({', '.join(reads)})."
-        if reads
-        else (
+
+    if reads:
+        note = (
+            f"{len(operations)} operation(s) included; registry reads captured "
+            f"({', '.join(reads)})."
+        )
+    else:
+        note = (
             f"{len(operations)} operation(s) included and no registry read among "
             "them, so a VM-artifact check could not have been seen. "
             "tools/procmon-configs/dynamic_registry_reads.pmc captures them."
         )
-    )
+
+    if excluded_classes:
+        note += (
+            f" Event class(es) excluded outright: {', '.join(excluded_classes)}"
+            " -- nothing in those is captured whatever the operations above say."
+        )
+    result["note"] = note
     return result
+
+
+def excluded_event_classes(rules: Iterable[FilterRule]) -> list[str]:
+    """Event classes the config switches off wholesale.
+
+    Procmon's toolbar toggles -- Registry, File System, Network, Process,
+    Profiling -- are exclude rules on column 40082, and they gate the class
+    before any operation include is considered. A config can therefore list
+    `TCP Connect` among its includes and capture no network event at all, which
+    is a silence indistinguishable from a quiet sample.
+    """
+    return sorted(
+        {
+            rule.value
+            for rule in rules
+            if rule.column == COLUMN_EVENT_CLASS and rule.action == ACTION_EXCLUDE
+        }
+    )
 
 
 def _main(argv: list[str] | None = None) -> int:

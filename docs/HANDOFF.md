@@ -158,15 +158,26 @@ the host.
 
 Full notes: `G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
 
-**The manifest claimed a capability the capture did not have.** Not one TCP
-event in 600 seconds, for any process. `describe_procmon_filter` reports the
-`.pmc`'s *include rules* -- which list `TCP Connect` -- as if they described
-coverage, but include rules only filter events Procmon generates, and the
-network event class was off. `captures_registry_reads` shares the flaw and was
-right here only because the registry class happened to be on. **Fix before the
-next run**, since the same payload was measured making a connection attempt
-every 17 seconds and two instruments have now missed it for two unrelated
-reasons.
+**RETRACTED: the capture recorded no TCP because the payload sent none.** This
+section previously said the network event class was off in the `.pmc` and that
+the manifest had claimed coverage it did not have. Both are false. The same CSV
+holds **2,481 `UDP Send`** events from `svchost` and Edge, so network capture
+worked; the only excluded class is `Profiling`.
+
+**The payload had not started beaconing.** Measured the same morning and not
+connected at the time: first leaked socket **88 minutes** after it started, the
+steady 17-second loop only from ~2.7 hours. The capture watched six and a half
+minutes. **A window shorter than the behaviour it looks for yields an absence
+that means nothing** -- and this one looked like a finding.
+
+What was genuinely missing is now fixed: `describe_procmon_filter` never
+mentioned event classes, and a class excluded on column 40082 overrides every
+operation include. It reports `excluded_classes` now, with seven tests.
+
+**So re-running the gated capture will not answer the beacon question.** The
+gate exists to catch the payload's *first seconds* and it did that. The beacon
+needs a different run: let the payload sit for ~90 minutes, then take a short
+**network-only** capture, which is cheap because the volume is trivial.
 
 Read, in `docs/ROADMAP.md`:
 

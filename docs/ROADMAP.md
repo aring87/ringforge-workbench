@@ -1773,30 +1773,45 @@ the host. Worth knowing before anyone terminates it by hand.
 Full notes beside the artifact:
 `G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
 
-### The manifest asserted a capability the capture did not have — 01 Sep
+### RETRACTED — the network class was never off, and the window was too short — 01 Sep
 
-**Not one TCP event, for any process, in 600 seconds.** The filter's include
-rules list `TCP Connect`, `TCP Send`, `UDP Send` and the rest, and
-`describe_procmon_filter` reports them under `procmon_filter.operations` as
-though they describe the capture. They do not. **Include rules only filter
-events Procmon generates**, and the network event class was toggled off in the
-`.pmc`, so no network event existed to be filtered or reported.
+**The section that stood here blamed the instrument and was wrong.** It said the
+gated capture recorded no TCP event because the network event class was toggled
+off in the `.pmc`, and that `describe_procmon_filter` had therefore asserted a
+capability the capture never had. Neither claim survives the file.
 
-`captures_registry_reads` has exactly the same weakness. It was correct on this
-run because the registry class happened to be enabled -- correct by luck, and
-the pipeline relies on that flag to decide whether a zero means anything.
+**Network capture worked throughout.** The same CSV holds **2,481 `UDP Send`**
+and 165 `UDP Receive` events, from `svchost.exe`, `msedgewebview2.exe` and
+`msedge.exe`. The clean-baseline proving run has them too. Procmon records
+network activity perfectly well as SYSTEM in session 0, and the only event class
+excluded in that config is `Profiling` -- visible as an exclude rule on column
+40082, which is where Procmon's toolbar toggles live.
 
-**Two instruments, two unrelated blind spots, identical silence.** The same
-payload was measured this morning making a connection attempt every 17 seconds
--- 127 leaked bound sockets, one per attempt. Sysmon missed them because its
-configuration excludes loopback and an incomplete connect raises no Event 3.
-Procmon missed them because its network class was off. Neither absence was
-evidence, and both would have read as one.
+**The payload made zero network operations because it had not started
+beaconing.** This was already measured the same morning and not connected: the
+first leaked socket appeared **88 minutes** after the payload started, and the
+steady 17-second loop only from about 2.7 hours in. The gated capture watched
+**six and a half minutes**. It was never going to see one.
 
-**To fix:** enable the network class in the `.pmc` and make
-`describe_procmon_filter` report class enablement rather than inferring coverage
-from include rules -- or, where it cannot see the classes, say so instead of
-listing operations that imply coverage.
+So the run is not evidence about the beacon in either direction, and the
+sentence to keep is the general one: **a window shorter than the behaviour it
+is looking for produces an absence that means nothing**, and the absence looked
+exactly like a finding.
+
+**What was genuinely missing, and is now fixed.** `describe_procmon_filter`
+reported operation includes and never mentioned event classes. A class excluded
+on column 40082 is not captured however the includes read, so a config *could*
+list `TCP Connect` and capture nothing while being described identically. It now
+reports `excluded_classes` and says in the note that an excluded class overrides
+the operation list. Seven tests, including one pinning that the shipped config
+excludes only `Profiling`.
+
+**The correction matters more than the fix.** Two instruments had, on the same
+day, produced the same silence for what looked like two instrument faults.
+Sysmon's was real -- its configuration excludes loopback, and an incomplete
+connect raises no Event 3. Procmon's was not: it would have recorded the
+beacons and there were none to record. Reaching for a second instrument fault
+because the first was real is the error worth remembering.
 
 ### Traps this cost a day to find
 
