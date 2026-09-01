@@ -141,7 +141,22 @@ the stage that unpacks it. Archived with SHA-256s at
 `G:\ringforge-artifacts\ce0d08be-costura-01sep\` (zip password `infected`); the
 capture itself is beside it in `ce0d08be-gated-capture-01sep\` with a README.
 
-**`stuff.dll` is the next thing to look at**, and it needs no VM.
+**`stuff.dll` is read, and it was the highest-value 12 KB in the set.** It is the
+RAT's protocol and configuration core, unobfuscated and built in Debug, so
+`scripts/dotnet_meta.py` took it end to end with no decompiler. Its frame is
+`0xDEADBEEF`, compressed length, original size, a compression flag, the payload,
+and a CRC-32, with Deflate applied only above 256 bytes -- **a network signature
+derived without capturing a single packet**, and the 17-second beacons carry it.
+
+It leaks its build machine (`...\Users\Cristian\source\repos\Stuff\...`, Debug)
+and its MVID, both pivotable where the sample hash is not. Its config schema
+carries `VM` as an **operator setting**, which explains why this build reads no
+VM artefacts -- without reopening gap 4, which was declined on the surface being
+rare and OS-swamped rather than on this sample's silence. And
+`ProcessCritical` is `RtlSetProcessIsCritical`: killing the process bugchecks
+the host.
+
+Full notes: `G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
 
 **The manifest claimed a capability the capture did not have.** Not one TCP
 event in 600 seconds, for any process. `describe_procmon_filter` reports the
