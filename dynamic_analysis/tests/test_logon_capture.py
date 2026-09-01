@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,11 +9,13 @@ from dynamic_analysis.logon_capture import (
     DEFAULT_WINDOW_SECONDS,
     MAX_WINDOW_SECONDS,
     TASK_NAME,
+    MAX_TR_LENGTH,
     build_arm_argv,
     build_capture_argv,
     build_disarm_argv,
     empty_manifest,
     run_capture,
+    write_capture_shim,
 )
 
 REGISTRY_READS_PMC = (
@@ -26,7 +29,7 @@ class TaskCommandTests(unittest.TestCase):
         # The whole point. Racing the sample's own ONLOGON task is a coin toss,
         # and losing it misses the first seconds -- which is where `ce0d08be...`
         # did its work both times. ONSTART is running before a session exists.
-        argv = build_arm_argv(["python.exe", "capture.py"])
+        argv = build_arm_argv(r"C:\out\run_capture.cmd")
 
         self.assertIn("/sc", argv)
         self.assertEqual(argv[argv.index("/sc") + 1], "ONSTART")
@@ -35,18 +38,18 @@ class TaskCommandTests(unittest.TestCase):
     def test_it_runs_as_system_and_elevated(self) -> None:
         # Procmon needs administrator to load its driver, and the capture has to
         # exist before any user logs on.
-        argv = build_arm_argv(["python.exe", "capture.py"])
+        argv = build_arm_argv(r"C:\out\run_capture.cmd")
 
         self.assertEqual(argv[argv.index("/ru") + 1], "SYSTEM")
         self.assertEqual(argv[argv.index("/rl") + 1], "HIGHEST")
 
     def test_rearming_replaces_rather_than_failing(self) -> None:
-        self.assertIn("/f", build_arm_argv(["python.exe", "capture.py"]))
+        self.assertIn("/f", build_arm_argv(r"C:\out\run_capture.cmd"))
 
     def test_the_task_name_is_not_disguised(self) -> None:
         # An analyzer artifact that hides from the analyzer is how a
         # contaminated run becomes an unexplainable one.
-        self.assertIn(TASK_NAME, build_arm_argv(["python.exe", "capture.py"]))
+        self.assertIn(TASK_NAME, build_arm_argv(r"C:\out\run_capture.cmd"))
         self.assertIn(TASK_NAME, build_disarm_argv())
 
     def test_the_capture_command_carries_the_config_when_given(self) -> None:
@@ -64,6 +67,30 @@ class TaskCommandTests(unittest.TestCase):
         argv = build_capture_argv("python.exe", "s.py", r"C:\out", r"C:\p.exe")
 
         self.assertNotIn("--config", argv)
+
+
+class ShimTests(unittest.TestCase):
+    def test_the_task_points_at_a_shim_so_tr_stays_under_the_cap(self) -> None:
+        # schtasks rejects a /tr over 261 characters and the real command is
+        # five absolute paths in one string -- 297 on the first attempt, which
+        # is how this was found: on the guest, at the arming step.
+        with TemporaryDirectory() as tmp:
+            argv = build_capture_argv(
+                r"C:\Program Files\Python312\python.exe",
+                r"C:\projects\RingForge_Analyzer\ringforge-workbench\scripts\logon_capture.py",
+                r"C:\logon-capture",
+                r"C:\projects\RingForge_Analyzer\ringforge-workbench\tools\rf_trace64.exe",
+                300,
+                r"C:\projects\RingForge_Analyzer\ringforge-workbench\tools\procmon-configs\dynamic_registry_reads.pmc",
+            )
+            self.assertGreater(len(subprocess.list2cmdline(argv)), MAX_TR_LENGTH)
+
+            shim = write_capture_shim(tmp, argv)
+            tr = build_arm_argv(str(shim))[-1]
+
+            self.assertLessEqual(len(tr), MAX_TR_LENGTH)
+            self.assertIn("--capture", shim.read_text(encoding="utf-8"))
+            self.assertIn("rf_trace64.exe", shim.read_text(encoding="utf-8"))
 
 
 class ManifestTests(unittest.TestCase):

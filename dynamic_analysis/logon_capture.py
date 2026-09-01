@@ -89,7 +89,32 @@ def build_capture_argv(
     return argv
 
 
-def build_arm_argv(capture_argv: list[str], task_name: str = TASK_NAME) -> list[str]:
+#: `schtasks` rejects a `/tr` longer than this, and the real command is well
+#: over it: an interpreter path, a script path, an output directory, a Procmon
+#: path and a `.pmc` path are five absolute paths in one string. Measured at 297
+#: characters on the first attempt.
+MAX_TR_LENGTH = 261
+
+
+def write_capture_shim(out_dir: str | Path, capture_argv: list[str]) -> Path:
+    """A `.cmd` holding the capture command, so `/tr` stays short.
+
+    The alternative was shortening the command, and every way of doing that
+    moves an argument somewhere less visible -- a defaults file, an environment
+    variable, a hardcoded path. The shim keeps the whole invocation written down
+    in one readable place next to the output it produces, which is also where
+    someone debugging a capture that did not run will look first.
+    """
+    shim = Path(out_dir) / "run_capture.cmd"
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    shim.write_text(
+        "@echo off\r\n" + subprocess.list2cmdline(capture_argv) + "\r\n",
+        encoding="utf-8",
+    )
+    return shim
+
+
+def build_arm_argv(command: str, task_name: str = TASK_NAME) -> list[str]:
     """`schtasks /create` for an ONSTART task running as SYSTEM.
 
     `/rl HIGHEST` because Procmon needs administrator to load its driver, and
@@ -104,7 +129,7 @@ def build_arm_argv(capture_argv: list[str], task_name: str = TASK_NAME) -> list[
         "/ru", "SYSTEM",
         "/rl", "HIGHEST",
         "/f",
-        "/tr", subprocess.list2cmdline(capture_argv),
+        "/tr", command,
     ]
 
 
@@ -225,8 +250,10 @@ def arm(
         window_seconds,
         config_path,
     )
-    result = _run(build_arm_argv(capture_argv))
+    shim = write_capture_shim(out_dir, capture_argv)
+    result = _run(build_arm_argv(str(shim)))
     result["command"] = subprocess.list2cmdline(capture_argv)
+    result["shim"] = str(shim)
     result["task_name"] = TASK_NAME
     return result
 
