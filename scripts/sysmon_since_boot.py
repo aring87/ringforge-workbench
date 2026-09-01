@@ -73,10 +73,44 @@ def _print_report(status: dict, summary: dict) -> None:
     if status.get("lineage_note"):
         print(f"  ! {status['lineage_note']}")
 
+    coverage = status.get("coverage") or {}
+    if coverage.get("note"):
+        print(f"  ! {coverage['note']}")
+
     counts = summary.get("counts") or {}
     if counts:
         ordered = sorted(counts.items(), key=lambda item: -item[1])
-        print("counts      " + "  ".join(f"{name}={count}" for name, count in ordered[:12]))
+        print("machine     " + "  ".join(f"{name}={count}" for name, count in ordered[:12]))
+        print("            (the whole box, not the payload -- see below)")
+
+    # The payload's own events, which is the question this script exists for.
+    # Printed after the machine-wide line and labelled, because a reader
+    # skimming `ProcessCreate=351` next to a payload that made one of them will
+    # credit the machine's boot to the sample.
+    activity = status.get("payload_activity") or {}
+    if activity.get("attributed"):
+        own = activity.get("counts") or {}
+        if own:
+            ordered = sorted(own.items(), key=lambda item: -item[1])
+            print(f"payload's   {activity['event_total']} events -- "
+                  + "  ".join(f"{name}={count}" for name, count in ordered[:12]))
+        else:
+            print("payload's   0 events beyond its own start")
+
+        for label, key in (
+            ("  spawned", "processes_created"),
+            ("  wrote", "registry_values_set"),
+            ("  keys", "registry_keys_touched"),
+            ("  files", "files_created"),
+            ("  dns", "dns_queries"),
+            ("  network", "network_targets"),
+            ("  pipes", "named_pipes"),
+        ):
+            values = activity.get(key) or []
+            for value in values[:10]:
+                print(f"{label:<11} {value}")
+            if len(values) > 10:
+                print(f"{label:<11} (+{len(values) - 10} more)")
 
     for label, key in (("dns", "dns_queries"), ("network", "network_targets"),
                        ("pipes", "named_pipes")):

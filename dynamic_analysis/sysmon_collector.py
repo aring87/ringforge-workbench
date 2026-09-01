@@ -1221,6 +1221,151 @@ def payload_appearance(
     return result
 
 
+def recording_coverage(
+    events: list[dict[str, Any]],
+    boot_since_utc: str,
+) -> dict[str, Any]:
+    """When Sysmon actually started recording, against when the boot began.
+
+    The premise of this whole module is that Sysmon's driver is boot-start, so
+    the channel covers the payload's first seconds without anything having to
+    be armed. Measured on the guest 01 Sep, that premise holds but not for the
+    reason stated: boot at 14:25:07, first event at 14:27:58, **a 171-second
+    hole at the start of the window**. The payload started at 292s and was
+    caught with about two minutes to spare -- margin that came from a slow boot
+    rather than from coverage.
+
+    So the gap is reported on every run. A payload that starts inside it would
+    be missed exactly the way the Procmon capture missed one, and the manifest
+    would otherwise say `since-boot` and look complete.
+    """
+    boot = _parse_event_time(boot_since_utc)
+    result: dict[str, Any] = {
+        "first_event": "",
+        "first_event_id": 0,
+        "first_event_name": "",
+        "gap_seconds": None,
+        "note": "",
+    }
+    if not events:
+        result["note"] = "No events in the window, so coverage cannot be established."
+        return result
+
+    first = events[0]
+    result["first_event"] = first.get("timestamp", "")
+    result["first_event_id"] = first.get("event_id", 0)
+    result["first_event_name"] = first.get("event_name", "")
+
+    stamp = _parse_event_time(result["first_event"])
+    if boot is None or stamp is None:
+        return result
+
+    gap = int((stamp - boot).total_seconds())
+    result["gap_seconds"] = gap
+    if gap <= 0:
+        return result
+
+    explained = " Its first event is Sysmon's own service-state change, so it was starting, not idle." \
+        if first.get("event_id") == 4 else ""
+    result["note"] = (
+        f"Sysmon recorded nothing for the first {gap}s of this boot.{explained} "
+        "Anything the payload did inside that window is not here and is not "
+        "absent -- it was never recorded."
+    )
+    return result
+
+
+def payload_activity(
+    events: list[dict[str, Any]],
+    descendant_pids: Optional[set[int]],
+) -> dict[str, Any]:
+    """What the payload itself did, as opposed to what the machine did.
+
+    `summarize_sysmon_events` filters *highlights* by lineage but counts every
+    event on the box, which is the right shape for a detonation -- the run's
+    own window is mostly the sample. A boot window is mostly Windows. On the
+    01 Sep guest read that produced `ProcessCreate=351, RegistrySetValue=171`
+    for a payload that had made exactly one process create, and a reader
+    skimming the counts would have credited all of it to the sample.
+
+    So this splits the same events by actor. `_actor_pid` decides who acted,
+    which matters for `CreateRemoteThread` and `ProcessAccess`, where reading
+    `ProcessId` would credit an injection to its victim.
+
+    ``None`` for the lineage means it could not be resolved, and every list
+    here comes back empty rather than full -- the same degrade the rest of the
+    module uses, for the same reason.
+    """
+    result: dict[str, Any] = {
+        "attributed": descendant_pids is not None,
+        "counts": {},
+        "event_total": 0,
+        "registry_values_set": [],
+        "registry_keys_touched": [],
+        "files_created": [],
+        "dns_queries": [],
+        "network_targets": [],
+        "named_pipes": [],
+        "processes_created": [],
+        "images_loaded": [],
+    }
+    if not descendant_pids:
+        return result
+
+    for event in events:
+        actor = _actor_pid(event)
+        if actor is None or actor not in descendant_pids:
+            continue
+
+        name = event.get("event_name", str(event.get("event_id", "?")))
+        result["counts"][name] = result["counts"].get(name, 0) + 1
+        result["event_total"] += 1
+
+        data = event.get("data", {}) or {}
+        event_id = event.get("event_id")
+
+        if event_id == 13:
+            detail = _short(f"{data.get('TargetObject', '?')} = {data.get('Details', '')}")
+            if detail not in result["registry_values_set"]:
+                result["registry_values_set"].append(detail)
+        elif event_id in (12, 14):
+            target = _short(data.get("TargetObject", ""))
+            if target and target not in result["registry_keys_touched"]:
+                result["registry_keys_touched"].append(target)
+        elif event_id == 11:
+            target = _short(data.get("TargetFilename", ""))
+            if target and target not in result["files_created"]:
+                result["files_created"].append(target)
+        elif event_id == 22:
+            query = f"{data.get('QueryName', '?')} -> {_short(data.get('QueryResults', ''), 90)}"
+            if query not in result["dns_queries"]:
+                result["dns_queries"].append(query)
+        elif event_id == 3:
+            host = data.get("DestinationHostname") or data.get("DestinationIp", "")
+            target = f"{host}:{data.get('DestinationPort', '')}".strip(":")
+            if target and target not in result["network_targets"]:
+                result["network_targets"].append(target)
+        elif event_id in (17, 18):
+            pipe = data.get("PipeName", "").strip()
+            if pipe and pipe not in result["named_pipes"]:
+                result["named_pipes"].append(pipe)
+        elif event_id == 1:
+            line = _short(f"{data.get('Image', '?')} {data.get('CommandLine', '')}")
+            if line not in result["processes_created"]:
+                result["processes_created"].append(line)
+        elif event_id == 7:
+            loaded = _image_basename(data.get("ImageLoaded", ""))
+            if loaded and loaded not in result["images_loaded"]:
+                result["images_loaded"].append(loaded)
+
+    for key in ("registry_values_set", "registry_keys_touched", "files_created",
+                "dns_queries", "network_targets", "named_pipes",
+                "processes_created", "images_loaded"):
+        result[key] = result[key][:200]
+
+    return result
+
+
 def collect_since_boot(
     evtx_path: str | Path,
     image_name: str = "",
@@ -1293,9 +1438,12 @@ def collect_since_boot(
             "--max-events before drawing any conclusion from an absence."
         )
 
+    status["coverage"] = recording_coverage(events, since_utc)
+
     descendants = descendants_from_sysmon(events, image_name) if image_name else None
     status["lineage_resolved"] = descendants is not None
     status["payload"] = payload_appearance(events, image_name, since_utc)
+    status["payload_activity"] = payload_activity(events, descendants)
 
     if not image_name:
         status["lineage_note"] = (

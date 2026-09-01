@@ -18,6 +18,16 @@ Three things can go wrong quietly, and each has a test here:
 - **Nothing can be attributed.** A logon-triggered payload has no launched PID.
   Without lineage the summary is the machine's whole boot, and an ordinary boot
   is not quiet.
+- **The window can be labelled `since-boot` and not cover the boot.** Measured
+  on the guest 01 Sep: boot 14:25:07, first event 14:27:58. Sysmon's driver is
+  boot-start, but its service was still starting for the first 171 seconds, and
+  a payload beginning inside that hole would be missed with nothing in the
+  output to say so. The payload started at 292s and was caught by a margin that
+  came from a slow boot rather than from coverage.
+- **The counts can be the machine's while the reader takes them for the
+  payload's.** The same read reported `ProcessCreate=351, RegistrySetValue=171`
+  for a payload that made exactly one process create. Both numbers were correct
+  and neither was about the sample.
 """
 
 import json
@@ -32,7 +42,9 @@ from dynamic_analysis.sysmon_collector import (
     BOOT_TIME_TOLERANCE_SECONDS,
     collect_since_boot,
     descendants_from_sysmon,
+    payload_activity,
     payload_appearance,
+    recording_coverage,
     resolve_boot_time,
 )
 
@@ -301,6 +313,126 @@ class CollectSinceBoot(unittest.TestCase):
         _, summary, status = self._collect()
 
         json.dumps({"status": status, "summary": summary}, default=str)
+
+
+def _event(event_id, data, at_second, name="Event"):
+    stamp = (BOOT + timedelta(seconds=at_second)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return {
+        "event_id": event_id,
+        "event_name": name,
+        "timestamp": stamp,
+        "process_id": str(data.get("ProcessId", "")),
+        "execution_process_id": "",
+        "data_values": [],
+        "image": data.get("Image", ""),
+        "data": data,
+    }
+
+
+class RecordingCoverage(unittest.TestCase):
+    """Measured on the guest, 01 Sep: boot 14:25:07, first event 14:27:58.
+
+    A 171-second hole at the start of a window the manifest calls `since-boot`.
+    The payload started at 292s and was caught, but by a margin that came from
+    a slow boot rather than from coverage -- and a payload starting inside that
+    hole would be missed exactly the way the Procmon capture missed one, with
+    nothing in the output to say so.
+    """
+
+    def test_the_hole_at_the_start_is_reported(self):
+        events = [_event(4, {}, 171, name="SysmonServiceStateChange")]
+
+        coverage = recording_coverage(events, BOOT_UTC)
+
+        self.assertEqual(coverage["gap_seconds"], 171)
+        self.assertIn("first 171s", coverage["note"])
+
+    def test_a_service_start_explains_the_hole(self):
+        """Event 4 is Sysmon saying it was starting. That is a different fact
+        from Sysmon having been up and the machine having been quiet."""
+        events = [_event(4, {}, 171, name="SysmonServiceStateChange")]
+
+        self.assertIn("service-state change", recording_coverage(events, BOOT_UTC)["note"])
+
+    def test_no_gap_is_no_note(self):
+        events = [_create(4100, "C:\\Windows\\System32\\svchost.exe", 900, 0)]
+
+        coverage = recording_coverage(events, BOOT_UTC)
+
+        self.assertEqual(coverage["gap_seconds"], 0)
+        self.assertEqual(coverage["note"], "")
+
+    def test_an_empty_window_establishes_nothing(self):
+        coverage = recording_coverage([], BOOT_UTC)
+
+        self.assertIsNone(coverage["gap_seconds"])
+        self.assertIn("cannot be established", coverage["note"])
+
+
+class PayloadActivity(unittest.TestCase):
+    """The counts in the summary are the machine's; these are the payload's.
+
+    The 01 Sep guest read reported `ProcessCreate=351, RegistrySetValue=171`
+    for a payload that had made exactly one process create. Both numbers were
+    correct and neither was about the sample.
+    """
+
+    def setUp(self):
+        self.events = [
+            _create(5200, PAYLOAD, 4100, 292),
+            _create(9000, "C:\\Windows\\explorer.exe", 900, 300),
+            _event(13, {"ProcessId": "5200", "TargetObject": "HKCU\\...\\Run\\Updater",
+                        "Details": "C:\\payload.exe"}, 295, name="RegistrySetValue"),
+            _event(13, {"ProcessId": "9000", "TargetObject": "HKCU\\...\\Explorer\\Advanced",
+                        "Details": "1"}, 301, name="RegistrySetValue"),
+            _event(11, {"ProcessId": "5200",
+                        "TargetFilename": "C:\\Users\\a\\AppData\\Roaming\\x.dat"}, 296,
+                   name="FileCreate"),
+            _event(22, {"ProcessId": "9000", "QueryName": "windowsupdate.com",
+                        "QueryResults": "1.2.3.4"}, 305, name="DnsQuery"),
+        ]
+
+    def test_only_the_payload_s_events_are_counted(self):
+        activity = payload_activity(self.events, {5200})
+
+        self.assertTrue(activity["attributed"])
+        self.assertEqual(activity["event_total"], 3)
+        self.assertEqual(activity["counts"]["RegistrySetValue"], 1)
+        self.assertNotIn("DnsQuery", activity["counts"])
+
+    def test_it_names_what_the_payload_wrote(self):
+        activity = payload_activity(self.events, {5200})
+
+        self.assertEqual(len(activity["registry_values_set"]), 1)
+        self.assertIn("Run\\Updater", activity["registry_values_set"][0])
+        self.assertIn("x.dat", activity["files_created"][0])
+        self.assertEqual(activity["dns_queries"], [])
+
+    def test_an_injection_is_credited_to_the_injector_not_the_victim(self):
+        """`CreateRemoteThread` names the actor in SourceProcessId and the
+        victim in ProcessId. Reading ProcessId would file the payload's
+        injection under the process it injected into -- and would file someone
+        else's injection INTO the payload as the payload's own."""
+        into_payload = _event(8, {"SourceProcessId": "9000", "ProcessId": "5200",
+                                  "SourceImage": "C:\\other.exe",
+                                  "TargetImage": PAYLOAD}, 310,
+                              name="CreateRemoteThread")
+        by_payload = _event(8, {"SourceProcessId": "5200", "ProcessId": "9000",
+                                "SourceImage": PAYLOAD,
+                                "TargetImage": "C:\\Windows\\explorer.exe"}, 311,
+                            name="CreateRemoteThread")
+
+        activity = payload_activity([into_payload, by_payload], {5200})
+
+        self.assertEqual(activity["counts"].get("CreateRemoteThread"), 1)
+        self.assertEqual(activity["event_total"], 1)
+
+    def test_unresolved_lineage_reports_nothing_rather_than_everything(self):
+        activity = payload_activity(self.events, None)
+
+        self.assertFalse(activity["attributed"])
+        self.assertEqual(activity["event_total"], 0)
+        self.assertEqual(activity["counts"], {})
 
 
 if __name__ == "__main__":
