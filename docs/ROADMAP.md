@@ -1435,6 +1435,79 @@ having "given up its infrastructure", which it never had. Any C2-gated
 experiment on this family needs a *configured* sample; `ce0d08be...` is a dead
 end for it, and the port is the only part worth carrying forward.
 
+### Item 1 — the collector's proving run failed, and what it falsified — 31 Aug
+
+**The run was set up correctly and produced nothing, which is the outcome the
+manifest exists for.** `ce0d08be-installed-onlogon-armed` restored, the three
+files copied in over the shared folder, boot logging disabled, the capture
+armed, rebooted. The task fired. `logon_capture.json` was written. There was no
+`.pml`, no `.csv`, and `reason: Backing file not found`.
+
+**Two failures, and the second one falsifies a design claim made confidently in
+this document and in the module's own docstring.**
+
+**1. Procmon asks questions nobody in session 0 can answer, and `/Quiet`
+suppresses neither.** A leftover `%WINDIR%\Procmon.pmb` from the throwaway boot
+raised *"A log of boot-time activity was created by a previous instance. Do you
+wish to save the collected data now?"*, and an existing backing file raises
+*"Okay to overwrite event log?"*. Launched as SYSTEM by a scheduled task, with
+no window station, Procmon sat on the dialog. Interactively, under the same
+command, it captures fine -- 256 MB of preallocated backing file within seconds.
+**The command was never wrong.**
+
+**2. `ONSTART` is earlier than `ONLOGON`. It is not early.**
+
+    21:32:55   the sample's ONLOGON payload started
+    21:36:46   the ONSTART capture started
+
+Nearly four minutes late, against a payload that is up 2 seconds after the logon
+and finished persisting 12 seconds later. The claim was *"`ONSTART` runs as
+SYSTEM at boot, before any user session exists, so there is no ordering to get
+right"* -- written into the module, the commit and this document as though it
+were settled, when it was an assumption nobody had measured. Task Scheduler
+delays and throttles boot-triggered tasks. **The distinction between a
+reasonable assumption and a measured fact is the thing this whole document is
+about, and it was lost in the space of one commit.**
+
+**And a third, found while diagnosing: the manifest could lie.** It opened with
+`reason: "capture did not start"` and overwrote that only on success or on a
+caught `Exception`. A killed process -- `KeyboardInterrupt` is not an
+`Exception` -- ran the `finally`, wrote the placeholder out as though it were a
+finding, and left Procmon running. The observed manifest said the capture never
+started while a 256 MB backing file grew beside it.
+
+**What is fixed, with tests.**
+
+    check_blocking_prompts     removes our own backing file; refuses on a boot
+                               log, with the remedy, rather than deleting
+                               something that may be the only copy of a boot
+                               nobody can repeat
+    _wait_for_backing_file     Procmon preallocates 256 MB, so a real start
+                               shows a file in a second or two. No file means it
+                               is not capturing whatever the process table says.
+                               Turns 300 seconds of silence into an accurate
+                               failure in fifteen
+    stage tracking             `finally` reports where it actually got to, so a
+                               killed run says `interrupted while capturing`
+                               rather than repeating its opening placeholder
+    seconds_after_boot         in every manifest, so the ONSTART margin is
+                               measured on each run instead of assumed
+
+**What is not fixed is the trigger, and it needs a different mechanism rather
+than a better flag.** A scheduled task cannot be relied on to run before a
+logon-triggered payload. The candidates are a boot-start service, or Procmon's
+own boot logging if it can be made to honour a filter -- and unfiltered boot
+logging is already measured at 65 MB/min, which is why it was rejected as a
+collector in the first place. Until one of those is built and *measured*, the
+collector can watch a persisted payload but cannot promise to see its first
+seconds, and its first seconds are the point.
+
+**The honest summary of the increment: the collector is built, tested, and
+demonstrated not to work yet.** The parts that behaved correctly are the ones
+that reported failure -- every one of these was found because something wrote
+down what it could not do, rather than producing an empty capture that read like
+a quiet boot.
+
 ### Traps this cost a day to find
 
 Each of these produced a plausible number rather than an error, which is why

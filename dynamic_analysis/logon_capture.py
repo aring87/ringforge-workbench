@@ -1,4 +1,4 @@
-"""A filtered Procmon capture that is already running when the user logs on.
+"""A filtered Procmon capture, started early enough to see a persisted payload.
 
 **The pipeline cannot currently see what a persisted payload does.** Measured
 31 Aug on `ce0d08be...`: the detonation watched the sample drop 23 files, install
@@ -9,40 +9,44 @@ ever watched it. Every dynamic detector observes one boot, and a payload behind
 `ONLOGON`, a logon script or a scheduled trigger is outside all of them.
 
 Boot logging proves such a stage exists and is the wrong instrument for watching
-it: the same run produced 4.2 GB of `.pmb` in 65 minutes, a 1.67 GB `.pml` and a
-703 MB CSV *with the registry-read filter applied at export*, because boot
-logging has no capture-time filter. 65 MB per minute is not a collector, it is a
-one-off.
+it: the same run produced 4.2 GB of `.pmb` in 65 minutes, because boot logging
+has no capture-time filter. 65 MB per minute is not a collector, it is a one-off.
 
-Three decisions here, each of them the reason this works at all.
+**The first proving run failed, and what it falsified is recorded here rather
+than fixed quietly.** `ONSTART` was chosen over `ONLOGON` on the reasoning that
+it "runs as SYSTEM at boot, before any user session exists, so there is no
+ordering to get right". That is wrong in practice. Measured 31 Aug:
 
-**The task is `ONSTART`, not `ONLOGON`.** Racing the sample's own `ONLOGON` task
-would be a coin toss, and losing it means missing the first seconds -- which is
-exactly where `ce0d08be...` did its work both times. `ONSTART` runs as SYSTEM at
-boot, before any user session exists, so the capture is already running when the
-logon fires. There is no ordering to get right.
+    21:32:55   the sample's ONLOGON payload started
+    21:36:46   this capture started
 
-**The filter is the run's filter.** `DEFAULT_PROCMON_CONFIG_NAME` --
-`dynamic_registry_reads.pmc` -- so a logon capture sees registry reads by
-default, the same way a detonation does. The manifest records
-`captures_registry_reads` from the file rather than the filename, because a
-capture that could not have seen a thing must never read as having seen nothing.
+Task Scheduler delays and throttles boot-triggered tasks, and ours landed almost
+four minutes late -- against a payload that is up 2 seconds after the logon and
+finished persisting 12 seconds later. `ONSTART` is *earlier* than `ONLOGON`, it
+is not *early*. `seconds_after_boot` is now in every manifest so the margin is
+measured on each run instead of assumed, and the run that closes this gap will
+need a boot-start service or a filtered boot log, not a scheduled task.
 
-**The Procmon binary is a parameter, and should not be named `procmon`.**
-`ce0d08be...` carries a process-name blocklist holding `procmon`, `procexp`,
-`processhacker` and `perfmon`; the 31 Aug runs succeeded under a renamed copy.
-A payload stage that survives a logon has every opportunity to look.
+**Procmon asks questions nobody in session 0 can answer.** Two modals blocked
+the first run, and `/Quiet` suppresses neither: a leftover `%WINDIR%\\Procmon.pmb`
+("save the collected data?") and an existing backing file ("okay to
+overwrite?"). Both are checked before launch. The backing file is ours and is
+removed; the boot log is not ours, so it is reported as a refusal with the
+remedy rather than deleted out from under whoever armed it.
 
-**Arming is visible to the task diffs, so mind the ordering.** This registers a
-real scheduled task and nothing excludes analyzer-owned tasks from
-`diff_tasks`. Arm *outside* the window between a run's before and after
-snapshots -- after a detonation completes, or before one starts -- and it never
-shows as a new task. Arm in the middle and it is reported as persistence, by us.
+**And the collector has to verify itself.** `start_procmon_capture` sleeps three
+seconds and checks nothing, so both dialogs presented as a capture that reported
+success and recorded a 300-second silence -- the exact failure this package
+exists to prevent, committed by the thing meant to prevent it. The backing file
+is now checked after launch, which turns five minutes of nothing into an
+accurate failure in a few seconds.
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import subprocess
 import sys
 import time
@@ -56,15 +60,41 @@ from dynamic_analysis.procmon_config import describe_procmon_filter
 #: from the analyzer is how a contaminated run becomes an unexplainable one.
 TASK_NAME = "RingForgeLogonCapture"
 
-#: Seconds of capture after boot. The payload stage of `ce0d08be...` started
-#: 2 seconds after the logon and had installed its persistence 12 seconds later,
-#: so the interesting window is short; the default is long enough to also catch
-#: a first beacon on the ~18-second interval that sample used.
+#: Seconds of capture after the task fires. The payload stage of `ce0d08be...`
+#: started 2 seconds after the logon and had installed its persistence 12
+#: seconds later, so the interesting window is short; the default is long enough
+#: to also catch a first beacon on the ~18-second interval that sample used.
 DEFAULT_WINDOW_SECONDS = 300
 
 #: Guards a window long enough to fill a disk. A filtered capture is far cheaper
 #: than boot logging but it is not free.
 MAX_WINDOW_SECONDS = 3600
+
+#: `schtasks` rejects a `/tr` longer than this, and the real command is well
+#: over it: an interpreter path, a script path, an output directory, a Procmon
+#: path and a `.pmc` path are five absolute paths in one string. Measured at 297
+#: characters on the first attempt.
+MAX_TR_LENGTH = 261
+
+#: Procmon's boot log. Its presence raises a modal on *any* Procmon start.
+BOOT_LOG = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Procmon.pmb"
+
+#: How long to wait for Procmon to preallocate its backing file. It reserves
+#: 256 MB up front, so the file appears almost immediately when Procmon is
+#: actually running -- and never when it is sitting on a dialog.
+BACKING_FILE_TIMEOUT_SECONDS = 15
+
+
+def seconds_since_boot() -> int | None:
+    """Uptime, so a manifest can say how late the capture was.
+
+    The whole `ONSTART` premise is a claim about this number and nothing was
+    measuring it. ``None`` off Windows, where the counter does not exist.
+    """
+    try:
+        return int(ctypes.windll.kernel32.GetTickCount64() // 1000)
+    except (AttributeError, OSError):
+        return None
 
 
 def build_capture_argv(
@@ -89,13 +119,6 @@ def build_capture_argv(
     return argv
 
 
-#: `schtasks` rejects a `/tr` longer than this, and the real command is well
-#: over it: an interpreter path, a script path, an output directory, a Procmon
-#: path and a `.pmc` path are five absolute paths in one string. Measured at 297
-#: characters on the first attempt.
-MAX_TR_LENGTH = 261
-
-
 def write_capture_shim(out_dir: str | Path, capture_argv: list[str]) -> Path:
     """A `.cmd` holding the capture command, so `/tr` stays short.
 
@@ -118,7 +141,7 @@ def build_arm_argv(command: str, task_name: str = TASK_NAME) -> list[str]:
     """`schtasks /create` for an ONSTART task running as SYSTEM.
 
     `/rl HIGHEST` because Procmon needs administrator to load its driver, and
-    `/ru SYSTEM` because the capture has to exist before any user session does.
+    `/ru SYSTEM` because the capture should exist before a user session does.
     `/f` so re-arming replaces rather than failing, which is what an operator
     re-running this actually means.
     """
@@ -141,6 +164,39 @@ def build_status_argv(task_name: str = TASK_NAME) -> list[str]:
     return ["schtasks", "/query", "/tn", task_name, "/v", "/fo", "LIST"]
 
 
+def check_blocking_prompts(backing_file: str | Path, boot_log: Path = BOOT_LOG) -> dict[str, Any]:
+    """Clear what we own, refuse on what we do not.
+
+    Both modals stop an unattended capture dead, and `/Quiet` suppresses
+    neither. The backing file is this run's own output and is removed. The boot
+    log belongs to whoever armed boot logging, may be the only copy of a boot
+    nobody can repeat, and is worth more than one capture -- so it is refused
+    with the remedy rather than deleted.
+    """
+    result: dict[str, Any] = {"removed_backing_file": False, "blocked_by": "", "remedy": ""}
+
+    backing = Path(backing_file)
+    if backing.exists():
+        try:
+            backing.unlink()
+            result["removed_backing_file"] = True
+        except OSError as error:
+            result["blocked_by"] = f"existing backing file that could not be removed: {error}"
+            result["remedy"] = f"delete {backing}"
+            return result
+
+    if boot_log.exists():
+        result["blocked_by"] = (
+            f"a Procmon boot log at {boot_log}, which raises a modal on every "
+            "Procmon start and cannot be answered from a scheduled task"
+        )
+        result["remedy"] = (
+            f"convert it in the Procmon GUI, or delete {boot_log} if it is not wanted"
+        )
+
+    return result
+
+
 def empty_manifest(reason: str) -> dict[str, Any]:
     """The shape a capture that never happened still reports.
 
@@ -153,11 +209,14 @@ def empty_manifest(reason: str) -> dict[str, Any]:
         "reason": reason,
         "task_name": TASK_NAME,
         "window_seconds": 0,
+        "seconds_after_boot": None,
         "started_at": "",
         "ended_at": "",
         "backing_file": "",
+        "backing_file_bytes": 0,
         "csv_path": "",
         "csv_bytes": 0,
+        "preflight": {},
         "procmon_filter": describe_procmon_filter(None),
     }
 
@@ -166,19 +225,40 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _wait_for_backing_file(backing: Path, timeout: int, sleep) -> bool:
+    """Did Procmon actually start, or is it sitting on a dialog?
+
+    It preallocates 256 MB, so the file appears within a second or two of a real
+    start. Waiting for it is the difference between an accurate failure in three
+    seconds and a silent one in three hundred.
+    """
+    waited = 0
+    while waited < timeout:
+        if backing.exists() and backing.stat().st_size > 0:
+            return True
+        sleep(1)
+        waited += 1
+    return backing.exists() and backing.stat().st_size > 0
+
+
 def run_capture(
     out_dir: str | Path,
     procmon_path: str | Path,
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
     config_path: str | Path | None = None,
     sleep=time.sleep,
+    boot_log: Path = BOOT_LOG,
 ) -> dict[str, Any]:
     """Start Procmon, hold it open for the window, then stop and export.
 
     This is what the task runs, so it is also the only part that must not raise:
     a scheduled task that dies leaves no manifest, and a missing manifest is
-    indistinguishable from a boot where nothing happened. Every failure is
-    caught and written down instead.
+    indistinguishable from a boot where nothing happened.
+
+    ``stage`` exists because the first version could lie. Its manifest opened
+    with `reason: "capture did not start"` and only overwrote that on success or
+    on a caught `Exception` -- so a killed process wrote out the *initial* reason
+    as though it were a finding. `finally` now reports where it actually got to.
     """
     from dynamic_analysis.procmon_runner import (
         export_procmon_csv,
@@ -196,23 +276,64 @@ def run_capture(
 
     manifest = empty_manifest("capture did not start")
     manifest["window_seconds"] = window
+    manifest["seconds_after_boot"] = seconds_since_boot()
     manifest["backing_file"] = str(backing)
     manifest["csv_path"] = str(csv_path)
     manifest["procmon_filter"] = describe_procmon_filter(config_path)
 
+    stage = "preflight"
+    reason_recorded = False
+
     try:
+        preflight = check_blocking_prompts(backing, boot_log=boot_log)
+        manifest["preflight"] = preflight
+        if preflight["blocked_by"]:
+            manifest["reason"] = f"blocked by {preflight['blocked_by']}. Remedy: {preflight['remedy']}"
+            reason_recorded = True
+            return manifest
+
+        stage = "starting Procmon"
         manifest["started_at"] = _now()
         start_procmon_capture(procmon_path, backing, config_path=config_path)
+
+        stage = "waiting for the backing file"
+        if not _wait_for_backing_file(backing, BACKING_FILE_TIMEOUT_SECONDS, sleep):
+            manifest["reason"] = (
+                f"Procmon wrote no backing file within {BACKING_FILE_TIMEOUT_SECONDS}s. "
+                "It is running but not capturing -- almost always a modal dialog "
+                "that cannot be answered from a scheduled task."
+            )
+            reason_recorded = True
+            try:
+                terminate_procmon_capture(procmon_path)
+            except Exception:  # noqa: BLE001 -- already failing; do not mask the reason
+                pass
+            return manifest
+
+        stage = "capturing"
         sleep(window)
+
+        stage = "terminating Procmon"
         terminate_procmon_capture(procmon_path)
+
+        stage = "exporting the CSV"
         export_procmon_csv(procmon_path, backing, csv_path)
+
         manifest["completed"] = True
         manifest["reason"] = ""
-        manifest["csv_bytes"] = csv_path.stat().st_size if csv_path.exists() else 0
+        reason_recorded = True
     except Exception as error:  # noqa: BLE001 -- see the docstring
-        manifest["reason"] = f"{type(error).__name__}: {error}"
+        manifest["reason"] = f"{type(error).__name__} while {stage}: {error}"
+        reason_recorded = True
     finally:
         manifest["ended_at"] = _now()
+        if not reason_recorded:
+            # Killed, not raised. `except Exception` never sees a
+            # KeyboardInterrupt or a terminated process, and the old code wrote
+            # its opening placeholder out as if it were the answer.
+            manifest["reason"] = f"interrupted while {stage}"
+        manifest["backing_file_bytes"] = backing.stat().st_size if backing.exists() else 0
+        manifest["csv_bytes"] = csv_path.stat().st_size if csv_path.exists() else 0
         try:
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         except OSError:

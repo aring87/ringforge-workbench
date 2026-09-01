@@ -13,6 +13,7 @@ from dynamic_analysis.logon_capture import (
     build_arm_argv,
     build_capture_argv,
     build_disarm_argv,
+    check_blocking_prompts,
     empty_manifest,
     run_capture,
     write_capture_shim,
@@ -93,6 +94,118 @@ class ShimTests(unittest.TestCase):
             self.assertIn("rf_trace64.exe", shim.read_text(encoding="utf-8"))
 
 
+class BlockingPromptTests(unittest.TestCase):
+    """Procmon asks questions nobody in session 0 can answer, and `/Quiet`
+    suppresses neither of them. Both cost a 300-second capture that reported
+    success and recorded nothing."""
+
+    def test_our_own_backing_file_is_removed(self) -> None:
+        # "Okay to overwrite event log?" -- ours, so clear it and carry on.
+        with TemporaryDirectory() as tmp:
+            backing = Path(tmp) / "logon_capture.pml"
+            backing.write_bytes(b"stale")
+            missing_boot_log = Path(tmp) / "no-such-Procmon.pmb"
+
+            result = check_blocking_prompts(backing, boot_log=missing_boot_log)
+
+            self.assertTrue(result["removed_backing_file"])
+            self.assertFalse(backing.exists())
+            self.assertEqual(result["blocked_by"], "")
+
+    def test_a_boot_log_is_refused_rather_than_deleted(self) -> None:
+        # Not ours. It may be the only copy of a boot nobody can repeat, and it
+        # is worth more than one capture.
+        with TemporaryDirectory() as tmp:
+            boot_log = Path(tmp) / "Procmon.pmb"
+            boot_log.write_bytes(b"a boot nobody can repeat")
+
+            result = check_blocking_prompts(Path(tmp) / "logon_capture.pml", boot_log=boot_log)
+
+            self.assertIn("boot log", result["blocked_by"])
+            self.assertIn(str(boot_log), result["remedy"])
+            self.assertTrue(boot_log.exists())
+
+    def test_a_blocked_capture_never_launches_procmon(self) -> None:
+        with TemporaryDirectory() as tmp:
+            boot_log = Path(tmp) / "Procmon.pmb"
+            boot_log.write_bytes(b"x")
+
+            with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture") as start:
+                manifest = run_capture(tmp, r"C:\p.exe", window_seconds=1, boot_log=boot_log)
+
+            start.assert_not_called()
+            self.assertFalse(manifest["completed"])
+            self.assertIn("boot log", manifest["reason"])
+            self.assertIn("Remedy", manifest["reason"])
+
+
+class SelfVerificationTests(unittest.TestCase):
+    def test_a_procmon_that_writes_nothing_fails_fast_not_silently(self) -> None:
+        # The first proving run slept its full 300 seconds against a dialog and
+        # reported a capture. Procmon preallocates 256 MB, so a real start shows
+        # a backing file within a second or two; no file means it is not
+        # capturing, whatever the process table says.
+        slept = []
+        with TemporaryDirectory() as tmp:
+            with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture"), \
+                 mock.patch("dynamic_analysis.procmon_runner.terminate_procmon_capture") as stop, \
+                 mock.patch("dynamic_analysis.procmon_runner.export_procmon_csv") as export:
+                manifest = run_capture(
+                    tmp, r"C:\p.exe", window_seconds=300,
+                    sleep=slept.append, boot_log=Path(tmp) / "absent.pmb",
+                )
+
+        self.assertFalse(manifest["completed"])
+        self.assertIn("no backing file", manifest["reason"])
+        export.assert_not_called()
+        stop.assert_called_once()
+        # Never reached the window: the waits are the one-second polls only.
+        self.assertNotIn(300, slept)
+
+    def test_a_killed_capture_does_not_report_its_opening_placeholder(self) -> None:
+        # `except Exception` never sees a KeyboardInterrupt, so the first
+        # version wrote out `reason: "capture did not start"` -- its own initial
+        # value -- as though it were a finding. It had in fact captured for five
+        # minutes and been killed.
+        with TemporaryDirectory() as tmp:
+            backing = Path(tmp) / "logon_capture.pml"
+
+            def start(*_args, **_kwargs):
+                backing.write_bytes(b"x" * 4096)
+
+            with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture", start), \
+                 mock.patch("dynamic_analysis.procmon_runner.terminate_procmon_capture"), \
+                 mock.patch("dynamic_analysis.procmon_runner.export_procmon_csv"):
+                def killed(_seconds):
+                    raise KeyboardInterrupt
+
+                with self.assertRaises(KeyboardInterrupt):
+                    run_capture(tmp, r"C:\p.exe", window_seconds=300,
+                                sleep=killed, boot_log=Path(tmp) / "absent.pmb")
+
+            written = json.loads((Path(tmp) / "logon_capture.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(written["completed"])
+        self.assertIn("interrupted while", written["reason"])
+        self.assertNotEqual(written["reason"], "capture did not start")
+        self.assertEqual(written["backing_file_bytes"], 4096)
+
+
+class UptimeTests(unittest.TestCase):
+    def test_the_manifest_records_how_late_the_capture_was(self) -> None:
+        # The whole ONSTART premise is a claim about this number and nothing was
+        # measuring it. Measured 31 Aug: the payload ran at 21:32:55 and this
+        # capture started at 21:36:46, so ONSTART is earlier than ONLOGON but it
+        # is not early.
+        with TemporaryDirectory() as tmp:
+            boot_log = Path(tmp) / "absent.pmb"
+            with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture"):
+                manifest = run_capture(tmp, r"C:\p.exe", window_seconds=1,
+                                       sleep=lambda _s: None, boot_log=boot_log)
+
+        self.assertIn("seconds_after_boot", manifest)
+
+
 class ManifestTests(unittest.TestCase):
     def test_a_capture_that_never_ran_says_so(self) -> None:
         # Not an empty event list that reads like a quiet boot. The distinction
@@ -112,7 +225,8 @@ class ManifestTests(unittest.TestCase):
                 "dynamic_analysis.procmon_runner.start_procmon_capture",
                 side_effect=OSError("Procmon not found"),
             ):
-                manifest = run_capture(tmp, r"C:\missing.exe", window_seconds=1)
+                manifest = run_capture(tmp, r"C:\missing.exe", window_seconds=1,
+                                       boot_log=Path(tmp) / "absent.pmb")
 
             written = json.loads((Path(tmp) / "logon_capture.json").read_text(encoding="utf-8"))
 
@@ -125,12 +239,19 @@ class ManifestTests(unittest.TestCase):
         # seen a registry read must never read as having seen none.
         calls = []
         with TemporaryDirectory() as tmp:
-            with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture"), \
+            # The mocked start creates the backing file, as a real Procmon does by
+            # preallocating. The preflight has just deleted any stale one, so a
+            # start that leaves no file is a start that is not capturing.
+            def start(*_a, **_k):
+                (Path(tmp) / "logon_capture.pml").write_bytes(b"x" * 4096)
+
+            with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture", start), \
                  mock.patch("dynamic_analysis.procmon_runner.terminate_procmon_capture"), \
                  mock.patch("dynamic_analysis.procmon_runner.export_procmon_csv"):
                 manifest = run_capture(
                     tmp, r"C:\rf_trace64.exe", window_seconds=5,
                     config_path=REGISTRY_READS_PMC, sleep=calls.append,
+                    boot_log=Path(tmp) / "absent.pmb",
                 )
 
         self.assertTrue(manifest["completed"])
@@ -142,10 +263,14 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(asked=asked):
                 calls = []
                 with TemporaryDirectory() as tmp:
-                    with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture"), \
+                    def start(*_a, **_k):
+                        (Path(tmp) / "logon_capture.pml").write_bytes(b"x" * 4096)
+
+                    with mock.patch("dynamic_analysis.procmon_runner.start_procmon_capture", start), \
                          mock.patch("dynamic_analysis.procmon_runner.terminate_procmon_capture"), \
                          mock.patch("dynamic_analysis.procmon_runner.export_procmon_csv"):
-                        run_capture(tmp, r"C:\p.exe", window_seconds=asked, sleep=calls.append)
+                        run_capture(tmp, r"C:\p.exe", window_seconds=asked,
+                                    sleep=calls.append, boot_log=Path(tmp) / "absent.pmb")
                 self.assertEqual(calls, [expected])
 
     def test_the_default_window_outlasts_a_first_beacon(self) -> None:
