@@ -25,10 +25,13 @@ from dynamic_analysis.procmon_config import (
     ACTION_INCLUDE,
     COLUMN_EVENT_CLASS,
     COLUMN_OPERATION,
+    COLUMN_PROCESS_NAME,
     FilterRule,
     RELATION_IS,
     describe_procmon_filter,
     excluded_event_classes,
+    included_operations,
+    with_operations_replaced,
 )
 
 CONFIG = (
@@ -93,6 +96,77 @@ class Description(unittest.TestCase):
         self.assertFalse(described["readable"])
         self.assertEqual(described["excluded_classes"], [])
         self.assertIn("not found", described["note"])
+
+
+class NetworkOnlyConfig(unittest.TestCase):
+    """The config built to watch a beacon nothing has yet seen.
+
+    `ce0d08be...` attempts a connection every 17 seconds but does not begin for
+    about 88 minutes, so the instrument has to be cheap enough to leave running
+    for hours. The registry-read config measured ~29 MB/min -- 1.7 GB an hour --
+    and the gated run's 600-second window was six and a half minutes against a
+    behaviour that starts at eighty-eight.
+    """
+
+    NETWORK_ONLY = CONFIG.parent / "dynamic_network_only.pmc"
+
+    def test_replacing_drops_the_old_includes(self) -> None:
+        rules = [
+            _rule(COLUMN_OPERATION, "RegQueryValue", ACTION_INCLUDE),
+            _rule(COLUMN_OPERATION, "RegOpenKey", ACTION_INCLUDE),
+            _rule(COLUMN_PROCESS_NAME, "Procmon.exe", ACTION_EXCLUDE),
+        ]
+
+        replaced = with_operations_replaced(rules, ["TCP Connect"])
+        operations = included_operations(replaced)
+
+        self.assertEqual(operations, ["TCP Connect"])
+        self.assertNotIn("RegQueryValue", operations)
+
+    def test_the_exclude_rules_survive(self) -> None:
+        """They are noise suppression that applies whatever is captured, and
+        rebuilding them by hand is how a config stops excluding the analyzer."""
+        rules = [
+            _rule(COLUMN_OPERATION, "RegQueryValue", ACTION_INCLUDE),
+            _rule(COLUMN_PROCESS_NAME, "Procmon.exe", ACTION_EXCLUDE),
+            _rule(COLUMN_EVENT_CLASS, "Profiling", ACTION_EXCLUDE),
+        ]
+
+        replaced = with_operations_replaced(rules, ["TCP Connect"])
+
+        self.assertIn(
+            "Procmon.exe",
+            [r.value for r in replaced if r.column == COLUMN_PROCESS_NAME],
+        )
+        self.assertEqual(excluded_event_classes(replaced), ["Profiling"])
+
+    def test_it_is_idempotent(self) -> None:
+        rules = [_rule(COLUMN_OPERATION, "TCP Connect", ACTION_INCLUDE)]
+
+        once = with_operations_replaced(rules, ["TCP Connect"])
+        twice = with_operations_replaced(once, ["TCP Connect"])
+
+        self.assertEqual(included_operations(twice), ["TCP Connect"])
+        self.assertEqual(len(once), len(twice))
+
+    @unittest.skipUnless(NETWORK_ONLY.exists(), "the network config is not generated")
+    def test_the_shipped_network_config_captures_connects_and_lineage(self) -> None:
+        described = describe_procmon_filter(self.NETWORK_ONLY)
+
+        self.assertIn("TCP Connect", described["operations"])
+        self.assertIn("Process Create", described["operations"])
+        self.assertNotIn("RegQueryValue", described["operations"])
+
+    @unittest.skipUnless(NETWORK_ONLY.exists(), "the network config is not generated")
+    def test_it_says_it_cannot_see_registry_reads(self) -> None:
+        """A capture under this config that reports no VM artefact has not
+        looked for one. The manifest has to say so, or the next reader will
+        take the zero for a result -- which is the mistake this whole file is
+        the record of."""
+        described = describe_procmon_filter(self.NETWORK_ONLY)
+
+        self.assertFalse(described["captures_registry_reads"])
+        self.assertIn("no registry read", described["note"])
 
 
 if __name__ == "__main__":

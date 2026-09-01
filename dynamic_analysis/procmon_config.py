@@ -74,6 +74,43 @@ _RULE_TRAILER = b"\x00" * 8
 #: works.
 REGISTRY_READ_OPERATIONS = ("RegQueryValue", "RegOpenKey")
 
+#: Everything Procmon can say about a socket, plus the three process operations
+#: that keep the events attributable.
+#:
+#: Built for a beacon that no collector has yet seen. `ce0d08be...` attempts a
+#: connection every 17 seconds and leaks a bound socket per attempt, but it does
+#: not start doing so until roughly 88 minutes after it launches -- so the
+#: instrument has to be cheap enough to leave running for hours, and the
+#: registry-read config is not: it measured ~29 MB/min, which is 1.7 GB an hour.
+#: Restricted to these operations the same capture is a rounding error, because
+#: an idle contained guest makes almost no network calls at all.
+#:
+#: `TCP Connect` alone would answer where the beacon goes. The rest are here
+#: because a failed connect and a refused one look different in `Result`, and
+#: because a run that sees `TCP Send` without `TCP Connect` has caught something
+#: the model does not predict, which is worth being able to notice.
+#:
+#: The three process operations cost nothing and keep lineage: without them
+#: every network event is attributable only by image name, and a payload that
+#: spawns a child to do its talking would be filed as the child's own doing.
+NETWORK_OPERATIONS = (
+    "TCP Accept",
+    "TCP Connect",
+    "TCP Disconnect",
+    "TCP Receive",
+    "TCP Reconnect",
+    "TCP Retransmit",
+    "TCP Send",
+    "UDP Receive",
+    "UDP Send",
+    "Process Create",
+    "Process Start",
+    "Process Exit",
+)
+
+#: The config for watching a beacon, generated from the default by this module.
+NETWORK_ONLY_CONFIG_NAME = "dynamic_network_only.pmc"
+
 #: The config a run uses when nobody chooses one.
 #:
 #: Deliberately not `dynamic_default.pmc`. Three consecutive detonations were
@@ -217,6 +254,43 @@ def with_operations_included(rules: Iterable[FilterRule], operations: Iterable[s
         default=len(rules) - 1,
     )
     return rules[: last_include + 1] + additions + rules[last_include + 1 :]
+
+
+def with_operations_replaced(
+    rules: Iterable[FilterRule],
+    operations: Iterable[str],
+) -> list[FilterRule]:
+    """Every operation include swapped for this set, excludes left alone.
+
+    `with_operations_included` widens a filter; this narrows one, which is what
+    a purpose-built config needs. The exclude rules are kept untouched -- the
+    analyzer's own process names, `IRP_MJ_`, the NTFS metadata paths -- because
+    they are noise suppression that applies whatever is being captured, and
+    rebuilding them by hand is how a config quietly stops excluding the
+    analyzer.
+
+    The new includes land where the old ones were, so the file still reads as
+    includes first and excludes after.
+    """
+    rules = list(rules)
+
+    def _is_operation_include(rule: FilterRule) -> bool:
+        return (
+            rule.column == COLUMN_OPERATION
+            and rule.relation == RELATION_IS
+            and rule.action == ACTION_INCLUDE
+        )
+
+    first = next(
+        (index for index, rule in enumerate(rules) if _is_operation_include(rule)),
+        0,
+    )
+    kept = [rule for rule in rules if not _is_operation_include(rule)]
+    additions = [
+        FilterRule(COLUMN_OPERATION, RELATION_IS, ACTION_INCLUDE, op)
+        for op in operations
+    ]
+    return kept[:first] + additions + kept[first:]
 
 
 def write_filter_rules(
@@ -380,15 +454,29 @@ def _main(argv: list[str] | None = None) -> int:
         metavar="OUT",
         help=f"write a copy including {', '.join(REGISTRY_READ_OPERATIONS)}",
     )
+    parser.add_argument(
+        "--network-only",
+        metavar="OUT",
+        help="write a copy whose only operations are network and process ones",
+    )
     args = parser.parse_args(argv)
 
     rules = read_filter_rules(args.config)
     print(f"{len(rules)} rules; operations included: {', '.join(included_operations(rules))}")
+    excluded = excluded_event_classes(rules)
+    if excluded:
+        print(f"event classes excluded outright: {', '.join(excluded)}")
 
     if args.add_registry_reads:
         updated = with_operations_included(rules, REGISTRY_READ_OPERATIONS)
         out = write_filter_rules(args.config, updated, args.add_registry_reads)
         print(f"wrote {out} with {len(updated)} rules")
+
+    if args.network_only:
+        updated = with_operations_replaced(rules, NETWORK_OPERATIONS)
+        out = write_filter_rules(args.config, updated, args.network_only)
+        print(f"wrote {out} with {len(updated)} rules")
+        print(f"  operations: {', '.join(included_operations(updated))}")
 
     return 0
 
