@@ -16,11 +16,13 @@ import zlib
 
 from dynamic_analysis.beacon_frame import (
     HEADER,
+    LENGTH,
     MAGIC,
     MIN_SIZE_TO_COMPRESS,
     TRAILER,
     build_frame,
     crc32,
+    decode_dictionary,
     frame_length,
     parse_frame,
 )
@@ -143,6 +145,90 @@ class Parsing(unittest.TestCase):
 
         self.assertFalse(parsed["ok"])
         self.assertTrue(any("originalSize" in p for p in parsed["problems"]))
+
+
+class Dictionary(unittest.TestCase):
+    """`Stuff.PacketSerializer` over the string dictionary.
+
+    The shape is confirmed rather than guessed: the first check-in this sample
+    ever delivered, 02 Sep, declared 14 pairs, decoded 14, and consumed 388 of
+    388 bytes with nothing left over.
+    """
+
+    #: The real message, rebuilt field for field.
+    LISTINFO = [
+        ("Packet", "listinfo"),
+        ("IP", "192.168.56.20"),
+        ("Group", "Started"),
+        ("Country", "Unknown"),
+        ("UID", "Raton_Fcm7JziU"),
+        ("Username", "adam"),
+        ("Machine", "WIN11"),
+        ("Os", "Windows 11 Pro 64bit"),
+        ("Executing", "Administrator"),
+        ("AV", "Windows Defender"),
+        ("Pass", ""),
+        ("Version", "Free"),
+        ("Clock", "21:15:51 01/09/2026"),
+        ("Payload", "ce0d08be.exe"),
+    ]
+
+    @staticmethod
+    def _encode(pairs):
+        out = LENGTH.pack(len(pairs))
+        for key, value in pairs:
+            for text in (key, value):
+                raw = text.encode("utf-8")
+                out += LENGTH.pack(len(raw)) + raw
+        return out
+
+    def test_the_real_check_in_round_trips(self) -> None:
+        decoded = decode_dictionary(self._encode(self.LISTINFO))
+
+        self.assertTrue(decoded["ok"], decoded["problems"])
+        self.assertEqual(decoded["declared"], 14)
+        self.assertEqual(decoded["pairs"], self.LISTINFO)
+        self.assertEqual(decoded["trailing_bytes"], 0)
+
+    def test_an_empty_value_is_a_value(self) -> None:
+        """`Pass` is empty in the real message. A decoder that treated a
+        zero-length string as an end marker would stop nine fields early and
+        report a shorter, entirely plausible check-in."""
+        decoded = decode_dictionary(self._encode([("Pass", ""), ("Version", "Free")]))
+
+        self.assertTrue(decoded["ok"])
+        self.assertEqual(decoded["pairs"], [("Pass", ""), ("Version", "Free")])
+
+    def test_a_miscount_is_reported_with_both_numbers(self) -> None:
+        body = bytearray(self._encode([("a", "b")]))
+        body[0:4] = LENGTH.pack(9)
+
+        decoded = decode_dictionary(bytes(body))
+
+        self.assertFalse(decoded["ok"])
+        self.assertTrue(any("declared 9" in p for p in decoded["problems"]))
+        self.assertEqual(decoded["pairs"], [("a", "b")])
+
+    def test_a_length_running_past_the_end_does_not_raise(self) -> None:
+        body = self._encode([("key", "value")])[:-3]
+
+        decoded = decode_dictionary(body)
+
+        self.assertFalse(decoded["ok"])
+        self.assertTrue(any("runs past the end" in p for p in decoded["problems"]))
+
+    def test_repeated_keys_are_kept(self) -> None:
+        """A dict would drop one silently, and a protocol that repeats a key is
+        saying something worth seeing."""
+        decoded = decode_dictionary(self._encode([("k", "1"), ("k", "2")]))
+
+        self.assertEqual(decoded["pairs"], [("k", "1"), ("k", "2")])
+
+    def test_a_runt_body_is_not_a_dictionary(self) -> None:
+        decoded = decode_dictionary(b"\x01\x02")
+
+        self.assertFalse(decoded["ok"])
+        self.assertTrue(any("count field" in p for p in decoded["problems"]))
 
 
 class FrameLength(unittest.TestCase):

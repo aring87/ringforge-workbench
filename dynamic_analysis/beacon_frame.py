@@ -51,9 +51,92 @@ HEADER_SIZE = HEADER.size
 TRAILER_SIZE = TRAILER.size
 
 
+#: `[uint32 count]` then `count` x `[uint32 len][utf-8 key][uint32 len][utf-8 value]`.
+#:
+#: This is `Stuff.PacketSerializer` over the string dictionary whose accessors
+#: are `SetString`/`GetAsString`/`GetAll`. Confirmed against the first check-in
+#: this sample ever delivered, 02 Sep: 14 declared pairs, 14 decoded, 388 of
+#: 388 bytes consumed with nothing left over.
+LENGTH = struct.Struct("<I")
+
+
 def crc32(data: bytes) -> int:
-    """IEEE CRC-32, which is what the sample's own table is assumed to be."""
+    """IEEE CRC-32.
+
+    Was an assumption -- `stuff.dll` builds its own table (`Crc32.BuildTable`)
+    and the constants were never read -- and is now measured: the first real
+    frame's trailer matched this on the first try.
+    """
     return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def decode_dictionary(payload: bytes) -> dict[str, Any]:
+    """Decode the key-value body a frame carries.
+
+    Reports rather than raises, for the reason `parse_frame` does: a body that
+    disagrees with this layout is evidence about the layout.
+
+    ``pairs`` is a list rather than a dict because a repeated key would
+    otherwise vanish silently, and a protocol that repeats one is telling you
+    something.
+    """
+    result: dict[str, Any] = {
+        "ok": False,
+        "problems": [],
+        "declared": None,
+        "pairs": [],
+        "bytes_consumed": 0,
+        "trailing_bytes": 0,
+    }
+
+    if len(payload) < LENGTH.size:
+        result["problems"].append("shorter than a count field")
+        return result
+
+    offset = 0
+    (declared,) = LENGTH.unpack_from(payload, offset)
+    offset += LENGTH.size
+    result["declared"] = declared
+
+    def _take_string() -> str | None:
+        nonlocal offset
+        if offset + LENGTH.size > len(payload):
+            result["problems"].append(f"truncated length at offset {offset}")
+            return None
+        (size,) = LENGTH.unpack_from(payload, offset)
+        offset += LENGTH.size
+        if offset + size > len(payload):
+            result["problems"].append(
+                f"string of {size} bytes at offset {offset} runs past the end"
+            )
+            return None
+        text = payload[offset:offset + size].decode("utf-8", "replace")
+        offset += size
+        return text
+
+    while offset < len(payload):
+        key = _take_string()
+        if key is None:
+            break
+        value = _take_string()
+        if value is None:
+            break
+        result["pairs"].append((key, value))
+
+    result["bytes_consumed"] = offset
+    result["trailing_bytes"] = len(payload) - offset
+
+    if declared != len(result["pairs"]):
+        result["problems"].append(
+            f"declared {declared} pairs, decoded {len(result['pairs'])}"
+        )
+    if result["trailing_bytes"]:
+        result["problems"].append(
+            f"{result['trailing_bytes']} bytes left after the last pair"
+        )
+
+    result["ok"] = not result["problems"]
+    return result
 
 
 def build_frame(payload: bytes, compress: bool | None = None) -> bytes:
