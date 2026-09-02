@@ -1773,6 +1773,57 @@ the host. Worth knowing before anyone terminates it by hand.
 Full notes beside the artifact:
 `G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
 
+### Item 1 — the command channel, driven, and why gap 4 could never have seen the VM check — 02 Sep
+
+**Seven commands sent down one TLS session and answered.** The first time
+anything has instructed this sample.
+
+    Ping        Packet Ping, "From client adam"
+    Connect     Error, "Unknown packet type: Connect"
+    Clientinfo  23 fields
+    Task        Error, "Unknown packet type: Task"
+    Request     Error, "You are already an admin"      -- a UAC elevation request
+    Report      PluginMessage, "Starting the report window..."
+    Survival    PluginMessage, "Creating folders..."
+    Notify      no answer; session closed; THE PROCESS WAS GONE
+
+**`Clientinfo` reports virtual-machine identifiers to the operator:**
+`Bios Manufacturer: innotek GmbH`, `Mainboard Name: Oracle Corporation
+VirtualBox`, `GPU: VirtualBox Graphics Adapter (WDDM)`, and a MAC beginning
+`080027`, VirtualBox's OUI.
+
+**This resolves a thread open since gap 4 without reopening it.** Two
+detonations measured 967 registry reads by this payload with not one VM
+artefact among them. Both facts stand: the sample does not look for a VM *in
+the registry*, and it does not look *at all* unless a C2 asks -- these are WMI
+queries inside a command handler. Every prior run had no C2, so the collection
+never ran. The operator-facing `"Client ... was a virtual machine!"` text now
+has its client-side source, and it is **reporting rather than an evasion gate**:
+nothing observed shows the sample changing behaviour on the strength of it.
+
+Gap 4 was declined because the registry surface is rare in the field and
+swamped by the OS. That argument is untouched. What changes is the *explanation
+of this sample's silence*, which was previously an open thread.
+
+**The dispatcher is a discovery oracle.** `Connect` and `Task` returned
+**"Unknown packet type: <name>"**, so the client distinguishes names it
+dispatches from names it does not and says which. The 165 strings recovered
+from the heap can therefore be *verified* rather than assumed -- every name
+classifies as known, unknown, or acted upon, without understanding any of them.
+
+**`Notify` terminates the client.** Sent with no fields; no answer, session
+closed, process gone. Almost certainly an unhandled exception on a missing key.
+**That is a free denial of service against this family**, and it is also the
+constraint on enumerating the rest: the client does not reconnect after a
+session ends, and its `ONLOGON` task only re-launches it at the next logon, so
+a sweep gets one session per payload lifetime.
+
+**And two commands did work we caused:** a report window, and `Survival`
+answering "Creating folders...". Those folders are this run's doing, not the
+sample's, and the artifact README says so.
+
+Artifact: `G:\ringforge-artifacts\ce0d08be-command-channel-02sep\`.
+
 ### Item 1 — the family names itself, and 165 commands come out of its strings — 02 Sep
 
 **`.BotKillerRaton`, `Raton_`, and "your raton client message box".** The payload
