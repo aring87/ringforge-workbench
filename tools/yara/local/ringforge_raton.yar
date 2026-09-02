@@ -75,6 +75,15 @@ rule RingForge_Raton_Client
         $act2 = "Ransomware started" wide
         $act3 = "This client was shared to you from someone" wide
 
+        // A builder placeholder left unpatched. The published source
+        // (codeberg.org/Raton/Raton, Client/Things/Config.cs) initialises every
+        // config field to `silly1`..`silly21` and the builder overwrites what
+        // the operator sets; anything untouched ships as its literal. So this
+        // is a family string that happens to be evidence of a lazily
+        // configured build, not the operator tag it was first read as.
+        // Corroborating only -- on its own it is three syllables of nothing.
+        $cfg1 = "silly21" wide
+
     condition:
         uint16(0) == 0x5A4D
         and filesize < 20MB
@@ -84,7 +93,7 @@ rule RingForge_Raton_Client
             any of ($name*)
             or 3 of ($proto*)
         )
-        and any of ($proto*, $act*)
+        and any of ($proto*, $act*, $cfg*)
 }
 
 rule RingForge_Raton_Transport
@@ -128,10 +137,16 @@ rule RingForge_Raton_Transport
 }
 
 /*
-   This build only. Not family indicators -- an operator's builder sets all
-   three, and a different campaign will differ. Kept separate so a hit here
+   This build only. Not family indicators -- an operator's builder sets each of
+   these, and a different campaign will differ. Kept separate so a hit here
    means something narrower and more useful: the same build, or the same
    operator.
+
+   `silly21` WAS HERE AND HAS BEEN MOVED to the family rule, 02 Sep. It is not
+   this operator's tag: the published Raton source ships every config field
+   with a placeholder literal `silly1`..`silly21` for the builder to patch, so
+   the string is a field left unset. It identifies the builder, not the
+   customer, and belongs where an unpatched default belongs.
 
    The password is the more interesting of them. The 02 Sep check-in reported
    `Pass` as empty while this literal sits in the image, so it is either unused
@@ -149,7 +164,6 @@ rule RingForge_Raton_Build_ce0d08be
     strings:
         $pass     = "bbch4f57swBUEpVWfwKEKxJ" wide
         $telegram = "https://t.me/sillyisafed" wide
-        $tag      = "silly21" wide
         $guid     = "5CDF2C82-841E-4546-9722-0CF74078229A" wide
         $box      = "raton client message box" wide
 

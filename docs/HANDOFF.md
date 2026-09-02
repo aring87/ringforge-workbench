@@ -152,7 +152,10 @@ bottom of this section.
     the payload         151-case dispatcher decompiled; 32 commands take
                         fields, 119 take none
     detection           three YARA rules, benign rate 0 of 9,091 PE files
-    the pipeline        deferred_stage names the gap a run cannot close
+    the pipeline        deferred_stage names the gap a run cannot close,
+                        and now renders it in the HTML report too
+    attribution         the family is public source. This build is later
+                        than it, and `silly21` was never an operator tag
 
 **Snapshots, and which to use.**
 
@@ -179,14 +182,20 @@ not verified.
 
 **What is left, all optional.**
 
-1. Attribution: `Raton`, `https://t.me/sillyisafed`, the `Cristian` build path,
-   `Version: Free`. Host-side research, needs internet, deliberately not
-   attempted.
+1. CLOSED. Attribution done -- see *Pick up here - 02 Sep, the family is
+   public source and this build is later*. Raton is an open-source C# RAT
+   at `codeberg.org/Raton/Raton` by `Silly`/`S-illy`; `Stuff` is a folder
+   in it, which is what the `Cristian` PDB path names. The sample is a
+   **post-1.9.0 build**, so the published source dates it rather than
+   describing it. What is still open is narrow and named there: whether
+   `sillyisafed` is the operator or a newer channel of the author's.
 2. The 32 field-taking commands, sent properly formed from `command_table.tsv`.
    Includes whether `Report` with a `Name` is safe, which would release it from
    the withheld set.
 3. Five recon commands answered nothing in 20s -- `ProcessSpy`, `Programs`,
-   `RegistryRequest`, `DeviceRequest`, `Preview`. Unexplained.
+   `RegistryRequest`, `DeviceRequest`, `Preview`. Unexplained, and one
+   explanation is now ruled out: in the published source these reply on the
+   existing session, not on a second connection of their own.
 4. CLOSED. `deferred_stage` now renders in the HTML report as a
    `card-alert` under the crash warning -- the note with its emphasis
    intact, a table naming each entry and what it launches, and the gated
@@ -205,6 +214,64 @@ happened next belongs to the thing that happened last", and each was caught by
 going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
+
+### Pick up here — 02 Sep, the family is public source and this build is later
+
+**Raton is not an unknown.** `codeberg.org/Raton/Raton` -- "Raton Access Tool",
+C#, `SillyRAT.sln`, author `Silly <SillyKuadro@gmail.com>` / `S-illy`, last
+touched 12 Apr 2025. The GitHub mirror and the account are both 404. `Stuff` is
+a folder in that repository, which is what the `Cristian` PDB path names.
+Public reporting is thin: ThreatMon ("Raton Access Tool (SillyRAT)", MaaS,
+technical body gated), CYFIRMA's weekly of 20 Mar 2026 (two hashes, C2
+`cloudpub[.]ru`), FemtoSec 14 Jun 2026 (no indicators). **Our hash appears in
+none of it.**
+
+**Four of this project's readings now have their source.** The cert callback
+literally `return true`s; the client speaks first; `UID.cs` is
+`"Raton_" + Helpers.Random(7)`, once per process, derived from nothing --
+which confirms today's retraction at the source rather than by inference.
+
+**And the fourth is gap 4's answer from the other side.** `antivm.cs` checks
+WMI `Manufacturer` against `"vmware"` and `"innotek"`, `Model` against
+`"virtual machine"`, and six directories under `Program Files`. **It never
+reads the registry.** A registry collector could not have seen Raton's VM check
+however long it ran. `VM` is a builder toggle and this build had it off.
+
+**The sample is a post-1.9.0 build, and that is the useful finding.** The
+published framing is a bare 4-byte length prefix -- no `0xDEADBEEF`, no CRC-32,
+no `PacketFrame`/`PacketCompressor`/`PacketSerializer`. Its dispatcher has ~55
+cases and *no default*, so `"Unknown packet type: "` does not exist and the
+discovery oracle is a later addition. `Report`, `Programs`, `RegistryRequest`
+and `DeviceRequest` are absent. Its check-in carries the hardware inventory
+that **ours has moved into the `Clientinfo` command** -- the design change
+measured this morning, visible as a diff. The public source dates this build; it
+does not describe it.
+
+**A correction, and it is the fifth of the day's shape.** `silly21` is **not an
+operator tag**. `Client/Things/Config.cs` initialises every config field to a
+placeholder `silly1`..`silly21` for the builder to patch, and our image holds
+exactly one such string, inside the config block. It is a field left unset. It
+has moved out of `RingForge_Raton_Build_ce0d08be`, where it claimed to identify
+this operator, into the family rule where an unpatched default belongs. Both
+rules still fire on the payload, scanned in memory: family 10 strings, build 4.
+
+**`https://t.me/sillyisafed` is neither handle the author publishes** -- those
+are `t.me/RatonTool` and `t.me/DUMBASSsilly`, new IOCs at the family level. So
+it is the operator's or a newer channel of the author's; unresolved, and an IOC
+either way.
+
+**One theory killed.** The five silent recon commands were worth explaining by
+a second connection, AsyncRAT-style. In the published source `processHandler`
+replies on the existing session, so that has no support and the silence is
+still unexplained.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - attribution: Raton is public source, and this build is not it
+
+**Not done, deliberately:** no attempt to identify the people behind the
+aliases beyond what their own public repository publishes, and no visit to the
+sites distributing cracked 2026 builders.
 
 ### Pick up here — 02 Sep, the deferred stage is named in every run
 

@@ -1973,6 +1973,153 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — attribution: Raton is public source, and this build is not it — 02 Sep
+
+**The family is public, named, and open.** `codeberg.org/Raton/Raton`, "Raton
+Access Tool", C#, `SillyRAT.sln`, created 11 Apr 2025 and last touched 12 Apr
+2025. Three commits, two identities, one person: `Silly
+<SillyKuadro@gmail.com>` and `S-illy <s-illy@noreply.codeberg.org>`. The GitHub
+mirror the search engines still index, `github.com/S-illy/Raton-Access-Tool`,
+is **404 along with the account** -- Codeberg is what survives.
+
+**`Stuff` is a folder in that repository.** The PDB path this project has been
+carrying since 01 Sep --
+`C:\Users\Cristian\source\repos\Stuff\Stuff\obj\Debug\Stuff.pdb` -- names the
+same project, built out of its own solution on a machine whose account is
+`Cristian`. Not a commit author there: the repository's authors are `Silly` and
+`S-illy`. `Cristian` is whoever compiled the library.
+
+**Spanish authorship is now three independent signals, not two.** `Raton`,
+`Cristian`, and the repository's own commit message: *"Actualizar README.md"*.
+
+**Public reporting exists, and it is thin.** ThreatMon's *Raton/Silly Remote
+Access Trojan* names it "Raton Access Tool (SillyRAT)" and describes a MaaS
+model; the technical body is a gated download. CYFIRMA's weekly of 20 Mar 2026
+carries two hashes and the C2 domain `cloudpub[.]ru`. FemtoSec, 14 Jun 2026,
+adds a date and a forum source and no indicators. Cracked 2026 builder packages
+circulate on crimeware sites; those were **not** visited.
+
+**Our sample's hash is in none of it.** MalwareBazaar sits behind a bot check,
+so no sample-level corroboration was obtained either way.
+
+## What the source confirms, and it is not nothing
+
+Four of this project's own readings can now be checked against the code that
+produced the behaviour rather than against the behaviour alone:
+
+    cert validation   Client/Connection/Client.cs returns true from the
+                      RemoteCertificateValidationCallback. "It does not
+                      validate the certificate" was right, and is now
+                      structural rather than measured once
+    who speaks first  the client does. The 02 Sep retraction was correct
+    the UID           Client/Things/UID.cs is "Raton_" + Helpers.Random(7),
+                      generated once per process, derived from nothing. The
+                      retraction of "per-host" is confirmed at the source, and
+                      Raton_Fcm7JziU is exactly that shape
+    anti-VM           Client/Configuration/antivm.cs is WMI Manufacturer
+                      against "vmware" and "innotek", Model against "virtual
+                      machine", and six directory tests under Program Files.
+                      IT NEVER READS THE REGISTRY
+
+**That last row is gap 4's decision, arriving from the other side.** 967
+registry reads with no VM artefact was a measurement; this is the reason for
+it. Raton's VM check is WMI and the filesystem, and a registry collector could
+not have seen it however long it ran. `VM` is also a builder toggle
+(`Config.cs`), and on detection the client calls `Environment.Exit(0)` -- so
+this build had it **off**, which is why it ran here at all, and which is
+consistent with the same build happily reporting `innotek GmbH` to an operator
+through `Clientinfo`.
+
+## What the source does not match, which is the more useful half
+
+The published v1.9.0 is **older and smaller than the sample**:
+
+    framing       published: a bare 4-byte length prefix, nothing else.
+                  Ours: 0xDEADBEEF, lengths, a compression flag, CRC-32, in
+                  PacketFrame / PacketCompressor / PacketSerializer -- none of
+                  which exist in the published Stuff/, whose PacketStuff.cs is
+                  a bare Dictionary<string, object> DTO
+    dispatcher    published: ~55 cases and NO default case, so no
+                  "Unknown packet type: " string exists. Ours: 151 cases and a
+                  default that names the packet back. The discovery oracle
+                  that let 165 strings be verified is a later addition
+    commands      Report, Programs, RegistryRequest and DeviceRequest are not
+                  in the published dispatcher at all
+    check-in      published: the hardware inventory rides in the check-in --
+                  Bios Manufacturer, Mainboard, CPU, GPU, Mac Address,
+                  Lat/Long, License Key. Ours is slimmer, and the WMI
+                  inventory has MOVED INTO the Clientinfo command
+    fields        published: no Version and no Pass field anywhere in the
+                  check-in. Both are later
+
+**The design change measured on 02 Sep is visible as a diff.** "WMI queries
+inside a command handler, so they run only when a C2 asks" is not a quirk of
+this build: it is a deliberate move away from a check-in that used to carry the
+inventory unasked.
+
+**So the sample is a post-1.9.0 Raton, and the public source is a lower bound
+rather than a copy.** Reading it does not substitute for the work done on this
+build -- it dates it, and it says which parts were the author's later thinking.
+
+**One theory it kills.** The five recon commands that answered nothing in 20s
+were worth explaining by a second connection -- AsyncRAT, whose packet layer
+this project credits, opens one per subsystem. In the published source
+`processHandler.cs` replies on the existing session through
+`SillyClient.Send(...)`, so that explanation has no support and the silence is
+still unexplained.
+
+## A correction: `silly21` is not a tag
+
+`Client/Things/Config.cs` ships every configurable field with a placeholder
+literal that the builder patches: `Mutex = "silly1"`, `ht = "silly2"`,
+`pt = "silly3"`, through `Password = "silly20"` and `Raw = "silly21"`.
+
+The image contains exactly one `sillyNN` string, `silly21`, and it sits inside
+the contiguous config block in the `#US` heap. It is **an unpatched builder
+default** -- a field this operator left unset -- and not a tag, a handle, or
+anything of the operator's own. This file and `docs/HANDOFF.md` both listed it
+beside `https://t.me/sillyisafed` as though it were the second half of an
+operator contact.
+
+*Which* field was left unset is not settled: our config order differs from
+v1.9.0's numbering, so `Raw` is the v1.9.0 answer and not necessarily this
+build's. That it is a placeholder does not depend on the numbering.
+
+**It is the shape of the four corrections already recorded for today**: a
+string that arrived next to real indicators was read as one of them. The fix is
+the same one -- go one level deeper into evidence already in hand.
+
+**Consequence for detection.** `silly21` moves out of
+`RingForge_Raton_Build_ce0d08be`, where it claimed to identify this operator,
+and into the family rule, where an unpatched default belongs and where it is
+worth more: it fires on any Raton build that left that field alone.
+
+## The handle, and what it is not
+
+`https://t.me/sillyisafed` is the `Website` config value, already read that way
+from the literal block. It is **neither contact the author publishes** -- the
+README gives `https://t.me/RatonTool` as the channel and
+`https://t.me/DUMBASSsilly` as direct contact, beside a BTC address
+`bc1qd2088hs8ajg9qv3m2f3p285e7r7ntmutygtux6`. So `sillyisafed` is the
+operator's, or a newer channel of the author's, and which is not resolved here.
+It stays an IOC either way, and the two the README publishes are new IOCs at
+the family level.
+
+**The build reads as a test or an unconfigured one.** Loopback C2 where
+CYFIRMA's Raton operators use a tunnelling service, `Version: Free`, *"This
+client was shared to you from someone"*, and a config field still holding its
+placeholder. Four weak signals agreeing, none of them proof.
+
+## What was deliberately not done
+
+No attempt to identify the people behind `Silly`, `S-illy`, `SillyKuadro` or
+`Cristian` beyond the aliases their own public repository publishes. No visit
+to the sites distributing cracked 2026 builders. Both are scope decisions
+rather than dead ends.
+
+Sources: `codeberg.org/Raton/Raton` and its API, `threatmon.io`, `cyfirma.com`,
+`femtosec.io`.
+
 ### Item 1 — the beacon goes to 127.0.0.1:7372, every 17.03 seconds, without jitter — 01 Sep
 
 **Answered.** 212 connection attempts in an hour, **all to `win11:7372`**, the
