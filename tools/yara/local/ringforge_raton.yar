@@ -151,42 +151,72 @@ rule RingForge_Raton_Transport
 }
 
 /*
-   This build only. Not family indicators -- an operator's builder sets each of
-   these, and a different campaign will differ. Kept separate so a hit here
-   means something narrower and more useful: the same build, or the same
-   operator.
+   A RATON BUILD WITH THE BUILDER'S DEFAULTS LEFT IN PLACE.
 
-   `silly21` WAS HERE AND HAS BEEN MOVED to the family rule, 02 Sep. It is not
-   this operator's tag: the published Raton source ships every config field
-   with a placeholder literal `silly1`..`silly21` for the builder to patch, so
-   the string is a field left unset. It identifies the builder, not the
-   customer, and belongs where an unpatched default belongs.
+   THIS RULE WAS `RingForge_Raton_Build_ce0d08be` AND CLAIMED TO IDENTIFY AN
+   OPERATOR. It did not, and the renaming is the point: three of its four
+   original strings turned out to be things the builder ships, not things a
+   customer chose. Kept, because "the operator changed nothing" is a real and
+   useful property -- just not the one the old name asserted.
 
-   The password is the more interesting of them. The 02 Sep check-in reported
-   `Pass` as empty while this literal sits in the image, so it is either unused
-   in that direction or is an authentication step on the reply path that has
-   not been tested.
+   What left it, and why, because the pattern is the whole lesson:
 
-   `5CDF2C82-841E-4546-9722-0CF74078229A` WAS HERE AND IS REMOVED, 02 Sep. It
-   is not this operator's anything: it is the IID of IAudioEndpointVolume,
-   loaded by the payload's own SetVolume to reach the Core Audio API. A
-   Windows interface id in a rule whose entire meaning is "the same build, or
-   the same operator" made that meaning false. Found by reading SetVolume
-   while chasing something else, which is the only reason it was ever
-   questioned.
+     silly21          02 Sep. The published source initialises every config
+                      field to a placeholder `silly1`..`silly21`. The string is
+                      a field left unset, so it identifies the builder and
+                      belongs in the family rule, where it now sits.
+
+     5CDF2C82-...     02 Sep. Not this operator's anything: the IID of
+                      IAudioEndpointVolume, loaded by the payload's own
+                      SetVolume to reach the Core Audio API. Found by reading
+                      SetVolume while chasing an unrelated crash, which is the
+                      only reason it was ever questioned.
+
+     t.me/sillyisafed 02 Sep. THE AUTHOR'S CHANNEL, not the operator's. It is
+                      hardcoded in the client as a status string --
+                      `case "Telegram"` reports "Sending messages to
+                      sillyisafed..." before calling TdataFinder.CheckAndSend
+                      -- and a builder does not patch status messages. The
+                      channel is named "Silly", 356 subscribers, and links a
+                      shop at raton.fun. So the config `Website` carrying it is
+                      the builder's default, exactly like silly21.
+
+   WHAT IS LEFT AND WHAT IT MEANS.
+
+   `$box` is placeholder prose: the image carries "Hello, i'm the description
+   of your raton client message box" and "Hello, im a title for your message
+   box". Nobody writes that on purpose for a victim; it is what the builder
+   puts in the field when the operator does not.
+
+   `$pass` is the only string here that might be the operator's, and it is not
+   established that it is -- a builder that generates a random password per
+   build would produce exactly this. The 02 Sep check-in reported `Pass` as
+   empty while the literal sits in the image, so it is either unused in that
+   direction or an authentication step on the reply path that has not been
+   tested.
+
+   SO A HIT MEANS: a Raton build that shipped with its message-box text and its
+   Website field untouched. It does NOT mean the same operator, and it must not
+   be used to link campaigns.
 */
-rule RingForge_Raton_Build_ce0d08be
+rule RingForge_Raton_Default_Config
 {
     meta:
         author      = "RingForge"
         date        = "2026-09-02"
-        description = "Raton, the ce0d08be build -- operator config, not family"
-        confidence  = "build-specific by construction"
+        description = "Raton shipped with builder defaults -- NOT an operator link"
+        confidence  = "identifies an unconfigured build, not a campaign"
+        renamed_from = "RingForge_Raton_Build_ce0d08be, 02 Sep -- see the header"
+        sample      = "ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1"
 
     strings:
-        $pass     = "bbch4f57swBUEpVWfwKEKxJ" wide
+        // Builder defaults, all three.
         $telegram = "https://t.me/sillyisafed" wide
         $box      = "raton client message box" wide
+        $boxtitle = "Hello, im a title for your message box" wide
+
+        // Possibly the operator's, possibly builder-generated. Unresolved.
+        $pass     = "bbch4f57swBUEpVWfwKEKxJ" wide
 
     condition:
         uint16(0) == 0x5A4D and 2 of them

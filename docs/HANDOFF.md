@@ -220,6 +220,53 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, `sillyisafed` is the author's and the build rule was defaults
+
+**The last open thread on `ce0d08be...` is closed.**
+`https://t.me/sillyisafed` is the **author's** channel, not this operator's:
+
+1. It is **hardcoded in the client**, not read from config -- `case "Telegram"`
+   reports *"Sending messages to sillyisafed..."* before calling
+   `TdataFinder.CheckAndSend()`. A builder patches config fields, not status
+   messages.
+2. The channel is named **`Silly`**, the author's alias everywhere else.
+3. It is a **broadcast channel, 356 subscribers, advertising a shop** at
+   `raton.fun`. A vendor's channel, not a customer's contact.
+
+**It is not a backdoor**, which was the hypothesis worth killing. `TdataFinder`
+zips `Telegram Desktop\tdata` and sends `Packet: tdata` with a `Path` and `UID`
+down the **ordinary C2 socket** -- to the operator, not the author. The status
+string is flavour.
+
+**`raton.fun/shop` is a placeholder** (*"Wait for our rats..."*), so the shop is
+announced rather than live -- but a vendor channel with a shop link supports the
+MaaS reading over the Codeberg README's *"free as always"*, and gives the
+check-in's `Version: Free` an obvious meaning: a tier. The README also calls
+`t.me/RatonTool` a channel; it is a user contact.
+
+**The consequence: a YARA rule that meant something other than it said.** If
+the handle is the author's, this sample's `Website` field carrying it is a
+builder default -- the third string to leave the build-specific rule for that
+reason in one day, after `silly21` and the `IAudioEndpointVolume` IID. What
+remained, `$box`, is placeholder prose as well: *"Hello, i'm the description of
+your raton client message box"*.
+
+So **`RingForge_Raton_Build_ce0d08be` is renamed
+`RingForge_Raton_Default_Config`**, with `$boxtitle` added and a header saying
+a hit identifies an unconfigured build and **must not be used to link
+campaigns**. `$pass` stays, labelled unresolved -- a builder generating a random
+password per build would produce exactly it. Benign rate re-measured: **0 of
+13,174 PE files**; family 11 strings on the sample, defaults 4.
+
+**Every string in that rule that looked like an operator's fingerprint was the
+vendor's**, and each was caught by reading what produced it rather than where
+it sat.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - sillyisafed is the author's channel, and the build rule was
+             mostly defaults
+
 ### Pick up here — 02 Sep, the sweep completed and `Report` is safe
 
 **30 of 30 sent, 24 answered, the session survived all of them.**
@@ -282,11 +329,10 @@ The sweep regenerates at 31 commands and is re-staged in the share and on the
 artifact drive. `ReleasingOneHeldCommand` moved off `Report` and onto `Share`,
 which is held for a reason that will not be measured away.
 
-**The command channel on `ce0d08be...` is finished.** All four items the
-02 Sep end-of-session list named are closed. What is left on this sample is
-the one thread the attribution section names: whether `sillyisafed` is the
-operator or a newer channel of the author's, which is host-side research and
-not a detonation.
+**The command channel on `ce0d08be...` is finished**, and so is the sample:
+all four items the 02 Sep end-of-session list named are closed, and so is the
+`sillyisafed` thread -- see the section above it. Nothing on this subject is
+open.
 
 Artifact: `G:\ringforge-artifacts\ce0d08be-fieldsweep2-02sep\`, with a README
 carrying the full reading.

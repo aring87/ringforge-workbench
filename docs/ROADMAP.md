@@ -1973,6 +1973,86 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — `sillyisafed` is the author's channel, and the build rule was mostly defaults — 02 Sep
+
+**The last open thread on this sample, closed, and it took a rule with it.**
+The question was whether `https://t.me/sillyisafed` belonged to this operator
+or to the author. It is the author's, on three independent grounds.
+
+**1. It is hardcoded in the client, not read from config.**
+
+    case "Telegram":
+        val40.SetString("Message", "(From " + Environment.UserName +
+                        "): Sending messages to sillyisafed...");
+        Client.Send(val40.Pacc());
+        TdataFinder.CheckAndSend();
+
+A builder patches config fields. It does not patch status messages, and this
+one names the handle in the middle of a sentence.
+
+**2. The channel is named `Silly`** -- the author's alias everywhere else:
+`Silly <SillyKuadro@gmail.com>` on the commits, `S-illy` on Codeberg,
+`DUMBASSsilly` in the README.
+
+**3. It is a broadcast channel with 356 subscribers advertising a shop** at
+`raton.fun`. That is a vendor's channel, not a customer's contact.
+
+## It is not a backdoor, and that was worth checking
+
+The obvious hypothesis for a hardcoded handle in a stealer path is the Cobian
+shape: the author collecting from their own customers' victims. **It is wrong
+here.** `TdataFinder` finds `Telegram Desktop\tdata` (Windows, Linux and macOS
+paths), zips it, and sends
+
+    Packet   tdata
+    Path     <the zip>
+    UID      Raton_...
+
+down the **ordinary C2 socket**, to whoever the operator is. The status string
+is flavour. The victim's Telegram session goes to the customer, not the author.
+
+## What the channel says about the model
+
+`raton.fun/shop` is a placeholder -- *"Wait for our rats..."* -- so the
+storefront is announced rather than live. But a vendor channel with a shop link
+supports ThreatMon's *MaaS* reading over the Codeberg README's *"free as
+always"*, and it gives the check-in's **`Version: Free`** an obvious meaning: a
+tier. Also corrected: the README calls `t.me/RatonTool` a channel; it is a user
+contact card.
+
+The published v1.9.0 source contains **no** `Telegram` case, no `tdata`, and no
+`silly` string anywhere in its dispatcher -- one more measurement of the gap
+between it and this build.
+
+## The consequence: a rule that meant something other than it said
+
+If the handle is the author's, then this sample's `Website` config field
+carrying it is **the builder's default**, exactly like `silly21`. That is the
+third string to leave `RingForge_Raton_Build_ce0d08be` for that reason in one
+day:
+
+    silly21           an unpatched config placeholder
+    5CDF2C82-...      the IID of IAudioEndpointVolume
+    t.me/sillyisafed  the author's channel, shipped as a default
+
+What remained was `$box`, and it is placeholder prose too -- the image carries
+*"Hello, i'm the description of your raton client message box"*. Nobody writes
+that for a victim on purpose.
+
+**So the rule never identified an operator.** It identified a build whose
+operator changed nothing. Renamed **`RingForge_Raton_Build_ce0d08be` ->
+`RingForge_Raton_Default_Config`**, with `$boxtitle` added, honest meta, and a
+header that says a hit must not be used to link campaigns. `$pass` stays as the
+only string that might be the operator's, labelled as unresolved: a builder
+generating a random password per build would produce exactly it.
+
+Benign rate re-measured after the change: **0 of 13,174 PE files**. Both rules
+still fire on the sample -- family 11 strings, defaults 4.
+
+**The pattern is the finding.** Every string in that rule that looked like an
+operator's fingerprint was the vendor's, and each was caught the same way: by
+reading what produced it instead of where it sat.
+
 ### Item 2 — the sweep completed: 30 of 30, and `Report` with a `Name` is safe — 02 Sep
 
 **The corrected sweep ran end to end.** 30 sent, 24 answered, the session
