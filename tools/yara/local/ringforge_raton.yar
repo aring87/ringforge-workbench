@@ -166,6 +166,14 @@ rule RingForge_Raton_Transport
    `Pass` as empty while this literal sits in the image, so it is either unused
    in that direction or is an authentication step on the reply path that has
    not been tested.
+
+   `5CDF2C82-841E-4546-9722-0CF74078229A` WAS HERE AND IS REMOVED, 02 Sep. It
+   is not this operator's anything: it is the IID of IAudioEndpointVolume,
+   loaded by the payload's own SetVolume to reach the Core Audio API. A
+   Windows interface id in a rule whose entire meaning is "the same build, or
+   the same operator" made that meaning false. Found by reading SetVolume
+   while chasing something else, which is the only reason it was ever
+   questioned.
 */
 rule RingForge_Raton_Build_ce0d08be
 {
@@ -178,7 +186,6 @@ rule RingForge_Raton_Build_ce0d08be
     strings:
         $pass     = "bbch4f57swBUEpVWfwKEKxJ" wide
         $telegram = "https://t.me/sillyisafed" wide
-        $guid     = "5CDF2C82-841E-4546-9722-0CF74078229A" wide
         $box      = "raton client message box" wide
 
     condition:

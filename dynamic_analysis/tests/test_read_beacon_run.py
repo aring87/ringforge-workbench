@@ -105,6 +105,34 @@ class Reading(unittest.TestCase):
         self.assertIn("'Clipboard'", out)
 
 
+    def test_a_request_answered_by_its_response_is_not_a_mismatch(self) -> None:
+        """RegistryRequest is answered by RegistryResponse, measured 02 Sep."""
+        out = _run(_capture([
+            _exchange("RegistryRequest",
+                      [[["Packet", "RegistryResponse"], ["Type", "Roots"]]], 191)
+        ]))
+
+        self.assertIn("mismatched  0", out)
+        self.assertNotIn("NOT THIS COMMAND", out)
+
+    def test_device_request_pairs_the_same_way(self) -> None:
+        out = _run(_capture([
+            _exchange("DeviceRequest",
+                      [[["Packet", "DeviceResponse"], ["Type", "Devices"]]], 2059)
+        ]))
+
+        self.assertIn("mismatched  0", out)
+
+    def test_a_response_for_another_request_still_flags(self) -> None:
+        """The convention must not swallow a real shift."""
+        out = _run(_capture([
+            _exchange("RegistryRequest",
+                      [[["Packet", "DeviceResponse"]]], 100)
+        ]))
+
+        self.assertIn("mismatched  1", out)
+
+
 class LegacyCaptures(unittest.TestCase):
     """The 02 Sep shape: one frame per exchange, and no responses list."""
 

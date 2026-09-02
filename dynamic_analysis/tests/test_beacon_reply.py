@@ -308,5 +308,60 @@ class ReleasingOneHeldCommand(unittest.TestCase):
         self.assertEqual(plan.withheld, ["Share"])
 
 
+class TypedValues(unittest.TestCase):
+    """An Integer field is four raw bytes, and this is what that cost.
+
+    `Stuff.Unpack.GetAsInteger` is `BitConverter.ToInt32` over the value's
+    bytes. Sending `Volume=50` as the two characters "50" threw
+    `System.ArgumentException` out of `BitConverter.ToInt32` and ended the
+    02 Sep session at the sweep's first integer field, with eleven commands --
+    `Report` among them -- still unsent.
+    """
+
+    def test_an_integer_is_four_little_endian_bytes(self) -> None:
+        spec = parse_command_lines(["Volume\tVolume=int:50"])[0]
+
+        self.assertEqual(spec.fields, (("Volume", b"\x32\x00\x00\x00"),))
+
+    def test_a_negative_integer_round_trips(self) -> None:
+        spec = parse_command_lines(["X\tN=int:-1"])[0]
+
+        self.assertEqual(spec.fields[0][1], b"\xff\xff\xff\xff")
+
+    def test_base64_becomes_raw_bytes(self) -> None:
+        spec = parse_command_lines(["PlayAudio\tAudio=b64:cmluZ2Zvcmdl"])[0]
+
+        self.assertEqual(spec.fields, (("Audio", b"ringforge"),))
+
+    def test_str_escapes_a_value_that_looks_like_a_tag(self) -> None:
+        spec = parse_command_lines(["X\tT=str:int:literal"])[0]
+
+        self.assertEqual(spec.fields, (("T", "int:literal"),))
+
+    def test_an_untagged_value_is_still_text(self) -> None:
+        """Every commands file written before tags existed still parses."""
+        spec = parse_command_lines(["Shell\tCommand=ver"])[0]
+
+        self.assertEqual(spec.fields, (("Command", "ver"),))
+
+    def test_bytes_survive_the_frame(self) -> None:
+        """End to end: the four bytes have to arrive as four bytes."""
+        spec = parse_command_lines(["Volume\tVolume=int:50"])[0]
+        plan = ReplyPlan.from_specs([spec])
+
+        frame = parse_frame(plan.next_candidate().frame())
+        body = decode_dictionary(frame["decompressed"])
+
+        self.assertTrue(body["ok"])
+        self.assertEqual(dict(body["pairs"])["Volume"], "2\x00\x00\x00")
+
+    def test_encode_dictionary_takes_bytes_beside_text(self) -> None:
+        body = encode_dictionary([("Packet", "Volume"), ("Volume", b"\x01\x00\x00\x00")])
+        decoded = decode_dictionary(body)
+
+        self.assertTrue(decoded["ok"])
+        self.assertEqual(len(dict(decoded["pairs"])["Volume"]), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

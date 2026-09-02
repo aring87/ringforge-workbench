@@ -158,6 +158,8 @@ bottom of this section.
                         than it, and `silly21` was never an operator tag
     the silent five     four were asked nothing; Preview was never
                         measured. The field sweep is built, not sent
+    the field sweep     sent. Six sub-dispatchers answered, Preview
+                        answered, and an Integer field ended the session
 
 **Snapshots, and which to use.**
 
@@ -191,13 +193,11 @@ not verified.
    **post-1.9.0 build**, so the published source dates it rather than
    describing it. What is still open is narrow and named there: whether
    `sillyisafed` is the operator or a newer channel of the author's.
-2. BUILT, NOT SENT. The sweep is generated, checked and staged -- 29
-   commands, 28 carrying fields, `Report` last with a `Name`. What
-   remains is one logon and one session: see *THE RUN TO DO NEXT* in
-   the section below.
-3. EXPLAINED. Four are sub-dispatchers that were sent no `Command` or
-   `Action` and returned without replying; `Preview` was never measured
-   at all. Confirming it is part of the run above.
+2. SENT, PARTLY. 18 of 29 went out and 13 answered before an Integer
+   field ended the session. The encoding is now known and enforced;
+   `Report` is still unreached and is the reason to run it again.
+3. CLOSED. Confirmed live: all six sub-dispatchers answered when given
+   `Command` or `Action`, and `Preview` answered.
 4. CLOSED. `deferred_stage` now renders in the HTML report as a
    `card-alert` under the crash warning -- the note with its emphasis
    intact, a table naming each entry and what it launches, and the gated
@@ -216,6 +216,73 @@ happened next belongs to the thing that happened last", and each was caught by
 going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
+
+### Pick up here — 02 Sep, the field sweep ran and an integer ended it
+
+**18 of 29 sent, 13 answered.** One TLS session, `Raton_2y0gdlJF`.
+
+**Item 3 is confirmed rather than inferred.** All six sub-dispatchers answered
+when given `Command` or `Action` -- `ProcessSpy` 174,627 characters of process
+list, `Programs`, `Services`, `RegistryRequest` twice, `DeviceRequest` -- and
+**`Preview` answered**, which settles the last of the five. `Hosts` returned
+the hosts file, so `123ratonpro` is confirmed on the wire.
+
+**`GetAsInteger` is `BitConverter.ToInt32` over the raw value bytes.** An
+Integer field is four little-endian bytes, not decimal text. `Volume=50` went
+out as two characters and threw `System.ArgumentException`, ending the session
+at the sweep's first integer field with eleven commands unsent. The guest's
+event log names the frame exactly. The client had said the same thing in the
+other direction all along: `FileSearch` answers `Progress =
+"\x00\x00\x00\x00"`.
+
+**A missing integer key is safe; a present one of the wrong length is fatal.**
+`ProcessSpy` reads `ProcessId` unconditionally and answered fine without it.
+
+**The type was in `command_table.tsv` from the day it was parsed** and the
+generator dropped it. `load_table` keeps it now and `check` enforces it:
+`int:50`, `b64:...`, or the file is refused. `str:` escapes a literal.
+
+**A misattribution, corrected within the hour.** This file was told the cause
+was `SetVolume` throwing on a missing audio endpoint. The guest has an audio
+device and the throw was one call earlier. The case reads `GetAsInteger` *and
+then* calls `SetVolume`, and only the second was read -- the fifth instance in
+two days of the first plausible cause not being the cause. `Volume` is not
+destructive and is not withheld; it is safe with four bytes.
+
+**Two silences were preconditions, two are by design.** `Shell` and
+`CommandPrompt` return immediately when no shell session exists, so
+`StartShell` now precedes them. `Notepad` and `Notify` send no reply on
+success, so their silence is the correct result.
+
+**`Compiler` does not fall through** -- an unknown `Type` compiles as C#
+anyway, and returned a real compiler error.
+
+**A correction to our own rule.** `5CDF2C82-841E-4546-9722-0CF74078229A` was
+`$guid` in the build-specific rule. It is the IID of `IAudioEndpointVolume`,
+loaded by the payload's own `SetVolume` -- a Windows interface id in a rule
+meaning "same build, or same operator". Removed.
+
+**`Report` was released and never reached.** It is last in the sweep and the
+session died at 18, so the question is exactly as open as it was.
+
+Suite 1,337 -> 1,364.
+
+**THE RUN TO DO NEXT.** Log the guest off and on for a fresh payload, then send
+the **whole corrected file** -- one session either way, and a complete record
+beats a stitched one:
+
+    python scripts\beacon_listener.py --out C:\beacon-fields-2 --minutes 10 ^
+        --tls-cert C:\tls\server.pem --tls-key C:\tls\privkey.pem ^
+        --respond --commands C:\tls\commands-fields.txt --allow Report
+
+Copy `tls-commands-fields.txt` and the two changed modules from the share
+first; both are re-staged. `--start-after NAME` exists if a later sweep dies
+late and only the tail is worth repeating.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 2 - the field sweep ran: six sub-dispatchers answered, and an integer
+             ended it
 
 ### Pick up here — 02 Sep, the silent five explained and the field sweep built
 

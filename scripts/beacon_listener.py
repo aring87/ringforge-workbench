@@ -476,6 +476,10 @@ def main(argv: list[str] | None = None) -> int:
              "Build one with scripts/build_command_sweep.py",
     )
     parser.add_argument(
+        "--start-after", metavar="NAME",
+        help="skip everything up to and including this command. A sweep\n             that ends early costs a logon to repeat, and the client gets\n             one session per lifetime, so the next run starts where the\n             last one stopped rather than paying for the part that already\n             answered",
+    )
+    parser.add_argument(
         "--allow", action="append", default=[], metavar="NAME",
         help="release one withheld command by name, repeatable. For a run "
              "designed to measure a specific held command -- Report is the "
@@ -506,6 +510,17 @@ def main(argv: list[str] | None = None) -> int:
                 # client receives null for a field it cannot find, and null is
                 # what crashed it on 02 Sep.
                 parser.error(f"{args.commands}: {error}")
+            if args.start_after:
+                names = [s.name for s in specs]
+                if args.start_after not in names:
+                    parser.error(
+                        f"--start-after {args.start_after!r} is not in "
+                        f"{args.commands}"
+                    )
+                cut = len(names) - names[::-1].index(args.start_after)
+                skipped, specs = specs[:cut], specs[cut:]
+                print(f"resuming after {args.start_after}: "
+                      f"{len(skipped)} skipped, {len(specs)} to send")
             try:
                 plan = ReplyPlan.from_specs(
                     specs,

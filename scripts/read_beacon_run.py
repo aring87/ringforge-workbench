@@ -50,6 +50,24 @@ from dynamic_analysis.beacon_frame import decode_dictionary  # noqa: E402
 STATUS_PACKETS = frozenset({"PluginMessage", "Success", "Error", "Info"})
 
 
+def _answers(command: str, packet: str) -> bool:
+    """Does this reply belong to this command by name?
+
+    Most handlers echo the command. Two rename it: `RegistryRequest` is
+    answered by `RegistryResponse` and `DeviceRequest` by
+    `DeviceResponse`, both measured 02 Sep. Calling those mispaired
+    would flag a correct reply and teach the reader to ignore the flag,
+    which is the one thing it must not do.
+    """
+    if packet == command:
+        return True
+    if command.endswith("Request") and packet == (
+        command[: -len("Request")] + "Response"
+    ):
+        return True
+    return False
+
+
 def _fields_of(entry: dict) -> list[tuple[str, str]]:
     """The pairs a recorded response carries, whichever shape it is in."""
     pairs = entry.get("fields")
@@ -125,7 +143,7 @@ def read(path: Path) -> int:
                     continue
                 packet = _packet_of(pairs)
                 answered += 1
-                if packet == name:
+                if _answers(name, packet):
                     flag = ""
                 elif packet in STATUS_PACKETS:
                     status_only += 1
@@ -148,7 +166,7 @@ def read(path: Path) -> int:
             for entry in responses:
                 pairs = _fields_of(entry)
                 packet = _packet_of(pairs) or "<unparsed>"
-                if packet == name:
+                if _answers(name, packet):
                     flag = ""
                 elif packet in STATUS_PACKETS:
                     status_only += 1

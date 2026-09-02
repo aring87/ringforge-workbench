@@ -36,10 +36,15 @@ list costs about two minutes.
 
 from __future__ import annotations
 
+import base64
+import struct
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from dynamic_analysis.beacon_frame import LENGTH, build_frame
+
+#: A four-byte little-endian signed integer, which is what an Integer field is.
+INT32 = struct.Struct("<i")
 
 
 def encode_dictionary(pairs: Iterable[tuple[str, str]]) -> bytes:
@@ -52,7 +57,9 @@ def encode_dictionary(pairs: Iterable[tuple[str, str]]) -> bytes:
     out = LENGTH.pack(len(pairs))
     for key, value in pairs:
         for text in (key, value):
-            raw = text.encode("utf-8")
+            # A value is not always text. An Integer field is four raw bytes,
+            # and sending its digits instead is what ended the 02 Sep sweep.
+            raw = text.encode("utf-8") if isinstance(text, str) else bytes(text)
             out += LENGTH.pack(len(raw)) + raw
     return out
 
@@ -225,6 +232,47 @@ class CommandSpec:
         return [("Packet", self.name), *self.fields]
 
 
+#: How an integer rides in the body, measured 02 Sep from a crash and a reply.
+#:
+#: `Stuff.Unpack.GetAsInteger` is `BitConverter.ToInt32(value, 0)` over the
+#: value's raw bytes. It is NOT a decimal string. Sending `Volume=50` as the
+#: two characters "50" threw `System.ArgumentException` out of
+#: `BitConverter.ToInt32` and ended the session at the sweep's first integer
+#: field -- the whole tail of the run, `Report` included, went unsent.
+#:
+#: The client had already said as much in the other direction: `FileSearch`
+#: answers with `Progress = "\x00\x00\x00\x00"`, four raw bytes.
+#:
+#: A MISSING integer key is safe -- `HandleProcessManager.Run` reads
+#: `ProcessId` unconditionally and answered fine without it. A key that is
+#: present and not exactly four bytes is fatal. So the dangerous value is not
+#: the absent one, it is the plausible one.
+INT_TAG = "int:"
+
+#: Raw bytes, base64 in the file. For a ByteArray field, or any value that is
+#: not text.
+BYTES_TAG = "b64:"
+
+#: An explicit "this really is text", for a value that would otherwise be read
+#: as a tag.
+TEXT_TAG = "str:"
+
+
+def encode_value(text: str) -> str | bytes:
+    """Read one `key=value` right-hand side into what goes on the wire.
+
+    Untagged values stay text, which is what the body is made of and what every
+    field written before this was.
+    """
+    if text.startswith(INT_TAG):
+        return INT32.pack(int(text[len(INT_TAG):]))
+    if text.startswith(BYTES_TAG):
+        return base64.b64decode(text[len(BYTES_TAG):], validate=True)
+    if text.startswith(TEXT_TAG):
+        return text[len(TEXT_TAG):]
+    return text
+
+
 #: The separator between a command and its fields, and between fields.
 #:
 #: A tab rather than a space because a value may contain spaces -- `Notepad`
@@ -275,7 +323,7 @@ def parse_command_lines(lines: Iterable[str]) -> list[CommandSpec]:
                 raise ValueError(
                     f"{name}: field {part.strip()!r} is not key=value"
                 )
-            fields.append((key.strip(), value))
+            fields.append((key.strip(), encode_value(value)))
         specs.append(CommandSpec(name, tuple(fields), note))
     return specs
 

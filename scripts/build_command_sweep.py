@@ -74,6 +74,19 @@ HANDLER_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
                       "DeviceId": ()},
 }
 
+#: Accessor types for handler-level fields, where the table has none.
+HANDLER_TYPES: dict[tuple[str, str], str] = {
+    ("ProcessSpy", "ProcessId"): "Integer",
+}
+
+#: Accessor type -> the tag its value must carry in the commands file.
+#:
+#: `Integer` is the one that has already cost a session. `GetAsInteger` is
+#: `BitConverter.ToInt32` over the raw value bytes, so digits are not an
+#: integer and a two-byte array throws. `ByteArray` is the same argument,
+#: made before it is paid for.
+REQUIRED_TAG = {"Integer": "int:", "ByteArray": "b64:"}
+
 #: Sub-actions this refuses to emit, whatever is asked for.
 #:
 #: Each of these changes the guest in a way that outlives the command, and none
@@ -128,15 +141,19 @@ SAFE_FIELDS: list[tuple[str, list[tuple[str, str]], str]] = [
     ("Hosts", [("Content", "123ratonpro")],
      "the hardcoded magic that selects the READ path. Any other Content is "
      "base64-decoded and written over the hosts file"),
+    ("StartShell", [],
+     "measured 02 Sep: Shell answered nothing because CmdShell opens by "
+     "returning when there is no live shell process. This makes one"),
     ("Shell", [("Command", "ver")],
-     "prints a version banner and exits"),
+     "prints a version banner into the session StartShell made"),
     ("CommandPrompt", [("Command", "ver")],
      "same, down the other of the two command paths"),
     ("Execute", [("Type", "Batch"), ("Code", "rem ringforge-probe")],
      "a batch script whose only line is a comment"),
-    ("Compiler", [("Type", "probe"), ("Code", "rem ringforge-probe")],
-     "a Type that is neither vb nor cs, so the field path is exercised and "
-     "nothing is compiled"),
+    ("Compiler", [("Type", "cs"), ("Code", "class R { }")],
+     "measured 02 Sep: a Type that is neither vb nor cs does NOT fall "
+     "through, it compiles as C#. So this is the smallest valid C# rather "
+     "than a comment, which produced a compiler error"),
     ("FileSearch", [("Extension", ".ringforge-none")],
      "an extension nothing on the guest has"),
     ("Notepad", [("Title", "ringforge"), ("Content", "ringforge probe")],
@@ -148,19 +165,20 @@ SAFE_FIELDS: list[tuple[str, list[tuple[str, str]], str]] = [
      "a dialog the operator dismisses"),
     ("TTS", [("Text", "ringforge probe")],
      "speaks one phrase"),
-    ("Volume", [("Volume", "50")],
-     "clamped to 0-100 by the handler; 50 changes nothing audible"),
-    ("Webcam", [("Cam", "0")],
+    ("Volume", [("Volume", "int:50")],
+     "four raw bytes, not the characters 50. The text form ended the "
+     "02 Sep sweep here, at its first integer field"),
+    ("Webcam", [("Cam", "int:0")],
      "GetWebcams already answered 'No cameras found', so this exercises the "
      "integer field and should return an error"),
     ("Website", [("URL", "http://127.0.0.1:1/")],
      "Process.Start on a dead loopback port. It opens a browser window"),
-    ("StartProxy", [("Port", "18080")],
+    ("StartProxy", [("Port", "int:18080")],
      "a SOCKS5 listener inside the contained guest"),
-    ("ClosePort", [("Port", "65533")],
+    ("ClosePort", [("Port", "int:65533")],
      "kills the process owning the port. 65533 owns nothing -- NEVER 7372, "
      "which is this session"),
-    ("Draw", [("data", TINY_PNG), ("w", "1"), ("h", "1")],
+    ("Draw", [("data", TINY_PNG), ("w", "int:1"), ("h", "int:1")],
      "the smallest real image"),
     ("Clipboard", [("Text", "ringforge-clipboard-probe")],
      "overwrites the guest clipboard, which the operator's own staging "
@@ -173,9 +191,10 @@ SAFE_FIELDS: list[tuple[str, list[tuple[str, str]], str]] = [
 
 #: Group 3 -- byte arrays, then the one that is known to have killed a session.
 RISKY_TAIL: list[tuple[str, list[tuple[str, str]], str]] = [
-    ("ChatMessage", [("Message", "ringforge probe"), ("img", "ringforge")],
+    ("ChatMessage", [("Message", "ringforge probe"),
+                     ("img", "b64:cmluZ2Zvcmdl")],
      "the img bytes are only base64-encoded, never parsed as an image"),
-    ("PlayAudio", [("Audio", "ringforge")],
+    ("PlayAudio", [("Audio", "b64:cmluZ2Zvcmdl")],
      "NAudio is handed bytes that are not audio. Inside Task.Run, so a throw "
      "should not reach the process -- untested, hence its position"),
     ("CustomGDI", [("Image", TINY_PNG)],
@@ -189,42 +208,63 @@ RISKY_TAIL: list[tuple[str, list[tuple[str, str]], str]] = [
 ]
 
 
-def load_table(path: Path) -> dict[str, set[str]]:
-    """Command -> the field names `HandlePacket` reads, from the parsed table."""
-    table: dict[str, set[str]] = {}
+def load_table(path: Path) -> dict[str, dict[str, str]]:
+    """Command -> {field: accessor type}, from the parsed table.
+
+    The type is kept rather than discarded. It was in the table from the
+    day it was parsed -- `Volume:Integer`, `Port:Integer`,
+    `Audio:ByteArray` -- and nothing read it, so the 02 Sep sweep sent
+    `Volume=50` as two characters of text and `BitConverter.ToInt32` threw
+    on the two-byte array. The type was on disk the whole time.
+    """
+    table: dict[str, dict[str, str]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
         parts = line.split("\t")
         name = parts[0].strip()
-        fields = set()
+        fields: dict[str, str] = {}
         if len(parts) > 1 and parts[1].strip():
             for entry in parts[1].split(","):
-                key = entry.split(":")[0].strip()
-                if key:
-                    fields.add(key)
+                key, _, kind = entry.strip().partition(":")
+                if key.strip():
+                    fields[key.strip()] = kind.strip() or "String"
         table[name] = fields
     return table
 
 
 def check(
     groups: list[tuple[str, list[tuple[str, str]], str]],
-    table: dict[str, set[str]],
+    table: dict[str, dict[str, str]],
 ) -> list[str]:
-    """Every emitted field must be one some source says the client reads."""
+    """Every emitted field must be read by something, and carry its type."""
     problems: list[str] = []
     for name, fields, _ in groups:
         if name not in table:
             problems.append(f"{name}: not a command in the table")
             continue
-        known = set(table[name]) | set(HANDLER_FIELDS.get(name, {}))
+        handler = HANDLER_FIELDS.get(name, {})
+        known = set(table[name]) | set(handler)
         for key, value in fields:
             if key not in known:
                 problems.append(
                     f"{name}: field {key!r} is read by nothing "
                     f"(table has {sorted(table[name]) or 'none'}, "
-                    f"handler has {sorted(HANDLER_FIELDS.get(name, {})) or 'none'})"
+                    f"handler has {sorted(handler) or 'none'})"
                 )
+                continue
+
+            kind = (table[name].get(key)
+                    or HANDLER_TYPES.get((name, key), "String"))
+            tag = REQUIRED_TAG.get(kind)
+            if tag and not value.startswith(tag):
+                problems.append(
+                    f"{name}: field {key!r} is {kind} and must be sent as "
+                    f"{tag}<value>, not the text {value!r}. The value is "
+                    "read as raw bytes, and text of the wrong length "
+                    "throws inside the client"
+                )
+
             refused = REFUSED_SUB_ACTIONS.get(name, frozenset())
             if value in refused:
                 problems.append(

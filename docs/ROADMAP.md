@@ -1973,6 +1973,131 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 2 — the field sweep ran: six sub-dispatchers answered, and an integer ended it — 02 Sep
+
+**18 of 29 sent, 13 answered, and the session ended at the first integer
+field.** One TLS session, `Raton_2y0gdlJF`, 19:06 UTC.
+
+## Item 3 is confirmed, not inferred
+
+Every one of the six answered when given the field its handler reads:
+
+    ProcessSpy       Command=List      28 KB, 174,627 chars of process list,
+                                       and a CurrentRaton field naming itself
+    Programs         Command=List      16 KB, 23,785 chars
+    Services         Command=List      5 KB, 18,438 chars
+    RegistryRequest  Action=GetRoots   Packet: RegistryResponse, Type Roots
+    RegistryRequest  Action=GetSubKeys Type SubKeys, for HKCU\Software
+    DeviceRequest    Action=GetDevices Packet: DeviceResponse, 4,845 chars
+    Preview          (no fields)       73 KB: Image, Uptime, Window, Time,
+                                       Architecture, Battery, Camera, Microphone
+
+**`Preview` answered**, which settles the last of it: its 02 Sep silence was
+the artefact of being last in a sweep running a frame behind, exactly as
+predicted. Note what it returns beyond the screenshot -- `Window =
+"Administrator: Windows PowerShell"`, the operator's own foreground window
+title.
+
+**`Hosts` returned the hosts file**, so `123ratonpro` is confirmed on the wire
+rather than only in the IL.
+
+**Two commands rename their reply.** `RegistryRequest` is answered by
+`RegistryResponse` and `DeviceRequest` by `DeviceResponse`. `read_beacon_run`
+now treats `XRequest` -> `XResponse` as correct; flagging a correct reply is
+how a reader learns to ignore the flag.
+
+**`FileSearch` answers with two frames** -- an ack and then `Progress`. The
+second command of that shape after `GetClipboard`, and the reason the drain fix
+was worth making.
+
+## The integer encoding, learned the expensive way
+
+`Volume` ended the session. The guest's event log names it exactly:
+
+    System.ArgumentException
+       at System.BitConverter.ToInt32(Byte[], Int32)
+       at Stuff.Unpack.GetAsInteger(System.String)
+       at HandlePacket+<Run>d__62.MoveNext()
+
+**`GetAsInteger` is `BitConverter.ToInt32` over the value's raw bytes.** An
+Integer field is four little-endian bytes, not decimal text. `Volume=50` went
+out as the two characters "50" and `ToInt32` threw on a two-byte array.
+
+The client had already said so in the other direction and nobody read it:
+`FileSearch` answers with `Progress = "\x00\x00\x00\x00"`.
+
+**A missing integer key is safe; a present one of the wrong length is fatal.**
+`HandleProcessManager.Run` reads `ProcessId` unconditionally and answered fine
+without it. So the dangerous value is not the absent one, it is the plausible
+one -- which is the worst possible shape for a field to have.
+
+**The type was on disk the whole time.** `command_table.tsv` has carried
+`Volume:Integer`, `Port:Integer`, `Audio:ByteArray` since the day it was
+parsed, in column two, and the generator dropped the type and kept the name.
+`load_table` now keeps it and `check` enforces it: an Integer field must be
+written `int:50` and a ByteArray `b64:...`, or the generator refuses to emit
+the file. `parse_command_lines` encodes those tags, `encode_dictionary` takes
+bytes beside text, and `str:` escapes a literal that would read as a tag.
+
+## A misattribution of mine, and how it happened
+
+Before the event log came back this file was told the cause was `SetVolume`
+throwing on a missing audio endpoint -- it calls
+`Marshal::ThrowExceptionForHR` on `GetDefaultAudioEndpoint`, unguarded, which
+is a real hazard and was not this one. The guest has an audio device
+(`High Definition Audio Device, OK`) and the throw happened one call earlier,
+in `GetAsInteger`, before `SetVolume` ran at all.
+
+The method was right and stopped one level short: the case reads
+`GetAsInteger("Volume")` *and then* calls `SetVolume`, and only the second was
+read. **This is the fifth instance of the same shape in two days** -- the first
+plausible cause on the path is not the cause -- and the only reason it was
+caught within the hour is that the event log was asked for before the fix was
+written.
+
+`Volume` is not destructive and is not withheld. It is safe with four bytes.
+
+## Two more silences, both preconditions
+
+    Shell           CmdShell returns immediately when there is no live shell
+    CommandPrompt   same path
+    Notepad         no reply on the success path at all
+    Notify          same
+
+`StartShell` now precedes `Shell` in the sweep. `Notepad` and `Notify` send
+nothing by design, so their silence is the correct result and not a finding.
+
+**`Compiler` does not fall through.** A `Type` that is neither `vb` nor `cs`
+compiles as C# anyway: `Type=probe, Code=rem ...` returned *"Compilation
+Error: Line 1: A namespace cannot directly contain members such as fields or
+methods"*. The sweep now sends the smallest valid C# instead.
+
+## A correction to our own detection
+
+`5CDF2C82-841E-4546-9722-0CF74078229A` was `$guid` in
+`RingForge_Raton_Build_ce0d08be`, filed as operator config. It is the **IID of
+`IAudioEndpointVolume`**, loaded by the payload's own `SetVolume`. A Windows
+interface id in a rule whose entire meaning is "the same build, or the same
+operator" made that meaning false. Removed; the rule still fires on the sample
+with 3 of its remaining 4 strings. Found while reading `SetVolume` for the
+wrong reason, which is the only reason it was ever questioned.
+
+## What is still unmeasured
+
+`Report` with a `Name` was released with `--allow Report` and **never
+reached** -- it is last in the sweep and the session died at 18. The question
+it was released to answer is exactly as open as it was.
+
+Eleven commands remain unsent: `Volume` onwards. `--start-after NAME` now
+exists for resuming a sweep that ends early, though the next run should send
+the whole corrected file: it is one session either way and a complete record
+beats a stitched one.
+
+Artifact: `G:\ringforge-artifacts\ce0d08be-payload\tls-commands-fields.txt`,
+capture in `\\VBOXSVR\ringforge\gated-run\beacon-fields`.
+
+Suite 1,337 -> 1,364.
+
 ### Item 3 — the five silent commands were asked nothing, and item 2's sweep is built — 02 Sep
 
 **No detonation was needed for either half of this, and one was nearly spent
