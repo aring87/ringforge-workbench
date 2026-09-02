@@ -1773,6 +1773,69 @@ the host. Worth knowing before anyone terminates it by hand.
 Full notes beside the artifact:
 `G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
 
+### Item 1 — the family names itself, and 165 commands come out of its strings — 02 Sep
+
+**`.BotKillerRaton`, `Raton_`, and "your raton client message box".** The payload
+calls itself Raton, which matches the `Raton_Fcm7JziU` UID seen on the wire and
+sits alongside the `Cristian` PDB path in `stuff.dll`. **Attribution against
+public reporting has not been attempted** -- this is what the sample says about
+itself, which is a different claim.
+
+**Read without writing the file to disk.** Bitdefender quarantined the extracted
+copy within seconds, and this bench's policy is a password-protected archive
+rather than an AV exclusion. `DotNetImage` already accepts `data=`, so the bytes
+went from 7-Zip's stdout into memory. 1,626 user strings, 3,697 identifiers.
+
+**The config, as literals, in config order:** `Free`,
+`bbch4f57swBUEpVWfwKEKxJ`, `7372`, `127.0.0.1`, the two MsgBox defaults,
+`https://t.me/sillyisafed`, `Started`. Every one matches a field the check-in
+reported -- **except the password, which the check-in sent empty while the
+string sits in the image.** A password the client holds and does not send is a
+plausible authentication step on the *reply* path, which is the next thing the
+responder tests.
+
+**A Telegram handle, `https://t.me/sillyisafed`, plus `silly21`**, and the
+string *"This client was shared to you from someone"* beside `Version: Free`:
+a leaked or cracked builder rather than a purchased one. The handle is the
+strongest pivot recovered from this sample.
+
+**Defence evasion nobody had seen it do:**
+
+    powershell.exe -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass
+      "Add-MpPreference -ExclusionProcess '<self>'"
+
+It whitelists itself in Defender. The gated capture watched two minutes of a
+resident payload and this did not fire in that window. Also a second persistence
+path, `...CurrentVersion\Run`, beside the `schtasks` one that was observed.
+
+**Watchlists:** `taskmgr`, `procexp`, `processhacker`, `perfmon`, `procmon`;
+`ida*`, `dnspy`, `fiddler`, `charles`, `httpdebug`, `gdb`, `dbgclr`; and
+`innotek`, a VirtualBox vendor string. **Whether any of it executes in this
+build is not established** -- these are strings, and `get_VM` is an operator
+setting.
+
+**What it targets:** the Minecraft ecosystem in depth (`.minecraft`,
+`TlauncherProfiles.json`, `accounts.nbt`, Lunar, Feather, Meteor, Impact),
+Discord, Roblox, Steam, Epic, Riot, Xbox, Signal, Telegram, Anydesk, Mullvad,
+browser cookies with Clone handlers for Chrome, Edge, Brave, Opera and OperaGX,
+and a `Clipper` with `isBTC`/`isLTC`/`isSolana`/`isXMR` helpers -- the same
+capability class as `0bw`, in a different family.
+
+**165 `Packet` values**, including `HVNC`, `RemoteDesktop`, `Shell`, `Webcam`,
+`Microphone`, `Keylogger`, `StartSystemRecording`, `ProcessSpy`, `DDOS`,
+`BSOD`, `Melt`, `BotKiller`, `Defender`, and **`Jigsaw` beside `Encrypt` and
+`Decrypt`** -- a ransom capability, not only a stealer. `Plugin`, `PluginChunk`
+and `RunPlugin` mean that surface is a floor rather than a ceiling.
+
+**The distinction that matters here.** All of the above is *strings in an
+image*. What this sample has been *observed* doing is far narrower: the
+`schtasks` persistence and its re-creation, 967 registry reads with no VM
+artefact, a 17.03-second beacon, one TLS check-in, and the Costura unpack. The
+list says what the build can be told to do; nothing here shows it being told.
+
+Artifact: `G:\ringforge-artifacts\ce0d08be-payload\` -- the archive, both string
+heaps, `commands.txt`, and full notes.
+
 ### Item 1 — the C2 protocol, end to end, and the first message it ever sent — 02 Sep
 
 **306 bytes answered everything.** A listener bound to 7372 inside the guest --
