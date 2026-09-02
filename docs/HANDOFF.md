@@ -220,6 +220,45 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, the `422e30ed` doubled path is not the gate's doing
+
+**Hypothesis A eliminated.** Stage 4's `C:C:\Windows\System32\` is not a symptom
+of the Sandboxie gate poisoning the context cookie. `scripts/stage4_path_sources.py`
+reads both at the builder's call boundary:
+
+    cookie at build time   0x03e93c74   the payload base, a CLEAN self-address
+    path built             'C:C:\Windows\System32\'          <-- doubled anyway
+
+The gate did not fire on this path and the path is doubled regardless, which
+needs no argument about what the routine reads. **`0aq` had already excluded it
+in a table nobody read that way**: both halves of the output follow the *input*
+(`D:\Foo\Bar\ntdll.dll` -> `D:D:\Foo\Bar\`, cookie untouched).
+
+**The trap, and it is the seventh of its shape on this chain.** The builder does
+read the cookie -- 15 times -- and the first version of this probe concluded
+"may be downstream of the gate" on that basis. Its call tree makes **3,038,245
+reads across 171,816 addresses**: a read is not a contribution, and 15 in three
+million is not a signal. The probe now discriminates on the cookie's *value*
+against the path's *shape*. The direct test is unavailable and the script says
+so: `--cookie` derails the run before the builder returns, because the cookie is
+a live pointer.
+
+**What it leaves.** Reading 1 of `0aq` stands alone: the builder's rule can only
+produce a well-formed path when `FullDllName` has no volume, every real WOW64
+entry carries one, and the real API rejects all twelve
+(`real_createprocess_paths.py`). So the likeliest reading of stage 4's silence
+is that **this build's host walk cannot succeed on any machine** -- no host, no
+progress, no unpacking -- which also fits the polls never being reached once the
+create was made faithful.
+
+Not proven. The lead is the one anomaly in a uniform walk: **`write.exe` alone
+is opened and never created** (`fbdf40b`). That was option B when this was
+picked up and it is now the front of the queue.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 2 - the doubled path is not the gate's doing
+
 ### Pick up here — 02 Sep, `deferred_stage` met real data and failed in the way it warns about
 
 **The card renders, and the module had a false negative in it.** First

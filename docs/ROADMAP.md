@@ -1973,6 +1973,70 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 2 — the doubled path is not the gate's doing — 02 Sep
+
+**Hypothesis A, eliminated by measurement.** Stage 4 builds its strings off
+`[esi+0x6d8]` (`0k`), and `[ctx+0x6d8]` is the cookie the Sandboxie gate poisons
+with `0x32dfd514` (`0ax`, `0bd`). If the builder took the path from a poisoned
+cookie, the `C:C:\` doubling would be a *symptom* of the gate and the two open
+threads on this chain would be one thread. They are not.
+
+`scripts/stage4_path_sources.py`, at the builder's call boundary:
+
+    cookie at build time   0x03e93c74   the payload base -- a clean
+                                        self-address, NOT the poison
+    path built             'C:C:\Windows\System32\'          <-- doubled
+
+**The gate did not fire on this path and the path is doubled anyway.** That is
+the whole disproof: it needs no argument about what the routine reads.
+
+**And `0aq` had already excluded it, in a table nobody read that way.** Both
+halves of the output follow the *input*: feeding `D:\Foo\Bar\ntdll.dll` returns
+`D:D:\Foo\Bar\` with the cookie untouched. Neither half can be coming from a
+value that did not change.
+
+## The trap this probe walked into first, and it is the seventh
+
+The obvious test is "does the builder read the cookie?", and the answer is
+**yes -- 15 times**, from `0x3e95314`, `0x3ebf67d` and `0x3ebf6a4`. On that
+basis the first version of this probe printed *"the doubled path may be
+downstream of the gate"*.
+
+It is worthless as evidence. The builder's call tree makes **3,038,245 reads
+across 171,816 distinct addresses**; a value can be read without reaching the
+output, and 15 reads in three million is not a signal. **A read is not a
+contribution.**
+
+That is the same shape as the `0aa` RUN CHECK, `stage3_tail`'s "no writes" and
+`stage4_gate`'s "six seconds are not a stall" -- a summary written for the
+expected case. The probe now discriminates on the cookie's **value** against the
+path's **shape**, which is a fact about this run rather than a fact about the
+hypothesis.
+
+**The direct test is unavailable, which is worth recording so it is not
+retried.** `--cookie` overwrites `[ctx+0x6d8]` at the call to see whether the
+output changes -- the method `0aq` used on the input. It does not work here: the
+cookie is a live pointer, and writing any other value derails the run before the
+builder returns, so no output exists to compare. The flag is kept and says so.
+
+## What that leaves
+
+**Reading 1 of `0aq` stands, now with nothing beside it.** The path builder's
+rule -- the input's first segment, then the input's own directory -- can only
+produce a well-formed path when `FullDllName` has no volume, and every real
+WOW64 loader entry carries one. `real_createprocess_paths.py` measured the
+consequence on the real API: `ERROR_INVALID_NAME`, all twelve.
+
+So the honest reading of stage 4's silence is that **this build's host walk
+cannot succeed on any machine**: it never obtains a host, so it never proceeds,
+so it never unpacks. That is consistent with the gate result too -- once
+`CreateProcessInternalW` was made faithful the rendezvous polls stopped being
+reached at all (120,090,809 blocks, zero checks, `--force-all` byte-identical).
+
+It is not yet proof. The one anomaly left in an otherwise uniform walk is the
+place to press: **`write.exe` alone is opened and not created** (`fbdf40b`), and
+a single exception to a rule is usually where the rule is written down.
+
 ### Item 1 — `deferred_stage` against a live run — 02 Sep
 
 **Built in the morning with 14 tests, met real data in the evening, and had a
