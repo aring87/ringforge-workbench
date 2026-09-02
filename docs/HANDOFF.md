@@ -144,8 +144,10 @@ shows behaviour changing on it.
 the 165 recovered strings can be *verified* rather than assumed -- each
 classifies as known, unknown, or acted upon.
 
-**`Notify` terminates the client.** Sent with no fields: no answer, session
-closed, process gone. A free denial of service against this family, and the
+**`Notify` terminates the client**, and the Application log names it:
+`System.NullReferenceException at ProcessMonitor.Start(System.String, Int32)`
+from `HandlePacket+<Run>d__62.MoveNext()`, unhandled, `0xe0434352`. A free
+denial of service against this family, and the
 constraint on further sweeps -- the client does not reconnect after a session
 ends and its `ONLOGON` task only re-launches it at the next logon, so **one
 session per payload lifetime**.

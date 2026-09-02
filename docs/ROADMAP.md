@@ -1811,8 +1811,11 @@ dispatches from names it does not and says which. The 165 strings recovered
 from the heap can therefore be *verified* rather than assumed -- every name
 classifies as known, unknown, or acted upon, without understanding any of them.
 
-**`Notify` terminates the client.** Sent with no fields; no answer, session
-closed, process gone. Almost certainly an unhandled exception on a missing key.
+**`Notify` terminates the client**, and the Application log names the bug:
+`System.NullReferenceException at ProcessMonitor.Start(System.String, Int32)`,
+from `HandlePacket+<Run>d__62.MoveNext()`, unhandled, exit code `0xe0434352`.
+Sent with no fields, the handler dereferences null and nothing catches it. The
+trace also confirms `HandlePacket.Run` as the dispatcher.
 **That is a free denial of service against this family**, and it is also the
 constraint on enumerating the rest: the client does not reconnect after a
 session ends, and its `ONLOGON` task only re-launches it at the next logon, so
