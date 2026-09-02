@@ -156,6 +156,8 @@ bottom of this section.
                         and now renders it in the HTML report too
     attribution         the family is public source. This build is later
                         than it, and `silly21` was never an operator tag
+    the silent five     four were asked nothing; Preview was never
+                        measured. The field sweep is built, not sent
 
 **Snapshots, and which to use.**
 
@@ -189,13 +191,13 @@ not verified.
    **post-1.9.0 build**, so the published source dates it rather than
    describing it. What is still open is narrow and named there: whether
    `sillyisafed` is the operator or a newer channel of the author's.
-2. The 32 field-taking commands, sent properly formed from `command_table.tsv`.
-   Includes whether `Report` with a `Name` is safe, which would release it from
-   the withheld set.
-3. Five recon commands answered nothing in 20s -- `ProcessSpy`, `Programs`,
-   `RegistryRequest`, `DeviceRequest`, `Preview`. Unexplained, and one
-   explanation is now ruled out: in the published source these reply on the
-   existing session, not on a second connection of their own.
+2. BUILT, NOT SENT. The sweep is generated, checked and staged -- 29
+   commands, 28 carrying fields, `Report` last with a `Name`. What
+   remains is one logon and one session: see *THE RUN TO DO NEXT* in
+   the section below.
+3. EXPLAINED. Four are sub-dispatchers that were sent no `Command` or
+   `Action` and returned without replying; `Preview` was never measured
+   at all. Confirming it is part of the run above.
 4. CLOSED. `deferred_stage` now renders in the HTML report as a
    `card-alert` under the crash warning -- the note with its emphasis
    intact, a table naming each entry and what it launches, and the gated
@@ -214,6 +216,67 @@ happened next belongs to the thing that happened last", and each was caught by
 going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
+
+### Pick up here — 02 Sep, the silent five explained and the field sweep built
+
+**Four of the five were asked nothing.** `ProcessSpy`, `Programs`,
+`RegistryRequest` and `DeviceRequest` each hand the packet to a handler class
+that switches on a field `HandlePacket` never reads -- `Command` for the first
+two, `Action` for the other two. Null matches no case, control falls off the
+switch to a `ret`, and nothing is sent. Read from the handlers' own IL.
+`HandleServices` is a sixth of the same shape that no sweep has tried.
+
+**`Preview` is unmeasured, not silent, and that entry is retracted.** Its
+window did receive 100 bytes -- `Wifi`'s frame, one behind. It was the last
+command of a sweep running a frame late, so when the list ended the connection
+closed and nothing was left to read a `Preview` reply if one came.
+
+**`command_table.tsv` sees one level, and now says so.** It records what the
+dispatcher reads, which is correct and is not the whole answer. Its `Services`
+row was also wrong -- it carried `PluginHandler`'s fields and calls -- and is
+corrected in place.
+
+**The sweep now sends fields.** `CommandSpec`, `parse_command_lines`
+(tab-separated, `ProcessSpy<TAB>Command=List`, bare names unchanged),
+`ReplyPlan.from_specs`, and `scripts/build_command_sweep.py`, which **checks
+every field name against the table and the handler IL** so a typo is an error
+rather than a null on the wire. Null on the wire is what killed the client on
+02 Sep.
+
+**Two new refusals.** `REFUSED_SUB_ACTIONS` covers the 15 destructive
+sub-actions that withholding by name cannot see -- `Action=DeleteKey` wears
+`RegistryRequest`'s read-only name. And `Share` is now withheld: its case is
+`ShareClient.Clone(Host, Port)`, which clones the running client to another
+address.
+
+**`--allow NAME` releases one withheld command**, because measuring `Report`
+should not mean releasing 33.
+
+**`123ratonpro` is a new family IOC.** `case "Hosts"` returns the hosts file
+when `Content` equals that literal and **overwrites the file** with anything
+else. Hardcoded, wide-only, not builder config. Now an anchor in the family
+rule; benign rate re-measured rather than carried over: **0 of 13,174 PE
+files**.
+
+Suite 1,311 -> 1,337.
+
+**THE RUN TO DO NEXT.** 29 commands, 28 with fields, staged at
+`\\VBOXSVR\ringforge\gated-run\tls-commands-fields.txt`. Restore
+`ce0d08be-armed-gated-tooled`, boot, log on as `adam`, and in the guest:
+
+    python scripts\beacon_listener.py --out C:\beacon-fields --minutes 10 ^
+        --tls-cert C:\tls\server.pem --tls-key C:\tls\privkey.pem ^
+        --respond --commands \\VBOXSVR\ringforge\gated-run\tls-commands-fields.txt ^
+        --allow Report
+
+`Report` is last in the file for a reason: it is the one command known to have
+ended a session, and if a real `Name` does not fix that, nothing is lost after
+it.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 3 - the five silent commands were asked nothing, and item 2's sweep
+             is built
 
 ### Pick up here — 02 Sep, the family is public source and this build is later
 

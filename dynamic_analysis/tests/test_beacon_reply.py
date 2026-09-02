@@ -19,9 +19,11 @@ from dynamic_analysis.beacon_reply import (
     DESTRUCTIVE,
     GUESSES,
     Candidate,
+    CommandSpec,
     ReplyPlan,
     build_reply,
     encode_dictionary,
+    parse_command_lines,
     partition,
 )
 
@@ -202,6 +204,108 @@ class SessionSweep(unittest.TestCase):
 
         self.assertFalse(plan.exhausted())
         self.assertTrue(plan.candidates)
+
+
+class Fields(unittest.TestCase):
+    """A command may carry the fields its handler reads.
+
+    The cost of getting this wrong is measured rather than hypothetical: a
+    field the client reads and cannot find comes back null, and on 02 Sep a
+    null `Name` ended the session and took the rest of the sweep with it.
+    """
+
+    def test_a_bare_name_still_means_a_bare_packet(self) -> None:
+        """Every commands file written before fields existed must still work."""
+        specs = parse_command_lines(["Ping", "Clientinfo"])
+
+        self.assertEqual([s.name for s in specs], ["Ping", "Clientinfo"])
+        self.assertIsInstance(specs[0], CommandSpec)
+        self.assertEqual(specs[0].fields, ())
+        self.assertEqual(specs[0].pairs(), [("Packet", "Ping")])
+
+    def test_fields_ride_after_the_packet_name(self) -> None:
+        spec = parse_command_lines(["ProcessSpy\tCommand=List"])[0]
+
+        self.assertEqual(
+            spec.pairs(), [("Packet", "ProcessSpy"), ("Command", "List")]
+        )
+
+    def test_a_value_may_contain_spaces_and_an_equals_sign(self) -> None:
+        """Tab-separated for exactly this reason: Notepad takes a Content."""
+        spec = parse_command_lines(["Notepad\tContent=a b = c"])[0]
+
+        self.assertEqual(spec.fields, (("Content", "a b = c"),))
+
+    def test_a_token_without_an_equals_sign_is_refused(self) -> None:
+        """Guessing which half was meant is how a null reaches a handler."""
+        with self.assertRaises(ValueError):
+            parse_command_lines(["Shell\tver"])
+
+    def test_a_trailing_note_is_kept_not_dropped(self) -> None:
+        spec = parse_command_lines(["Hosts\tContent=123ratonpro\t# the magic"])[0]
+
+        self.assertEqual(spec.fields, (("Content", "123ratonpro"),))
+        self.assertEqual(spec.note, "the magic")
+
+    def test_comments_and_blank_lines_are_skipped(self) -> None:
+        specs = parse_command_lines(["# header", "", "   ", "Ping"])
+
+        self.assertEqual([s.name for s in specs], ["Ping"])
+
+    def test_the_frame_carries_the_fields(self) -> None:
+        """End to end, because the point is what lands on the wire."""
+        spec = parse_command_lines(["RegistryRequest\tAction=GetRoots"])[0]
+        plan = ReplyPlan.from_specs([spec])
+
+        frame = parse_frame(plan.next_candidate().frame())
+        body = decode_dictionary(frame["decompressed"])
+
+        self.assertTrue(body["ok"])
+        self.assertEqual(
+            body["pairs"],
+            [("Packet", "RegistryRequest"), ("Action", "GetRoots")],
+        )
+
+
+class ReleasingOneHeldCommand(unittest.TestCase):
+    """`--allow` exists so measuring `Report` does not mean releasing 33."""
+
+    def _specs(self):
+        return parse_command_lines(["Ping", "Report\tName=explorer"])
+
+    def test_a_held_command_is_still_held_when_it_carries_fields(self) -> None:
+        plan = ReplyPlan.from_specs(self._specs())
+
+        self.assertEqual(plan.withheld, ["Report"])
+        self.assertEqual([c.name for c in plan.candidates], ["Ping"])
+
+    def test_allow_releases_only_what_it_names(self) -> None:
+        plan = ReplyPlan.from_specs(self._specs(), allow=["Report"])
+
+        self.assertEqual(plan.withheld, [])
+        self.assertEqual(plan.released, ["Report"])
+        self.assertEqual([c.name for c in plan.candidates], ["Ping", "Report"])
+
+    def test_the_run_says_what_it_released(self) -> None:
+        """A run that deliberately sent a held command must record it."""
+        plan = ReplyPlan.from_specs(self._specs(), allow=["Report"])
+
+        self.assertEqual(plan.summary()["released_deliberately"], ["Report"])
+
+    def test_allowing_a_name_not_in_the_sweep_is_refused(self) -> None:
+        """Otherwise a typo silently releases nothing and reads as success."""
+        with self.assertRaises(ValueError):
+            ReplyPlan.from_specs(self._specs(), allow=["Repot"])
+
+    def test_allowing_a_name_that_was_never_held_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            ReplyPlan.from_specs(self._specs(), allow=["Ping"])
+
+    def test_share_is_held(self) -> None:
+        """It clones the running client to another address."""
+        plan = ReplyPlan.from_specs(parse_command_lines(["Share\tHost=x\tPort=1"]))
+
+        self.assertEqual(plan.withheld, ["Share"])
 
 
 if __name__ == "__main__":

@@ -68,7 +68,11 @@ from dynamic_analysis.beacon_frame import (  # noqa: E402
     frame_length,
     parse_frame,
 )
-from dynamic_analysis.beacon_reply import DESTRUCTIVE, ReplyPlan  # noqa: E402
+from dynamic_analysis.beacon_reply import (  # noqa: E402
+    DESTRUCTIVE,
+    ReplyPlan,
+    parse_command_lines,
+)
 
 DEFAULT_PORT = 7372
 DEFAULT_HOST = "127.0.0.1"
@@ -467,7 +471,15 @@ def main(argv: list[str] | None = None) -> int:
         "--commands",
         help="a file of command names, one per line, to use instead of the "
              "built-in guesses. Extract them from the payload assembly with "
-             "dotnet_meta.py --strings user",
+             "dotnet_meta.py --strings user. A line may carry the fields its "
+             "handler reads, tab-separated: 'ProcessSpy	Command=List'. "
+             "Build one with scripts/build_command_sweep.py",
+    )
+    parser.add_argument(
+        "--allow", action="append", default=[], metavar="NAME",
+        help="release one withheld command by name, repeatable. For a run "
+             "designed to measure a specific held command -- Report is the "
+             "one it was written for -- without releasing the other 33",
     )
     parser.add_argument(
         "--include-destructive", action="store_true",
@@ -485,16 +497,30 @@ def main(argv: list[str] | None = None) -> int:
     plan = None
     if args.respond:
         if args.commands:
-            names = [
-                line.strip()
-                for line in Path(args.commands).read_text(encoding="utf-8").splitlines()
-                if line.strip() and not line.startswith("#")
-            ]
-            plan = ReplyPlan.from_commands(
-                names, include_destructive=args.include_destructive
-            )
-            print(f"replying from {len(plan.candidates)} of {len(names)} "
-                  f"command name(s) in {args.commands}")
+            try:
+                specs = parse_command_lines(
+                    Path(args.commands).read_text(encoding="utf-8").splitlines()
+                )
+            except ValueError as error:
+                # A malformed field is refused here rather than sent. The
+                # client receives null for a field it cannot find, and null is
+                # what crashed it on 02 Sep.
+                parser.error(f"{args.commands}: {error}")
+            try:
+                plan = ReplyPlan.from_specs(
+                    specs,
+                    include_destructive=args.include_destructive,
+                    allow=args.allow,
+                )
+            except ValueError as error:
+                parser.error(str(error))
+            with_fields = sum(1 for s in specs if s.fields)
+            print(f"replying from {len(plan.candidates)} of {len(specs)} "
+                  f"command(s) in {args.commands}, {with_fields} carrying fields")
+            if plan.released:
+                print("RELEASED, deliberately: " + ", ".join(plan.released))
+                print("  these are withheld by default; the client acts on "
+                      "what it is sent")
             if plan.withheld:
                 print(f"withholding {len(plan.withheld)} destructive: "
                       + ", ".join(plan.withheld[:8])

@@ -147,6 +147,17 @@ DESTRUCTIVE = frozenset({
     "Defender", "Bypass", "HideFile", "AddToStartup", "Startup", "StartupTask",
     "regdisable", "taskdisable", "cmddisable", "ChangeIcons", "Wallpaper",
     "Update", "Uninstall", "Disconnect",
+    # Added 02 Sep, after reading the case rather than the name:
+    #
+    #     case "Share":
+    #         ShareClient.Clone(GetAsString("Host"), GetAsString("Port"));
+    #
+    # It clones the running client to another address. That is propagation and
+    # a configuration change in one, and it is the mechanism behind the
+    # payload's own string "This client was shared to you from someone".
+    # Nothing on this bench should send it, and a sweep that reached it by
+    # accident would be sending a RAT somewhere.
+    "Share",
     # Kills the client, measured 02 Sep, and the decompiled dispatcher says
     # exactly why:
     #
@@ -182,6 +193,93 @@ ALREADY_TRIED = (
 )
 
 
+@dataclass(frozen=True)
+class CommandSpec:
+    """One command name and the fields to send with it.
+
+    **Why this exists.** Until 02 Sep every candidate was `{"Packet": name}`
+    and nothing else, which is the right shape for discovering *whether* a name
+    is a real dispatcher case and the wrong one for finding out what it does.
+    32 of the 151 cases read a field, and a case that reads a field from a
+    packet that has none gets null -- which is how `Report` crashed the client
+    and cost a logon.
+
+    **The fields are not always the ones the dispatcher reads.** Five cases
+    delegate to a handler class that reads its own: `ProcessSpy`, `Programs`
+    and `Services` switch on `Command`, `RegistryRequest` and `DeviceRequest`
+    on `Action`. Sent bare they match nothing, fall off the end of the switch
+    and return without replying -- which is exactly what four of them did on
+    02 Sep and was recorded as unexplained silence.
+    """
+
+    name: str
+    fields: tuple[tuple[str, str], ...] = ()
+    note: str = ""
+
+    def pairs(self) -> list[tuple[str, str]]:
+        """`Packet` first, then the fields, in the order they were written.
+
+        Order is not cosmetic: the body is a list of pairs rather than a map,
+        and the client reads `Packet` before anything else.
+        """
+        return [("Packet", self.name), *self.fields]
+
+
+#: The separator between a command and its fields, and between fields.
+#:
+#: A tab rather than a space because a value may contain spaces -- `Notepad`
+#: takes a `Content`, `MsgBox` takes a `Message` -- and a key may not contain a
+#: tab.
+FIELD_SEPARATOR = "\t"
+
+
+def parse_command_lines(lines: Iterable[str]) -> list[CommandSpec]:
+    """Read a commands file, which may now carry fields.
+
+    One command per line. A bare name still means a bare packet, so every file
+    written before this existed parses unchanged. With fields, the name and
+    each `key=value` are separated by tabs::
+
+        Ping
+        ProcessSpy<TAB>Command=List
+        RegistryRequest<TAB>Action=GetRoots<TAB>Path=HKEY_CURRENT_USER
+
+    A `#` in the first column starts a comment line. A tab followed by `#`
+    after the fields is kept as the spec's note rather than dropped: why a
+    value was chosen belongs in the run log beside what it did.
+
+    A token with no `=` raises. Guessing which half was meant is how a null
+    reaches a handler, and null is what crashed the client on 02 Sep.
+    """
+    specs: list[CommandSpec] = []
+    for line in lines:
+        text = line.rstrip("\r\n")
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+
+        note = ""
+        marker = FIELD_SEPARATOR + "#"
+        if marker in text:
+            text, _, note = text.partition(marker)
+            note = note.strip()
+
+        parts = [p for p in text.split(FIELD_SEPARATOR) if p.strip()]
+        if not parts:
+            continue
+
+        name = parts[0].strip()
+        fields: list[tuple[str, str]] = []
+        for part in parts[1:]:
+            key, separator, value = part.partition("=")
+            if not separator:
+                raise ValueError(
+                    f"{name}: field {part.strip()!r} is not key=value"
+                )
+            fields.append((key.strip(), value))
+        specs.append(CommandSpec(name, tuple(fields), note))
+    return specs
+
+
 def partition(names: Iterable[str]) -> tuple[list[str], list[str]]:
     """Split a command list into what is safe to send and what is not."""
     names = list(names)
@@ -198,6 +296,8 @@ class ReplyPlan:
     index: int = 0
     results: list[dict[str, Any]] = field(default_factory=list)
     withheld: list[str] = field(default_factory=list)
+    #: Withheld names deliberately released for this run, via `allow`.
+    released: list[str] = field(default_factory=list)
 
     def exhausted(self) -> bool:
         """True once every candidate has been sent at least once.
@@ -207,6 +307,69 @@ class ReplyPlan:
         after it has finished is only re-testing.
         """
         return self.index >= len(self.candidates)
+
+    @classmethod
+    def from_specs(
+        cls,
+        specs: Iterable[CommandSpec],
+        include_destructive: bool = False,
+        allow: Iterable[str] = (),
+    ) -> "ReplyPlan":
+        """A plan over commands that carry their handlers' fields.
+
+        Withholding is by name, exactly as for bare commands: a destructive
+        command is no less destructive for being properly formed, and one that
+        arrives with the right fields is *more* likely to do what it says.
+
+        ``allow`` releases named commands from the withheld set without
+        releasing the rest. It exists because `Report` is the one withheld
+        name a run may specifically be designed to measure -- it was withheld
+        for crashing the client with a null `Name`, and whether a real `Name`
+        is safe cannot be settled by continuing to withhold it. Releasing 33
+        commands to ask about one is not a trade worth making, so this is the
+        narrow instrument. Released names are recorded on the plan, because a
+        run that deliberately sent a held command must say so.
+        """
+        specs = list(specs)
+        allow = {str(name) for name in allow}
+
+        unknown = sorted(allow - {s.name for s in specs})
+        if unknown:
+            raise ValueError(
+                "--allow names not in the sweep: " + ", ".join(unknown)
+            )
+        not_withheld = sorted(allow - DESTRUCTIVE)
+        if not_withheld:
+            raise ValueError(
+                "--allow names that were never withheld: "
+                + ", ".join(not_withheld)
+            )
+
+        def held(name: str) -> bool:
+            return name in DESTRUCTIVE and name not in allow
+
+        withheld = [s.name for s in specs if held(s.name)]
+        chosen = specs if include_destructive else [
+            s for s in specs if not held(s.name)
+        ]
+        candidates = [
+            Candidate(
+                spec.name,
+                spec.pairs(),
+                spec.note or (
+                    f"{len(spec.fields)} field(s) its handler reads: "
+                    + ", ".join(k for k, _ in spec.fields)
+                    if spec.fields
+                    else "From the payload's own string heap, so it is a name "
+                    "the client's dispatcher knows."
+                ),
+            )
+            for spec in chosen
+        ]
+        plan = cls(candidates=candidates or list(GUESSES))
+        plan.withheld = [] if include_destructive else withheld
+        plan.released = sorted(allow)
+        return plan
 
     @classmethod
     def from_commands(
@@ -268,6 +431,7 @@ class ReplyPlan:
             "candidates_tried": len(self.results),
             "candidates_total": len(self.candidates),
             "withheld_as_destructive": self.withheld,
+            "released_deliberately": self.released,
             "answered": [r["candidate"] for r in answered],
             "note": (
                 f"{answered[0]['candidate']} was answered -- the client parsed "

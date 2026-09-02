@@ -14,6 +14,12 @@
    string -- scanning only System32 would have been the easy version of this
    check and the wrong one.
 
+   RE-MEASURED 02 Sep after `$gate1` was added: 0 of 13,174 PE files over the
+   same roots. The figure moved because the sweep took more extensions, not
+   because the corpus did -- and it was re-run rather than carried over
+   because a new anchor is a new way to fire, so the old number would have
+   been a claim about a rule that no longer existed.
+
    That is a floor, not a benign rate in the sense this project usually means:
    one machine's software, not a corpus of installers and third-party
    applications. It is enough to say these rules are not noisy on a Windows
@@ -53,7 +59,7 @@ rule RingForge_Raton_Client
         description = "Raton .NET RAT client -- family strings, not config"
         reference   = "G:/ringforge-artifacts/ce0d08be-payload/"
         sample      = "ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1"
-        benign_rate = "0 of 9,091 PE files, 02 Sep -- see the header"
+        benign_rate = "0 of 13,174 PE files, 02 Sep -- see the header"
 
     strings:
         // The family naming itself. Recovered from the #US heap and confirmed
@@ -69,6 +75,13 @@ rule RingForge_Raton_Client
         $proto2 = "Unknown packet type: " wide
         $proto3 = "You are already an admin" wide
         $proto4 = "PluginMessage" wide
+
+        // A hardcoded gate constant, not operator config: `case "Hosts"` reads
+        // `Content` and returns the hosts file only when it equals this.
+        // Anything else is base64-decoded over the file, so the same command
+        // reads or overwrites depending on one literal. Wide-only, once in the
+        // image, and not a word anyone else uses -- which is why it anchors.
+        $gate1 = "123ratonpro" wide
 
         // Behaviour, in its own words.
         $act1 = "Add-MpPreference -ExclusionProcess" wide
@@ -91,6 +104,7 @@ rule RingForge_Raton_Client
             // Either name is close to conclusive on its own, but neither is
             // required: a build that renames itself keeps the protocol.
             any of ($name*)
+            or $gate1
             or 3 of ($proto*)
         )
         and any of ($proto*, $act*, $cfg*)

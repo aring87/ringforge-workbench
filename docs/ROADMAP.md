@@ -1973,6 +1973,158 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 3 — the five silent commands were asked nothing, and item 2's sweep is built — 02 Sep
+
+**No detonation was needed for either half of this, and one was nearly spent
+finding that out.** The plan was a fresh logon and a second sweep. What
+answered it was the recorded frames from the first one and the payload's own
+IL, both already in hand.
+
+## The four that were silent, and the one that was not
+
+Re-reading `beacon_listener.jsonl` from the 02 Sep recon run by what each
+frame says about itself rather than by position:
+
+    ProcessSpy       0 bytes, read timeout
+    Programs         0 bytes, read timeout
+    RegistryRequest  0 bytes, read timeout
+    DeviceRequest    0 bytes, read timeout
+    Preview          100 bytes -- and they are Wifi's
+
+Those four are unambiguous: they came **before** `GetClipboard`, which is where
+the two-frames-for-one-command shift began, so no backlog could have hidden a
+reply. `Preview` is a different case. It was the **last** command of a sweep
+running one frame behind, its window held the frame `Wifi` had produced, and
+when the list ended the loop closed the connection. Nothing was left to read a
+`Preview` frame if one came.
+
+**So `Preview` is unmeasured, not silent**, and the 02 Sep entry calling it one
+of five is retracted. The list is four measured silences and one command whose
+answer nobody was listening for.
+
+## Why the four are silent, from their own IL
+
+Each delegates to a handler class, and only `HandlePacket` had been
+decompiled. Disassembling the handlers (`dotnet_meta.py`, bytes from 7-Zip's
+stdout, no loose copy on disk) shows all four are **sub-dispatchers keyed on a
+field the dispatcher never reads**:
+
+    HandleProcessManager.Run      GetAsString("Command")  List Kill Pause
+                                                          Resume Info
+    HandlePrograms.Run            GetAsString("Command")  List Uninstall
+    HandleServices.Run            GetAsString("Command")  List Start Stop
+                                                          Restart
+    RegistryClientHandler         GetAsString("Action")   GetRoots GetSubKeys
+                                  GetAsString("Path")     GetValues + 6 writes
+    DeviceManagerHandler          GetAsString("Action")   GetDevices Refresh
+                                  GetAsString("DeviceId") Enable Disable Update
+
+Sent bare, `Command` and `Action` are null, no string comparison matches, and
+control falls off the end of the switch to a `ret`. **No reply, no error, no
+crash. They were asked nothing and answered accordingly.**
+
+`HandleServices` is a sixth of the same shape and was never in a sweep at all.
+
+**The general form is worth keeping: `command_table.tsv` sees one level.** It
+records what `HandlePacket` reads, which is the right thing for it to record
+and is not the whole answer. The table now says so in its own header, and the
+handler-level fields live in `build_command_sweep.py:HANDLER_FIELDS`, read from
+the IL.
+
+**One row of the table was also wrong.** `Services` carried
+`Packet/Plugin/Args/Index/Total/Data` and a call list ending in
+`Assembly.Load` -- those are `PluginHandler`'s, from the neighbouring cases.
+The dispatcher's `Services` case reads nothing. Corrected in place, with the
+correction noted rather than made quietly.
+
+## What the sweep now sends
+
+`{"Packet": name}` and nothing else was the right shape for discovering
+*whether* a name is a real case. It is the wrong shape for finding out what one
+does, and 32 of the 151 cases read a field.
+
+    CommandSpec              a name plus the fields to send with it
+    parse_command_lines      tab-separated: ProcessSpy<TAB>Command=List.
+                             A bare name still means a bare packet, so every
+                             file written before this parses unchanged
+    ReplyPlan.from_specs     the plan over those, withholding by name as before
+    --allow NAME             release one withheld command without the other 33
+    scripts/build_command_sweep.py    generates the file and checks it
+
+**The generator refuses rather than trusts.** Every field name it emits is
+checked against the table and against `HANDLER_FIELDS`; a name neither source
+knows is an error instead of a null on the wire. That check exists because the
+alternative was measured: `Report` read `Name` from a bare packet, handed null
+to `ProcessMonitor.Start`, and the session died eight commands in.
+
+**Withholding by name cannot see a sub-action, so a second refusal was needed.**
+`RegistryRequest` is a read command with `Action=GetRoots` and a destructive one
+with `Action=DeleteKey`, and the name is identical in both. `REFUSED_SUB_ACTIONS`
+covers the 15 that write: `Kill`, `Uninstall`, service start/stop/restart, six
+registry writes, and device enable/disable/update.
+
+**`Share` joined the withheld set**, on reading the case rather than the name:
+
+    case "Share":
+        ShareClient.Clone(GetAsString("Host"), GetAsString("Port"));
+
+It clones the running client to another address. That is propagation and a
+configuration change at once, and it is the mechanism behind the payload's own
+string *"This client was shared to you from someone"*.
+
+**29 commands, 28 carrying fields, in three groups.** The six sub-dispatchers
+and the `Preview` re-ask first, since they are the cheapest and answer a live
+question. Then the dispatcher-level field takers with inert values. Then byte
+arrays. Then `Report` last of all -- it is the one command known to have ended
+a session, whether a real `Name` fixes that is the question the tail exists
+for, and putting it at the end means a wrong answer costs nothing after it.
+It is withheld by default and released with `--allow Report`.
+
+Each value carries its reason in the file. Two are worth repeating here:
+
+    ClosePort  Port=65533. It kills the process owning the port, and 7372
+               is this session
+    Hosts      Content=123ratonpro, which is the ONLY safe value
+
+## `123ratonpro` is a gate constant, and it is a family IOC
+
+    case "Hosts":
+        if (GetAsString("Content") == "123ratonpro")   -> read the hosts file
+        else  File.WriteAllText(path, base64decode(Content))
+
+One literal decides whether the same command reads the hosts file or
+**overwrites it**. It is hardcoded, not builder config, wide-only, once in the
+image, and not a word anything else uses -- so it is now an anchor in
+`RingForge_Raton_Client`. Benign rate re-measured over the same roots rather
+than carried over, because a new anchor is a new way to fire: **0 of 13,174 PE
+files**.
+
+## A version detail, incidentally
+
+`UID.cs` in the published v1.9.0 source is `"Raton_" + Helpers.Random(7)`. Both
+UIDs this bench has seen -- `Raton_Fcm7JziU`, `Raton_x4Ah3S71` -- are eight
+characters. One more small confirmation that this build post-dates the source.
+
+## The run that has not happened
+
+Everything above is host-side. The sweep has not been sent: that needs a fresh
+payload, which needs a logon, and the client gets one session per lifetime.
+Staged in `\\VBOXSVR\ringforge\gated-run` and on the artifact drive.
+
+    Restore ce0d08be-armed-gated-tooled, boot, log on as adam.
+    In the guest:
+
+    python scripts\beacon_listener.py --out C:\beacon-fields --minutes 10 ^
+        --tls-cert C:\tls\server.pem --tls-key C:\tls\privkey.pem ^
+        --respond --commands \\VBOXSVR\ringforge\gated-run\tls-commands-fields.txt ^
+        --allow Report
+
+The readout: whether the six sub-dispatchers answer when asked properly, what
+`Preview` does when something is listening for it, and whether `Report` with a
+`Name` is safe -- which would release it from the withheld set.
+
+Suite 1,311 -> 1,337.
+
 ### Item 1 — attribution: Raton is public source, and this build is not it — 02 Sep
 
 **The family is public, named, and open.** `codeberg.org/Raton/Raton`, "Raton
