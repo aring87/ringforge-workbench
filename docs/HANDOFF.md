@@ -185,8 +185,11 @@ rather than an AV exclusion, so the bytes went from 7-Zip's stdout into
 **165 `Packet` command names recovered**, which is what the responder now
 sweeps instead of guesses. `HVNC`, `RemoteDesktop`, `Shell`, `Webcam`,
 `Microphone`, `Keylogger`, `StartSystemRecording`, `DDOS`, `BSOD`, `Melt`,
-`BotKiller`, and `Jigsaw` beside `Encrypt`/`Decrypt` -- a ransom capability, not
-only a stealer. `Plugin`/`RunPlugin` make that a floor, not a ceiling.
+`BotKiller`, and a real ransom capability -- `Encrypt` sets `ransompass`, runs
+`Cryptor.Encrypt` and opens a `Ransomware` form, taking `Password` and
+`Content`. `Jigsaw` is separate: a forced game with a score requirement, named
+after the ransomware but encrypting nothing. `Plugin`/`RunPlugin` make the
+surface a floor, not a ceiling.
 
 **New IOCs.** A Telegram handle `https://t.me/sillyisafed`, the tag `silly21`,
 and the config password literal `bbch4f57swBUEpVWfwKEKxJ` -- **which the check-in

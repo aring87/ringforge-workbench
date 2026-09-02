@@ -1886,9 +1886,13 @@ capability class as `0bw`, in a different family.
 
 **165 `Packet` values**, including `HVNC`, `RemoteDesktop`, `Shell`, `Webcam`,
 `Microphone`, `Keylogger`, `StartSystemRecording`, `ProcessSpy`, `DDOS`,
-`BSOD`, `Melt`, `BotKiller`, `Defender`, and **`Jigsaw` beside `Encrypt` and
-`Decrypt`** -- a ransom capability, not only a stealer. `Plugin`, `PluginChunk`
-and `RunPlugin` mean that surface is a floor rather than a ceiling.
+`BSOD`, `Melt`, `BotKiller`, `Defender`, and a **real ransom capability**:
+decompiled, `Encrypt` sets `ransompass`, runs `Cryptor.Encrypt(pass)` and opens
+a `Ransomware` form carrying the operator's note, taking `Password` and
+`Content`. **`Jigsaw` is a separate feature** -- a forced game with a score
+requirement, named after the ransomware's gimmick but encrypting nothing --
+which an earlier entry conflated with it. `Plugin`, `PluginChunk` and
+`RunPlugin` mean the surface is a floor rather than a ceiling.
 
 **The distinction that matters here.** All of the above is *strings in an
 image*. What this sample has been *observed* doing is far narrower: the
