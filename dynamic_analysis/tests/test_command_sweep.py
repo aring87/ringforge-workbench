@@ -112,15 +112,30 @@ class TheSweepItself(unittest.TestCase):
 
         self.assertEqual(contents, ["123ratonpro"])
 
-    def test_report_is_last(self) -> None:
-        """It is the one command known to have ended a session."""
-        self.assertEqual(RISKY_TAIL[-1][0], "Report")
+    def test_custom_gdi_is_last(self) -> None:
+        """Measured 02 Sep: it paints an overlay that cannot be stopped.
+
+        The client takes no commands outside a session and does not reconnect
+        after one ends, so anything after `CustomGDI` is unreachable and the
+        payload has to be killed to clear the screen. It ran second-to-last
+        that day and cost the guest.
+        """
+        self.assertEqual(RISKY_TAIL[-1][0], "CustomGDI")
 
     def test_report_carries_a_name(self) -> None:
-        """Sending it bare again would repeat the mistake it is here to test."""
-        fields = dict(RISKY_TAIL[-1][1])
+        """Sending it bare ends the session, measured twice over."""
+        fields = dict(
+            next(f for name, f, _ in RISKY_TAIL if name == "Report")
+        )
 
         self.assertTrue(fields.get("Name"))
+
+    def test_chat_precedes_chat_message(self) -> None:
+        """ChatMessage answers 'The chat is closed, nice try...' without it."""
+        names = [name for name, _, _ in RISKY_TAIL]
+
+        self.assertIn("Chat", names)
+        self.assertLess(names.index("Chat"), names.index("ChatMessage"))
 
 
 class AccessorTypes(unittest.TestCase):

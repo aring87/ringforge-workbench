@@ -35,9 +35,15 @@ that. `REFUSED_SUB_ACTIONS` does, and this refuses to emit one.
 is disposable, so this is not about the bench: it is about the run staying
 readable. A command that changes what a later command sees -- a clipper timer,
 a GDI overlay -- makes the rest of the sweep harder to interpret, so those go
-last. `Report` goes last of all: it is the one command known to have ended a
-session, the run exists partly to find out whether a `Name` fixes that, and
-putting it at the end means the answer costs nothing if it is no.
+last.
+
+**`CustomGDI` goes last of all, and that is load-bearing.** It paints an
+overlay across the desktop and there is no way to stop it: the client accepts
+no commands outside a session and does not reconnect after one ends, so
+everything ordered after it is unreachable and the payload has to be killed.
+On 02 Sep it ran second-to-last, with `Report` behind it, and that ordering is
+the only reason the run's headline result was collected before the guest
+became unusable.
 """
 
 from __future__ import annotations
@@ -189,22 +195,27 @@ SAFE_FIELDS: list[tuple[str, list[tuple[str, str]], str]] = [
      "session, so it goes after everything that reads the clipboard"),
 ]
 
-#: Group 3 -- byte arrays, then the one that is known to have killed a session.
+#: Group 3 -- byte arrays, then the effects that outlive the command.
 RISKY_TAIL: list[tuple[str, list[tuple[str, str]], str]] = [
+    ("Chat", [],
+     "measured 02 Sep: ChatMessage answered 'The chat is closed, nice try...' "
+     "until a chat exists. The third precondition of its kind, after the "
+     "sub-dispatchers and the shell"),
     ("ChatMessage", [("Message", "ringforge probe"),
                      ("img", "b64:cmluZ2Zvcmdl")],
      "the img bytes are only base64-encoded, never parsed as an image"),
     ("PlayAudio", [("Audio", "b64:cmluZ2Zvcmdl")],
-     "NAudio is handed bytes that are not audio. Inside Task.Run, so a throw "
-     "should not reach the process -- untested, hence its position"),
-    ("CustomGDI", [("Image", TINY_PNG)],
-     "sets a persistent overlay flag, so nothing that reads the screen may "
-     "follow it"),
+     "measured 02 Sep: answers Success and then 'Invalid MP3 file - no MP3 "
+     "Frames Detected'. The bytes arrive as bytes; it wants an MP3"),
     ("Report", [("Name", "explorer")],
-     "THE QUESTION THIS TAIL EXISTS FOR. Bare, its null Name ended the "
-     "session on 02 Sep. A real process name should not. Last, so a wrong "
-     "answer costs nothing after it. Withheld by name -- release it with "
-     "--allow Report"),
+     "measured 02 Sep and SAFE with a Name: it answers an Alert naming the "
+     "process it detected. Bare, its null Name ends the session, which is why "
+     "FATAL_WITHOUT refuses that shape rather than the command"),
+    ("CustomGDI", [("Image", TINY_PNG)],
+     "LAST, and it must stay last. It paints a persistent overlay and there "
+     "is no way to stop it: the client takes no commands outside a session "
+     "and does not reconnect after one ends, so the payload has to be killed. "
+     "On 02 Sep it ran second-to-last and cost the guest"),
 ]
 
 
@@ -329,7 +340,8 @@ def main(argv: list[str] | None = None) -> int:
         ("fields the table cannot see: five sub-dispatchers, and one re-ask",
          SUB_DISPATCHERS),
         ("dispatcher-level field takers, inert values", SAFE_FIELDS),
-        ("byte arrays, then the one that ended a session", RISKY_TAIL),
+        ("preconditions and byte arrays, then the one with no way back",
+         RISKY_TAIL),
     ):
         for index, (name, fields, note) in enumerate(block):
             groups.append((heading if index == 0 else "", name, fields, note))
@@ -345,8 +357,8 @@ def main(argv: list[str] | None = None) -> int:
     if withheld:
         print(f"{len(withheld)} of which the listener withholds by default: "
               f"{', '.join(withheld)}", file=sys.stderr)
-        print("  Report is in the sweep because measuring it is the point of "
-              "the tail. Send it with --allow Report", file=sys.stderr)
+        print("  Send one anyway with --allow NAME, and only if the run is "
+              "designed to measure it", file=sys.stderr)
 
     if args.out:
         args.out.write_text(text, encoding="utf-8")

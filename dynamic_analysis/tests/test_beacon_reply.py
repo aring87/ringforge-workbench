@@ -17,6 +17,7 @@ import unittest
 from dynamic_analysis.beacon_frame import decode_dictionary, parse_frame
 from dynamic_analysis.beacon_reply import (
     DESTRUCTIVE,
+    FATAL_WITHOUT,
     GUESSES,
     Candidate,
     CommandSpec,
@@ -168,14 +169,66 @@ class Destructive(unittest.TestCase):
                      "Shutdown", "Kill", "ChangePassword"):
             self.assertIn(name, DESTRUCTIVE, name)
 
-    def test_report_is_withheld_and_notify_is_not(self) -> None:
-        """The crash was first blamed on `Notify`, the command in flight when
-        the process died. The decompiled dispatcher names the real one:
-        `Report` reads `Name`, gets null from a bare packet, and hands it to
-        ProcessMonitor.Start. `Notify` reads title and content and builds a
-        balloon tip."""
-        self.assertIn("Report", DESTRUCTIVE)
+    def test_report_is_not_destructive_and_neither_is_notify(self) -> None:
+        """`Report` was withheld for a session it ended, then measured.
+
+        Sent with `Name=explorer` on 02 Sep it answered an `Alert` naming the
+        process it had detected, and the session carried on. It destroys
+        nothing. What killed the client was the *bare* packet -- the null
+        `Name` reaching `ProcessMonitor.Start` -- so the hazard is the shape,
+        and `FATAL_WITHOUT` refuses the shape.
+
+        `Notify` was never destructive either: it was blamed for `Report`'s
+        crash because it was the command in flight when the process died.
+        """
+        self.assertNotIn("Report", DESTRUCTIVE)
         self.assertNotIn("Notify", DESTRUCTIVE)
+        self.assertIn("Report", FATAL_WITHOUT)
+
+
+class FatalWithoutItsField(unittest.TestCase):
+    """A command can be safe to send and lethal to send bare.
+
+    That is a different axis from destructive, and withholding by name covers
+    it badly in both directions: it hides a capability that is safe when asked
+    properly, and it says nothing about the shape that actually kills.
+    """
+
+    def test_report_with_a_name_is_allowed_through(self) -> None:
+        plan = ReplyPlan.from_specs(parse_command_lines(["Report\tName=explorer"]))
+
+        self.assertEqual([c.name for c in plan.candidates], ["Report"])
+        self.assertEqual(plan.withheld, [])
+
+    def test_report_without_a_name_is_refused(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            ReplyPlan.from_specs(parse_command_lines(["Report"]))
+
+        self.assertIn("Name", str(caught.exception))
+
+    def test_the_refusal_names_the_consequence(self) -> None:
+        """An error that only says "invalid" teaches nothing about why."""
+        with self.assertRaises(ValueError) as caught:
+            ReplyPlan.from_specs(parse_command_lines(["Report"]))
+
+        self.assertIn("ends the session", str(caught.exception))
+
+    def test_a_bare_name_sweep_withholds_it_instead_of_raising(self) -> None:
+        """There is no field to supply on that path, and the older sweeps
+        list `Report` by name. Raising would make them unusable to protect
+        them from a shape they cannot avoid."""
+        plan = ReplyPlan.from_commands(["Ping", "Report", "Geo"])
+
+        self.assertEqual([c.name for c in plan.candidates], ["Ping", "Geo"])
+        self.assertIn("Report", plan.withheld)
+
+    def test_include_destructive_does_not_release_the_fatal_shape(self) -> None:
+        """It releases the destructive. Bare `Report` is not destructive, it
+        is unsendable, and no flag makes it safe on that path."""
+        plan = ReplyPlan.from_commands(["Ping", "Report"], include_destructive=True)
+
+        self.assertEqual([c.name for c in plan.candidates], ["Ping"])
+        self.assertEqual(plan.withheld, ["Report"])
 
 
 class SessionSweep(unittest.TestCase):
@@ -268,44 +321,53 @@ class Fields(unittest.TestCase):
 
 
 class ReleasingOneHeldCommand(unittest.TestCase):
-    """`--allow` exists so measuring `Report` does not mean releasing 33."""
+    """`--allow` exists so measuring one held command does not release 33.
+
+    It was written for `Report`, which has since been measured and is no
+    longer withheld -- so these use `Share`, which is held for a reason that
+    will not be measured away: it clones the running client to another
+    address.
+    """
 
     def _specs(self):
-        return parse_command_lines(["Ping", "Report\tName=explorer"])
+        return parse_command_lines(["Ping", "Share\tHost=x\tPort=1"])
 
     def test_a_held_command_is_still_held_when_it_carries_fields(self) -> None:
         plan = ReplyPlan.from_specs(self._specs())
 
-        self.assertEqual(plan.withheld, ["Report"])
+        self.assertEqual(plan.withheld, ["Share"])
         self.assertEqual([c.name for c in plan.candidates], ["Ping"])
 
     def test_allow_releases_only_what_it_names(self) -> None:
-        plan = ReplyPlan.from_specs(self._specs(), allow=["Report"])
+        plan = ReplyPlan.from_specs(self._specs(), allow=["Share"])
 
         self.assertEqual(plan.withheld, [])
-        self.assertEqual(plan.released, ["Report"])
-        self.assertEqual([c.name for c in plan.candidates], ["Ping", "Report"])
+        self.assertEqual(plan.released, ["Share"])
+        self.assertEqual([c.name for c in plan.candidates], ["Ping", "Share"])
 
     def test_the_run_says_what_it_released(self) -> None:
         """A run that deliberately sent a held command must record it."""
-        plan = ReplyPlan.from_specs(self._specs(), allow=["Report"])
+        plan = ReplyPlan.from_specs(self._specs(), allow=["Share"])
 
-        self.assertEqual(plan.summary()["released_deliberately"], ["Report"])
+        self.assertEqual(plan.summary()["released_deliberately"], ["Share"])
 
     def test_allowing_a_name_not_in_the_sweep_is_refused(self) -> None:
         """Otherwise a typo silently releases nothing and reads as success."""
         with self.assertRaises(ValueError):
-            ReplyPlan.from_specs(self._specs(), allow=["Repot"])
+            ReplyPlan.from_specs(self._specs(), allow=["Shre"])
 
     def test_allowing_a_name_that_was_never_held_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             ReplyPlan.from_specs(self._specs(), allow=["Ping"])
 
-    def test_share_is_held(self) -> None:
-        """It clones the running client to another address."""
-        plan = ReplyPlan.from_specs(parse_command_lines(["Share\tHost=x\tPort=1"]))
+    def test_report_no_longer_needs_releasing(self) -> None:
+        """It was measured safe with its field, so it goes out unheld."""
+        plan = ReplyPlan.from_specs(
+            parse_command_lines(["Report\tName=explorer"])
+        )
 
-        self.assertEqual(plan.withheld, ["Share"])
+        self.assertEqual(plan.withheld, [])
+        self.assertEqual([c.name for c in plan.candidates], ["Report"])
 
 
 class TypedValues(unittest.TestCase):

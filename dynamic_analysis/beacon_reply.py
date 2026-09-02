@@ -165,29 +165,37 @@ DESTRUCTIVE = frozenset({
     # Nothing on this bench should send it, and a sweep that reached it by
     # accident would be sending a RAT somewhere.
     "Share",
-    # Kills the client, measured 02 Sep, and the decompiled dispatcher says
-    # exactly why:
+    # `Report` WAS HERE AND IS OUT, 02 Sep, because it was measured rather than
+    # assumed. Sent with `Name=explorer` it answered
     #
-    #     case "Report":
-    #         string asString10 = unpack.GetAsString("Name");
-    #         pm = new ProcessMonitor();
-    #         pm.Start(asString10);        // null -> NullReferenceException
+    #     PluginMessage  "Starting the report window..."
+    #     Alert          "(Report window from adam): detected explorer"
     #
-    # Unhandled, out of HandlePacket+<Run>d__62.MoveNext(), exit 0xe0434352.
-    # The exception surfaces on a background thread about a second later, which
-    # is why two further commands were answered before the process died --
-    # and why the crash was first misattributed to `Notify`, the command in
-    # flight when it went.
+    # and the session carried on. It starts a process monitor and alerts when
+    # the named process appears; it destroys nothing. What killed the client on
+    # 02 Sep was the *bare* packet -- `GetAsString("Name")` returned null and
+    # `ProcessMonitor.Start(null)` threw out of
+    # HandlePacket+<Run>d__62.MoveNext() with 0xe0434352.
     #
-    # It destroys nothing on the host and is here because it costs the rest of
-    # the sweep: the client does not reconnect after its session ends, and its
-    # ONLOGON task only re-launches at the next logon, so one careless
-    # candidate is one logon.
-    #
-    # `Report` with a `Name` field may well be safe. Withheld until that is
-    # measured rather than assumed.
-    "Report",
+    # So the hazard was never the command, it was the shape. Withholding by
+    # name would have gone on hiding a safe capability, and `FATAL_WITHOUT`
+    # below refuses the shape instead.
 })
+
+#: Commands that are fatal *without* a field, rather than dangerous with one.
+#:
+#: A different axis from `DESTRUCTIVE`, and `Report` is why it exists. Nothing
+#: about `Report` destroys anything -- it is fatal only when the field its
+#: handler reads is absent, because the null reaches
+#: `ProcessMonitor.Start(null)` and the unhandled exception ends the session,
+#: taking every unsent command with it.
+#:
+#: Withholding such a command by name is the wrong instrument twice over: it
+#: hides a capability that is safe when asked properly, and it says nothing
+#: about the shape that is actually dangerous. This refuses the shape.
+FATAL_WITHOUT: dict[str, tuple[str, ...]] = {
+    "Report": ("Name",),
+}
 
 #: Sent already, on 02 Sep, in this order. A resume starts after these.
 #:
@@ -370,16 +378,37 @@ class ReplyPlan:
         arrives with the right fields is *more* likely to do what it says.
 
         ``allow`` releases named commands from the withheld set without
-        releasing the rest. It exists because `Report` is the one withheld
-        name a run may specifically be designed to measure -- it was withheld
-        for crashing the client with a null `Name`, and whether a real `Name`
-        is safe cannot be settled by continuing to withhold it. Releasing 33
+        releasing the rest. It exists because `Report` was the one withheld
+        name a run was specifically designed to measure -- it was withheld for
+        crashing the client with a null `Name`, and whether a real `Name` is
+        safe could not be settled by continuing to withhold it. Releasing 33
         commands to ask about one is not a trade worth making, so this is the
         narrow instrument. Released names are recorded on the plan, because a
         run that deliberately sent a held command must say so.
+
+        **A command in `FATAL_WITHOUT` is refused when it lacks its field.**
+        That is a separate axis from withholding and `Report` is why: it is
+        harmless when asked properly and lethal to the session when asked
+        bare, so refusing the name would have hidden a safe capability while
+        refusing nothing that was actually dangerous.
         """
         specs = list(specs)
         allow = {str(name) for name in allow}
+
+        for spec in specs:
+            required = FATAL_WITHOUT.get(spec.name)
+            if not required:
+                continue
+            present = {key for key, _ in spec.fields}
+            missing = [key for key in required if key not in present]
+            if missing:
+                raise ValueError(
+                    f"{spec.name} without {', '.join(missing)} ends the "
+                    f"session: its handler reads the field, gets null, and "
+                    f"the unhandled exception takes every unsent command with "
+                    f"it. Send {spec.name} with "
+                    + ", ".join(f"{key}=<value>" for key in missing)
+                )
 
         unknown = sorted(allow - {s.name for s in specs})
         if unknown:
@@ -435,9 +464,28 @@ class ReplyPlan:
         on what it is sent. The withheld names are listed on the plan so a run
         says what it declined to try rather than quietly shortening its own
         sweep.
+
+        **A `FATAL_WITHOUT` name is withheld here rather than refused**, which
+        is the opposite of what `from_specs` does with it, and deliberately.
+        Every candidate on this path is sent bare, so there is no field to
+        supply and no way to make `Report` safe in a file of names -- raising
+        would make the older bare-name sweeps unusable to protect them from a
+        shape they cannot avoid. Withholding sends everything else and says
+        what it skipped.
         """
+        commands = list(commands)
+        bare_fatal = [n for n in commands if n in FATAL_WITHOUT]
+
         safe, held = partition(commands)
-        chosen = list(commands) if include_destructive else safe
+        safe = [n for n in safe if n not in FATAL_WITHOUT]
+        held = held + [n for n in bare_fatal if n not in held]
+
+        # `include_destructive` releases the destructive; it does not release
+        # a shape that cannot be sent safely at all. There is no field to add
+        # on this path, so the fatal-bare names stay out either way and are
+        # reported either way.
+        chosen = ([n for n in commands if n not in FATAL_WITHOUT]
+                  if include_destructive else safe)
         candidates = [
             Candidate(
                 name,
@@ -448,7 +496,7 @@ class ReplyPlan:
             for name in chosen
         ]
         plan = cls(candidates=candidates or list(GUESSES))
-        plan.withheld = [] if include_destructive else held
+        plan.withheld = list(bare_fatal) if include_destructive else held
         return plan
 
     def next_candidate(self) -> Candidate:

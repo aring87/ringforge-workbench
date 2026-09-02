@@ -158,6 +158,8 @@ bottom of this section.
                         than it, and `silly21` was never an operator tag
     the silent five     four were asked nothing; Preview was never
                         measured. The field sweep is built, not sent
+    the sweep, again    30 of 30, 24 answered, session survived. Report
+                        with a Name is safe. Compiler runs what it compiles
     the field sweep     sent. Six sub-dispatchers answered, Preview
                         answered, and an Integer field ended the session
 
@@ -193,9 +195,10 @@ not verified.
    **post-1.9.0 build**, so the published source dates it rather than
    describing it. What is still open is narrow and named there: whether
    `sillyisafed` is the operator or a newer channel of the author's.
-2. SENT, PARTLY. 18 of 29 went out and 13 answered before an Integer
-   field ended the session. The encoding is now known and enforced;
-   `Report` is still unreached and is the reason to run it again.
+2. CLOSED. The corrected sweep ran end to end -- 30 of 30 sent, 24
+   answered, the session survived all of them. **`Report` with a `Name` is
+   safe** and comes out of the withheld set. See *Pick up here - 02 Sep,
+   the sweep completed*.
 3. CLOSED. Confirmed live: all six sub-dispatchers answered when given
    `Command` or `Action`, and `Preview` answered.
 4. CLOSED. `deferred_stage` now renders in the HTML report as a
@@ -216,6 +219,86 @@ happened next belongs to the thing that happened last", and each was caught by
 going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
+
+### Pick up here — 02 Sep, the sweep completed and `Report` is safe
+
+**30 of 30 sent, 24 answered, the session survived all of them.**
+`Raton_R4qRZ1k3`. The command channel on this sample is now done.
+
+**`Report` with a `Name` does not crash the client.** Sent last, released with
+`--allow Report`: `PluginMessage "Starting the report window..."` then `Alert
+"(Report window from adam): detected explorer"`. It starts a process monitor
+and alerts when the named process appears. The 02 Sep crash was a bare packet
+handing `ProcessMonitor.Start` a null and nothing more. **It comes out of the
+withheld set** -- not destructive, only dangerous in the one shape the
+generator now cannot emit.
+
+**The encoding fix proved out on the command that broke.** `Volume=int:50` was
+parsed, `SetVolume` ran, nothing replied because that case has no reply path,
+and the sweep carried on for twelve more commands.
+
+**`StartShell` then `Shell` is an interactive shell** -- the cmd banner, then
+`C:\Windows\System32>ver` and the version. The precondition read out of
+`CmdShell` confirmed on the wire. `CommandPrompt` is a different path and
+still answers nothing.
+
+**`Compiler` runs what it compiles.** `Type=cs` wrote
+`%Temp%\CompiledCS<random>.exe` and tried to execute it, failing only for want
+of a `Main`. Arbitrary code execution from source text, and it leaves a binary
+behind.
+
+**A third precondition class:** `ChatMessage` answers *"The chat is closed,
+nice try..."* until `Chat` is opened. `PlayAudio` wants an MP3 and said so
+after accepting the bytes. `StartProxy` opened a live SOCKS5 listener on
+18080.
+
+**`CustomGDI` has no in-band stop.** It painted the desktop unusable and kept
+painting; the sweep was complete, and the client takes no commands outside a
+session and does not reconnect after one ends. The payload was killed. It was
+deliberately placed second-to-last and `Report` after it, which is the only
+reason the run's headline result survived.
+
+**Guest state: revert it.** It carries a compiled executable in `%Temp%`, a
+SOCKS5 proxy's history, a report window, a drawing window, an Edge window and
+the overlay. The payload is killed, so nothing is beaconing.
+
+**`Report` is out of `DESTRUCTIVE`, and `FATAL_WITHOUT` replaces it.** A
+command can be safe to send and lethal to send *bare*, which is a different
+axis from destructive and one that withholding by name covers badly in both
+directions -- it hid a safe capability while saying nothing about the shape
+that actually kills. `FATAL_WITHOUT = {"Report": ("Name",)}` refuses the shape:
+`from_specs` raises with the consequence named, and `from_commands` **withholds
+instead of raising**, because every candidate on that path is sent bare and the
+older name-only sweeps list `Report`. `--include-destructive` does not release
+it there either: no flag makes a bare `Report` safe.
+
+`Chat` now precedes `ChatMessage`, and **`CustomGDI` is last** -- it was
+second-to-last on 02 Sep and that is the only reason `Report`'s answer was
+collected before the guest became unusable.
+
+**NOT DONE. Bash was blocked for the rest of that session by a safety check,
+so three things are edited but unverified:**
+
+- **Nothing is committed.** Last commit is `665beb7`. The working tree carries
+  the write-ups here and in `docs/ROADMAP.md`, the `FATAL_WITHOUT` change in
+  `dynamic_analysis/beacon_reply.py`, the sweep reordering in
+  `scripts/build_command_sweep.py`, and the tests for both.
+- **The suite has not been run since those edits.** They were made by reading
+  rather than by testing, and `Report` moving out of `DESTRUCTIVE` reaches
+  three test classes -- `Destructive`, `ReleasingOneHeldCommand` (rewritten
+  onto `Share`, which is held for a reason that will not be measured away) and
+  `TheSweepItself`. Run `pytest -q` before trusting any of it. It stood at
+  1,364.
+- **The staged sweep file is stale.** `tls-commands-fields.txt` in the share
+  and on the artifact drive predates `Chat` and the `CustomGDI` reordering;
+  regenerate with `scripts/build_command_sweep.py --out ...` and re-copy.
+- `\\VBOXSVR\ringforge\gated-run\beacon-fields-2` is **not copied to the
+  artifact drive**. It belongs at
+  `G:\ringforge-artifacts\ce0d08be-fieldsweep2-02sep\`.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 2 - the sweep completed: 30 of 30, and Report with a Name is safe
 
 ### Pick up here — 02 Sep, the field sweep ran and an integer ended it
 

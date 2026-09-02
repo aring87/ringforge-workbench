@@ -1973,6 +1973,96 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 2 — the sweep completed: 30 of 30, and `Report` with a `Name` is safe — 02 Sep
+
+**The corrected sweep ran end to end.** 30 sent, 24 answered, the session
+survived every one of them. `Raton_R4qRZ1k3`, the third distinct per-run UID.
+
+## The question this was built for is answered
+
+`Report` was released with `--allow Report`, sent last, and **did not crash the
+client**:
+
+    PluginMessage  "Starting the report window..."
+    Alert          "(Report window from adam): detected explorer"
+
+It starts a process monitor against the named process and alerts when that
+process is seen. The 02 Sep crash was a bare packet handing
+`ProcessMonitor.Start` a null, and nothing more. **`Report` comes out of the
+withheld set** -- it is not destructive, it was dangerous only in the one shape
+that is now impossible to send by accident.
+
+**The encoding fix proved out on the same command that broke.**
+`Volume=int:50` was parsed, `SetVolume` ran, nothing replied -- that case has
+no reply path -- and the sweep carried on for twelve more commands. Four raw
+bytes is the whole difference between this run and the last.
+
+## What answered, and what it means
+
+**`StartShell` then `Shell` is an interactive shell.** Three frames then two:
+
+    Success  "Shell session started"
+    Shell    Output "Microsoft Windows [Version 10.0.26200.8875]"
+    Shell    Output "(c) Microsoft Corporation. All rights reserved."
+    Shell    Output "C:\Windows\System32>ver"
+    Shell    Output "Microsoft Windows [Version 10.0.26200.8875]"
+
+The precondition read out of `CmdShell`'s first two instructions, confirmed on
+the wire. `CommandPrompt` is a different path and still answers nothing.
+
+**`Compiler` compiles *and executes*.** `Type=cs, Code=class R { }` returned
+
+    Compilation Error: Line 0: Program 'c:\Users\adam\AppData\Local\Temp\
+    CompiledCSBmeqzgH7DHOJ7i0L4yZ5550Z1Vhl9U.exe' does not contain a static
+    'Main' method suitable for an entry point
+
+It wrote an executable and tried to run it. That is arbitrary code execution
+from source text, not merely compilation, and it leaves a binary in `%Temp%`.
+
+**A third precondition class.** `ChatMessage` answered
+`Error: "The chat is closed, nice try..."` -- it needs `Chat` opened first.
+After the sub-dispatchers and the shell, that is three separate reasons a
+command answers nothing that have nothing to do with the command being broken.
+
+**`PlayAudio` wants an MP3**, and its ByteArray path works: `Success "Playing
+audio"` then `Error "Invalid MP3 file - no MP3 Frames Detected"`. The bytes
+arrived as bytes.
+
+**`StartProxy` really does open SOCKS5** -- *"SOCKS5 proxy started on port
+18080"*, a live proxy inside the guest. `ClosePort` answered *"Port 65533
+closed"*, `Website` *"URL Opened"*, `Draw` and `Clipboard` and `CustomGDI` all
+acknowledged.
+
+**Six answered nothing:** `CommandPrompt`, `Notepad`, `Notify`, `Volume`,
+`Webcam`, `Clipper`. Four of those have no reply path in their case at all, so
+silence is the correct result rather than a finding.
+
+## The ordering earned itself
+
+`CustomGDI` painted the desktop into an unusable cascade and kept painting.
+Because the sweep was complete when it fired, **there was no in-band stop**:
+the client does not accept commands outside a session and does not reconnect
+after one ends. The payload had to be killed, which also took down the SOCKS5
+proxy.
+
+It was placed second-to-last for exactly that reason, and `Report` -- the one
+command the run existed to measure -- was placed after it and still answered.
+Had the two been the other way round the run would have cost a logon and
+answered nothing.
+
+## What this leaves
+
+Nothing on the `ce0d08be...` command channel. The 32 field-taking commands
+have been sent properly formed, the withheld set is down to the genuinely
+destructive, and every silence is explained or is a handler with no reply path.
+
+The guest carries a compiled executable in `%Temp%`, a report window, a drawing
+window, an Edge window and the GDI overlay, so it is a revert rather than a
+reuse.
+
+Artifact: `\\VBOXSVR\ringforge\gated-run\beacon-fields-2` -- **not yet copied to
+the artifact drive**, see the handoff.
+
 ### Item 2 — the field sweep ran: six sub-dispatchers answered, and an integer ended it — 02 Sep
 
 **18 of 29 sent, 13 answered, and the session ended at the first integer

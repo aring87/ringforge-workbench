@@ -482,8 +482,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allow", action="append", default=[], metavar="NAME",
         help="release one withheld command by name, repeatable. For a run "
-             "designed to measure a specific held command -- Report is the "
-             "one it was written for -- without releasing the other 33",
+             "designed to measure a specific held command, without releasing "
+             "the rest. Written for Report, which has since been measured "
+             "safe with a Name and is no longer withheld",
     )
     parser.add_argument(
         "--include-destructive", action="store_true",
