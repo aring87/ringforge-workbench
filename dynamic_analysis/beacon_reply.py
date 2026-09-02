@@ -120,6 +120,44 @@ GUESSES: list[Candidate] = [
 ]
 
 
+#: Commands withheld unless asked for explicitly.
+#:
+#: **Measured 02 Sep: the client acts on what it is sent.** It answered `Ping`
+#: on the first candidate, so a sweep is not a probe -- it is a sequence of
+#: instructions to a live RAT. The list below is every recovered name that
+#: destroys data, denies access to the machine, or changes its configuration
+#: in a way a restore is needed to undo.
+#:
+#: `Jigsaw` is the one that decides the default. It is a ransomware family
+#: name sitting beside `Encrypt` and `Decrypt`, and the guest disk holds the
+#: run's own outputs -- a sweep that reaches it takes the evidence with it.
+#:
+#: The guest is snapshotted and disposable, so this is not about safety of the
+#: bench. It is about not destroying a run in progress, and about a sweep being
+#: a decision rather than a side effect of ordering.
+DESTRUCTIVE = frozenset({
+    # data and availability
+    "Jigsaw", "Encrypt", "Decrypt", "Melt", "StopMelt", "BSOD", "DDOS",
+    "DDOSstop", "Shutdown", "Restart", "LogOff", "Kill", "ChangePassword",
+    "Empty", "StopEmpty", "forkbomb",
+    # input and display denial -- recoverable, but they end a session you are
+    # trying to observe
+    "Lock", "BlockInput", "TrapMouse", "HideMouse", "Screamer",
+    # configuration changes that outlive the run
+    "Defender", "Bypass", "HideFile", "AddToStartup", "Startup", "StartupTask",
+    "regdisable", "taskdisable", "cmddisable", "ChangeIcons", "Wallpaper",
+    "Update", "Uninstall", "Disconnect",
+})
+
+
+def partition(names: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Split a command list into what is safe to send and what is not."""
+    names = list(names)
+    safe = [n for n in names if n not in DESTRUCTIVE]
+    held = [n for n in names if n in DESTRUCTIVE]
+    return safe, held
+
+
 @dataclass
 class ReplyPlan:
     """Walks the candidates, one per connection, and records what each did."""
@@ -127,15 +165,36 @@ class ReplyPlan:
     candidates: list[Candidate] = field(default_factory=lambda: list(GUESSES))
     index: int = 0
     results: list[dict[str, Any]] = field(default_factory=list)
+    withheld: list[str] = field(default_factory=list)
+
+    def exhausted(self) -> bool:
+        """True once every candidate has been sent at least once.
+
+        A held-open session walks the whole list in one connection, so unlike
+        the per-connection sweep it can finish -- and a run that keeps sending
+        after it has finished is only re-testing.
+        """
+        return self.index >= len(self.candidates)
 
     @classmethod
-    def from_commands(cls, commands: Iterable[str]) -> "ReplyPlan":
+    def from_commands(
+        cls,
+        commands: Iterable[str],
+        include_destructive: bool = False,
+    ) -> "ReplyPlan":
         """A plan over command names extracted from the payload assembly.
 
         This is the version that is not guessing. `stuff.dll` carries no
         command names -- it is the transport -- so the vocabulary comes from
         the payload's own user-string heap.
+
+        ``include_destructive`` is off because the client was measured acting
+        on what it is sent. The withheld names are listed on the plan so a run
+        says what it declined to try rather than quietly shortening its own
+        sweep.
         """
+        safe, held = partition(commands)
+        chosen = list(commands) if include_destructive else safe
         candidates = [
             Candidate(
                 name,
@@ -143,9 +202,11 @@ class ReplyPlan:
                 "From the payload's own string heap, so it is a name the "
                 "client's dispatcher knows.",
             )
-            for name in commands
+            for name in chosen
         ]
-        return cls(candidates=candidates or list(GUESSES))
+        plan = cls(candidates=candidates or list(GUESSES))
+        plan.withheld = [] if include_destructive else held
+        return plan
 
     def next_candidate(self) -> Candidate:
         candidate = self.candidates[self.index % len(self.candidates)]
@@ -173,6 +234,8 @@ class ReplyPlan:
         answered = [r for r in self.results if r["answered"]]
         return {
             "candidates_tried": len(self.results),
+            "candidates_total": len(self.candidates),
+            "withheld_as_destructive": self.withheld,
             "answered": [r["candidate"] for r in answered],
             "note": (
                 f"{answered[0]['candidate']} was answered -- the client parsed "

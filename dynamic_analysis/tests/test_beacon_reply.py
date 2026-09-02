@@ -16,11 +16,13 @@ import unittest
 
 from dynamic_analysis.beacon_frame import decode_dictionary, parse_frame
 from dynamic_analysis.beacon_reply import (
+    DESTRUCTIVE,
     GUESSES,
     Candidate,
     ReplyPlan,
     build_reply,
     encode_dictionary,
+    partition,
 )
 
 
@@ -118,6 +120,79 @@ class Plan(unittest.TestCase):
         parsed = parse_frame(candidate.frame())
 
         self.assertTrue(parsed["ok"], parsed["problems"])
+
+
+class Destructive(unittest.TestCase):
+    """The client acts on what it is sent, so a sweep is not a probe.
+
+    Measured 02 Sep: it answered `Ping` on the first candidate. The recovered
+    vocabulary contains `Jigsaw` beside `Encrypt` and `Decrypt`, and the guest
+    disk holds the run's own outputs -- a sweep that reaches those takes the
+    evidence with it. The guest is disposable; the run in progress is not.
+    """
+
+    def test_the_dangerous_names_are_withheld_by_default(self) -> None:
+        plan = ReplyPlan.from_commands(["Ping", "Jigsaw", "Geo", "BSOD"])
+
+        self.assertEqual([c.name for c in plan.candidates], ["Ping", "Geo"])
+        self.assertEqual(plan.withheld, ["Jigsaw", "BSOD"])
+
+    def test_they_are_sent_when_asked_for(self) -> None:
+        plan = ReplyPlan.from_commands(
+            ["Ping", "Jigsaw"], include_destructive=True
+        )
+
+        self.assertEqual([c.name for c in plan.candidates], ["Ping", "Jigsaw"])
+        self.assertEqual(plan.withheld, [])
+
+    def test_the_summary_says_what_was_not_tried(self) -> None:
+        """A sweep that quietly shortened itself would read as a vocabulary
+        that failed, rather than one that was never sent."""
+        plan = ReplyPlan.from_commands(["Ping", "Melt"])
+        plan.record(plan.next_candidate(), reply_bytes=70, closed_by="complete frame")
+
+        summary = plan.summary()
+        self.assertEqual(summary["withheld_as_destructive"], ["Melt"])
+        self.assertEqual(summary["candidates_total"], 1)
+
+    def test_partition_keeps_order(self) -> None:
+        safe, held = partition(["Geo", "BSOD", "Ping", "Encrypt"])
+
+        self.assertEqual(safe, ["Geo", "Ping"])
+        self.assertEqual(held, ["BSOD", "Encrypt"])
+
+    def test_ransom_and_wipe_names_are_all_covered(self) -> None:
+        for name in ("Jigsaw", "Encrypt", "Decrypt", "Melt", "BSOD", "DDOS",
+                     "Shutdown", "Kill", "ChangePassword"):
+            self.assertIn(name, DESTRUCTIVE, name)
+
+
+class SessionSweep(unittest.TestCase):
+    """One connection, many commands.
+
+    The per-connection design was built on the client re-dialling every 17 s.
+    Measured 02 Sep: once it gets a valid reply it stops reconnecting -- nine
+    minutes of silence after answering `Ping` -- so a sweep that closes after
+    each command gets one candidate per *run*, and the recovered vocabulary
+    would need 165 restarts.
+    """
+
+    def test_a_plan_finishes(self) -> None:
+        plan = ReplyPlan.from_commands(["Ping", "Geo", "PortSpy"])
+
+        self.assertFalse(plan.exhausted())
+        for _ in range(3):
+            plan.next_candidate()
+
+        self.assertTrue(plan.exhausted())
+
+    def test_an_empty_plan_is_exhausted_but_not_empty(self) -> None:
+        """`from_commands([])` falls back to the guesses rather than sending
+        nothing, so exhaustion still means "the list was walked"."""
+        plan = ReplyPlan.from_commands([])
+
+        self.assertFalse(plan.exhausted())
+        self.assertTrue(plan.candidates)
 
 
 if __name__ == "__main__":

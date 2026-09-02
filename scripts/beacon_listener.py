@@ -68,7 +68,7 @@ from dynamic_analysis.beacon_frame import (  # noqa: E402
     frame_length,
     parse_frame,
 )
-from dynamic_analysis.beacon_reply import ReplyPlan  # noqa: E402
+from dynamic_analysis.beacon_reply import DESTRUCTIVE, ReplyPlan  # noqa: E402
 
 DEFAULT_PORT = 7372
 DEFAULT_HOST = "127.0.0.1"
@@ -255,60 +255,78 @@ def serve(
                 # The reply, and then whatever the client makes of it. This is
                 # the only part of the protocol nobody has ever seen: the
                 # client has never been answered, so no command has reached it.
+                # A held-open session, not one command per connection.
+                #
+                # Measured 02 Sep: the client answered `Ping` and then stopped
+                # reconnecting for nine minutes. A valid reply moves it into a
+                # connected state where it no longer re-dials, so a sweep that
+                # closes after each command gets exactly one candidate per run
+                # -- 165 restarts for the recovered vocabulary. The panel
+                # evidently drives a persistent session, and the client sent
+                # its second frame immediately, so this holds the socket and
+                # walks the list down it.
                 if plan is not None and received:
-                    candidate = plan.next_candidate()
-                    frame = candidate.frame()
-                    try:
-                        conn.sendall(frame)
-                    except OSError as error:
-                        record["reply_error"] = str(error)
-                        print(f"  ! could not send {candidate.name}: {error}")
-                    else:
-                        print(f"  replied {candidate.name}: {len(frame)} bytes")
+                    exchange = 0
+                    while not plan.exhausted():
+                        candidate = plan.next_candidate()
+                        frame = candidate.frame()
+                        exchange += 1
+                        try:
+                            conn.sendall(frame)
+                        except OSError as error:
+                            record.setdefault("reply_errors", []).append(
+                                f"{candidate.name}: {error}"
+                            )
+                            print(f"  ! could not send {candidate.name}: {error}")
+                            break
+
+                        print(f"  [{exchange}] sent {candidate.name} "
+                              f"({len(frame)} bytes)")
                         follow_up = b""
                         while True:
                             try:
                                 chunk = conn.recv(65536)
                             except socket.timeout:
-                                closed = "read timeout after reply"
+                                closed = "read timeout"
                                 break
                             except OSError as error:
-                                closed = f"error after reply: {error}"
+                                closed = f"error: {error}"
                                 break
                             if not chunk:
-                                closed = "client closed after reply"
+                                closed = "client closed"
                                 break
                             follow_up += chunk
                             if len(follow_up) >= HEADER_SIZE:
                                 want = frame_length(follow_up[:HEADER_SIZE])
                                 if want and len(follow_up) >= want:
-                                    closed = "complete frame after reply"
+                                    closed = "complete frame"
                                     break
 
                         outcome = plan.record(candidate, len(follow_up), closed)
-                        record["reply"] = outcome
+                        record.setdefault("exchanges", []).append(outcome)
+
                         if follow_up:
-                            blob = raw_dir / f"conn{index:04d}-reply.bin"
+                            blob = raw_dir / f"conn{index:04d}-{exchange:03d}-{candidate.name}.bin"
                             blob.write_bytes(follow_up)
                             summary["answered_replies"] += 1
-                            print(f"  ANSWERED: {len(follow_up)} bytes back "
+                            print(f"      ANSWERED {len(follow_up)} bytes "
                                   f"-> {blob.name}")
-                            for line in _hexdump(follow_up):
-                                print(line)
                             answer = parse_frame(follow_up)
-                            record["reply_frame"] = {
-                                "ok": answer["ok"],
-                                "problems": answer["problems"],
-                                "decompressed_hex": answer["decompressed"][:4096].hex(),
-                            }
                             if answer["ok"]:
                                 body = decode_dictionary(answer["decompressed"])
-                                record["reply_fields"] = body["pairs"]
-                                print("  reply fields:")
+                                outcome["fields"] = body["pairs"]
                                 for key, value in body["pairs"]:
-                                    print(f"    {key} = {value!r}")
+                                    print(f"        {key} = {value!r}")
+                            else:
+                                outcome["problems"] = answer["problems"]
+                                for line in _hexdump(follow_up, limit=160):
+                                    print(line)
                         else:
-                            print(f"  no answer ({closed})")
+                            print(f"      no answer ({closed})")
+
+                        if closed == "client closed":
+                            print("      session ended by the client")
+                            break
 
                 if received:
                     summary["connections_that_sent_bytes"] += 1
@@ -413,6 +431,12 @@ def main(argv: list[str] | None = None) -> int:
              "built-in guesses. Extract them from the payload assembly with "
              "dotnet_meta.py --strings user",
     )
+    parser.add_argument(
+        "--include-destructive", action="store_true",
+        help=f"also send the {len(DESTRUCTIVE)} commands withheld by default. "
+             "The client acts on what it is sent, and these destroy data, deny "
+             "access, or change configuration a restore is needed to undo",
+    )
     args = parser.parse_args(argv)
 
     host = "0.0.0.0" if args.any_address else args.host
@@ -428,8 +452,17 @@ def main(argv: list[str] | None = None) -> int:
                 for line in Path(args.commands).read_text(encoding="utf-8").splitlines()
                 if line.strip() and not line.startswith("#")
             ]
-            plan = ReplyPlan.from_commands(names)
-            print(f"replying from {len(names)} command name(s) in {args.commands}")
+            plan = ReplyPlan.from_commands(
+                names, include_destructive=args.include_destructive
+            )
+            print(f"replying from {len(plan.candidates)} of {len(names)} "
+                  f"command name(s) in {args.commands}")
+            if plan.withheld:
+                print(f"withholding {len(plan.withheld)} destructive: "
+                      + ", ".join(plan.withheld[:8])
+                      + (" ..." if len(plan.withheld) > 8 else ""))
+                print("  --include-destructive sends them; the client acts on "
+                      "what it is sent")
         else:
             plan = ReplyPlan()
             print(f"replying from {len(plan.candidates)} built-in candidates -- "
