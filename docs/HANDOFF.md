@@ -258,9 +258,10 @@ session and does not reconnect after one ends. The payload was killed. It was
 deliberately placed second-to-last and `Report` after it, which is the only
 reason the run's headline result survived.
 
-**Guest state: revert it.** It carries a compiled executable in `%Temp%`, a
-SOCKS5 proxy's history, a report window, a drawing window, an Edge window and
-the overlay. The payload is killed, so nothing is beaconing.
+**Guest state: reverted.** Back on `ce0d08be-armed-gated-tooled`, powered off,
+NIC1 cable off. The run left a compiled executable in `%Temp%`, a report
+window, a drawing window, an Edge window and the overlay, so it was a revert
+rather than a reuse.
 
 **`Report` is out of `DESTRUCTIVE`, and `FATAL_WITHOUT` replaces it.** A
 command can be safe to send and lethal to send *bare*, which is a different
@@ -276,25 +277,19 @@ it there either: no flag makes a bare `Report` safe.
 second-to-last on 02 Sep and that is the only reason `Report`'s answer was
 collected before the guest became unusable.
 
-**NOT DONE. Bash was blocked for the rest of that session by a safety check,
-so three things are edited but unverified:**
+**Everything from this run is committed, tested and archived.** Suite 1,370.
+The sweep regenerates at 31 commands and is re-staged in the share and on the
+artifact drive. `ReleasingOneHeldCommand` moved off `Report` and onto `Share`,
+which is held for a reason that will not be measured away.
 
-- **Nothing is committed.** Last commit is `665beb7`. The working tree carries
-  the write-ups here and in `docs/ROADMAP.md`, the `FATAL_WITHOUT` change in
-  `dynamic_analysis/beacon_reply.py`, the sweep reordering in
-  `scripts/build_command_sweep.py`, and the tests for both.
-- **The suite has not been run since those edits.** They were made by reading
-  rather than by testing, and `Report` moving out of `DESTRUCTIVE` reaches
-  three test classes -- `Destructive`, `ReleasingOneHeldCommand` (rewritten
-  onto `Share`, which is held for a reason that will not be measured away) and
-  `TheSweepItself`. Run `pytest -q` before trusting any of it. It stood at
-  1,364.
-- **The staged sweep file is stale.** `tls-commands-fields.txt` in the share
-  and on the artifact drive predates `Chat` and the `CustomGDI` reordering;
-  regenerate with `scripts/build_command_sweep.py --out ...` and re-copy.
-- `\\VBOXSVR\ringforge\gated-run\beacon-fields-2` is **not copied to the
-  artifact drive**. It belongs at
-  `G:\ringforge-artifacts\ce0d08be-fieldsweep2-02sep\`.
+**The command channel on `ce0d08be...` is finished.** All four items the
+02 Sep end-of-session list named are closed. What is left on this sample is
+the one thread the attribution section names: whether `sillyisafed` is the
+operator or a newer channel of the author's, which is host-side research and
+not a detonation.
+
+Artifact: `G:\ringforge-artifacts\ce0d08be-fieldsweep2-02sep\`, with a README
+carrying the full reading.
 
 Read, in `docs/ROADMAP.md`:
 
