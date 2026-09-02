@@ -1811,11 +1811,20 @@ dispatches from names it does not and says which. The 165 strings recovered
 from the heap can therefore be *verified* rather than assumed -- every name
 classifies as known, unknown, or acted upon, without understanding any of them.
 
-**`Notify` terminates the client**, and the Application log names the bug:
-`System.NullReferenceException at ProcessMonitor.Start(System.String, Int32)`,
-from `HandlePacket+<Run>d__62.MoveNext()`, unhandled, exit code `0xe0434352`.
-Sent with no fields, the handler dereferences null and nothing catches it. The
-trace also confirms `HandlePacket.Run` as the dispatcher.
+**`Report` terminates the client** -- not `Notify`, which was the first
+attribution and was wrong. The decompiled dispatcher settles it:
+
+    case "Report":
+        string asString10 = unpack.GetAsString("Name");
+        pm = new ProcessMonitor();
+        pm.Start(asString10);        // null -> NullReferenceException
+
+Unhandled, out of `HandlePacket+<Run>d__62.MoveNext()`, exit `0xe0434352`,
+matching the logged trace exactly. The exception surfaces on a background
+thread about a second later, which is why `Survival` and `Notify` were still
+processed before the process died -- and why the command *in flight* looked
+like the culprit. `Notify` reads `title` and `content` and builds a balloon
+tip.
 **That is a free denial of service against this family**, and it is also the
 constraint on enumerating the rest: the client does not reconnect after a
 session ends, and its `ONLOGON` task only re-launches it at the next logon, so

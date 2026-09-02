@@ -147,16 +147,28 @@ DESTRUCTIVE = frozenset({
     "Defender", "Bypass", "HideFile", "AddToStartup", "Startup", "StartupTask",
     "regdisable", "taskdisable", "cmddisable", "ChangeIcons", "Wallpaper",
     "Update", "Uninstall", "Disconnect",
-    # Kills the client, measured. Sent with no fields it reaches
-    # ProcessMonitor.Start(String, Int32), dereferences null, and the exception
-    # is unhandled: System.NullReferenceException out of
-    # HandlePacket+<Run>d__62.MoveNext(), exit code 0xe0434352.
+    # Kills the client, measured 02 Sep, and the decompiled dispatcher says
+    # exactly why:
     #
-    # It destroys nothing on the host, and it is here because it costs the rest
-    # of the sweep. The client does not reconnect after its session ends and
-    # its ONLOGON task only re-launches at the next logon, so one careless
+    #     case "Report":
+    #         string asString10 = unpack.GetAsString("Name");
+    #         pm = new ProcessMonitor();
+    #         pm.Start(asString10);        // null -> NullReferenceException
+    #
+    # Unhandled, out of HandlePacket+<Run>d__62.MoveNext(), exit 0xe0434352.
+    # The exception surfaces on a background thread about a second later, which
+    # is why two further commands were answered before the process died --
+    # and why the crash was first misattributed to `Notify`, the command in
+    # flight when it went.
+    #
+    # It destroys nothing on the host and is here because it costs the rest of
+    # the sweep: the client does not reconnect after its session ends, and its
+    # ONLOGON task only re-launches at the next logon, so one careless
     # candidate is one logon.
-    "Notify",
+    #
+    # `Report` with a `Name` field may well be safe. Withheld until that is
+    # measured rather than assumed.
+    "Report",
 })
 
 #: Sent already, on 02 Sep, in this order. A resume starts after these.

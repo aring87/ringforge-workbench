@@ -166,6 +166,15 @@ class Destructive(unittest.TestCase):
                      "Shutdown", "Kill", "ChangePassword"):
             self.assertIn(name, DESTRUCTIVE, name)
 
+    def test_report_is_withheld_and_notify_is_not(self) -> None:
+        """The crash was first blamed on `Notify`, the command in flight when
+        the process died. The decompiled dispatcher names the real one:
+        `Report` reads `Name`, gets null from a bare packet, and hands it to
+        ProcessMonitor.Start. `Notify` reads title and content and builds a
+        balloon tip."""
+        self.assertIn("Report", DESTRUCTIVE)
+        self.assertNotIn("Notify", DESTRUCTIVE)
+
 
 class SessionSweep(unittest.TestCase):
     """One connection, many commands.
