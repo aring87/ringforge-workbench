@@ -762,7 +762,7 @@ class APIAnalysisWindow(tk.Toplevel):
         return text
         
     def _get_active_case_dir(self) -> Path:
-        """
+        r"""
         Resolve the current RingForge case folder from the parent app context.
 
         Expected structure:

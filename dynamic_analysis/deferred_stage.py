@@ -42,13 +42,40 @@ from typing import Any
 DEFERRED_TRIGGER_REASONS = ("logon_trigger", "boot_trigger")
 
 
+#: Where `diff_tasks` puts the entries, plus every alias this has guessed at.
+#:
+#: **`new_tasks` is the one the orchestrator actually writes**, and it was
+#: missing until the first live run, 02 Sep. The module was built against
+#: assumed key names and its tests used `added_tasks`, so the scheduled-task
+#: branch never fired on real data. It looked like it worked because Autoruns
+#: independently enumerates Task Scheduler and the autorun branch caught the
+#: same task -- a false negative hidden by a second collector, which is the
+#: exact failure this module exists to prevent, in the module itself.
+#:
+#: `modified_tasks` counts for the same reason a new one does: a task edited
+#: during the run to fire at the next logon is a stage this run will not watch.
+#: `removed_tasks` never counts.
+DEFERRED_TASK_KEYS = (
+    "new_tasks",
+    "modified_tasks",
+    "added_tasks",
+    "suspicious_added_tasks",
+    "added",
+    "suspicious_tasks",
+)
+
+
 def _tasks_with_deferred_triggers(task_diff_summary: dict[str, Any]) -> list[dict[str, Any]]:
-    """Added tasks that fire at a future logon or boot."""
+    """Added or modified tasks that fire at a future logon or boot."""
     if not isinstance(task_diff_summary, dict):
         return []
 
     found: list[dict[str, Any]] = []
-    for key in ("added_tasks", "suspicious_added_tasks", "added", "suspicious_tasks"):
+    # Every key, not the first that yields: the aliases are guesses at one
+    # collector's shape, and stopping at the first match is how `new_tasks`
+    # went unread while `added_tasks` sat in the tests. Duplicates across
+    # aliases are removed by the equality check below.
+    for key in DEFERRED_TASK_KEYS:
         entries = task_diff_summary.get(key)
         if not isinstance(entries, list):
             continue
@@ -69,9 +96,40 @@ def _tasks_with_deferred_triggers(task_diff_summary: dict[str, Any]) -> list[dic
             }
             if record not in found:
                 found.append(record)
-        if found:
-            break
     return found
+
+
+def _normalized_action(record: dict[str, Any]) -> str:
+    """The image a record points at, comparable across collectors."""
+    return str(record.get("action") or "").strip().strip('"').casefold()
+
+
+def _merge_duplicate_stages(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One persistence entry seen by two collectors is one deferred stage.
+
+    Autoruns enumerates Task Scheduler, so a task installed during the run
+    arrives here twice -- measured on `ce0d08be...`, 02 Sep, where the same
+    image came back as `scheduled_task` and as `autorun`. Counting both would
+    put "2" on a card describing one thing, and a count that overstates the
+    gap is the same kind of wrong as one that hides it.
+
+    The scheduled-task record wins, because it names the trigger. The autorun
+    record only knows the entry is a start-up hook.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for record in records:
+        action = _normalized_action(record)
+        if action and action in seen:
+            index = seen[action]
+            if (merged[index].get("kind") != "scheduled_task"
+                    and record.get("kind") == "scheduled_task"):
+                merged[index] = record
+            continue
+        if action:
+            seen[action] = len(merged)
+        merged.append(record)
+    return merged
 
 
 def _first_action(entry: dict[str, Any]) -> str:
@@ -124,8 +182,10 @@ def assess_deferred_stage(
     ``observed`` is always False and is stated rather than implied, because the
     whole point is that the pipeline observes one boot.
     """
-    entries = _tasks_with_deferred_triggers(task_diff_summary or {})
-    entries += _autorun_entries(autoruns_diff_summary or {})
+    entries = _merge_duplicate_stages(
+        _tasks_with_deferred_triggers(task_diff_summary or {})
+        + _autorun_entries(autoruns_diff_summary or {})
+    )
 
     result: dict[str, Any] = {
         "present": bool(entries),

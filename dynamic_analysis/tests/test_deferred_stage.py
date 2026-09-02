@@ -242,5 +242,108 @@ class ReportSection(unittest.TestCase):
         self.assertIn("&lt;script&gt;", html)
 
 
+class TheShapeTheOrchestratorActuallyWrites(unittest.TestCase):
+    """Read off the first live run, 02 Sep, which is where the bug surfaced.
+
+    The module was built against assumed key names and its tests used
+    `added_tasks`. `diff_tasks` writes **`new_tasks`**, so the scheduled-task
+    branch never fired on real data -- and nobody noticed, because Autoruns
+    enumerates Task Scheduler and the autorun branch caught the same task.
+
+    A false negative hidden by a second collector is precisely the failure this
+    module exists to prevent, occurring inside the module. These pin the real
+    shape rather than a remembered one.
+    """
+
+    #: One entry from `persistence/task_diffs.json`, run 96f6ee01, trimmed.
+    LIVE_TASK = {
+        "name": None,
+        "task_name": "ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1",
+        "reasons": ["logon_trigger", "execute_in_suspicious_path"],
+        "suspicious_reasons": None,
+        "triggers": [{"enabled": True, "trigger_type": "MSFT_TaskLogonTrigger"}],
+        "actions": [{
+            "execute": '"C:\\Users\\adam\\AppData\\Roaming\\PlatformRuntime\\'
+                       'ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1.exe"',
+            "arguments": "",
+            "working_directory": "",
+        }],
+    }
+
+    #: The same persistence as Autoruns reports it.
+    LIVE_AUTORUN = {
+        "entry": "\\ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1",
+        "entry_location": "Task Scheduler",
+        "image_path": "C:\\Users\\adam\\AppData\\Roaming\\PlatformRuntime\\"
+                      "ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1.exe",
+    }
+
+    def test_new_tasks_is_read(self) -> None:
+        result = assess_deferred_stage(
+            task_diff_summary={"new_tasks": [self.LIVE_TASK]}
+        )
+
+        self.assertTrue(result["present"])
+        self.assertEqual(result["entries"][0]["kind"], "scheduled_task")
+        self.assertEqual(result["entries"][0]["triggers"], ["logon_trigger"])
+
+    def test_modified_tasks_counts_too(self) -> None:
+        """A task edited during the run to fire at the next logon is a stage
+        this run will not watch, exactly like a new one."""
+        result = assess_deferred_stage(
+            task_diff_summary={"modified_tasks": [self.LIVE_TASK]}
+        )
+
+        self.assertTrue(result["present"])
+
+    def test_removed_tasks_never_counts(self) -> None:
+        result = assess_deferred_stage(
+            task_diff_summary={"removed_tasks": [self.LIVE_TASK]}
+        )
+
+        self.assertFalse(result["present"])
+
+    def test_one_persistence_seen_by_two_collectors_counts_once(self) -> None:
+        """Autoruns enumerates Task Scheduler, so the same task arrives twice.
+        A count that overstates the gap is as wrong as one that hides it."""
+        result = assess_deferred_stage(
+            task_diff_summary={"new_tasks": [self.LIVE_TASK]},
+            autoruns_diff_summary={"suspicious_new_entries": [self.LIVE_AUTORUN]},
+        )
+
+        self.assertEqual(result["entry_count"], 1)
+
+    def test_the_richer_record_survives_the_merge(self) -> None:
+        """The task record names the trigger; the autorun record does not."""
+        result = assess_deferred_stage(
+            task_diff_summary={"new_tasks": [self.LIVE_TASK]},
+            autoruns_diff_summary={"suspicious_new_entries": [self.LIVE_AUTORUN]},
+        )
+
+        self.assertEqual(result["entries"][0]["kind"], "scheduled_task")
+        self.assertEqual(result["entries"][0]["triggers"], ["logon_trigger"])
+
+    def test_two_different_images_are_not_merged(self) -> None:
+        other = dict(self.LIVE_AUTORUN, image_path="C:\\Windows\\other.exe")
+
+        result = assess_deferred_stage(
+            task_diff_summary={"new_tasks": [self.LIVE_TASK]},
+            autoruns_diff_summary={"suspicious_new_entries": [other]},
+        )
+
+        self.assertEqual(result["entry_count"], 2)
+
+    def test_entries_without_an_action_are_not_merged_together(self) -> None:
+        """An empty action is not evidence that two entries are one entry."""
+        bare = {"task_name": "a", "reasons": ["logon_trigger"]}
+        other = {"task_name": "b", "reasons": ["boot_trigger"]}
+
+        result = assess_deferred_stage(
+            task_diff_summary={"new_tasks": [bare, other]}
+        )
+
+        self.assertEqual(result["entry_count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

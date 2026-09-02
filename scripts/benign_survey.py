@@ -1,4 +1,4 @@
-"""A wide, cheap benign corpus for calibrating thresholds -- not for measuring rates.
+r"""A wide, cheap benign corpus for calibrating thresholds -- not for measuring rates.
 
 **Written on 28 Aug because three thresholds were set against 592 binaries and
 each was limited by a different thinness in that corpus. All three are now

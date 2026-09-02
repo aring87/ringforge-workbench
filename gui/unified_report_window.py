@@ -19,7 +19,7 @@ except Exception:
 
 
 class UnifiedReportWindow(tk.Toplevel):
-    """
+    r"""
     Unified RingForge report window with the cleaned case-home layout.
 
     Preferred layout:

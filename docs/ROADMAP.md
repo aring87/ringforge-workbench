@@ -1973,6 +1973,95 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — `deferred_stage` against a live run — 02 Sep
+
+**Built in the morning with 14 tests, met real data in the evening, and had a
+false negative in it.** The run:
+
+    verdict            105 · High · Likely Malicious
+    network_isolation  ok
+    observation        146 s, ended_because post_exit_observation_complete
+    exit_code          0, installer mode
+    run                ce0d08be516376f5decc3bf6_20260902_224500_96f6ee01
+
+**The card renders.** `deferred_stage.present: true`, `observed: false`, one
+entry, and the HTML carries *Deferred Stage — Installed, Not Observed* with the
+note, the entry naming `%AppData%\PlatformRuntime\ce0d08be....exe`, and the
+six-step procedure down to `vm_gated_logon.ps1 -ProveChannel`. A correct verdict
+about the installer, and a report that says the resident stage was never
+watched. That is the argument the module was written on, now demonstrated
+rather than asserted.
+
+## The bug, and why a run found what fixtures could not
+
+`diff_tasks` writes its entries under **`new_tasks`**. `deferred_stage` looked
+for `added_tasks`, `suspicious_added_tasks`, `added`, `suspicious_tasks` -- key
+names assumed when it was written, with `added_tasks` used in its own tests. On
+real data **the scheduled-task branch matched nothing.**
+
+It rendered anyway. **Autoruns independently enumerates Task Scheduler**, so the
+autorun branch caught the same task and produced the weaker record: `kind:
+autorun`, `location: Task Scheduler`, no trigger named.
+
+**A false negative concealed by a second collector is exactly the failure this
+module exists to prevent, occurring inside the module.** On a sample whose
+persistence Autoruns does not enumerate, or a run with autoruns disabled, it
+would have reported `present: false` -- clean, and wrong, on the one question it
+was built to answer.
+
+Two fixes:
+
+    DEFERRED_TASK_KEYS      gains new_tasks and modified_tasks, and EVERY key
+                            is scanned rather than stopping at the first that
+                            yields. Stopping early is how new_tasks went unread
+                            while added_tasks sat in the tests
+    _merge_duplicate_stages one persistence seen by two collectors is one
+                            deferred stage. Keyed on the image path, keeping
+                            the scheduled-task record because it names the
+                            trigger. A count that overstates the gap is as
+                            wrong as one that hides it
+
+Re-run against this capture's own `task_diffs.json` and `autoruns_diff.json`:
+one entry, `kind: scheduled_task`, `triggers: ["logon_trigger"]`. Seven
+regression tests pin the live shape in
+`TheShapeTheOrchestratorActuallyWrites`. Suite 1,370 -> 1,377.
+
+## Two structural traps the preflight caught
+
+**The guest's YARA rules are frozen at its baseline.** `tools/yara/rules/` is
+gitignored, so nothing a `git` operation does to the guest touches them;
+`ringforge_raton.yar`, written that morning, was absent -- the rule for the
+exact sample being detonated. The strip said `Mem YARA: ready -- 1 local
+rule(s) MISSING` and that is the only reason it was noticed. Without it the
+memory-YARA category returns empty, which reads as "nothing matched" rather
+than "nothing was loaded".
+
+**Post-exit longer than the timeout truncates the window silently.** Timeout 60
+against post-exit 120 would have stopped at 60 s. The GUI warns; the timeout
+went to 180 and the run ended on `post_exit_observation_complete`.
+
+## Staging a contained guest, which is worth reusing
+
+The guest has no network path out, so it cannot `git pull` -- and the workflow
+already notes a pull does not survive a revert. What worked cleanly: a **git
+bundle over the shared folder**.
+
+    host   git bundle create <share>\ringforge.bundle main
+    guest  git fetch <share>\ringforge.bundle main
+           git reset --hard FETCH_HEAD
+
+Complete history, one file, and the commit hash is verifiable at both ends --
+better than copying directories and hoping the set was right.
+
+**And a detail that cost twenty minutes:** the archived sample carries
+**Hidden+System** attributes, which 7-Zip preserves. It was in `samples\` the
+whole time, invisible to the file picker and to `Get-ChildItem` without
+`-Force`. The search went to Defender first, which had nothing to do with it --
+real-time off, tamper off, no detections. `7z l` showed `..HS.` in the Attr
+column and settled it.
+
+Artifact: `G:\ringforge-artifacts\ce0d08be-deferredstage-02sep\`.
+
 ### Item 1 — `sillyisafed` is the author's channel, and the build rule was mostly defaults — 02 Sep
 
 **The last open thread on this sample, closed, and it took a rule with it.**

@@ -220,6 +220,59 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, `deferred_stage` met real data and failed in the way it warns about
+
+**The card renders, and the module had a false negative in it.** First
+orchestrator run since it was built: `ce0d08be...` scored **105 · High ·
+Likely Malicious** on its installer, `network_isolation ok`, 146 s ending on
+`post_exit_observation_complete` — and the HTML grew *Deferred Stage —
+Installed, Not Observed*, with the note, the entry naming
+`%AppData%\PlatformRuntime\ce0d08be....exe`, and the six-step gated procedure.
+A correct verdict about the installer, and the report saying out loud that the
+resident stage was never watched.
+
+**Then the bug.** `diff_tasks` writes its entries under **`new_tasks`**. The
+module looked for `added_tasks`, `suspicious_added_tasks`, `added` and
+`suspicious_tasks` — assumed key names, with `added_tasks` in its own tests. On
+real data the scheduled-task branch matched **nothing**.
+
+It rendered anyway because **Autoruns independently enumerates Task
+Scheduler**, so the autorun branch caught the same task and produced the
+vaguer record: `kind: autorun`, no trigger named. **A false negative hidden by
+a second collector — the exact failure this module exists to prevent,
+occurring inside the module.** With autoruns off, or a persistence Autoruns
+does not list, it would have reported `present: false`.
+
+Fixed: `DEFERRED_TASK_KEYS` gains `new_tasks` and `modified_tasks` and **every**
+key is scanned instead of stopping at the first that yields — stopping early is
+how this hid. `_merge_duplicate_stages` collapses one persistence seen by two
+collectors into one entry, keyed on the image path, keeping the scheduled-task
+record because it names the trigger. Against this run's own data the assessment
+now returns one entry, `kind: scheduled_task`, `triggers: ["logon_trigger"]`.
+Seven regression tests pin the live shape. Suite 1,370 -> **1,377**.
+
+**Two traps the preflight caught, both structural.** `tools/yara/rules/` is
+gitignored, so the guest's deployed rules are frozen at whatever its baseline
+snapshot carried — `ringforge_raton.yar`, written the same day, was missing,
+and the strip said so: `Mem YARA: ready -- 1 local rule(s) MISSING`. And
+timeout 60 against post-exit 120 would have truncated the window the verdict is
+built from; the GUI warned and the timeout went to 180.
+
+**Staging a contained guest:** it cannot `git pull`, so the clone was
+fast-forwarded from a **git bundle over the shared folder** —
+`git bundle create` on the host, `git fetch <bundle> main` in the guest. Clean,
+complete, and the commit hash is verifiable at both ends.
+
+**The sample carries Hidden+System attributes**, so it is invisible in the file
+picker and to `Get-ChildItem` without `-Force` until `attrib -h -s`. That cost
+twenty minutes of chasing Defender, which had nothing to do with it.
+
+Artifact: `G:\ringforge-artifacts\ce0d08be-deferredstage-02sep\`.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - deferred_stage against a live run
+
 ### Pick up here — 02 Sep, `sillyisafed` is the author's and the build rule was defaults
 
 **The last open thread on `ce0d08be...` is closed.**
