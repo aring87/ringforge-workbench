@@ -282,8 +282,29 @@ def serve(
 
                         print(f"  [{exchange}] sent {candidate.name} "
                               f"({len(frame)} bytes)")
-                        follow_up = b""
+
+                        # Drain every frame the client offers, not one.
+                        #
+                        # Measured 02 Sep: `GetClipboard` answers TWICE -- an
+                        # acknowledgement and then the clipboard contents as a
+                        # separate frame. A loop that reads one frame per
+                        # command consumed the ack here and handed the data to
+                        # the *next* command, shifting every attribution after
+                        # it by one. Positional pairing was never sound.
+                        #
+                        # It is also unnecessary: every response names the
+                        # command it belongs to in its own `Packet` field, so
+                        # correlation is by content and the shift cannot recur.
+                        buffered = b""
+                        frames: list[bytes] = []
+                        closed = "read timeout"
                         while True:
+                            if len(buffered) >= HEADER_SIZE:
+                                want = frame_length(buffered[:HEADER_SIZE])
+                                if want and len(buffered) >= want:
+                                    frames.append(buffered[:want])
+                                    buffered = buffered[want:]
+                                    continue
                             try:
                                 chunk = conn.recv(65536)
                             except socket.timeout:
@@ -295,33 +316,50 @@ def serve(
                             if not chunk:
                                 closed = "client closed"
                                 break
-                            follow_up += chunk
-                            if len(follow_up) >= HEADER_SIZE:
-                                want = frame_length(follow_up[:HEADER_SIZE])
-                                if want and len(follow_up) >= want:
-                                    closed = "complete frame"
-                                    break
+                            buffered += chunk
 
-                        outcome = plan.record(candidate, len(follow_up), closed)
+                        received_bytes = sum(len(f) for f in frames) + len(buffered)
+                        outcome = plan.record(candidate, received_bytes, closed)
+                        outcome["frames_received"] = len(frames)
+                        outcome["responses"] = []
                         record.setdefault("exchanges", []).append(outcome)
 
-                        if follow_up:
-                            blob = raw_dir / f"conn{index:04d}-{exchange:03d}-{candidate.name}.bin"
-                            blob.write_bytes(follow_up)
+                        if frames:
                             summary["answered_replies"] += 1
-                            print(f"      ANSWERED {len(follow_up)} bytes "
-                                  f"-> {blob.name}")
-                            answer = parse_frame(follow_up)
+                            print(f"      {len(frames)} frame(s), "
+                                  f"{received_bytes} bytes")
+                        for position, raw in enumerate(frames, 1):
+                            answer = parse_frame(raw)
+                            entry: dict = {"bytes": len(raw), "ok": answer["ok"]}
+                            label = "unparsed"
                             if answer["ok"]:
                                 body = decode_dictionary(answer["decompressed"])
-                                outcome["fields"] = body["pairs"]
-                                for key, value in body["pairs"]:
-                                    print(f"        {key} = {value!r}")
+                                fields = body["pairs"]
+                                entry["fields"] = fields
+                                label = dict(fields).get("Packet", "?")
+                                entry["answers"] = label
                             else:
-                                outcome["problems"] = answer["problems"]
-                                for line in _hexdump(follow_up, limit=160):
-                                    print(line)
-                        else:
+                                entry["problems"] = answer["problems"]
+                            outcome["responses"].append(entry)
+
+                            blob = (raw_dir /
+                                    f"conn{index:04d}-{exchange:03d}"
+                                    f"-{candidate.name}-{position}-{label}.bin")
+                            blob.write_bytes(raw)
+
+                            # The response's own Packet value, not the command
+                            # that happened to precede it.
+                            marker = "" if label == candidate.name else "   <- not this command"
+                            print(f"      -> Packet={label}{marker}")
+                            if answer["ok"]:
+                                for key, value in entry["fields"]:
+                                    shown = value if len(str(value)) <= 90 else (
+                                        str(value)[:87] + "..."
+                                    )
+                                    if key != "Packet":
+                                        print(f"           {key} = {shown!r}")
+
+                        if not frames:
                             print(f"      no answer ({closed})")
 
                         if closed == "client closed":
