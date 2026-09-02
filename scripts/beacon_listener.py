@@ -64,9 +64,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dynamic_analysis.beacon_frame import (  # noqa: E402
     HEADER_SIZE,
     build_frame,
+    decode_dictionary,
     frame_length,
     parse_frame,
 )
+from dynamic_analysis.beacon_reply import ReplyPlan  # noqa: E402
 
 DEFAULT_PORT = 7372
 DEFAULT_HOST = "127.0.0.1"
@@ -128,6 +130,7 @@ def serve(
     read_timeout: float,
     tls_cert: Path | None = None,
     tls_key: Path | None = None,
+    plan: "ReplyPlan | None" = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = out_dir / "raw"
@@ -150,6 +153,8 @@ def serve(
         "total_bytes_received": 0,
         "frames_parsed": 0,
         "frames_ok": 0,
+        "answered_replies": 0,
+        "reply_plan": [],
         "note": "",
     }
 
@@ -247,6 +252,64 @@ def serve(
                 record["bytes_received"] = len(received)
                 summary["total_bytes_received"] += len(received)
 
+                # The reply, and then whatever the client makes of it. This is
+                # the only part of the protocol nobody has ever seen: the
+                # client has never been answered, so no command has reached it.
+                if plan is not None and received:
+                    candidate = plan.next_candidate()
+                    frame = candidate.frame()
+                    try:
+                        conn.sendall(frame)
+                    except OSError as error:
+                        record["reply_error"] = str(error)
+                        print(f"  ! could not send {candidate.name}: {error}")
+                    else:
+                        print(f"  replied {candidate.name}: {len(frame)} bytes")
+                        follow_up = b""
+                        while True:
+                            try:
+                                chunk = conn.recv(65536)
+                            except socket.timeout:
+                                closed = "read timeout after reply"
+                                break
+                            except OSError as error:
+                                closed = f"error after reply: {error}"
+                                break
+                            if not chunk:
+                                closed = "client closed after reply"
+                                break
+                            follow_up += chunk
+                            if len(follow_up) >= HEADER_SIZE:
+                                want = frame_length(follow_up[:HEADER_SIZE])
+                                if want and len(follow_up) >= want:
+                                    closed = "complete frame after reply"
+                                    break
+
+                        outcome = plan.record(candidate, len(follow_up), closed)
+                        record["reply"] = outcome
+                        if follow_up:
+                            blob = raw_dir / f"conn{index:04d}-reply.bin"
+                            blob.write_bytes(follow_up)
+                            summary["answered_replies"] += 1
+                            print(f"  ANSWERED: {len(follow_up)} bytes back "
+                                  f"-> {blob.name}")
+                            for line in _hexdump(follow_up):
+                                print(line)
+                            answer = parse_frame(follow_up)
+                            record["reply_frame"] = {
+                                "ok": answer["ok"],
+                                "problems": answer["problems"],
+                                "decompressed_hex": answer["decompressed"][:4096].hex(),
+                            }
+                            if answer["ok"]:
+                                body = decode_dictionary(answer["decompressed"])
+                                record["reply_fields"] = body["pairs"]
+                                print("  reply fields:")
+                                for key, value in body["pairs"]:
+                                    print(f"    {key} = {value!r}")
+                        else:
+                            print(f"  no answer ({closed})")
+
                 if received:
                     summary["connections_that_sent_bytes"] += 1
                     blob = raw_dir / f"conn{index:04d}.bin"
@@ -287,6 +350,10 @@ def serve(
     finally:
         listener.close()
         log.close()
+
+    if plan is not None:
+        summary["reply_plan"] = plan.results
+        summary["reply_summary"] = plan.summary()
 
     summary["ended_at"] = _now()
     if summary["connections"] == 0:
@@ -335,12 +402,38 @@ def main(argv: list[str] | None = None) -> int:
              "visible without this",
     )
     parser.add_argument("--tls-key", help="PEM private key for --tls-cert")
+    parser.add_argument(
+        "--respond", action="store_true",
+        help="reply to the check-in, one candidate per connection, and record "
+             "what the client does with it",
+    )
+    parser.add_argument(
+        "--commands",
+        help="a file of command names, one per line, to use instead of the "
+             "built-in guesses. Extract them from the payload assembly with "
+             "dotnet_meta.py --strings user",
+    )
     args = parser.parse_args(argv)
 
     host = "0.0.0.0" if args.any_address else args.host
 
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key go together")
+
+    plan = None
+    if args.respond:
+        if args.commands:
+            names = [
+                line.strip()
+                for line in Path(args.commands).read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")
+            ]
+            plan = ReplyPlan.from_commands(names)
+            print(f"replying from {len(names)} command name(s) in {args.commands}")
+        else:
+            plan = ReplyPlan()
+            print(f"replying from {len(plan.candidates)} built-in candidates -- "
+                  "these are GUESSES; --commands takes names from the payload")
 
     summary = serve(
         Path(args.out),
@@ -351,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         read_timeout=args.read_timeout,
         tls_cert=Path(args.tls_cert) if args.tls_cert else None,
         tls_key=Path(args.tls_key) if args.tls_key else None,
+        plan=plan,
     )
 
     print("\n" + json.dumps(summary, indent=2))
