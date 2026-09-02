@@ -8,14 +8,29 @@ hour, every one to `win11:7372` -- so nothing on the host-only network can
 answer it and FakeNet is the wrong instrument. This binds the port the sample is
 already knocking on.
 
-**The default mode is silence, and that is the measurement.** This file's
-own documentation elsewhere says the protocol is server-speaks-first, and that
-claim comes from reading the sample, not from watching it: nothing has ever
-accepted its connection, so nobody has seen what it does when one succeeds. So
-the first run says nothing and writes down whether the client does. If bytes
-arrive, "server speaks first" is wrong and the protocol has just handed us its
-opening message. If none arrive before the client gives up, the claim survives a
-test it had not had, and `--hello` is the next run rather than the first.
+**The silent run has been done, and it answered two questions at once.**
+02 Sep, five connections in three minutes: the client sends **418 bytes without
+being spoken to**, and those bytes are a **TLS ClientHello** --
+`16 03 01 01 9d 01 00 01 99 03 03`, offering TLS 1.3 down to 1.0 in
+`supported_versions`, x25519 and secp256r1 key shares, and no SNI, which fits a
+client dialling an address rather than a name.
+
+So **"server speaks first" is retracted** -- it came from reading the sample
+rather than watching it, and nothing had ever accepted its connection. And the
+`stuff.dll` frame is the **inner** protocol: `0xDEADBEEF` never appears on the
+wire because everything above the handshake is encrypted.
+
+**`--tls-cert` is therefore the mode that matters now.** Without it the run
+stops at the ClientHello. With it, the handshake is the experiment: if the
+client completes it, the inner frames arrive decrypted and the `stuff.dll`
+model gets its first test against real bytes. If it drops after the certificate
+flight, it validates or pins -- which is an answer, and the same shape of answer
+`make_tls_cert.py` was written for on `0bw`. The CA minted alongside the leaf
+can then be installed in the guest's root store and the run repeated.
+
+The timing also changes once connections are accepted: refused connects retry
+every 17.03 s, accepted ones came 35 s apart, the difference being how long the
+client waits on a server that never speaks.
 
 **Every byte is kept, whatever the parser makes of it.** Frames are decoded with
 `dynamic_analysis.beacon_frame`, whose model is read out of `stuff.dll` IL and
@@ -38,6 +53,7 @@ import argparse
 import binascii
 import json
 import socket
+import ssl
 import sys
 import time
 from datetime import datetime, timezone
@@ -73,6 +89,36 @@ def _hexdump(data: bytes, limit: int = 512) -> list[str]:
     return lines
 
 
+def _tls_context(cert: Path, key: Path) -> "ssl.SSLContext":
+    """A permissive server context, because the question is what the client does.
+
+    Measured 02 Sep: the client opens with a **TLS ClientHello** -- so the
+    `stuff.dll` frame is the *inner* protocol and nothing of it is visible until
+    a handshake completes. The ClientHello offers TLS 1.3 down to 1.0 in
+    `supported_versions` and carries no SNI, which fits a client dialling an
+    address rather than a name.
+
+    Everything here is set as wide as the library allows: any protocol version
+    the client offers, no client certificate wanted, and the default cipher list
+    relaxed. A handshake that fails should fail because *the client* refused,
+    which is a finding about the sample, and not because this end declined a
+    version or a suite, which is a finding about nothing.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=str(cert), keyfile=str(key))
+    context.verify_mode = ssl.CERT_NONE
+    context.check_hostname = False
+    try:
+        context.minimum_version = ssl.TLSVersion.TLSv1
+    except (ValueError, AttributeError):
+        pass
+    try:
+        context.set_ciphers("ALL:@SECLEVEL=0")
+    except ssl.SSLError:
+        pass
+    return context
+
+
 def serve(
     out_dir: Path,
     minutes: int,
@@ -80,6 +126,8 @@ def serve(
     host: str,
     port: int,
     read_timeout: float,
+    tls_cert: Path | None = None,
+    tls_key: Path | None = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = out_dir / "raw"
@@ -92,6 +140,10 @@ def serve(
         "host": host,
         "port": port,
         "mode": "hello" if hello else "silent",
+        "tls": bool(tls_cert),
+        "tls_handshakes_completed": 0,
+        "tls_handshakes_failed": 0,
+        "tls_failures": [],
         "read_timeout_seconds": read_timeout,
         "connections": 0,
         "connections_that_sent_bytes": 0,
@@ -111,6 +163,10 @@ def serve(
     print(f"listening on {host}:{port} for {minutes} minute(s), "
           f"mode={'hello' if hello else 'silent'}")
     print(f"writing to {out_dir}")
+
+    context = _tls_context(tls_cert, tls_key) if tls_cert and tls_key else None
+    if context:
+        print(f"TLS enabled, serving {tls_cert.name}")
 
     log = log_path.open("a", encoding="utf-8")
 
@@ -136,6 +192,28 @@ def serve(
 
             with conn:
                 conn.settimeout(read_timeout)
+
+                if context is not None:
+                    # The handshake is the experiment. A client that refuses
+                    # our certificate drops here, and that refusal is the
+                    # finding -- so it is recorded rather than swallowed.
+                    try:
+                        conn = context.wrap_socket(conn, server_side=True)
+                    except (ssl.SSLError, OSError) as error:
+                        summary["tls_handshakes_failed"] += 1
+                        detail = f"{type(error).__name__}: {error}"
+                        summary["tls_failures"].append(detail)
+                        record["closed_by"] = f"TLS handshake failed -- {detail}"
+                        print(f"  ! TLS handshake failed: {detail}")
+                        log.write(json.dumps(record) + "\n")
+                        log.flush()
+                        continue
+                    summary["tls_handshakes_completed"] += 1
+                    record["tls"] = {
+                        "version": conn.version(),
+                        "cipher": conn.cipher(),
+                    }
+                    print(f"  TLS up: {conn.version()} {conn.cipher()[0]}")
 
                 if hello:
                     frame = build_frame(b"")
@@ -250,9 +328,19 @@ def main(argv: list[str] | None = None) -> int:
         help="send a frame on connect instead of staying silent",
     )
     parser.add_argument("--read-timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--tls-cert",
+        help="PEM certificate to serve; enables TLS termination. The client "
+             "opens with a ClientHello, so nothing of the inner protocol is "
+             "visible without this",
+    )
+    parser.add_argument("--tls-key", help="PEM private key for --tls-cert")
     args = parser.parse_args(argv)
 
     host = "0.0.0.0" if args.any_address else args.host
+
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("--tls-cert and --tls-key go together")
 
     summary = serve(
         Path(args.out),
@@ -261,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
         host=host,
         port=args.port,
         read_timeout=args.read_timeout,
+        tls_cert=Path(args.tls_cert) if args.tls_cert else None,
+        tls_key=Path(args.tls_key) if args.tls_key else None,
     )
 
     print("\n" + json.dumps(summary, indent=2))
