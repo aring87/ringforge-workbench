@@ -90,6 +90,10 @@ from dynamic_analysis.procmon_parser import (
     summarize_interesting_events,
     summarize_procmon_events,
 )
+from dynamic_analysis.deferred_stage import (
+    assess_deferred_stage,
+    describe_for_status,
+)
 from dynamic_analysis.procmon_config import describe_procmon_filter
 from dynamic_analysis.ntdll_unhooking import (
     collect_ntdll_unhooking,
@@ -3312,6 +3316,21 @@ def run_dynamic_analysis(
             "verdict": "Cancelled",
         }
 
+    # A run that installed a future-triggered persistence has a stage it will
+    # never watch, and the verdict describes only the installer. The
+    # orchestrator cannot observe that stage -- it spans a reboot and needs the
+    # host to drive a logon, while this runs inside one boot in the guest -- so
+    # it names the gap and hands over the procedure rather than staying quiet
+    # about something it cannot close.
+    deferred_stage = assess_deferred_stage(
+        task_diff_summary=task_diff_summary,
+        autoruns_diff_summary=autoruns_diff_summary,
+        sample_name=sample_path.name,
+    )
+    deferred_line = describe_for_status(deferred_stage)
+    if deferred_line:
+        _emit(status_cb, deferred_line)
+
     summary = {
         "schema_version": "dynamic-1.0",
         "run_id": run_id,
@@ -3357,6 +3376,9 @@ def run_dynamic_analysis(
         "service_diff_summary": service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {},
         "autoruns_diff_summary": autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {},
         "autoruns_diff": autoruns_diff_summary,
+        # Named because a report that omits it reads as "nothing else
+        # happened" when the truth is "nobody watched the rest".
+        "deferred_stage": deferred_stage,
         "dropped_files_summary": dropped_files_summary,
         # The list, not just the counts. `payload_dropped` can reach strong off
         # this, and a reader could not previously see what the count was made of
