@@ -147,7 +147,27 @@ DESTRUCTIVE = frozenset({
     "Defender", "Bypass", "HideFile", "AddToStartup", "Startup", "StartupTask",
     "regdisable", "taskdisable", "cmddisable", "ChangeIcons", "Wallpaper",
     "Update", "Uninstall", "Disconnect",
+    # Kills the client, measured. Sent with no fields it reaches
+    # ProcessMonitor.Start(String, Int32), dereferences null, and the exception
+    # is unhandled: System.NullReferenceException out of
+    # HandlePacket+<Run>d__62.MoveNext(), exit code 0xe0434352.
+    #
+    # It destroys nothing on the host, and it is here because it costs the rest
+    # of the sweep. The client does not reconnect after its session ends and
+    # its ONLOGON task only re-launches at the next logon, so one careless
+    # candidate is one logon.
+    "Notify",
 })
+
+#: Sent already, on 02 Sep, in this order. A resume starts after these.
+#:
+#: Kept in code rather than in a hand-edited list because the alternative is an
+#: operator remembering where a sweep stopped, and a repeat of `Notify` costs a
+#: logon.
+ALREADY_TRIED = (
+    "Ping", "Connect", "Clientinfo", "Task", "Request", "Report", "Survival",
+    "Notify",
+)
 
 
 def partition(names: Iterable[str]) -> tuple[list[str], list[str]]:
