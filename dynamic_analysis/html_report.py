@@ -35,6 +35,26 @@ def _pretty_key(value: str) -> str:
     return labels.get(key, key.replace("_", " ").strip().title())
 
 
+def _bold_markdown(value: Any) -> str:
+    """Escape, then honour the ``**bold**`` an analysis module wrote.
+
+    These notes are authored once, in the module that made the finding, and
+    several of them mark their own load-bearing sentence -- `deferred_stage`
+    marks *this run did not observe what they launch*, which is the whole point
+    of the card. Escaping first means the emphasis is the only markup that
+    survives; an unpaired marker leaves the text exactly as written rather than
+    guessing where the author meant the bold to stop.
+    """
+    escaped = _esc(value)
+    parts = escaped.split("**")
+    if len(parts) % 2 == 0:
+        return escaped
+    return "".join(
+        part if index % 2 == 0 else f"<b>{part}</b>"
+        for index, part in enumerate(parts)
+    )
+
+
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -1432,6 +1452,89 @@ def _abnormal_termination_section(summary: dict[str, Any]) -> str:
     """
 
 
+def _deferred_stage_section(summary: dict[str, Any]) -> str:
+    """Persistence installed by this run whose trigger has not fired yet.
+
+    The verdict above describes the installer, and nothing else. On
+    `ce0d08be...` that verdict was Likely Malicious at 140 while the resident
+    stage its `ONLOGON` task launches -- beaconing every 17.03 s, reporting the
+    machine to an operator, carrying a ransom capability -- was in no run at
+    all, and no line of the report said so. A summary that stays quiet about an
+    unobserved stage is the same failure as a collector that reports clean when
+    it could not see: the reader cannot tell "nothing happened" from "nobody
+    looked".
+
+    Not scored. It renders the procedure rather than the warning alone, because
+    the run structurally cannot close this gap -- the gated capture spans a
+    reboot and is driven from the host -- and the reader is the one who can.
+
+    Silent when nothing deferred was installed. `assess_deferred_stage` writes a
+    note for that case, but an absence is not a finding and every other alert
+    card here stays quiet the same way.
+    """
+    deferred = summary.get("deferred_stage", {}) or {}
+    if not deferred.get("present"):
+        return ""
+
+    entries = [e for e in (deferred.get("entries") or []) if isinstance(e, dict)]
+    count = _to_int(deferred.get("entry_count", len(entries)))
+
+    rows = []
+    for entry in entries:
+        triggers = entry.get("triggers")
+        if isinstance(triggers, (list, tuple)):
+            fires = ", ".join(str(t) for t in triggers)
+        else:
+            fires = str(triggers or "")
+        rows.append(
+            "<tr>"
+            f"<td class=\"nowrap\">{_esc(_pretty_key(str(entry.get('kind', ''))))}</td>"
+            f"<td>{_esc(entry.get('name', ''))}</td>"
+            f"<td>{_esc(fires or entry.get('location', ''))}</td>"
+            f"<td>{_esc(entry.get('action', ''))}</td>"
+            "</tr>"
+        )
+
+    entry_table = ""
+    if rows:
+        entry_table = f"""
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr>
+            <th>Kind</th><th>Name</th><th>Fires At</th><th>Launches</th>
+          </tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+      """
+
+    steps = [str(s) for s in (deferred.get("procedure") or [])]
+    procedure = ""
+    if steps:
+        procedure = (
+            "<p class=\"muted\">To observe it, from the pipeline's own tooling:</p>"
+            "<ol>" + "".join(f"<li>{_esc(step)}</li>" for step in steps) + "</ol>"
+        )
+
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>Deferred Stage — Installed, Not Observed</h2>
+        {_section_badge("Deferred entries", count, context=True)}
+      </div>
+      <p class="muted">{_bold_markdown(deferred.get("note", ""))}</p>
+      {entry_table}
+      {procedure}
+      <p class="muted">
+        Not scored, and <b>not a claim that the deferred stage is malicious</b>
+        -- it is a claim that nothing here looked at it. The run watches one
+        boot in the guest; the capture that spans a reboot is driven from the
+        host.
+      </p>
+    </section>
+    """
+
+
 def _image_timestamp_section(summary: dict[str, Any]) -> str:
     """The image Windows was running vs the file it was started from.
 
@@ -2725,6 +2828,7 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_containment_section(summary)}
 {_observation_window_section(summary)}
 {_abnormal_termination_section(summary)}
+{_deferred_stage_section(summary)}
 {_vm_check_and_bail_section(summary)}
 {_evidence_section(summary)}
 

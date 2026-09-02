@@ -293,7 +293,8 @@ th {
 .muted {
   color: var(--muted);
 }
-ul {
+ul,
+ol {
   margin: 0;
   padding-left: 20px;
 }

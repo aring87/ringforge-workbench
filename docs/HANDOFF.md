@@ -187,7 +187,14 @@ not verified.
    the withheld set.
 3. Five recon commands answered nothing in 20s -- `ProcessSpy`, `Programs`,
    `RegistryRequest`, `DeviceRequest`, `Preview`. Unexplained.
-4. `deferred_stage` is in the run summary but not in the HTML report.
+4. CLOSED. `deferred_stage` now renders in the HTML report as a
+   `card-alert` under the crash warning -- the note with its emphasis
+   intact, a table naming each entry and what it launches, and the gated
+   procedure as numbered steps. Silent when nothing deferred was
+   installed, and it says in its own text that it is not scored and is
+   not a claim the deferred stage is malicious. Seven tests in
+   `test_deferred_stage.py::ReportSection`, one of which pins that a task
+   name off the guest cannot inject markup.
 
 **Four corrections were made today and all are in the commits**, because the
 shape repeats and is worth recognising: the Procmon network class (it was fine;

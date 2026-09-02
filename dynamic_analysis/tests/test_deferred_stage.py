@@ -161,5 +161,86 @@ class Robustness(unittest.TestCase):
         self.assertTrue(result["present"])
 
 
+class ReportSection(unittest.TestCase):
+    """The status line scrolls past; the report is what gets read later.
+
+    This gap existed as a summary key and a line of console output for a day,
+    which is most of the way to not existing: the measured case is a report
+    whose reader had no way to know a stage was missing from it.
+    """
+
+    def _summary(self, **over):
+        base = {
+            "task_diff_summary": {
+                "added_tasks": [_task("ce0d08be...", ["logon_trigger"])]
+            }
+        }
+        base.update(over)
+        return {"deferred_stage": assess_deferred_stage(**base)}
+
+    def test_the_gap_reaches_the_page(self) -> None:
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        html = build_dynamic_html_report(self._summary())
+
+        self.assertIn("Deferred Stage", html)
+        self.assertIn("did not observe what they launch", html)
+        self.assertIn("card-alert", html)
+
+    def test_the_entry_is_named_and_so_is_what_it_launches(self) -> None:
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        html = build_dynamic_html_report(self._summary())
+
+        self.assertIn("ce0d08be...", html)
+        self.assertIn("logon_trigger", html)
+        self.assertIn("x.exe", html)
+
+    def test_the_procedure_travels_with_the_warning(self) -> None:
+        """A card that says only "you have a gap" leaves the reader where the
+        run left them. The steps are already in the summary; render them."""
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        html = build_dynamic_html_report(self._summary())
+
+        self.assertIn("vm_gated_logon.ps1", html)
+        self.assertIn("must be larger", html)
+
+    def test_it_says_it_is_not_scored(self) -> None:
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        self.assertIn("Not scored", build_dynamic_html_report(self._summary()))
+
+    def test_a_run_with_no_deferred_stage_grows_no_card(self) -> None:
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        quiet = {"deferred_stage": assess_deferred_stage()}
+        self.assertNotIn("Deferred Stage", build_dynamic_html_report(quiet))
+        self.assertNotIn("Deferred Stage", build_dynamic_html_report({}))
+
+    def test_the_note_keeps_its_emphasis_instead_of_its_asterisks(self) -> None:
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        html = build_dynamic_html_report(self._summary())
+
+        self.assertNotIn("**", html)
+        self.assertIn("<b>This run did not observe what they launch.</b>", html)
+
+    def test_a_task_name_cannot_inject_markup(self) -> None:
+        """Every field here comes off the guest, named by the sample."""
+        from dynamic_analysis.html_report import build_dynamic_html_report
+
+        html = build_dynamic_html_report(
+            self._summary(
+                task_diff_summary={
+                    "added_tasks": [_task("<script>x</script>", ["logon_trigger"])]
+                }
+            )
+        )
+
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+
 if __name__ == "__main__":
     unittest.main()
