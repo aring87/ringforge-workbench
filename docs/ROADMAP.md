@@ -1773,6 +1773,62 @@ the host. Worth knowing before anyone terminates it by hand.
 Full notes beside the artifact:
 `G:\ringforge-artifacts\ce0d08be-costura-01sep\stuff-dll-analysis.md`.
 
+### Item 1 — the beacon goes to 127.0.0.1:7372, every 17.03 seconds, without jitter — 01 Sep
+
+**Answered.** 212 connection attempts in an hour, **all to `win11:7372`**, the
+destination never varying. The hardcoded `127.0.0.1:7372` that static analysis
+found is now confirmed dynamically, which no instrument had managed: a bound
+socket carries no remote address, Sysmon's config excludes loopback, and the
+gated capture watched six minutes of a payload that had not started.
+
+    attempts      212 in 59m54s     19:39:31 .. 20:39:25
+    interval      mean 17.034s  median 17.033s
+                  min 17.008s   max 17.069s   stdev 0.014s
+                  intervals >0.5s off the median: 0
+    per attempt   4 x TCP Reconnect, 1 x TCP Disconnect
+    cost          8.8 MB backing, 2.0 MB CSV, for the whole hour
+
+**The timer has no jitter, and that is a correction in the useful direction.**
+The earlier reading -- "17 s with an occasional 18, so a true period near
+17.5" -- was an artefact of `Get-NetTCPConnection`'s `CreationTime` resolving
+only to the second. Against Procmon's sub-millisecond stamps it is 17.03 s with
+14 ms of variance over an hour and not one outlier. A fixed-period beacon with
+no randomisation is materially easier to detect than a jittered one.
+
+**There is no `TCP Connect` event in the entire capture.** Procmon logs that
+operation only for a connection that completes; a SYN into a closed port
+produces `TCP Reconnect` retransmissions and a `TCP Disconnect`. **A filter
+watching `TCP Connect` alone would have recorded nothing while the sample
+beaconed 212 times** -- which is worth remembering, because that is exactly the
+shape of absence this project keeps mistaking for a finding.
+
+**And the socket leak was not a leak.** Four sockets existed at 20:51 against
+212 attempts in the preceding hour, so they are released. "One leaked socket per
+attempt, monotonic, ~77 hours to port exhaustion" is withdrawn. The
+127-and-climbing series seen that morning is unexplained and was accumulation
+under some condition that does not hold generally.
+
+The socket table was the right instrument for **noticing** the beacon -- it is
+how the behaviour was found when both event collectors were silent -- and the
+wrong one for **measuring** it. Both errors came from reading precision into it
+that it does not have.
+
+**Unexplained, and worth a note before it is forgotten:** the payload was
+already beaconing minutes after logon on this boot (50 sockets by ~18:50),
+against 88 minutes on the earlier one. Either that gap was a phase in which
+sockets were closed rather than retained, or the schedule depends on disk state;
+this boot came from a snapshot on which the payload had already run twice.
+
+**What is still not known is the content.** Nothing listens on 7372, so every
+attempt dies at the SYN and no application data is ever sent. `stuff.dll` gives
+the frame it *would* send -- `0xDEADBEEF`, compressed length, original size, a
+compression flag, payload, CRC-32 -- and confirming that on the wire needs a
+listener, which is a FakeNet or `beacon_responder.py` job and the first chance
+to see the server-speaks-first protocol answered.
+
+Artifact and full notes:
+`G:\ringforge-artifacts\ce0d08be-beacon-capture-01sep\`.
+
 ### RETRACTED — the network class was never off, and the window was too short — 01 Sep
 
 **The section that stood here blamed the instrument and was wrong.** It said the
