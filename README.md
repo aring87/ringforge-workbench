@@ -13,6 +13,8 @@ RingForge Workbench is a Python/Tkinter software triage workbench for structured
 
 It is designed for malware analysts, SOC analysts, detection engineers, and security practitioners who want a practical Windows-focused workflow for reviewing software behavior, organizing case artifacts, and producing consistent analyst-readable reports.
 
+**See [Analysis Findings](#analysis-findings)** for what it has produced against seven live samples — a RAT whose C2 protocol was driven end to end, a four-stage FormBook chain, a clipboard hijacker that takes its C2 from a smart contract — with a consolidated [indicator table](#indicators) and, at the end, the five findings that were about the instrument rather than the sample.
+
 ---
 
 ## Current Release
