@@ -17,6 +17,13 @@ except Exception:
     scrolledtext = None
 
 
+from verdict.case_summary import (
+    extension_score_and_verdict,
+    overall_verdict,
+    spec_score_and_verdict,
+)
+
+
 class UnifiedReportWindow(tk.Toplevel):
     r"""
     Unified RingForge report window with the cleaned case-home layout.
@@ -872,155 +879,25 @@ class UnifiedReportWindow(tk.Toplevel):
         data = self._load_json_if_exists(p) if p else None
         return data if isinstance(data, dict) else None
         
+    # These three moved to `verdict/case_summary.py`, where they can be
+    # tested. None of them ever touched a widget; they were data functions
+    # living in a Toplevel, which is why the defect below went unnoticed for a
+    # release. See that module for what changed and what deliberately did not.
     def _derive_spec_score_and_verdict(self, spec_summary: dict | None) -> tuple[int | None, str | None]:
-        """
-        Derive a display score/verdict for spec-only or spec-heavy cases.
+        return spec_score_and_verdict(spec_summary)
 
-        This is intentionally separate from malware/static/dynamic scoring so API
-        spec risk does not sound like endpoint malware behavior.
-        """
-        if not isinstance(spec_summary, dict):
-            return None, None
-
-        summary = spec_summary.get("summary", {}) if isinstance(spec_summary.get("summary"), dict) else {}
-        scoring = spec_summary.get("scoring", {}) if isinstance(spec_summary.get("scoring"), dict) else {}
-
-        high_count = int(summary.get("high_risk_endpoint_count", 0) or 0)
-        medium_count = int(summary.get("medium_risk_endpoint_count", 0) or 0)
-        sensitive_unauth = int(summary.get("sensitive_unauthenticated_endpoint_count", 0) or 0)
-        auth_gap_count = int(summary.get("auth_gap_count", scoring.get("auth_gap_count", 0)) or 0)
-        schema_issue_count = int(summary.get("schema_issue_endpoint_count", scoring.get("schema_issue_endpoint_count", 0)) or 0)
-        file_upload_count = int(summary.get("file_upload_endpoint_count", scoring.get("file_upload_endpoints", 0)) or 0)
-
-        http_server = bool(scoring.get("http_server_detected", False))
-
-        score = 0
-        score += min(30, high_count * 10)
-        score += min(18, medium_count * 3)
-        score += min(12, sensitive_unauth * 3)
-        score += min(8, auth_gap_count)
-        score += min(6, schema_issue_count)
-        score += min(6, file_upload_count * 3)
-
-        if http_server:
-            score += 5
-
-        score = max(0, min(100, score))
-
-        if score >= 60:
-            verdict = "High API Spec Risk"
-        elif score >= 35:
-            verdict = "Medium API Spec Risk"
-        elif score >= 15:
-            verdict = "Low API Spec Risk"
-        else:
-            verdict = "Informational API Spec Review"
-
-        return score, verdict
-        
     def _derive_extension_score_and_verdict(self, extension_summary: dict | None) -> tuple[int | None, str | None]:
-        """
-        Derive a display score/verdict for browser-extension-only cases.
-        This keeps extension risk separate from static/dynamic malware scoring.
-        """
-        if not isinstance(extension_summary, dict):
-            return None, None
-
-        summary = extension_summary.get("summary", {})
-        if not isinstance(summary, dict):
-            return None, None
-
-        raw_score = summary.get("risk_score")
-        raw_verdict = str(summary.get("risk_verdict", "") or "").strip().lower()
-
-        try:
-            score = int(raw_score)
-        except Exception:
-            score = None
-
-        if raw_verdict == "high":
-            return score, "High Browser Extension Risk"
-        if raw_verdict == "medium":
-            return score, "Medium Browser Extension Risk"
-        if raw_verdict == "low":
-            return score, "Low Browser Extension Risk"
-
-        if score is not None:
-            if score >= 7:
-                return score, "High Browser Extension Risk"
-            if score >= 3:
-                return score, "Medium Browser Extension Risk"
-            return score, "Low Browser Extension Risk"
-
-        return None, None
+        return extension_score_and_verdict(extension_summary)
 
     def _derive_overall_verdict(self, artifacts: dict) -> str:
-        combined = self._combined_summary()
-        if isinstance(combined, dict):
-            for key in ("verdict", "severity"):
-                if combined.get(key):
-                    return str(combined.get(key))
-
-        dynamic_summary = self._latest_dynamic_summary()
-        static_summary = self._latest_static_summary()
-
-        if isinstance(dynamic_summary, dict) and dynamic_summary.get("verdict"):
-            return str(dynamic_summary.get("verdict"))
-
-        if isinstance(static_summary, dict) and static_summary.get("verdict"):
-            return str(static_summary.get("verdict"))
-
-        findings = self._build_detailed_findings()
-        joined = " ".join(" ".join(items).lower() for items in findings.values() if isinstance(items, list))
-
-        if "critical" in joined or "high risk" in joined:
-            return "High Risk"
-        if "needs review" in joined or "moderate risk" in joined or "persistence" in joined:
-            return "Moderate Risk"
-        if "benign" in joined or "low suspicion" in joined or "low risk" in joined:
-            return "Low Risk"
-
-        spec_found = artifacts.get("Spec Analysis", {}).get("found", False)
-        extension_found = artifacts.get("Browser Extension Analysis", {}).get("found", False)
-
-        other_modules_for_spec = any(
-            artifacts.get(name, {}).get("found", False)
-            for name in [
-                "Static Analysis",
-                "Dynamic Analysis",
-                "Manual API Tester",
-                "Browser Extension Analysis",
-                "Combined Score",
-            ]
+        return overall_verdict(
+            artifacts=artifacts,
+            combined=self._combined_summary(),
+            dynamic_summary=self._latest_dynamic_summary(),
+            static_summary=self._latest_static_summary(),
+            spec_summary=self._latest_spec_summary(),
+            extension_summary=self._latest_extension_summary(),
         )
-
-        other_modules_for_extension = any(
-            artifacts.get(name, {}).get("found", False)
-            for name in [
-                "Static Analysis",
-                "Dynamic Analysis",
-                "Manual API Tester",
-                "Spec Analysis",
-                "Combined Score",
-            ]
-        )
-
-        if spec_found and not other_modules_for_spec:
-            spec_score, spec_verdict = self._derive_spec_score_and_verdict(self._latest_spec_summary())
-            if spec_verdict:
-                return spec_verdict
-
-        if extension_found and not other_modules_for_extension:
-            extension_score, extension_verdict = self._derive_extension_score_and_verdict(self._latest_extension_summary())
-            if extension_verdict:
-                return extension_verdict
-
-        count = sum(1 for meta in artifacts.values() if meta.get("found"))
-        if count >= 2:
-            return "Moderate Activity"
-        if count >= 1:
-            return "Limited Activity"
-        return "No Results"
 
     # ---------------------------------------------------------------------
     # Scan/report generation

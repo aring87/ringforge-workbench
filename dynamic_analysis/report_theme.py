@@ -116,14 +116,26 @@ def severity_class_for_label(value: Any) -> str:
                 # malware wording, then posture wording, then the neutral band
                 "likely malicious", "elevated attention",
                 "serious exposure", "multiple weaknesses",
-                "strongly corroborated", "corroborated"}:
+                "strongly corroborated", "corroborated",
+                # The unified report's per-domain wording. Measured 03 Sep:
+                # every verdict that module could produce mapped here to
+                # `sev-none`, so a case reading "High API Spec Risk" rendered
+                # in the same neutral grey chip as "No Results". Knowing more
+                # than one vocabulary is this function's stated job, and these
+                # were the vocabularies it did not know.
+                "high risk", "high api spec risk",
+                "high browser extension risk"}:
         return "sev-high"
     if text in {"medium", "suspicious", "needs review",
                 "unknown", "insufficient coverage",
-                "single observation", "nothing collected"}:
+                "single observation", "nothing collected",
+                "moderate risk", "medium api spec risk",
+                "medium browser extension risk"}:
         return "sev-med"
-    if text in {"low", "low_risk", "low suspicion",
-                "no findings, coverage incomplete"}:
+    if text in {"low", "low_risk", "low suspicion", "low risk",
+                "no findings, coverage incomplete",
+                "low api spec risk", "low browser extension risk",
+                "informational api spec review"}:
         return "sev-low"
     return "sev-none"
 
