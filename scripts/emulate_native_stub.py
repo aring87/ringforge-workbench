@@ -251,6 +251,11 @@ class Emulator:
         self.log: Optional[list[dict]] = None
         #: Files the payload opened, in order, with the path it asked for.
         self.files: list[dict] = []
+        #: Paths the payload opened that do not resolve on this machine, so
+        #: `backing` served nothing. Recorded rather than silently empty: a
+        #: `b""` that nobody counts is how the malformed-path walk read as a
+        #: real one for two days.
+        self.refused_opens: list[str] = []
 
     def _install_hooks(self) -> None:
         """Attach the callbacks. Separate because a restored snapshot needs
@@ -612,25 +617,45 @@ class Emulator:
         return next((a for a, n in self.addr2name.items() if n == name), 0)
 
     def backing(self, nt_path: str) -> bytes:
-        """Real bytes for a file the payload opens, when the host has them.
+        """Real bytes for a file the payload opens -- when the path it asked
+        with would actually reach one.
 
-        Stage 3 opens `\\??\\ntdll.dll` -- reading a pristine copy from disk,
-        which is how a loader recovers unhooked syscall stubs. Answering that
-        with end-of-file does not merely stall it, it makes the run a study of
-        the harness. The host's own SysWOW64 copy is the honest answer, and it
-        is the same file the sample would get.
+        Stage 3 opens `C:\\Windows\\System32\\ntdll.dll` -- reading a pristine
+        copy from disk, which is how a loader recovers unhooked syscall stubs.
+        Answering that with end-of-file does not merely stall it, it makes the
+        run a study of the harness. The host's own SysWOW64 copy is the honest
+        answer, and it is the same file the sample would get.
+
+        **It resolves the path, not the leaf, and that distinction cost a
+        finding.** This used to take the last path component and look it up in
+        `SysWOW64` then `System32`, which silently repaired every malformed path
+        the payload built. Stage 4's host walk asks for
+        `\\??\\C:C:\\Windows\\System32\\compact.exe` -- a name that reaches
+        nothing on any machine, as `real_createprocess_paths.py` measured
+        against the real API -- and the leaf lookup answered all twelve with
+        real bytes anyway.
+
+        What that invented: stage 4 vets each candidate by reading it and
+        declines an empty one, so the harness's answers produced **eleven
+        creates that a real machine would never grant**, and the one skip
+        (`write.exe`) was not the sample being selective but this bench having
+        no WordPad. An answer that reads convincingly as the sample's behaviour
+        is the failure mode this project has already paid for once, in the
+        eleven-host walk of `0af`.
+
+        `winenv.resolve_dos_path` is the same resolver the creation side uses,
+        measured against the real API on every input tried, so both halves of an
+        open-then-create now agree about what exists.
         """
-        name = nt_path.rsplit("\\", 1)[-1].lower()
-        if not name:
+        resolved = winenv.resolve_dos_path(nt_path)
+        if resolved is None:
+            self.refused_opens.append(nt_path)
             return b""
-        for folder in (r"C:\Windows\SysWOW64", r"C:\Windows\System32"):
-            candidate = Path(folder) / name
-            if candidate.is_file():
-                try:
-                    return candidate.read_bytes()
-                except OSError:
-                    return b""
-        return b""
+        try:
+            return Path(resolved).read_bytes()
+        except OSError:
+            self.refused_opens.append(nt_path)
+            return b""
 
     def unicode_string(self, ptr: int) -> str:
         """The text of a UNICODE_STRING -- (Length, MaximumLength, Buffer),

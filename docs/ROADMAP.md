@@ -1973,6 +1973,65 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 2 — `backing` resolves the path now, and the walk creates nothing — 02 Sep
+
+**The prediction was recorded first and every part of it held.**
+
+    predicted                       measured
+    creates drop from 11 to 0       0 creates
+    file opens stay at 12           12 candidate opens
+    the polls stay unreached        unchanged
+    stage 4 still returns           same terminal EIP, 0x7700a007
+
+`Emulator.backing` took the last path component and looked it up in `SysWOW64`
+then `System32`. It now calls `winenv.resolve_dos_path` -- the same resolver the
+creation side uses, measured against the real API by `fbdf40b` -- so both halves
+of an open-then-create agree about what exists. Refusals go into
+`emu.refused_opens` rather than vanishing as an uncounted `b""`.
+
+**The whole walk now reads as a real machine would answer it:**
+
+    12 candidate opens, all \??\C:C:\Windows\System32\<name>, all refused
+    14 of 15 opens resolved to nothing
+    0 creates
+    \??\C:\Windows\System32\ntdll.dll still resolves  <-- load-bearing, intact
+
+That last row is the one that had to hold: stage 3 reads a pristine `ntdll` off
+disk to recover clean syscall stubs, and answering it with end-of-file would
+make the run a study of the harness.
+
+**So stage 4's host walk produces no process at all**, which is now measured
+rather than reasoned. It is the cleanest account of stage 4's silence the chain
+has: not a gate, not a missing export, not an unresolvable forwarder -- it never
+obtains a host, because every name it builds is malformed.
+
+## Two guards that reported the correct result as a fault
+
+Fixing the harness made the census fail in two places, both the same shape this
+chain keeps hitting -- a check written for the expected case.
+
+**The RUN CHECK called zero creates VOID.** It was written when the harness
+answered every open by leaf, so a walk that ran always produced creates and
+their absence could only mean truncation. Zero creates is now the faithful
+outcome. It discriminates on the walk's own opens: no creates *and* no candidate
+opens is a truncated run, no creates *with* twelve opens is a result.
+
+**The construction summary called it "contradicts `0as`".** `0as` saw doubled
+creates because the harness then answered opens by leaf; it no longer does, so
+zero doubled creates is consistent with `0as` rather than a contradiction of it.
+
+Six tests pin `backing`, including that a well-formed path still gets its bytes
+and that a refusal is counted rather than silent. Suite 1,377 -> 1,383.
+
+## What this qualifies
+
+**Every stage-4 finding that counted creates.** `0ad` through `0as` were made
+while the harness granted eleven creates a real machine would refuse. The
+conclusions about *path construction* stand -- they were about the strings, and
+`real_createprocess_paths.py` measured those against the real API -- but any
+count of creates, hosts or targets in those sections is harness-shaped and
+should be re-derived before it is built on.
+
 ### Item 2 — `write.exe` is skipped because this bench has no WordPad — 02 Sep
 
 **The anomaly is ours, and finding that out is worth more than the anomaly.**

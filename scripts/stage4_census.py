@@ -113,11 +113,33 @@ def main(argv: list[str] | None = None) -> int:
     # RUN CHECK, naming its observation. A run cut short by the budget produces
     # a short walk, which reads exactly like a walk that ended early for a
     # reason -- and that is the `0aa` shape this project has hit four times.
-    if not creates:
-        print("\n*** VOID: no CreateProcessInternalW call in this run at all. "
-              "Either the budget\n    ran out before the walk or the checkpoint "
-              "is past it. Nothing below is a\n    statement about the sample.")
+    # **Zero creates is a RESULT now, not only a truncation.** This guard was
+    # written when the harness answered every open by leaf name, so a walk that
+    # ran always produced creates and their absence could only mean the run was
+    # cut short. Since `backing` resolves the path instead, the faithful outcome
+    # of a walk built on `C:C:\...` is zero creates -- and the guard called that
+    # VOID, which is a check written for the expected case reporting the
+    # measured one as a failure.
+    #
+    # The walk's own opens are the discriminator: a run cut short has neither,
+    # a faithful run has twelve opens and no create.
+    candidate_opens = [o for o in opens if leaf(o.get("path", "")) in CANDIDATES]
+    if not creates and not candidate_opens:
+        print("\n*** VOID: no CreateProcessInternalW call and no candidate open "
+              "in this run at\n    all. Either the budget ran out before the "
+              "walk or the checkpoint is past\n    it. Nothing below is a "
+              "statement about the sample.")
         return 2
+    if not creates:
+        refused = getattr(emu, "refused_opens", [])
+        print(f"\nNO CREATES, AND THE WALK RAN: {len(candidate_opens)} "
+              f"candidate open(s), 0 create(s).")
+        print(f"    {len(refused)} open(s) resolved to nothing on this machine, "
+              f"which is what a real\n    machine does with every path this "
+              f"walk builds. Stage 4 reads each candidate\n    and declines an "
+              f"empty one, so it declines all of them.")
+        print("    This is the faithful outcome, not a truncated run -- see "
+              "`backing` and 0aq.")
 
     print(f"\nTHE WALK: {len(opens)} file open(s), {len(creates)} create(s)\n")
     print(f"{'#':<3} {'NtCreateFile called with':<44} "
@@ -177,10 +199,24 @@ def main(argv: list[str] | None = None) -> int:
         print("\n   Creates doubled, opens clean -- two constructions, and the "
               "sample is capable of")
         print("   the correct string. The doubling is a defect in one of them.")
+    elif doubled_opens and not creates:
+        # The faithful case since `backing` started resolving paths: every open
+        # is doubled, every open resolves to nothing, and the walk therefore
+        # never reaches a create. Saying "contradicts 0as" here would be this
+        # probe reporting its own correctness as a fault.
+        print("\n   **One construction, and it never reaches a create.** All "
+              f"{doubled_opens} candidate opens")
+        print("   are doubled and none resolves, so stage 4 declines every "
+              "candidate and creates")
+        print("   nothing. `0as` saw doubled creates because the harness then "
+              "answered opens by")
+        print("   leaf name; it no longer does. Consistent with 0as, not a "
+              "contradiction of it.")
     else:
-        print("\n   No doubled create in this run, which contradicts 0as. "
-              "Settle that before")
-        print("   reading anything else here.")
+        print("\n   No doubled create in this run, and opens are not doubled "
+              "either, which")
+        print("   contradicts 0as. Settle that before reading anything else "
+              "here.")
 
     # The volume the whole thing is built from, which is not what 0as recorded.
     directories = {p.rsplit("\\", 1)[0] for p in candidate_opens}

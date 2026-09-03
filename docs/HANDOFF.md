@@ -220,6 +220,52 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, the walk creates nothing, and that is the faithful answer
+
+**The `backing` fix landed and the pre-registered prediction held in every
+part.**
+
+    predicted                     measured
+    creates drop from 11 to 0     0 creates
+    file opens stay at 12         12 candidate opens
+    the polls stay unreached      unchanged
+    stage 4 still returns         same terminal EIP, 0x7700a007
+
+`Emulator.backing` resolved files by **leaf name**; it now calls
+`winenv.resolve_dos_path`, the same resolver the creation side uses, so both
+halves of an open-then-create agree about what exists. Refusals are recorded in
+`emu.refused_opens` instead of vanishing as an uncounted `b""`.
+
+    12 candidate opens, all \??\C:C:\Windows\System32\<name>, all refused
+    14 of 15 opens resolved to nothing
+    0 creates
+    \??\C:\Windows\System32\ntdll.dll still resolves  <-- load-bearing, intact
+
+**So stage 4's host walk produces no process at all, measured rather than
+reasoned.** That is the cleanest account of its silence the chain has: not a
+gate, not a missing export, not an unresolvable forwarder -- it never obtains a
+host, because every name it builds is malformed.
+
+**Two guards then reported the correct result as a fault**, both the shape this
+chain keeps hitting. The census's RUN CHECK called zero creates VOID -- written
+when a walk that ran always produced creates -- and now discriminates on the
+walk's own opens. The construction summary called it "contradicts `0as`", when
+`0as` saw doubled creates only because the harness answered opens by leaf.
+
+Six tests pin `backing`. Suite 1,377 -> **1,383**.
+
+**WHAT THIS QUALIFIES, and it is the thing to carry forward.** Every stage-4
+finding that counted creates -- `0ad` through `0as` -- was made while the
+harness granted eleven creates a real machine would refuse. Conclusions about
+*path construction* stand, because those were about the strings and
+`real_createprocess_paths.py` measured them against the real API. **Any count of
+creates, hosts or targets in those sections is harness-shaped and needs
+re-deriving before it is built on.**
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 2 - backing resolves the path now, and the walk creates nothing
+
 ### Pick up here — 02 Sep, `write.exe` is skipped because this bench has no WordPad
 
 **Both open threads on the `422e30ed` chain answered, and the second one found
