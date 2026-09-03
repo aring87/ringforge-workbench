@@ -378,6 +378,99 @@ leaving a detector waiting forever for calibration.
 
 ---
 
+### Indicators
+
+Everything below was recovered by this workbench unless a row says otherwise.
+**Read the notes column** — several of these are indicators of a *builder* or a
+*vendor* rather than of a campaign, and two are deliberately not network
+signatures.
+
+#### Raton — `ce0d08be…`
+
+| Type | Indicator | Note |
+|---|---|---|
+| SHA-256 | `ce0d08be516376f5decc3bf6d8970fa493c925bc013a088c2a4eb8ed9f9fc3f1` | the client |
+| SHA-256 | `d8ee0fc96ce8de2e37bc8fdc051da7c1852b9a510270e663ba17281de23f049b` | `stuff.dll`, the transport library |
+| Path | `%AppData%\PlatformRuntime\<sha256>.exe` | the persisted copy |
+| Persistence | `schtasks` `ONLOGON`, `/rl HIGHEST`; second path under `…\CurrentVersion\Run` | self-healing |
+| Defence evasion | `powershell -ExecutionPolicy Bypass "Add-MpPreference -ExclusionProcess …"` | whitelists itself |
+| UID | `Raton_` + 8 random characters | **per run, not per host** |
+| Constant | `123ratonpro` | hardcoded gate: `Hosts` returns the hosts file on this value and **overwrites it** on any other |
+| Config | `bbch4f57swBUEpVWfwKEKxJ` | this build's password; the check-in sends `Pass` empty |
+| Builder default | `silly21` | an unpatched config placeholder, **not** an operator tag |
+| PDB | `C:\Users\Cristian\source\repos\Stuff\Stuff\obj\Debug\Stuff.pdb` | build-machine account |
+| Mutex | 16-character uppercase alphanumeric under `\BaseNamedObjects` | **shape only** — the value is derived from the username, so a literal was retracted |
+| Wire format | `0xDEADBEEF`, lengths, compression flag, CRC-32 | **not a network signature** — it is inside TLS. Useful against memory and files |
+| C2 | `127.0.0.1:7372` | **this build only, and loopback.** Do not treat as a network indicator |
+| Check-in | `IP Group Country UID Username Machine Os Executing AV Pass Version Clock Payload` | the `listinfo` schema |
+
+**Vendor and author**, from the project's own public repository and channel —
+recorded because they are pivots, not because anyone was identified:
+
+| Type | Indicator |
+|---|---|
+| Source | `codeberg.org/Raton/Raton` (GitHub mirror and account both 404) |
+| Channel | `t.me/sillyisafed` — "Silly", 356 subscribers, links a shop |
+| Contact | `t.me/RatonTool`, `t.me/DUMBASSsilly` |
+| Domain | `raton.fun` — `/shop` is a placeholder, *"Wait for our rats…"* |
+| Aliases | `Silly`, `S-illy`, `SillyKuadro@gmail.com` |
+| Donation | `bc1qd2088hs8ajg9qv3m2f3p285e7r7ntmutygtux6` |
+
+Third-party, for correlation only — CYFIRMA's weekly of 20 Mar 2026, not
+observed here: hashes `b15562c0…`, `25b442da…`, C2 `cloudpub[.]ru`.
+
+#### FormBook loader chain — `422e30ed…`
+
+| Type | Indicator | Note |
+|---|---|---|
+| SHA-256 | `422e30edd409936c649905ba4a8f58ed533287da77965268342ec38221d28231` | stage 1 |
+| SHA-256 | `e139c422121c32d68424f57e55b410d6c4a40376f4316bd9f2d2b43b77b80a2b` | stage 2, forged "MemCompress Pro" |
+| SHA-256 | `b454edc72887282752d53dd6712553cd41d69c5ff0a9c713129f4d2cd22ef78d` | stage 4, the stealer, decrypted |
+| Key | `HREWPjFNAr` | stage 2's payload cipher — a byte recurrence, not AES |
+| Injection | section-mapping into `RegSvcs.exe` | no `NtWriteVirtualMemory` on its path |
+| Constant | `0x32dfd514` | the author's poison address, stored when the Sandboxie gate fires |
+| Hash | `crc32("sbiedll.dll") == 0xe11da208` | the module that gates the crash |
+| Anti-analysis | 20 CRC-32 process-name constants, 13 cracked | includes `python` and `perl` — Cuckoo's agent |
+| Stealer targets | `Internet Explorer\IntelliForms\Storage2`, Chrome `Local State`, Firefox, cookies, autofill | stack-built at runtime |
+
+#### Remcos — `aa4d6427…`
+
+| Type | Indicator |
+|---|---|
+| SHA-256 | `aa4d642727be33ecd94acb8a24e546aeed325f08367333bb8974f5e54d99e715` |
+| C2 | `62.60.226.68:24042` |
+| Dropped | `%APPDATA%\Config\smng.exe` |
+| Persistence | `HKCU` and `HKLM\SOFTWARE\WOW6432Node` Run keys, value `TRY150-6P1GV6` |
+| Lookup | `pro.ip-api.com` |
+
+#### AgentTesla — `31a762fd…`
+
+| Type | Indicator |
+|---|---|
+| SHA-256 | `31a762fdce1008e635a5e6486d7bc50b4bce671c9232006216e70cd8f2a4a7fb` |
+| C2 | `ftp.cyberflor.co` |
+| Credential | `michi@cyberflor.co` |
+| Exfil | FTP control `:21`, passive data `:60000-60010` |
+
+#### EtherHiding clipper — `af2d8300…`
+
+| Type | Indicator | Note |
+|---|---|---|
+| SHA-256 | `af2d83008fff89591cf33cdbadf50b3d9eaa68d3057eda9b4f04a771121d2abc` | |
+| Contract | `0x4E31128a…` on BSC testnet, chain id `0x61` | abbreviated as the record has it |
+| C2 | `klopasnarhia.cc` | returned by `getData()`, **not rotated** since first read |
+| Campaign GUID | `4b817807-2731-459c-bc5d-4bd914c9eb55` | sent as the `Authorization` header |
+| Hollowing target | `SecurityHealthHost.exe` | |
+
+#### Others
+
+| Sample | SHA-256 | Note |
+|---|---|---|
+| Dridex | `e30b76f9454a5fd3d11b5792ff93e56c52bf5dfba6ab375c3b96e17af562f5fc` | the hollowing proof |
+| VM-detecting sample | `a6a86646b0066a630d7e6004ce08d52e70d81e77d98268b98a34b588cacded0a` | announces it in a dialog and still reads no VM artefact |
+
+---
+
 ### What the findings changed in the workbench
 
 Several of the most useful results were about the **instrument**, not the
