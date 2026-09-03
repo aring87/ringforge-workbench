@@ -220,6 +220,51 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, a host is not what unpacks stage 4
+
+**The candidate answer from earlier today is wrong, and the record already held
+the disproof.** The reading was that stage 4 never unpacks because it never
+obtains a host. `stage4_with_hosts.py --serve` answers the twelve candidates
+with real bytes:
+
+    mode        creates attempted   creates GRANTED   pages executed
+    faithful                    0                 0   25 of 67
+    --serve                    12                 0   25 of 67
+
+Serving the files moved creates 0 -> 12, which is experiment B's mechanism
+confirmed a third way. It changed nothing about the unpacking -- and **all
+twelve creates failed**, so the payload had no more of a host than before and
+**the run does not test the hypothesis**. Saying otherwise was the first thing
+the probe printed; it now discriminates on a *granted* create rather than an
+attempted one. Fourth summary line on this chain written for the expected case.
+
+**`0af` and `0ah` already measured that world.** With creates granted and the
+target's PEB readable, stage 4 made ONE create, read `ImageBaseAddress` once,
+slept twelve times and returned -- with no APIs at all after the last sleep. **A
+granted host did not unpack it.** One candidate explanation eliminated; THE
+QUESTION stands.
+
+**The lead that survives, and it is a static question.** `0ai` mapped a
+two-party rendezvous and stage 4 runs the **server** side of both halves. The
+requester (`+0x03e70`, `+0x03ee0`) is called directly from `+0x1654c` and
+`+0x16900`; the server (`+0x03f40`, `+0x04090`) is called from **nowhere** --
+no direct call, no jmp, not even present as a literal dword -- and is reached
+through a computed pointer. All twelve sleeps come from the server sites and the
+requester's never fire.
+
+**Stage 4 is waiting to be asked to inject, and nothing on this path asks.**
+Not a gate declining the stealer, not a missing host: one half of a protocol
+whose other half never runs. **Next: what calls the requester at `+0x1654c` /
+`+0x16900`.**
+
+Correcting one number in passing: the baseline is **25 of 67** pages, not the 23
+`0j` recorded. Writes into the payload region are 4 pages faithful and 5 served,
+so nothing decrypts its body in place either way.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - obtaining a host is not what unpacks stage 4
+
 ### Pick up here — 02 Sep, the walk creates nothing, and that is the faithful answer
 
 **The create counts in `0ad`-`0as` are re-derived, and the answer is that they

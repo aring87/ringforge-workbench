@@ -1973,6 +1973,75 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — obtaining a host is not what unpacks stage 4 — 02 Sep
+
+**The candidate answer from earlier today is wrong, and the record already had
+the disproof.**
+
+The reading was: stage 4 never unpacks because it never obtains a host -- every
+path it builds is malformed, every open fails, no create is attempted.
+`stage4_with_hosts.py --serve` answers the twelve candidates with real bytes and
+measures what changes:
+
+    mode        creates attempted   creates GRANTED   pages executed
+    faithful                    0                 0   25 of 67
+    --serve                    12                 0   25 of 67
+
+**Serving the files moved creates from 0 to 12**, which is experiment B's
+mechanism confirmed a third way: the read gates the create. **And it changed
+nothing about the unpacking**, because all twelve creates *failed* -- the path
+is still malformed, so the payload had no more of a host than before.
+
+**So this run does not test the hypothesis**, and saying otherwise was the first
+thing this probe printed. Its original conclusion read *"'No host' is NOT what
+stops it"* off twelve failed creates, which is the fourth summary line on this
+chain written for the expected case. It now discriminates on a **granted**
+create rather than an attempted one.
+
+## The hypothesis was already tested, in `0af` and `0ah`
+
+That world has been measured. With creates granted and the target's PEB
+readable, stage 4:
+
+    made ONE create, not eleven
+    read ImageBaseAddress once, four bytes at PebBaseAddress + 8
+    slept twelve times
+    returned -- and `0ah` counted the tail: NO APIs at all after the last sleep
+
+**A granted host did not unpack it.** `0ah` had the right words for it already:
+*"a hollowing routine that reads a target's base and then neither unmaps nor
+writes is not being blocked; it is doing something else."*
+
+So the answer to *what would make stage 4 unpack itself* is **not "give it a
+host"**. One candidate explanation is eliminated and THE QUESTION stands.
+
+## What survives as the lead
+
+`0ai` mapped a two-party rendezvous inside the payload, and stage 4 runs the
+**server** side of both halves:
+
+    requester  +0x03e70, +0x03ee0   called directly from +0x1654c and +0x16900
+    server     +0x03f40, +0x04090   called from nowhere -- no direct call, no
+                                    jmp, not present as a literal dword; it is
+                                    dispatched through a computed pointer
+
+All twelve sleeps come from the two server sites; the requester's own sleep
+sites never fire. **Stage 4 is waiting to be asked to inject, and nothing on
+this path asks.** `e686848` then found that once the create was faithful the
+server's polls are not even reached.
+
+That is the coherent shape of the silence: not a gate declining the stealer, not
+a missing host, but **one half of a protocol whose other half never runs**. The
+next question is what calls the requester at `+0x1654c` / `+0x16900`, and it is
+a static question this bench can ask.
+
+## One number to correct in passing
+
+The baseline is **25 of 67 pages**, not the 23 `0j` recorded. Small, and worth
+saying rather than letting the next reader treat 23 as canonical -- the harness
+has changed several times since. Writes into the payload region: 4 pages
+faithful, 5 served, so nothing decrypts its body in place under either.
+
 ### Item 2 — the create counts re-derived: they were never the sample's — 02 Sep
 
 **`0ad` through `0as` carried five different create counts and every one of them
