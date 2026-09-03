@@ -11,7 +11,7 @@ from typing import Any
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from dynamic_analysis.report_theme import report_css
+from static_triage_engine.api_report import build_api_report
 from static_triage_engine.api_response_analysis import analyze_response
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
@@ -1190,13 +1190,22 @@ class APIAnalysisWindow(tk.Toplevel):
         raw = self._get_text(self.response_raw_text)
         analysis = self._get_text(self.response_analysis_text)
 
+        redaction_count: int | None = None
         if self.redact_report_var.get():
+            before = sum(f.count("[REDACTED]") for f in
+                         (request_headers, request_body, headers, body, raw, analysis))
             request_headers = self._redact_secrets(request_headers)
             request_body = self._redact_secrets(request_body)
             headers = self._redact_secrets(headers)
             body = self._redact_secrets(body)
             raw = self._redact_secrets(raw)
             analysis = self._redact_secrets(analysis)
+            # Counted rather than asserted: "redaction was on" and "redaction
+            # removed nothing" are different facts, and a reader deciding how
+            # to handle the file needs the second one.
+            after = sum(f.count("[REDACTED]") for f in
+                        (request_headers, request_body, headers, body, raw, analysis))
+            redaction_count = max(after - before, 0)
         else:
             proceed = messagebox.askyesno(
                 "Save Unredacted Report",
@@ -1224,35 +1233,41 @@ class APIAnalysisWindow(tk.Toplevel):
         if not path:
             return
 
-        html = f"""<!doctype html>
-<html lang=\"en\">
-<head>
-<meta charset=\"utf-8\">
-<title>RingForge API Test Report</title>
-<style>{report_css()}</style>
-</head>
-<body>
-<div class=\"card\">
-    <h1>RingForge Manual API Tester Report</h1>
-    <div class=\"grid\">
-        <div class=\"label\">Method</div><div>{self._escape_html(method)}</div>
-        <div class=\"label\">URL</div><div>{self._escape_html(url)}</div>
-        <div class=\"label\">Status</div><div>{self._escape_html(status)}</div>
-        <div class=\"label\">Time</div><div>{self._escape_html(elapsed)}</div>
-        <div class=\"label\">Type</div><div>{self._escape_html(content_type)}</div>
-        <div class=\"label\">Size</div><div>{self._escape_html(size)}</div>
-        <div class=\"label\">Redaction</div><div>{self._escape_html(redaction_status)}</div>
-    </div>
-</div>
-<div class=\"card\"><h2>Response Analysis</h2><pre>{self._escape_html(analysis)}</pre></div>
-<div class=\"card\"><h2>Request Headers</h2><pre>{self._escape_html(request_headers)}</pre></div>
-<div class=\"card\"><h2>Request Body</h2><pre>{self._escape_html(request_body)}</pre></div>
-<div class=\"card\"><h2>Response Body</h2><pre>{self._escape_html(body)}</pre></div>
-<div class=\"card\"><h2>Response Headers</h2><pre>{self._escape_html(headers)}</pre></div>
-<div class=\"card\"><h2>Raw Output</h2><pre>{self._escape_html(raw)}</pre></div>
-</body>
-</html>
-"""
+        # The structured result, not the rendered text. The report used to
+        # embed `_analyze_response`'s plain-text block in a <pre>, which threw
+        # away the severities that `analyze_response` had already worked out --
+        # so the one module whose purpose is scoring a response was the only
+        # one that could not show a severity.
+        try:
+            analysis_result = analyze_response(
+                method=method,
+                url=url,
+                status=status,
+                response_headers=headers,
+                body=body or raw,
+            )
+        except Exception:
+            # A report that renders without findings is worth more than no
+            # report. The section says "no findings" is a statement about the
+            # checks that ran, so an empty result cannot read as a clearance.
+            analysis_result = {"findings": [], "counts": {}}
+
+        html = build_api_report(
+            method=method,
+            url=url,
+            status=status,
+            elapsed=elapsed,
+            content_type=content_type,
+            size=size,
+            request_headers=request_headers,
+            request_body=request_body,
+            response_headers=headers,
+            response_body=body,
+            response_raw=raw,
+            analysis=analysis_result,
+            redacted=bool(self.redact_report_var.get()),
+            redactions=redaction_count,
+        )
         out_path = Path(path)
         out_path.write_text(html, encoding="utf-8", errors="replace")
         self.latest_report_path = out_path

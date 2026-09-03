@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from dynamic_analysis.report_theme import report_css
 from static_triage_engine.verdict_report import render_verdict_report
 from gui import theme as T
 from gui.components import HeaderBar, ScrolledText

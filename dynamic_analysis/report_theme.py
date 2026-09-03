@@ -565,8 +565,28 @@ pre {
 """
 
 
-def report_page(title: str, subtitle: str, verdict: str, verdict_class: str, body_html: str) -> str:
+def report_page(title: str, subtitle: str, verdict: str = "",
+                verdict_class: str = "", body_html: str = "",
+                footer_note: str = "") -> str:
+    """The one page shell every report in this workbench renders into.
+
+    **The verdict is optional, and that is the point of it being optional.**
+    Three reports used to hand-roll their own `<!DOCTYPE html>` around
+    `report_css()` rather than call this, so the application and its own outputs
+    read as different products -- the same argument `design_tokens` was created
+    to settle for colour, one level up at the structure. Two of those three have
+    no verdict to show, and the fix for that is to let a report say nothing
+    rather than to invent a band for it.
+
+    ``footer_note`` names the producing module beside the timestamp, because a
+    reader holding one exported page should be able to tell which screen made
+    it.
+    """
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    verdict_html = (f'\n    <div class="verdict {verdict_class}">{verdict}</div>'
+                    if verdict else "")
+    footer = f"{footer_note} &bull; Generated: {generated_at}" if footer_note \
+        else f"Generated: {generated_at}"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -578,11 +598,10 @@ def report_page(title: str, subtitle: str, verdict: str, verdict_class: str, bod
 <div class="container">
   <div class="banner">
     <h1>{title}</h1>
-    <div class="subtitle">{subtitle}</div>
-    <div class="verdict {verdict_class}">{verdict}</div>
+    <div class="subtitle">{subtitle}</div>{verdict_html}
   </div>
   {body_html}
-  <div class="footer">Generated: {generated_at}</div>
+  <div class="footer">{footer}</div>
 </div>
 </body>
 </html>"""

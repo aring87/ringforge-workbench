@@ -29,7 +29,7 @@ from dynamic_analysis.procmon_config import (
     describe_procmon_filter,
 )
 from static_triage_engine.combine_case import combine_case
-from dynamic_analysis.report_theme import report_css
+from dynamic_analysis.report_theme import report_page
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
 
@@ -1948,32 +1948,56 @@ class DynamicAnalysisWindow(tk.Toplevel):
         counts = findings.get("counts", {}) or data.get("counts", {}) or {}
         sample = data.get("sample", {}) or {}
 
-        html_doc = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>Dynamic Report</title>
-<style>{report_css()}</style></head><body>
-<div class="card">
-<h1>Dynamic Analysis Report</h1>
-<p class="muted">Case: {esc(case_home.name)}</p>
-<p><b>Sample:</b> {esc(sample.get("sample_name", ""))}</p>
-<p><b>Path:</b> {esc(sample.get("sample_path", ""))}</p>
-<p><b>SHA256:</b> {esc(sample.get("sha256", ""))}</p>
-</div>
-<div class="card">
-<h2>Highlights</h2>
-{"<ul>" + "".join(f"<li>{esc(x)}</li>" for x in highlights) + "</ul>" if highlights else "<p class='muted'>None</p>"}
-</div>
-<div class="card">
-<h2>Findings Counts</h2>
-<table>
-<tr><th>Interesting Events</th><td>{esc(counts.get("interesting_events", 0))}</td></tr>
-<tr><th>Process Creates</th><td>{esc(counts.get("process_creates", 0))}</td></tr>
-<tr><th>Network Events</th><td>{esc(counts.get("network_events", 0))}</td></tr>
-<tr><th>File Write Events</th><td>{esc(counts.get("file_write_events", 0))}</td></tr>
-<tr><th>Suspicious Path Hits</th><td>{esc(counts.get("suspicious_path_hits", 0))}</td></tr>
-<tr><th>Persistence Hits</th><td>{esc(counts.get("persistence_hits", 0))}</td></tr>
-</table>
-</div>
-</body></html>"""
+        # **This is the fallback, and it now says so.** It runs when the full
+        # report generator fails, and it used to render a bare stack of cards
+        # titled "Dynamic Analysis Report" -- the same name as the real one,
+        # looking nothing like it, with no way for a reader holding the file to
+        # know which they had. A degraded output that does not announce itself
+        # is the same failure this project's collectors are built to avoid.
+        body_html = f"""
+<section class="card card-alert">
+  <div class="section-head"><h2>Fallback Report</h2></div>
+  <p class="muted">
+    The full dynamic report could not be generated, so this page was written
+    from the run summary alone. <b>It carries a fraction of what the full
+    report does</b> -- no evidence categories, no memory or network sections,
+    no verdict. Read an empty section here as "not rendered", never as
+    "nothing found", and re-export once the full generator succeeds.
+  </p>
+</section>
+<section class="card">
+  <div class="section-head"><h2>Sample</h2></div>
+  <table class="kv">
+    <tr><th>Case</th><td>{esc(case_home.name)}</td></tr>
+    <tr><th>Sample</th><td>{esc(sample.get("sample_name", ""))}</td></tr>
+    <tr><th>Path</th><td>{esc(sample.get("sample_path", ""))}</td></tr>
+    <tr><th>SHA256</th><td>{esc(sample.get("sha256", ""))}</td></tr>
+  </table>
+</section>
+<section class="card">
+  <div class="section-head"><h2>Highlights</h2></div>
+  {"<ul>" + "".join(f"<li>{esc(x)}</li>" for x in highlights) + "</ul>" if highlights else "<p class='muted'>None were recorded in the summary.</p>"}
+</section>
+<section class="card">
+  <div class="section-head"><h2>Findings Counts</h2></div>
+  <table class="kv">
+    <tr><th>Interesting Events</th><td>{esc(counts.get("interesting_events", 0))}</td></tr>
+    <tr><th>Process Creates</th><td>{esc(counts.get("process_creates", 0))}</td></tr>
+    <tr><th>Network Events</th><td>{esc(counts.get("network_events", 0))}</td></tr>
+    <tr><th>File Write Events</th><td>{esc(counts.get("file_write_events", 0))}</td></tr>
+    <tr><th>Suspicious Path Hits</th><td>{esc(counts.get("suspicious_path_hits", 0))}</td></tr>
+    <tr><th>Persistence Hits</th><td>{esc(counts.get("persistence_hits", 0))}</td></tr>
+  </table>
+</section>"""
+
+        html_doc = report_page(
+            title="Dynamic Analysis Report (Fallback)",
+            subtitle=f"Case: {esc(case_home.name)}",
+            verdict="Fallback",
+            verdict_class="sev-med",
+            body_html=body_html,
+            footer_note="RingForge Workbench &bull; Dynamic Analysis, fallback export",
+        )
 
         output_html.write_text(html_doc, encoding="utf-8", errors="replace")
 

@@ -32,7 +32,7 @@ from __future__ import annotations
 import html
 from typing import Any, Mapping, Sequence
 
-from dynamic_analysis.report_theme import report_css, severity_class_for_label
+from dynamic_analysis.report_theme import report_page, severity_class_for_label
 
 #: What each band means, in one sentence, per domain. Printed beneath the
 #: verdict so a reader never has to know the vocabulary to use the page.
@@ -287,20 +287,7 @@ def render_verdict_report(
         </table>
       </section>""" if artifact_rows else ""
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>RingForge Case Verdict</title>
-<style>{report_css()}</style>
-</head>
-<body>
-<div class="container">
-  <div class="banner">
-    <h1>Case Verdict</h1>
-    <div class="subtitle">{_e(case_name) or 'RingForge Workbench'}</div>
-  </div>
-
+    body_html = f"""
   {_verdict_block(verdict)}
   {_evidence_block(verdict)}
   {_coverage_block(verdict)}
@@ -314,13 +301,19 @@ def render_verdict_report(
       <tr><th>Case path</th><td>{_e(case_path)}</td></tr>
       <tr><th>Model</th><td>{_e(verdict.get('score_model'))}</td></tr>
       <tr><th>Context score</th><td>{_e(verdict.get('score', 0))}
-        <span class="muted">— descriptive volume. Nothing bands on it, and two
-        cases in the same band can differ here without differing in
+        <span class="muted">&mdash; descriptive volume. Nothing bands on it, and
+        two cases in the same band can differ here without differing in
         finding.</span></td></tr>
     </table>
-  </section>
+  </section>"""
 
-  <div class="footer">RingForge Workbench &bull; compare cases on the band, not the verdict wording</div>
-</div>
-</body>
-</html>"""
+    # The fourth report to hand-roll this shell. The verdict block carries the
+    # band itself, so the banner takes none -- which is what `report_page`'s
+    # optional verdict is for.
+    return report_page(
+        title="Case Verdict",
+        subtitle=_e(case_name) or "RingForge Workbench",
+        body_html=body_html,
+        footer_note="RingForge Workbench &bull; compare cases on the band, "
+                    "not the verdict wording",
+    )
