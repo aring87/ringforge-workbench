@@ -1973,6 +1973,72 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — "dead" is not "packed", and the requester's chain is plaintext — 03 Sep
+
+**This corrects `a5930d9`, committed an hour earlier.** That entry said the
+requester's callers sit "in the packed two-thirds", inferred from a page in
+which nothing executed. **A page where nothing ran is not the same as a page
+that is still encrypted**, and the difference decides whether there is a gate to
+find or a decryption to wait for.
+
+## Entropy does not separate live from dead
+
+    live pages   n=25  min 6.24  mean 7.20  max 7.93
+    dead pages   n=43  min 6.03  mean 7.55  max 7.96
+
+The distributions **overlap heavily**. Live pages reach 7.93, which a naive
+threshold would call packed; dead pages reach down to 6.03, which is below every
+live page's minimum. So "the unexecuted two-thirds is still packed" is not
+something entropy supports as a blanket statement, and `0j`'s framing is too
+strong.
+
+**Five dead pages sit at code-like entropy:**
+
+    0x03ea0000  +0x0c38c  6.10
+    0x03ea1000  +0x0d38c  6.25
+    0x03eab000  +0x1738c  6.03   <-- the lowest in the whole image
+    0x03eaf000  +0x1b38c  6.06
+    0x03ebc000  +0x2838c  6.28
+
+## And the requester's call chain runs straight through one of them
+
+Cross-referencing the backward walk from `a5930d9`:
+
+    +0x17e17  0x03eaba8b  page 0x03eab000  level 6 caller   CODE-LIKE DEAD PAGE
+    +0x17e8e  0x03eabb02  page 0x03eab000  level 6 caller   CODE-LIKE DEAD PAGE
+    +0x17f91  0x03eabc05  page 0x03eab000  level 5 caller   CODE-LIKE DEAD PAGE
+
+**Three links of the requester's caller chain are in `0x03eab000`, the
+lowest-entropy page in the image at 6.03** -- below the minimum of every page
+that actually executed.
+
+That is plaintext code which never ran. **So the requester is not unreachable
+because it is encrypted; it is decrypted and simply not entered.** Which puts a
+declined branch back on the table as something findable without decrypting
+anything at all.
+
+## The instrument that failed, and why it failed
+
+The experiment was designed to map FLOSS's stealer strings onto the page split.
+It found **nothing** -- no 4-byte chunk of any of the eleven strings anywhere in
+the image -- and the artifact README says why: FLOSS recovered them with its
+**decoded** pass, which emulates decoder functions and captures their *output*.
+The plaintext never exists statically, so searching for it tested nothing.
+
+The script says exactly that rather than reading zero hits as "they must be
+packed", which is the reading that would have confirmed `0j` by accident.
+
+## What to do next, and it is cheap
+
+`stage4_declined.py` already finds branches whose taken side ran and whose
+untaken side never did. **Restricted to these five pages**, it is looking for a
+gate in decrypted code rather than in a wall of ciphertext -- which is a search
+that can actually succeed.
+
+Caveat kept in view: 6.6 is a judgement, and the two distributions overlap. The
+case for `0x03eab000` is strong because it is below every live page, not because
+it clears an arbitrary line.
+
 ### Item 1 — the rendezvous is unpacked, its caller is not — 02 Sep
 
 **"What calls the requester" is not a separate thread from "what unpacks stage

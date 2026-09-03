@@ -220,6 +220,49 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 03 Sep, "dead" is not "packed", and the requester's chain is plaintext
+
+**This corrects the entry below it, committed an hour earlier.** That said the
+requester's callers sit "in the packed two-thirds", inferred from pages where
+nothing executed. **A page where nothing ran is not a page that is still
+encrypted**, and the difference decides whether there is a gate to find or a
+decryption to wait for.
+
+**Entropy does not separate live from dead:**
+
+    live pages   n=25  min 6.24  mean 7.20  max 7.93
+    dead pages   n=43  min 6.03  mean 7.55  max 7.96
+
+They overlap heavily, so `0j`'s "the unexecuted two-thirds is still packed" is
+too strong as a blanket claim. **Five dead pages are at code-like entropy**, and
+`0x03eab000` at **6.03** is the lowest in the whole image -- below the minimum of
+every page that executed.
+
+**The requester's caller chain runs through it.** Three links from the backward
+walk -- `+0x17e17`, `+0x17e8e`, `+0x17f91` -- are all in `0x03eab000`. That is
+plaintext code which never ran, so **the requester is not unreachable because it
+is encrypted; it is decrypted and not entered.** A declined branch is back on
+the table as something findable without decrypting anything.
+
+**The instrument that failed, and why.** The probe was built to map FLOSS's
+stealer strings onto the page split and found no chunk of any of the eleven
+anywhere. The artifact README says why: FLOSS recovered them with its *decoded*
+pass, which emulates decoder functions and captures their output, so the
+plaintext never exists statically. The script reports that rather than reading
+zero hits as "they must be packed" -- which would have confirmed `0j` by
+accident.
+
+**NEXT, and it is cheap.** `stage4_declined.py` finds branches whose taken side
+ran and whose untaken side never did. **Restricted to those five pages** it is
+hunting a gate in decrypted code instead of in ciphertext, which is a search
+that can succeed. Caveat: 6.6 is a judgement and the distributions overlap; the
+case for `0x03eab000` rests on it being below every live page, not on clearing a
+line.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - "dead" is not "packed", and the requester's chain is plaintext
+
 ### Pick up here — 02 Sep, the rendezvous is unpacked and its caller is not
 
 **"What calls the requester" is the same question as "what unpacks stage 4",
