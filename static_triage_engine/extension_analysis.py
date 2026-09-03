@@ -379,7 +379,16 @@ def extension_categories(
     cats.append(Category(
         name="external_control_surface",
         module="extension",
-        collected=manifest_ran and sources_ran,
+        # **`manifest_ran` alone, corrected 03 Sep.** This said `manifest_ran
+        # and sources_ran` while `present` reads only manifest facts, so a
+        # manifest analysed without a source scan -- `extension_categories`
+        # documents that as supported, and `analyze_extension(None, manifest)`
+        # guards for it -- raised `CategoryError: present but not collected`
+        # for any extension with an off-store `update_url` or
+        # `externally_connectable`. Nothing in this category has read `sources`
+        # since the native-messaging string match was removed above. No run
+        # that scans sources changes: both flags are true together there.
+        collected=manifest_ran,
         present=external,
         # Broad `externally_connectable` lets any page on any origin drive the
         # extension. That is the one shape here that needs no corroboration.

@@ -23,6 +23,13 @@ What is fixed here, and what is deliberately left alone:
   Whether an API-spec case should band on the corroboration model is a product
   decision, not a refactor, and changing the numbers under the same names would
   move verdicts silently. They are moved and tested, not rewritten.
+* **`extension_score_and_verdict`'s preference is no longer dead**, 03 Sep. It
+  claimed to prefer the module's own verdict and tested for `"high"` /
+  `"medium"` / `"low"` -- wording that module stopped writing at `v1.11.0` --
+  so the preference never fired and every extension-only case banded on the
+  score the model calls descriptive. It reads the model's `severity` now. The
+  arithmetic below it is still untouched; what changed is that it is reached
+  far less often.
 """
 
 from __future__ import annotations
@@ -101,11 +108,54 @@ def spec_score_and_verdict(spec_summary: Any) -> tuple[int | None, str | None]:
     return score, "Informational API Spec Review"
 
 
+#: The model's band -> this report's per-domain wording.
+_EXTENSION_BAND = {
+    "high": "High Browser Extension Risk",
+    "medium": "Medium Browser Extension Risk",
+    "low": "Low Browser Extension Risk",
+}
+
+#: The sentences `corroboration-v1` writes for this domain, mapped back to the
+#: band that produced them. Only for case folders written before the export
+#: carried `risk_severity`; a current run never reaches this. The retired
+#: additive words are kept at the end for folders older still.
+#:
+#: `Insufficient Coverage` and `Findings Not Scored` are absent deliberately.
+#: Both are the `Unknown` severity -- the model declining to band -- and the
+#: answer to "nothing could be weighed" is not a risk level.
+_EXTENSION_VERDICT_BAND = {
+    "likely malicious": "high",
+    "elevated attention": "high",
+    "needs review": "medium",
+    "low suspicion": "low",
+    "no indicators found": "low",
+    "no findings, coverage incomplete": "low",
+    "benign / clean baseline": "low",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+}
+
+
 def extension_score_and_verdict(extension_summary: Any) -> tuple[int | None, str | None]:
     """A display score for browser-extension-only cases.
 
-    Prefers the extension module's own verdict and only bands on the raw score
-    when it did not give one -- unchanged from the window version.
+    Prefers the extension module's own band and only falls back to the raw
+    score when it did not give one. **That preference was dead code.** It
+    compared `risk_verdict` against `"high"` / `"medium"` / `"low"`, the
+    additive vocabulary the module stopped emitting at `v1.11.0`; under
+    `corroboration-v1` the field holds a sentence -- "Likely Malicious",
+    "Needs Review" -- so no comparison could ever be true and *every*
+    extension-only case fell through to banding on `risk_score`. That is the
+    field the model documents as descriptive, capped volume plus what the
+    categories contributed, with nothing banding on it.
+
+    The band is read from `risk_severity` now, which the window carries
+    straight out of `analyze_extension`. **This changes verdicts**: a case
+    scoring 7 on volume alone read "High Browser Extension Risk" and now reads
+    whatever the model actually banded it.
+
+    The score arithmetic is untouched, and still the last resort.
     """
     if not isinstance(extension_summary, Mapping):
         return None, None
@@ -113,18 +163,23 @@ def extension_score_and_verdict(extension_summary: Any) -> tuple[int | None, str
     if not isinstance(summary, Mapping):
         return None, None
 
-    raw_verdict = str(summary.get("risk_verdict", "") or "").strip().lower()
     try:
         score = int(summary.get("risk_score"))
     except (TypeError, ValueError):
         score = None
 
-    if raw_verdict == "high":
-        return score, "High Browser Extension Risk"
-    if raw_verdict == "medium":
-        return score, "Medium Browser Extension Risk"
-    if raw_verdict == "low":
-        return score, "Low Browser Extension Risk"
+    severity = str(summary.get("risk_severity", "") or "").strip().lower()
+    if severity:
+        if severity in _EXTENSION_BAND:
+            return score, _EXTENSION_BAND[severity]
+        # `Unknown`. The model looked and declined to band; saying so is the
+        # honest answer and inventing a risk level from the score is the
+        # mistake this function was already making.
+        return score, INSUFFICIENT
+
+    raw_verdict = str(summary.get("risk_verdict", "") or "").strip().lower()
+    if raw_verdict in _EXTENSION_VERDICT_BAND:
+        return score, _EXTENSION_BAND[_EXTENSION_VERDICT_BAND[raw_verdict]]
 
     if score is not None:
         if score >= 7:

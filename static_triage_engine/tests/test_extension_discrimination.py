@@ -300,6 +300,34 @@ class WhatWasNotRead(unittest.TestCase):
 
         self.assertEqual(result.verdict, "No Findings, Coverage Incomplete")
 
+    def test_a_manifest_naming_an_outside_controller_survives_no_source_scan(self) -> None:
+        """It raised, 03 Sep. `external_control_surface` marked itself
+        collected only when *both* halves ran, while its `present` reads
+        manifest facts alone -- so a manifest with an off-store `update_url`
+        and no source tree was present-but-not-collected and
+        `CategoryError` came out of the analyser instead of a verdict.
+
+        The GUI always scans sources, so this never reached a window; the
+        documented `sources=None` path went through the floor.
+        """
+        manifest = _ordinary_manifest()
+        manifest["update_url"] = "https://cdn.example.test/updates.xml"
+
+        result, cats = _verdict(manifest, None)
+
+        category = _named(cats, "external_control_surface")
+        self.assertTrue(category.present)
+        self.assertTrue(category.collected)
+        self.assertEqual(result.verdict, "Needs Review")
+
+    def test_externally_connectable_survives_it_too(self) -> None:
+        manifest = _ordinary_manifest()
+        manifest["externally_connectable"] = {"matches": ["*://*/*"]}
+
+        result, _ = _verdict(manifest, None)
+
+        self.assertEqual(result.severity, "High")
+
     def test_an_unreadable_manifest_is_not_a_manifest_requesting_nothing(self) -> None:
         no_manifest, _ = _verdict(None, {})
         empty_manifest, _ = _verdict({}, {})

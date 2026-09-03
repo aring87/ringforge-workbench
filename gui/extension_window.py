@@ -8,8 +8,8 @@ from pathlib import Path
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from dynamic_analysis.report_theme import report_page
 from static_triage_engine.extension_analysis import analyze_extension
+from static_triage_engine.extension_report import build_extension_report
 from gui import theme as T
 from gui.components import HeaderBar, ScrolledText
 from gui.styles import apply_window_theme
@@ -73,6 +73,11 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         self.risk_score_var = tk.StringVar(value="0")
         self.file_count_var = tk.StringVar(value="0")
         self.risk_verdict_var = tk.StringVar(value="-")
+        # The model's own band, kept beside the sentence rather than re-read
+        # out of it. `risk_verdict` is written for a reader and its wording
+        # follows the domain; anything that needs to *act* on the result -- the
+        # report's verdict chip, the case summary -- reads this.
+        self.risk_severity_var = tk.StringVar(value="")
 
         self.risk_verdict_badge = None
         self.risk_verdict_text = None
@@ -626,6 +631,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
             self.risk_score_var.set("0")
             self.risk_verdict_var.set("-")
+            self.risk_severity_var.set("")
             self.file_count_var.set("0")
             self.loaded_name_var.set(source_path.name)
 
@@ -799,6 +805,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
         self.risk_score_var.set(str(result["score"]))
         self.risk_verdict_var.set(result["verdict"])
+        self.risk_severity_var.set(str(result["severity"]))
         self._update_risk_visuals(result["severity"])
         self._set_text(
             self.risk_text,
@@ -954,6 +961,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
                 "csp": self.csp_var.get(),
                 "risk_score": self.risk_score_var.get(),
                 "risk_verdict": self.risk_verdict_var.get(),
+                "risk_severity": self.risk_severity_var.get(),
                 "files_found": self.file_count_var.get(),
             },
             "risk_notes": risk_notes_text.splitlines() if risk_notes_text else [],
@@ -1054,120 +1062,9 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             self._bring_to_front()
 
     def _build_html_report(self, data: dict) -> str:
-        import html
-
-        summary = data.get("summary", {}) or {}
-        risk_notes = data.get("risk_notes", []) or []
-        file_inventory = data.get("file_inventory", []) or []
-        manifest = data.get("manifest", {}) or {}
-
-        def esc(value):
-            return html.escape("" if value is None else str(value))
-
-        verdict = str(summary.get("risk_verdict", "-")).strip().upper()
-        verdict_class = "sev-none"
-
-        if verdict == "CRITICAL":
-            verdict_class = "sev-critical"
-        elif verdict == "HIGH":
-            verdict_class = "sev-high"
-        elif verdict == "MEDIUM":
-            verdict_class = "sev-med"
-        elif verdict == "LOW":
-            verdict_class = "sev-low"
-
-        def list_section(title: str, items: list[str], emphasize: bool = False) -> str:
-            section_class = "card card-alert" if emphasize and items else "card"
-            body = "<p class='muted'>None</p>" if not items else "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in items) + "</ul>"
-            return f"""
-            <section class="{section_class}">
-              <div class="section-head">
-                <h2>{esc(title)}</h2>
-                <span class="badge sev-low">Count: {len(items)}</span>
-              </div>
-              {body}
-            </section>
-            """
-
-        def kv_table(title: str, rows: dict[str, object], badge_fragment: str = "") -> str:
-            rendered = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in rows.items())
-            return f"""
-            <section class="card">
-              <div class="section-head">
-                <h2>{esc(title)}</h2>
-                {badge_fragment}
-              </div>
-              <table class="kv">{rendered}</table>
-            </section>
-            """
-
-        tile_html = f"""
-        <section class="tile-grid">
-          <div class="tile"><div class="tile-label">Risk Verdict</div><div class="tile-value">{esc(summary.get("risk_verdict", "-"))}</div></div>
-          <div class="tile"><div class="tile-label">Risk Score</div><div class="tile-value">{esc(summary.get("risk_score", "0"))}</div></div>
-          <div class="tile"><div class="tile-label">Files Found</div><div class="tile-value">{esc(summary.get("files_found", "0"))}</div></div>
-          <div class="tile"><div class="tile-label">Manifest Version</div><div class="tile-value">{esc(summary.get("manifest_version", "-"))}</div></div>
-          <div class="tile"><div class="tile-label">Permissions</div><div class="tile-value">{esc(summary.get("permissions", "-"))}</div></div>
-          <div class="tile"><div class="tile-label">Host Permissions</div><div class="tile-value">{esc(summary.get("host_permissions", "-"))}</div></div>
-        </section>
-        """
-
-        summary_rows = {
-            "Name": summary.get("name", ""),
-            "Version": summary.get("version", ""),
-            "Description": summary.get("description", ""),
-            "Manifest Version": summary.get("manifest_version", ""),
-            "Permissions": summary.get("permissions", ""),
-            "Host Permissions": summary.get("host_permissions", ""),
-            "Background": summary.get("background", ""),
-            "Content Scripts": summary.get("content_scripts", ""),
-            "Web Resources": summary.get("web_resources", ""),
-            "Externally Connectable": summary.get("externally_connectable", ""),
-            "Update URL": summary.get("update_url", ""),
-            "Commands": summary.get("commands", ""),
-            "CSP": summary.get("csp", ""),
-        }
-
-        source_rows = {
-            "Source Path": data.get("source_path", ""),
-            "Working Directory": data.get("working_directory", ""),
-            "Manifest Path": data.get("manifest_path", ""),
-        }
-
-        manifest_pre = html.escape(json.dumps(manifest, indent=2, ensure_ascii=False))
-        file_items = [str(x) for x in file_inventory]
-        risk_items = [str(x) for x in risk_notes]
-
-        body_html = f"""
-    {tile_html}
-    <div class="grid">
-      {kv_table("Extension Source", source_rows)}
-      {kv_table("Extension Summary", summary_rows, f'<span class="badge {verdict_class}">Verdict: {esc(summary.get("risk_verdict", "-"))}</span>')}
-    </div>
-    {list_section("Risk Notes", risk_items, emphasize=True)}
-    {list_section("File Inventory", file_items)}
-    <section class="card">
-      <div class="section-head">
-        <h2>Manifest JSON</h2>
-        <span class="badge sev-low">Entries: {len(manifest) if isinstance(manifest, dict) else 0}</span>
-      </div>
-      <pre>{manifest_pre}</pre>
-    </section>
-    """
-
-        # Was a byte-for-byte re-implementation of `report_page`: same
-        # container, banner, title, subtitle, verdict and footer, differing only
-        # in the footer's wording. Sharing the builder means a change to the
-        # page shell reaches this report too, which is the whole reason there is
-        # a builder.
-        return report_page(
-            title="Browser Extension Analysis Report",
-            subtitle="Generated by RingForge Workbench",
-            verdict=esc(summary.get("risk_verdict", "-")),
-            verdict_class=verdict_class,
-            body_html=body_html,
-            footer_note="RingForge Workbench &bull; Browser Extension Analysis",
-        )
+        """Thin delegation. The page is
+        `static_triage_engine.extension_report`."""
+        return build_extension_report(data)
 
     def _current_case_name(self) -> str:
         case_name = self.parent.case_var.get().strip() if hasattr(self.parent, "case_var") else ""

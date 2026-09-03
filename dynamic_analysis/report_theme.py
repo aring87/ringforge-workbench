@@ -130,7 +130,12 @@ def severity_class_for_label(value: Any) -> str:
                 "unknown", "insufficient coverage",
                 "single observation", "nothing collected",
                 "moderate risk", "medium api spec risk",
-                "medium browser extension risk"}:
+                "medium browser extension risk",
+                # Observations were made and could not be weighed. Falling
+                # through to `sev-none` put it in the same chip as "No
+                # Results", which reads as clean about the one band that
+                # explicitly is not.
+                "findings not scored"}:
         return "sev-med"
     if text in {"low", "low_risk", "low suspicion", "low risk",
                 "no findings, coverage incomplete",

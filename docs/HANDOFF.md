@@ -281,39 +281,51 @@ same names would move verdicts silently. A test now pins the surprise inside it:
 `high_risk_endpoint_count` caps at 30 while the High band starts at 60, so a
 spec with a hundred high-risk endpoints and nothing else scores *Low*. 22 tests.
 
-Suite 1,383 -> **1,426**.
+**Browser Extension -- `static_triage_engine/extension_report.py`.**
+`_build_html_report` moved beside `extension_analysis.py`. The check the survey
+asked for answered **yes to both questions, in three places**:
 
-## NEXT: Browser Extension Analysis, already surveyed
+* **Every exported extension report rendered its verdict grey.** The report
+  uppercased `risk_verdict` and matched `CRITICAL` / `HIGH` / `MEDIUM` / `LOW`
+  -- the additive vocabulary this module stopped emitting at `v1.11.0`. Under
+  `corroboration-v1` the field holds a sentence ("Likely Malicious", "Elevated
+  Attention", "Needs Review", "Insufficient Coverage", "Low Suspicion", …), so
+  every rung missed. Same defect as the Unified Report's 13-of-13, in a
+  different module, found by the same question.
+* **`verdict/case_summary.extension_score_and_verdict` had the same dead
+  comparison**, testing `risk_verdict == "high"`. Its docstring said it
+  preferred the module's own verdict; it could never reach it, so **every
+  extension-only case banded on `risk_score`** -- the field `verdict/model`
+  documents as descriptive, capped volume, *nothing bands on it*. **This one
+  moves verdicts on existing cases.** The arithmetic below it is untouched and
+  still the fallback; it is reached far less often.
+* **`analyze_extension` raised instead of answering** for a manifest with no
+  source tree. `external_control_surface` set `collected=manifest_ran and
+  sources_ran` while its `present` reads manifest facts alone, so any extension
+  with an off-store `update_url` or `externally_connectable` came out as
+  `CategoryError: present but not collected`. Nothing in that category has read
+  `sources` since native messaging was removed from it. The GUI always scans
+  sources, so this never reached a window -- the documented `sources=None` path
+  went through the floor.
 
-**It is in better shape than the other two and the remaining work is small.**
-Its analysis is already a module -- `gui/extension_window.py` imports
-`analyze_extension` from `static_triage_engine/extension_analysis.py` -- and its
-report shell was consolidated in this thread.
+The fix in all three: the band comes from the model's `severity`, which
+`analyze_extension` has always returned and the window was discarding. The
+export carries it as `risk_severity` now; the wording is a fallback for case
+folders written before the field. 22 tests.
 
-Widget coupling, measured:
+`_extract_crx`, `_find_manifest` and `_read_file_preview` are widget-free and
+still in the window -- worth moving if the CRX parsing deserves tests; that is a
+judgement, not a defect. `_build_export_data` reads the form and stays.
 
-    _build_html_report      0 widget refs   <- EXTRACT THIS, ~116 lines
-    _extract_crx            0
-    _find_manifest          0
-    _read_file_preview      0
-    _populate_risk_notes    4
-    _build_export_data     19               <- leave; it reads the form
+Suite 1,383 -> **1,448**.
 
-**The one extraction that matters is `_build_html_report`**, to
-`static_triage_engine/extension_report.py`, beside `extension_analysis.py`,
-exactly as `api_report.py` sits beside `api_response_analysis.py`. It already
-calls `report_page`, so the shell is right and only the body needs moving --
-then it is testable, which it has never been.
+## The count, three modules in
 
-`_extract_crx`, `_find_manifest` and `_read_file_preview` are also widget-free
-and worth moving if the CRX parsing deserves tests; that is a judgement, not a
-defect. `_build_export_data` reads the form and should stay.
+Three extractions, four defects, every one of them in code that no test could
+import. The question that found three of the four is the cheap one: **does this
+read a band out of a sentence, or out of the model?**
 
-**Worth checking while in there**, since the same shape produced both defects
-found so far: whether the extension verdict wording maps to a severity class,
-and whether anything derives a band from text rather than from the analysis.
-
-## Untouched
+## NEXT: Untouched, and not yet surveyed
 
 **Spec Analysis** (`gui/spec_window.py`) and **Static Analysis** have not had
 this pass. `spec_window` already imports `report_page`, but as a lazy import

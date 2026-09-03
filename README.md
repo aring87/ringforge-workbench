@@ -551,10 +551,40 @@ collected" from "things ran and found nothing".
 The per-domain scoring moved unchanged. Whether an API-spec case should band on
 the corroboration model is a product decision, not a refactor.
 
+### The Browser Extension report stops rendering grey too, for the same reason
+
+Its report moved out of the window to `static_triage_engine/extension_report.py`,
+beside the analysis it draws -- the third module through this pass, and the
+third to be carrying a defect that could only live where nothing could reach it.
+
+The report coloured its verdict chip by uppercasing the verdict text and
+matching `CRITICAL` / `HIGH` / `MEDIUM` / `LOW`: **the additive vocabulary this
+module stopped emitting at `v1.11.0`.** Under `corroboration-v1` the field holds
+a sentence -- "Likely Malicious", "Elevated Attention", "Needs Review" -- so
+every rung missed and every exported extension report showed its verdict in the
+grey chip that also means "No Results". The chip reads the model's own severity
+now, which the export carries; the wording is consulted only for case folders
+written before that field existed.
+
+The same dead comparison was in the Unified Report's `extension_score_and_verdict`,
+which claimed to prefer the module's verdict and could never reach it -- so
+**every extension-only case silently banded on `risk_score`**, the number the
+model documents as descriptive with nothing banding on it. It reads the severity
+now. The score arithmetic is unchanged and still the last resort; it is simply
+reached far less often. This moves verdicts on existing extension-only cases,
+in the direction of what the model actually decided.
+
+And `analyze_extension` raised rather than answering when given a manifest with
+no source tree: `external_control_surface` marked itself collected only if both
+halves ran, while what makes it *present* is manifest-only, so any extension
+with an off-store `update_url` or `externally_connectable` came out of the
+analyser as a `CategoryError`. The GUI always scans sources, so this never
+reached a window -- the documented `sources=None` path went through the floor.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,426**. Both extractions are testable for the first
-  time; neither had a single test before.
+- Test suite **1,383 -> 1,448**. All three extractions are testable for the
+  first time; none had a single test before.
 
 ---
 

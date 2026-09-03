@@ -178,6 +178,49 @@ class ExtensionScoring(unittest.TestCase):
         self.assertEqual(verdict, "Low Browser Extension Risk")
         self.assertEqual(score, 9)
 
+    def test_the_wording_the_module_actually_writes_is_preferred_too(self) -> None:
+        """The test above passes on retired wording, which is how the defect
+        lived here: `"low"` is the additive vocabulary, and under
+        `corroboration-v1` the field holds a sentence. Every one of those
+        missed, so every extension-only case silently banded on `risk_score`.
+        """
+        for wording, expected in (
+                ("Likely Malicious", "High Browser Extension Risk"),
+                ("Elevated Attention", "High Browser Extension Risk"),
+                ("Needs Review", "Medium Browser Extension Risk"),
+                ("Low Suspicion", "Low Browser Extension Risk"),
+                ("No Indicators Found", "Low Browser Extension Risk")):
+            with self.subTest(wording=wording):
+                # A score that would band High on its own, so a pass here is
+                # the preference firing rather than the fallback agreeing.
+                _, verdict = extension_score_and_verdict(
+                    {"summary": {"risk_verdict": wording, "risk_score": 9}})
+                self.assertEqual(verdict, expected)
+
+    def test_the_severity_wins_over_the_sentence(self) -> None:
+        """The band is the model's output; the sentence is written for a
+        reader and its wording follows the domain. Read the band."""
+        _, verdict = extension_score_and_verdict(
+            {"summary": {"risk_verdict": "Needs Review",
+                         "risk_severity": "High", "risk_score": 0}})
+
+        self.assertEqual(verdict, "High Browser Extension Risk")
+
+    def test_an_unknown_band_is_not_dressed_as_a_risk_level(self) -> None:
+        """`Unknown` is the model declining to band. Falling through to the
+        score would invent the answer it declined to give."""
+        _, verdict = extension_score_and_verdict(
+            {"summary": {"risk_verdict": "Insufficient Coverage",
+                         "risk_severity": "Unknown", "risk_score": 9}})
+
+        self.assertEqual(verdict, INSUFFICIENT)
+
+    def test_the_score_is_returned_whatever_the_band(self) -> None:
+        score, _ = extension_score_and_verdict(
+            {"summary": {"risk_severity": "High", "risk_score": 12}})
+
+        self.assertEqual(score, 12)
+
     def test_it_bands_on_the_score_when_no_verdict_is_given(self) -> None:
         for raw, expected in ((9, "High Browser Extension Risk"),
                               (4, "Medium Browser Extension Risk"),
