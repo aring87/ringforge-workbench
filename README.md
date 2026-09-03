@@ -581,10 +581,45 @@ with an off-store `update_url` or `externally_connectable` came out of the
 analyser as a `CategoryError`. The GUI always scans sources, so this never
 reached a window -- the documented `sources=None` path went through the floor.
 
+### The API Spec report was showing the parser's opinion of itself
+
+Its report moved to `static_triage_engine/spec_report.py`. The banner slot --
+where the dynamic report writes "Likely Malicious" and the API tester writes
+"High · 4 finding(s)" -- was carrying **parser confidence**: `analyze_api_spec`
+sets it to say how much of the *document* it managed to read, starting at
+`"high"` and dropping to `"medium"` at three parser warnings and `"low"` at
+five. A reader holding the exported page saw **HIGH** on a document about API
+risk. It was coloured backwards as well, a confident parse taking the chip that
+elsewhere means nothing was found, and because the default is set before the
+parse is attempted, **a file that was not JSON at all rendered a banner reading
+HIGH**. Where confidence was blank it fell back to the spec type, putting
+OPENAPI in the verdict slot.
+
+Two real bands were available and it used neither. `combine_case` already runs
+`spec_categories` over this exact result to feed the Combined Score. The banner
+takes that now -- the corroboration model, posture wording, class from the
+band rather than from the sentence. The additive display score the Unified
+Report shows for spec-only cases is on the page too, labelled as not the
+banner: the two disagree on the reference Petstore spec (*No Weaknesses Found*
+against *Medium API Spec Risk · 47/100*), and two numbers that disagree are
+better shown together than found one on each of two pages.
+
+A spec that failed to parse now says so in an alert above its zeros, and bands
+as *Insufficient Coverage* rather than as clean.
+
+The window and the report had also drifted apart on the same result. The
+window canonicalised auth scheme names and the report printed whatever the spec
+author wrote, so the screen said `bearer` where the file said `bearerAuth`; and
+the window's endpoint table was built with three flags where the report had
+four, so `upload` appeared on the exported page and never on screen. Both call
+one implementation now.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,448**. All three extractions are testable for the
+- Test suite **1,383 -> 1,473**. All four extractions are testable for the
   first time; none had a single test before.
+- The API Spec report now names its producing module in the footer, which it
+  was the one `report_page` caller not to do.
 
 ---
 

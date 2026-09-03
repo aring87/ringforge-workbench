@@ -317,19 +317,63 @@ folders written before the field. 22 tests.
 still in the window -- worth moving if the CRX parsing deserves tests; that is a
 judgement, not a defect. `_build_export_data` reads the form and stays.
 
-Suite 1,383 -> **1,448**.
+**Spec Analysis -- `static_triage_engine/spec_report.py`.** `_render_html`
+moved, and the lazy `report_page` import inside it went with it. The loudest
+banner defect of the four:
 
-## The count, three modules in
+* **The verdict slot was carrying parser confidence.** `analyze_api_spec` sets
+  `confidence` to describe how much of the *document* it read -- `"high"` by
+  default, `"medium"` at three parser warnings, `"low"` at five. The report
+  uppercased it into the banner where every other report writes a band, and
+  coloured it backwards (confident parse -> `sev-none`). The default is set
+  **before the parse is attempted**, so a file that was not JSON rendered
+  `HIGH`. Blank confidence fell back to `spec_type.upper()`, putting `OPENAPI`
+  there.
+* **Two real bands existed and it used neither.** `combine_case` already runs
+  `spec_categories` over this same result for the Combined Score.
+* **The window and the report disagreed about the same result.** The window
+  canonicalised auth scheme names and the report did not (`bearer` on screen,
+  `bearerAuth` in the file); the window's endpoint table had three flags where
+  the report had four, so `upload` was on the page and never on screen. One
+  implementation now, in `spec_report`.
+* `_format_endpoint_auth` had no callers and read `auth_summary` / `auth` off
+  an endpoint -- keys an endpoint does not carry. Deleted.
 
-Three extractions, four defects, every one of them in code that no test could
-import. The question that found three of the four is the cheap one: **does this
-read a band out of a sentence, or out of the model?**
+**The band decision was taken, not deferred.** The banner carries the
+corroboration band; the additive `spec_score_and_verdict` is rendered in the
+body labelled as *not the banner*. They disagree on the reference spec, and
+that is now visible on one page instead of across two. 25 tests.
 
-## NEXT: Untouched, and not yet surveyed
+Suite 1,383 -> **1,473**.
 
-**Spec Analysis** (`gui/spec_window.py`) and **Static Analysis** have not had
-this pass. `spec_window` already imports `report_page`, but as a lazy import
-inside a function, which is worth a look.
+## Worth a look, spec: the two views ask different questions
+
+Petstore3 bands **No Weaknesses Found** while the same page reports
+`Endpoints With No Declared Auth: 10` and `Sensitive And Unauthenticated: 4`,
+and the additive score says 47/100 Medium. Not a bug in either -- 
+`unauthenticated_sensitive_endpoint` is gated on `no_auth`, meaning *the
+document declares no scheme at all*, and Petstore declares three globally. The
+summary counters count per-**endpoint** gaps under a global scheme; the
+category asks whether the document declares anything.
+
+Both readings are defensible and the comments in `categories.py` argue the
+category's case from a 300-spec corpus. But a spec with global auth and ten
+endpoints that never reference it currently fires nothing, and that is the
+shape worth a decision.
+
+## The count, four modules in
+
+Four extractions, seven defects, every one in code that no test could import.
+The question that found five of the seven is the cheap one: **does this read a
+band out of a sentence, or out of the model?** The spec module answered worse
+than that -- it read one out of the parser's opinion of its own reading.
+
+## NEXT: Static Analysis, not yet surveyed
+
+**Static Analysis** has not had this pass. Two `report_page` callers still pass
+no `footer_note` and so produce pages that do not name the screen that made
+them: `dynamic_analysis/html_report.py:2875` and
+`static_triage_engine/report.py:1096`.
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
 
