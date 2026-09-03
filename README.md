@@ -220,6 +220,192 @@ The Unified Report leads with the case verdict, the corroboration behind it and 
 
 ---
 
+## Analysis Findings
+
+Seven live samples have been through this workbench end to end. This section is
+what the tooling actually produced against each — measurements rather than
+claims, with the negatives kept because a negative that was measured is worth
+more than a positive that was assumed.
+
+The full working record is in [`docs/HANDOFF.md`](docs/HANDOFF.md) and
+[`docs/ROADMAP.md`](docs/ROADMAP.md), including the readings that were later
+retracted and why.
+
+---
+
+### Raton — `ce0d08be…` · .NET RAT · **closed**
+
+A commodity RAT whose C2 protocol was driven end to end, from first packet to
+the last command in its dispatcher.
+
+| | |
+|---|---|
+| Family | Raton / SillyRAT, open-source C# RAT (`codeberg.org/Raton/Raton`) |
+| Build | **Post-v1.9.0** — the published source dates the sample rather than describing it |
+| Persistence | `ONLOGON` scheduled task, self-healing, plus a second `…\CurrentVersion\Run` path |
+| C2 | `127.0.0.1:7372`, client speaks first, TLS 1.3, **no certificate validation** |
+| Wire format | `0xDEADBEEF` magic, lengths, compression flag, CRC-32, key/value body |
+| Beacon | 17.034 s mean, stdev 0.014 — a retry loop, not a heartbeat |
+| Capability | 151-case dispatcher; webcam, microphone, HVNC, keylogger, ransom, clipper |
+| Detection | 3 YARA rules, benign rate **0 of 13,174** PE files |
+
+**The command channel, driven.** 30 commands sent down one TLS session, 24
+answered. An interactive shell, a live SOCKS5 proxy, and a `Compiler` command
+that writes an executable to `%Temp%` and runs it — arbitrary code execution
+from source text. `Clientinfo` reports the machine's VM identifiers to the
+operator, which explains why registry-based VM detection never fired: with no
+C2, that collection never runs.
+
+**Three classes of "silent" command, none of them broken:** commands whose
+handler switches on a field the dispatcher never reads; commands with a
+precondition (`Shell` needs `StartShell`, `ChatMessage` needs `Chat`); and
+commands with no reply path at all.
+
+**Attribution.** The family is public source by an author using the aliases
+`Silly` / `S-illy`. Three of the four strings originally filed as this
+operator's fingerprint turned out to be the vendor's — an unpatched builder
+placeholder, a Windows interface GUID, and the author's own Telegram channel
+shipped as a config default. The detection rule was renamed accordingly: it
+identifies *a build that changed nothing*, not a campaign.
+
+---
+
+### FormBook loader chain — `422e30ed…` · four stages · **open**
+
+The longest-running subject here, and the one that has produced the most
+method. Four stages recovered, each by a different technique.
+
+| Stage | What it is | How it was recovered |
+|---|---|---|
+| 1 | .NET loader, SmartAssembly-protected, forged as a puzzle game | PE carve from process memory |
+| 2 | .NET assembly forged as "MemCompress Pro" | Parent-at-spawn dump — present in no other dump |
+| 3 | Native x86 loader, no imports, 272 KB encrypted body | Proxy-map call-graph rebuild; key recovered algebraically |
+| 4 | **Credential stealer**, 273,408 bytes, no PE header | Emulation through a two-party handshake |
+
+**Stage 4 is a credential stealer** — IE `IntelliForms\Storage2`, Chrome's
+`Local State`, Firefox, cookies, autofill — with its strings built on the stack
+at runtime, which is why nine detonations found none of them and the ruleset was
+never at fault.
+
+**It does not run its stealer, and four explanations for that are eliminated by
+measurement:** export tables (bit-identical run with 10,316 names added),
+`ApiSetMap` forwarders (never read), a granted host process (it reads the
+target's base, sleeps, and returns), and an unreached rendezvous (its caller is
+in code nothing branches to). Both routes into the unexecuted two-thirds are
+closed: **0 declined branches**, and all **93 indirect calls resolve into
+ntdll**.
+
+**Its host-process walk cannot succeed on any machine.** The path builder
+produces `C:C:\Windows\System32\<name>` for all twelve candidates, and the real
+`CreateProcessW` returns `ERROR_INVALID_NAME` for every one — measured against
+the live API, not modelled.
+
+---
+
+### Remcos — `aa4d6427…` · reference case
+
+The first sample to produce a corroborated verdict, and the case the scoring
+model is regression-tested against.
+
+| | |
+|---|---|
+| Chain | Native PE32 → suspended process → remote write → `%APPDATA%\Config\smng.exe` |
+| Injection | `CreateProcess` suspended + write + `Set`/`GetThreadContext` |
+| Persistence | `HKCU` **and** `HKLM\WOW6432Node` Run keys, value `TRY150-6P1GV6` |
+| C2 | `62.60.226.68:24042`, plus `pro.ip-api.com` for geolocation |
+| Verdict | 105 · Likely Malicious, three categories present and two strong |
+
+Its expectations were **written down before the run**. Four held, three failed,
+and every failure was a pipeline bug rather than a property of the sample — a
+run described only afterwards would have read as a clean success.
+
+---
+
+### AgentTesla — `31a762fd…` · fully-worked case
+
+Dormancy, self-spawn, unpack, C2 resolution, FTP authentication and the upload
+of its stolen-data report, all captured in a single run.
+
+| | |
+|---|---|
+| C2 | `ftp.cyberflor.co`, credential `michi@cyberflor.co` |
+| Exfil | FTP control `:21`, passive data `:60000-60010` |
+| Report format | `Time:/User Name:/Computer Name:/OSFullName:/CPU:/RAM:` then per-credential blocks |
+| Verdict | 85 · Likely Malicious |
+
+The uploaded report's format is itself a durable signature — a rule can be
+written against the captured upload rather than the binary.
+
+---
+
+### EtherHiding clipper — `af2d8300…` · **closed**
+
+A clipboard hijacker that takes its C2 address from a smart contract.
+
+    .ps1 loader → csc.exe ×2 → hollowed SecurityHealthHost.exe
+      → eth_call to a BSC testnet contract, which returns a bare hostname
+      → once per second: read the clipboard, report what the victim copied,
+        write the C2's reply back into the clipboard
+
+**The C2 controls the clipboard with no validation anywhere in the path.**
+Serving a value no one would mistake for a wallet address put that value in the
+clipboard 644 times out of 839 rounds, while 593 beacons simultaneously reported
+what the victim had actually copied. Whoever controls the C2 controls what lands
+in the victim's clipboard.
+
+---
+
+### Dridex — `e30b76f9…` · hollowing proof
+
+Mapped a 102,400-byte image over its own 180,224-byte file at base `0x400000`.
+The module-integrity check fired **10 times** across the dumps on identity
+(`TimeDateStamp` + `SizeOfImage`) rather than on degree — `modules_compared:
+314`, `identical: 314` — which is the exact case its false-negative fix was
+made for, and the route that covers the carver's overwrite-in-place blind spot.
+
+---
+
+### `a6a86646…` · the negative that closed a gap
+
+Chosen because it *provably* detects virtualisation — it announces
+*"cannot run inside a virtual machine"* in a dialog box. It still reported
+`artifacts_read: 0`, with registry, file, device-namespace and WMI routes each
+ruled out from its own events.
+
+Two samples for two that provably detect VMs and check by neither registry nor
+any other collected route. That is what closed gap 4 by decision rather than
+leaving a detector waiting forever for calibration.
+
+---
+
+### What the findings changed in the workbench
+
+Several of the most useful results were about the **instrument**, not the
+sample. They are listed because a tool that only ever confirms itself is the
+failure mode this project is built against:
+
+- **An emulator that answered file opens by leaf name** silently repaired every
+  malformed path a payload built, granting eleven process creations a real
+  machine would refuse. Fixed to resolve the path; the walk now creates nothing,
+  which is what a real machine does.
+- **A hollowing detector lost its finding to a cache eviction**, so whichever
+  module crossed the 96-entry limit was graded by degree instead of identity —
+  which is how a payload sharing most of its bytes with the file it impersonates
+  filed as `identical`.
+- **A persistence detector read the wrong key name** and only appeared to work
+  because a second collector happened to catch the same task. A false negative
+  concealed by redundancy is the exact failure that detector exists to prevent.
+- **Analyzer activity was scored as the sample's** four separate times — the
+  pipeline's own ProcDump, WerFault, a browser's writes, and Windows Update all
+  reached a verdict before lineage attribution was added.
+- **A YARA rule's build-specific strings were the vendor's defaults**, so a hit
+  meant "an unconfigured build" rather than "the same operator".
+
+Each was found by measurement rather than review, and each is written up with
+the reading it replaced.
+
+---
+
 ## What's New in v1.11.0
 
 `v1.11.0` replaces five separate scoring systems with one, and the reason is
