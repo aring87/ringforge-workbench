@@ -220,6 +220,51 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
+
+**The declined-branch hope from the entry below is dead, and the bench route
+with it.** Two probes close the last two ways in.
+
+**Direct control flow** -- `stage4_declined.py`, 4-billion-instruction budget:
+729 blocks, 25 of 67 pages, and **0 branches whose untaken side is in a page
+that never ran**. So the plaintext page `0x03eab000` at entropy 6.03, carrying
+three links of the requester's caller chain, is not guarded by a findable
+condition -- **nothing branches at it at all.** That reproduces `0j` rather than
+contradicting it.
+
+**Indirect dispatch** -- `stage4_indirect_targets.py`, resolving each call by
+reading its register or memory operand at execution rather than from a
+disassembly: **12 sites located, 9 fired, 93 calls taken, 9 distinct targets,
+every one between `0x7703ed00` and `0x770ec990` -- inside ntdll.** Not one
+targets the payload image, let alone a dead page. The mechanism `0ai` found the
+rendezvous *server* reached by is, on this path, used for nothing but API calls.
+
+**So no path from executed code into the unexecuted two-thirds exists in this
+run by any mechanism** -- not a branch, not a pointer. Whatever stops the
+harvesting is upstream of every branch and every pointer stage 4 takes.
+
+Three readings survive and the bench cannot separate them: the stealer is
+entered from outside stage 4 (the loader, or a second injection this run never
+performs); stage 4 as executed is not the whole payload and something meant to
+call into it does not exist on this path; or the run diverges earlier than any
+of this, in a way none of the twelve measured harness behaviours covers.
+
+**THIS IS WHERE THE BENCH RUNS OUT OF ROUTE ON `422e30ed`**, said as a result
+rather than as fatigue. Four candidate explanations eliminated by measurement --
+export tables, `ApiSetMap`, a granted host, an unreached rendezvous -- both
+routes into the dead region closed, and no instrument left that does not need
+either a guest measurement taken *while the gate runs* or a different sample.
+
+Honesty notes kept small and visible: `stage4_declined.py` reports 10 indirect
+sites and this probe locates 12, of which 9 fired; they count different things
+and the gap is one, not chased. And `call dword ptr [ebp+0x1f]` at `+0x117d9`
+resolving to `0x00000000` once is probably this probe locating a site
+mid-instruction rather than a real call to zero.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - nothing stage 4 executes reaches the dead pages, by any mechanism
+
 ### Pick up here — 03 Sep, "dead" is not "packed", and the requester's chain is plaintext
 
 **This corrects the entry below it, committed an hour earlier.** That said the

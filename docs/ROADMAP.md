@@ -1973,6 +1973,69 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — nothing stage 4 executes reaches the dead pages, by any mechanism — 03 Sep
+
+**The declined-branch hope from the previous entry is dead, and the bench route
+with it.** Two probes close the last two ways in.
+
+**Direct control flow — `stage4_declined.py`, 4-billion-instruction budget:**
+
+    729 blocks executed, 25 of 67 pages
+    0 branches/calls whose untaken side is in a page that never ran
+
+Not one executed branch declines into the dead region. That reproduces `0j`
+exactly rather than contradicting it, and it means the plaintext page
+`0x03eab000` -- three links of the requester's caller chain, entropy 6.03 -- is
+**not** guarded by a condition anyone can find. Nothing branches at it at all.
+
+**Indirect dispatch — `stage4_indirect_targets.py`**, which resolves every
+indirect call by reading the register or memory operand at the moment it
+executes rather than from a disassembly:
+
+    12 indirect call sites located in executed blocks, 9 of them fired
+    93 indirect calls taken, 9 distinct targets
+    every target: 0x7703ed00 .. 0x770ec990 -- inside ntdll, outside the payload
+
+**Every computed pointer stage 4 takes leads into ntdll.** Not one targets the
+payload image, let alone a dead page. The mechanism `0ai` found the rendezvous
+*server* reached by is, on this path, used for nothing but API calls.
+
+## What that establishes
+
+**No path from executed code into the unexecuted two-thirds exists in this run,
+by any mechanism** -- not a branch, not a pointer. Whatever stops the harvesting
+is upstream of every branch and every pointer stage 4 takes here.
+
+So the entry into the stealer is not reachable from the code stage 4 runs. Three
+readings survive that, and the bench cannot separate them:
+
+    the stealer is entered from outside stage 4 -- the loader, or a second
+      injection this run never performs
+    stage 4 as executed is not the whole payload, and something was meant to
+      call into it that does not exist on this path
+    the run diverges earlier than any of this, in a way none of the twelve
+      measured harness behaviours covers
+
+**This is where the bench runs out of route on `422e30ed`.** Said as a result
+rather than as fatigue: four candidate explanations eliminated by measurement
+(export tables, `ApiSetMap`, a granted host, an unreached rendezvous), the
+direct and indirect routes into the dead region both closed, and no instrument
+left that does not need either a guest measurement taken while the gate runs or
+a different sample.
+
+## Two small honesty notes
+
+`stage4_declined.py` reports **10** indirect sites and this probe locates
+**12**, of which **9** fired. Neither number is obviously the right one -- they
+count different things (sites in executed blocks against sites actually taken)
+and the gap is one. Not chased, and recorded so nobody reads either as
+authoritative.
+
+One site, `call dword ptr [ebp+0x1f]` at `+0x117d9`, resolved to `0x00000000`
+once. An unaligned displacement and a null target both suggest this probe
+located a site mid-instruction, so it is probably a decode artefact rather than
+a real call to zero.
+
 ### Item 1 — "dead" is not "packed", and the requester's chain is plaintext — 03 Sep
 
 **This corrects `a5930d9`, committed an hour earlier.** That entry said the
