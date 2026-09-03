@@ -222,6 +222,30 @@ because everything above the handshake is TLS.
 
 ### Pick up here — 02 Sep, the walk creates nothing, and that is the faithful answer
 
+**The create counts in `0ad`-`0as` are re-derived, and the answer is that they
+were never the sample's.** Five harness generations produced five numbers from
+one checkpoint: 9 (truncated), 11 (our failing PEB read drove a retry), 1
+(`0af`, read implemented), 11 again (`0at`, create validates the path), and now
+**0**. The number was measuring us.
+
+Current census against `0ae`'s table: the file half is **unchanged** --
+`NtCreateFile` 13, `NtQueryInformationFile` 13, `NtReadFile` 12, `NtClose` 13,
+`RtlDosPathNameToNtPathName_U` 13 -- and the process half is **gone**:
+`CreateProcessInternalW` 11 -> 0, `NtQueryInformationProcess` 11 -> 0, with the
+heap counts falling with them (36 -> 14, 24 -> 13). The loop stops after
+`NtClose`.
+
+What survives: the **twelve-name host-candidate list** (an IOC, drawn from the
+opens), the loop's file half, and "it reads each candidate before deciding" --
+now established twice, by intervention and by call census. What does not: every
+create count, and `0ad`'s expectation of *"twelve on a machine that carries
+`write.exe`"*, which assumed file presence decides. Expect zero everywhere.
+
+`0ad`, `0ae` and `0af` carry markers in place. `0aq`/`0ar`/`0as` are unaffected
+-- they are about the strings, measured against the real API, and count no
+creates.
+
+
 **The `backing` fix landed and the pre-registered prediction held in every
 part.**
 
@@ -8506,7 +8530,15 @@ reaches **`CreateProcessInternalW`**:
    system directory from ntdll's `FullDllName`, and this harness writes the leaf
    name into that field.
 
-#### 0ad. THE HOST TARGET LIST — nine processes, all CREATE_SUSPENDED
+#### 0ad. COUNTS RE-DERIVED 02 Sep — the list survives, the create counts are zero
+
+**Read *Item 2 - the create counts re-derived* in `docs/ROADMAP.md` first.**
+The twelve names come from the *opens* and are intact; every create count
+below is zero under a harness that resolves paths. And the closing
+expectation -- "expect twelve on a machine that carries `write.exe`" -- is
+**wrong**: the doubled path fails every open on any machine, so expect zero
+everywhere. The mechanism sentence is confirmed and is now the whole story.
+
 
 With `CreateProcessInternalW` implemented, stage 4 does not create one process.
 **It iterates a list of nine**, every one a legitimate SysWOW64 binary and every
@@ -8540,7 +8572,15 @@ Complete, in order, at 3,000,000,000 instructions (122,991,008 blocks, COMPLETE)
 creating it, and skips on a failed open. **Read the eleven above as
 eleven-of-twelve**, and expect twelve on a machine that carries `write.exe`.
 
-#### 0ae. NO INJECTION — it stops at `ProcessBasicInformation`, unimplemented
+#### 0ae. QUALIFIED 02 Sep — the process half of this loop is unobservable now
+
+**"It does not inject" stands and stands harder** -- there is no
+`CreateProcessInternalW` either, once opens are resolved rather than repaired
+by leaf. The flags and the `ProcessBasicInformation` asks below were visible
+only because the harness answered opens it should have refused; they hold as a
+*counterfactual*, reproducible with `stage4_write_exe.py --serve`. Current
+census in *Item 2 - the create counts re-derived*.
+
 
 Stage 4's own calls, with the loader's baseline subtracted:
 
@@ -8576,7 +8616,12 @@ payload at the next step, and implementing each revealed the next. That is the
 shape of the remaining work — not a mystery about the sample, but a queue of
 unimplemented APIs, each cheap to find because the harness names it.
 
-#### 0af. THE ELEVEN-HOST WALK WAS OUR ARTIFACT — corrected
+#### 0af. CONFIRMED TWICE 02 Sep — and its own "one create" is a harness number
+
+The mechanism here was right. The replacement figure -- one create -- is the
+third of five counts this chain produced from one sample, each a property of
+the harness generation. See *Item 2 - the create counts re-derived*.
+
 
 `ProcessBasicInformation` and then `NtReadVirtualMemory` are both implemented,
 the latter alongside **per-spawned-process host images**: each created process

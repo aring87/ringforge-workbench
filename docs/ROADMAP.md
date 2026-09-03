@@ -1973,6 +1973,105 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 2 — the create counts re-derived: they were never the sample's — 02 Sep
+
+**`0ad` through `0as` carried five different create counts and every one of them
+was a property of the harness generation that produced it.** Laid out in order,
+because the sequence is the finding:
+
+    creates  harness state                                   why that number
+    -------  ---------------------------------------------  ------------------
+       9     0ad, first probe                                truncated run
+      11     0ad, complete walk                              the walk retried
+                                                             every candidate
+                                                             because our failing
+                                                             PEB read made each
+                                                             one look unusable
+       1     0af, NtReadVirtualMemory + per-process images   retry cause removed;
+                                                             it accepted the
+                                                             first host
+      11     0at, CreateProcessInternalW validates the path  creates fail, so the
+                                                             retry loop resumes
+       0     bdbca38, backing resolves the path              opens fail, so it
+                                                             declines each
+                                                             candidate before any
+                                                             create is attempted
+
+One sample, one checkpoint, five answers. **The number was measuring us.**
+
+## The current census, measured
+
+`stage4_asks.py` under the fixed harness, against `0ae`'s table:
+
+    call                             0ae    now    change
+    -------------------------------  -----  -----  --------------------------
+    NtCreateFile                        13     13  unchanged
+    NtQueryInformationFile              13     13  unchanged
+    NtReadFile                          12     12  unchanged
+    NtClose                             13     13  unchanged
+    RtlDosPathNameToNtPathName_U        13     13  unchanged
+    RtlGetProcessHeaps                   1      1  unchanged
+    RtlAllocateHeap                     24     13  no per-process allocation
+    RtlFreeHeap                         36     14  the same
+    CreateProcessInternalW              11      0  GONE
+    NtQueryInformationProcess           11      0  GONE
+
+**The loop lost its second half and kept its first, exactly.** `0ae` mapped it
+as: build path -> `NtCreateFile` -> `NtQueryInformationFile` -> **`NtReadFile`**
+-> `NtClose` -> `CreateProcessInternalW` suspended -> `NtQueryInformationProcess`
+class 0 -> next candidate. It now stops after `NtClose`.
+
+Twelve reads for twelve candidates is the same fact `stage4_write_exe.py`
+established by intervention, arriving independently through the call census: it
+reads each one before deciding.
+
+## Section by section
+
+**`0ad` — the list survives, the counts do not.** The twelve names come from the
+*opens*, which still happen, so the host-candidate list is intact and remains the
+IOC it was. Its counts (nine, then eleven, then "expect twelve") are all zero.
+Its mechanism sentence -- *"the walk opens each candidate's file before creating
+it, and skips on a failed open"* -- is **confirmed**, and is now the whole story
+rather than a footnote about one name.
+
+**But `0ad`'s closing expectation is wrong and should not be inherited.** *"Expect
+twelve on a machine that carries `write.exe`"* assumes file presence decides. It
+does not: the doubled path fails every open on any machine, whatever it carries.
+Expect **zero**, everywhere.
+
+**`0ae` — "it does not inject" stands, and stands harder.** No
+`NtCreateSection`, no `NtMapViewOfSection`, no `NtWriteVirtualMemory`, no
+`NtOpenProcess`, no thread APIs -- and now no `CreateProcessInternalW` either.
+The `CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_NO_WINDOW` flags and the
+`ProcessBasicInformation` class-0 asks are **no longer observable in a faithful
+run**. They were only ever visible because the harness answered opens it should
+have refused. They remain valid as a *counterfactual* -- what the sample does
+when handed a readable candidate -- and `stage4_write_exe.py --serve` reproduces
+it deliberately, which is the honest way to keep them.
+
+**`0af` — doubly confirmed, and its own number joins the list.** "The eleven-host
+walk was our artifact" was right about the mechanism and its replacement figure,
+one create, is another harness-generation number rather than a property of the
+sample.
+
+**`0ai`/`0aj` — untouched.** Already superseded by `e686848`: once the create was
+faithful the rendezvous polls stopped being reached at all, and they are no more
+reachable now.
+
+**`0aq`/`0ar`/`0as` — unaffected.** They are about the *strings* the builder
+produces, measured against the real API by `real_createprocess_paths.py`, and
+none of them counts a create. `0as`'s "the buffer reaches
+`CreateProcessInternalW` exactly as built" is unobservable in a faithful run but
+was measured when it was written and holds as a counterfactual.
+
+## What is left of the host walk
+
+    the twelve names            IOC, intact
+    the loop's file half        intact, twelve opens and twelve reads
+    reads before it decides     confirmed twice, independently
+    the loop's process half     unreachable on any machine
+    creates                     zero, everywhere
+
 ### Item 2 — `backing` resolves the path now, and the walk creates nothing — 02 Sep
 
 **The prediction was recorded first and every part of it held.**
