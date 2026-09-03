@@ -1973,6 +1973,73 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 2 — `write.exe` is skipped because this bench has no WordPad — 02 Sep
+
+**The anomaly is ours, and finding that out is worth more than the anomaly.**
+
+`fbdf40b` left this open and ruled out the obvious cause: the open path is
+`C:C:\Windows\System32\write.exe`, which names nothing on any machine, so file
+presence could not be what sets it apart. **Right about a real machine, wrong
+about this harness.** `Emulator.backing` resolves by **leaf name** against the
+host's `SysWOW64` and then `System32`, ignoring the doubled prefix entirely, so
+inside the emulator every candidate is answered with the bench's real bytes.
+
+Measured on this host:
+
+    eleven candidates    present in SysWOW64, 15 KB - 452 KB, all x86
+    write.exe            ABSENT from both directories
+
+WordPad was removed from Windows 11, so `write.exe` is the one leaf `backing`
+cannot answer and it returns `b""`.
+
+**Proven by intervention, not by mechanism.** `scripts/stage4_write_exe.py
+--serve` answers `write.exe` with `label.exe`'s 15,872 bytes:
+
+    baseline   11 creates, write.exe skipped
+    --serve    12 creates, including 'C:C:\Windows\System32\write.exe'
+
+## What that establishes about the sample, and what about us
+
+**About the sample, newly measured:** stage 4 **vets each candidate by reading
+its file and declines an empty one**. It does not blindly create. That is real
+behaviour and nothing in the record had it.
+
+**About us, and it is the larger half:** `backing` answers opens that a real
+machine refuses. On a real machine `\??\C:C:\Windows\System32\<name>` fails for
+**all twelve** -- the same defect `real_createprocess_paths.py` measured against
+`CreateProcessW`. So a faithful run would hand stage 4 nothing for every
+candidate, and a payload that declines an empty file would then create
+**nothing at all**.
+
+**The census's eleven creates are therefore partly harness-shaped.** They are
+the same class of artifact as the eleven-host walk of `0af`: an invented answer
+that reads convincingly as the sample's behaviour. Every stage-4 finding that
+counted creates is qualified by it.
+
+**And it strengthens `0aq` reading 1 rather than weakening it.** The host walk
+does not merely produce unusable names -- on a machine that answers opens
+honestly it produces **no process at all**, which is a cleaner explanation of
+stage 4's silence than anything else on the table.
+
+## The fix, and the prediction to record before making it
+
+`backing` should resolve the path it is given rather than the leaf it can
+extract. `winenv.resolve_dos_path` already exists, already models WOW64
+redirection, and `fbdf40b` measured it against the real API on every input
+tried, so the instrument is in hand.
+
+**Pre-registered, because a run that confirms an expectation is worth less when
+the expectation is written afterwards:**
+
+    creates drop from 11 to 0
+    file opens stay at 12 -- the walk still tries, it is the answers that change
+    the rendezvous polls stay unreached, as in e686848
+    nothing about stage 4's decision to return changes, because it never had a
+      host in the first place
+
+If creates do **not** drop to zero, then something answers those opens that this
+reading has not accounted for, and the fidelity model is wrong somewhere else.
+
 ### Item 2 — the doubled path is not the gate's doing — 02 Sep
 
 **Hypothesis A, eliminated by measurement.** Stage 4 builds its strings off

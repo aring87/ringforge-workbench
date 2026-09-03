@@ -220,6 +220,58 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, `write.exe` is skipped because this bench has no WordPad
+
+**Both open threads on the `422e30ed` chain answered, and the second one found
+a harness artifact underneath the first.**
+
+**B: why `write.exe` alone skips the create.** `Emulator.backing` resolves by
+**leaf name** against the host's `SysWOW64` then `System32`, ignoring the
+doubled prefix, so each candidate is answered with this bench's real bytes.
+Eleven are present; **`write.exe` is absent from both directories** because
+WordPad was removed from Windows 11, so it alone gets `b""`.
+
+Proven by intervention rather than mechanism -- `scripts/stage4_write_exe.py`:
+
+    baseline   11 creates, write.exe skipped
+    --serve    12 creates, including 'C:C:\Windows\System32\write.exe'
+               (write.exe answered with label.exe's 15,872 bytes)
+
+**About the sample, newly measured:** stage 4 **vets each candidate by reading
+its file and declines an empty one**. It does not blindly create.
+
+**About us, and this is the larger half:** `backing` answers opens a real
+machine refuses. `\??\C:C:\Windows\System32\<name>` fails for **all twelve** on
+a real machine, so a faithful run hands stage 4 nothing for any candidate -- and
+a payload that declines an empty file then creates **nothing at all**. The
+census's eleven creates are partly harness-shaped, the same class as the
+eleven-host walk of `0af`, and every stage-4 finding that counted creates is
+qualified by it.
+
+That **strengthens** `0aq` reading 1: the host walk does not merely build
+unusable names, it produces no process at all on a machine that answers
+honestly. Which is the cleanest account of stage 4's silence yet.
+
+**A: the doubled path is not the gate's doing.** The cookie at build time holds
+`0x03e93c74`, the payload base -- a clean self-address, not the poison -- and
+the path is `C:C:\Windows\System32\` regardless. `0aq` had already excluded it:
+both halves of the output follow the *input*. The builder does read the cookie
+15 times, and the first version of that probe concluded "may be downstream of
+the gate" on it; its call tree makes 3,038,245 reads across 171,816 addresses,
+so a read is not a contribution. Seventh instance of that shape here.
+
+**THE NEXT THING, with its prediction already recorded.** Fix `backing` to
+resolve the path rather than the leaf -- `winenv.resolve_dos_path` exists and
+`fbdf40b` measured it against the real API. Predicted: **creates drop 11 -> 0**,
+opens stay at 12, the polls stay unreached, and stage 4's decision to return is
+unchanged because it never had a host. If creates do not drop to zero, something
+answers those opens that this reading has not accounted for.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 2 - write.exe is skipped because this bench has no WordPad
+    Item 2 - the doubled path is not the gate's doing
+
 ### Pick up here — 02 Sep, the `422e30ed` doubled path is not the gate's doing
 
 **Hypothesis A eliminated.** Stage 4's `C:C:\Windows\System32\` is not a symptom
