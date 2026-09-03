@@ -501,6 +501,63 @@ the reading it replaced.
 
 ---
 
+## Unreleased
+
+Work on top of `v1.11.1`. One theme: **a data function inside a window is an
+untested function**, and two real defects were living in exactly that space.
+
+### Every report renders through one page builder
+
+Four reports hand-rolled their own `<!DOCTYPE html>` around the shared
+stylesheet instead of calling `report_page`, so they had no banner, verdict,
+footer or generated-at stamp while the other three did. All four now share the
+builder, which gained an **optional verdict** -- two of them have none, and the
+right fix is to let a report say nothing rather than invent a band for it.
+
+The dynamic module's *fallback* report was the one actually wrong rather than
+merely inconsistent: it runs when the full generator fails, and it rendered a
+bare stack of cards titled "Dynamic Analysis Report", identical in name to the
+real one and nothing like it in shape. It announces itself now, and tells the
+reader to treat an empty section as *not rendered* rather than *nothing found*.
+
+### The Manual API Tester report shows its severities
+
+`analyze_response` returns structured findings with severities and counts. The
+report was embedding the plain-text rendering of them in a `<pre>` -- so the one
+module whose purpose is scoring a response was the only one that could not show
+a severity. Findings are now rows with severity badges, ordered worst first.
+
+Headers render as tables, with a malformed line kept and marked rather than
+dropped. Status families are coloured, because a 500 and a 200 are not the same
+event. And the redaction notice is deliberately loud: this is the only report
+that routinely holds bearer tokens, an unredacted save says so in an alert at
+the top, and a redacted one reports **how many values were actually replaced**,
+counted -- "redaction was on" and "redaction removed nothing" are different
+facts.
+
+### The Unified Report's verdict stops rendering grey
+
+Every verdict this module could produce mapped to the neutral severity class --
+13 of 13. A case reading "High API Spec Risk" wore the same grey chip as "No
+Results". The label mapper knows those vocabularies now, retired wording
+included so existing case folders still colour.
+
+And its fallback derived a band by joining every finding's text and matching
+substrings, so the word `persistence` appearing anywhere in any module's output
+produced "Moderate Risk". That path is gone; where no module scored a case it
+now says so in the canonical coverage wording, and distinguishes "nothing was
+collected" from "things ran and found nothing".
+
+The per-domain scoring moved unchanged. Whether an API-spec case should band on
+the corroboration model is a product decision, not a refactor.
+
+### Housekeeping
+
+- Test suite **1,383 -> 1,426**. Both extractions are testable for the first
+  time; neither had a single test before.
+
+---
+
 ## What's New in v1.11.1
 
 `v1.11.1` adds one report card and corrects two things the tooling was getting
