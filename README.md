@@ -1,6 +1,6 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.11.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.11.1-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
@@ -21,9 +21,9 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.11.0` |
-| Release Name | One Verdict Model |
-| Release Type | Feature release |
+| Version | `v1.11.1` |
+| Release Name | Deferred Stage |
+| Release Type | Feature and correctness release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
 | License | MIT |
@@ -501,11 +501,12 @@ the reading it replaced.
 
 ---
 
-## Unreleased
+## What's New in v1.11.1
 
-Work on top of `v1.11.0`, not yet cut as a release. Two of these were found by
-the tooling failing against real data rather than by review, and are written up
-that way.
+`v1.11.1` adds one report card and corrects two things the tooling was getting
+wrong. Both corrections were found by it **failing against real data** rather
+than by review, and are written up that way -- a release note that reports only
+the wins is the same omission this project builds its detectors against.
 
 ### Deferred stage — a run now names the gap it cannot close
 
