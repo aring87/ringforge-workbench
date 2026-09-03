@@ -1973,6 +1973,81 @@ would normally send commands. `beacon_frame.py` can now build a frame and
 Artifact and full notes:
 `G:\ringforge-artifacts\ce0d08be-c2-checkin-01sep\`.
 
+### Item 1 — the rendezvous is unpacked, its caller is not — 02 Sep
+
+**"What calls the requester" is not a separate thread from "what unpacks stage
+4". It is the same question, and that is worth knowing before someone spends a
+day on it as though it were a way around.**
+
+`scripts/stage4_requester.py` walks backwards from the requester's two call
+sites to the nearest code that actually executed. The split it found is the
+finding:
+
+    +0x1654c  requester call site 1     never executed, DEAD PAGE
+    +0x16900  requester call site 2     never executed, DEAD PAGE
+    +0x03e70  requester, first half     never executed, live page
+    +0x03ee0  requester, second half    never executed, live page
+    +0x03f40  server, first half        never executed, live page
+    +0x04090  server, second half       never executed, live page
+
+**The protocol's implementation sits in unpacked, executing pages. The code that
+invokes it sits in the packed two-thirds.** Stage 4 is carrying working
+rendezvous machinery that nothing on this path can reach, because the caller has
+not been decrypted.
+
+**Six levels back, not one executed caller.** From site 1:
+
+    +0x1654c <- func +0x163b0 <- +0x26be2 <- +0x2c475 <- +0x2ddc6
+             <- +0x2ddb0 <- +0x17f91 <- three callers of +0x17e17 / +0x17e8e / +0x1840f
+
+Every link never executed. This is **not a declined branch near the surface** --
+there is no point where live code evaluated a condition and chose not to enter.
+The whole subtree is dark.
+
+**And no indirect route either.** Zero literal dword references to the requester
+or to either call site anywhere in the image, so nothing dispatches to them
+through a computed pointer. That matters because it is exactly how the *server*
+side is reached (`0ai`: called from nowhere, no direct call, no jmp, not present
+as a literal), and the asymmetry is real rather than an artefact of the search.
+
+## Method, and why not a disassembly sweep
+
+Direct edges come from an **encoding search**: a `call rel32` at `A` targeting
+`T` is `E8` followed by `T - (A+5)`, so testing every offset for that exact
+encoding finds every such call without disassembling anything. A linear capstone
+pass silently drops every site after a desynchronisation -- measured, not feared:
+it is what made `hash_call_sites.py` report 45 sites where there were 65.
+
+The trade is stated in the script: an `E8` inside data whose following dword
+happens to encode a live target is a false edge. A false edge can only *add* a
+candidate path, never hide the real one, which is the direction that matters
+when the result is "no path exists". One such artefact is visible in the output
+-- `call at +0x2ddb0 -> +0x2ddb5`, a call to the next instruction, which is
+either the get-EIP idiom or exactly the false positive the docstring predicts.
+
+## A correction to `0ai`
+
+`0ai` recorded *"stage 4 ran the server side of both and never the requester
+side"*, and that was measured before `CreateProcessInternalW` validated its
+path. **Neither side runs now** -- the server entries are as unexecuted as the
+requester's -- which is consistent with `e686848` finding the polls unreached.
+The server functions being in *live* pages is why they were reachable then.
+
+## Where this leaves THE QUESTION
+
+Three candidate explanations for stage 4's silence are now eliminated by
+measurement rather than argument:
+
+    export tables / ApiSetMap    0c, 0d -- bit-identical run, never read
+    a granted host               0af, 0ah and c9f3918 -- it returns anyway
+    an unreached rendezvous      this -- the caller is packed, not declined
+
+What remains is the original question with nothing standing in front of it:
+**what would decrypt the other 42 pages?** Nothing in the executed stub
+decrypts, allocates a payload region, or transfers control into them (`0k`), and
+the body is not decrypted in place under any run tried -- 4 pages written
+faithfully, 5 with hosts served.
+
 ### Item 1 — obtaining a host is not what unpacks stage 4 — 02 Sep
 
 **The candidate answer from earlier today is wrong, and the record already had

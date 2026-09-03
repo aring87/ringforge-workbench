@@ -220,6 +220,52 @@ going one level deeper into evidence already in hand. Also retracted: the UID
 is per-run, not per-host, and the `0xDEADBEEF` frame is not a network signature
 because everything above the handshake is TLS.
 
+### Pick up here — 02 Sep, the rendezvous is unpacked and its caller is not
+
+**"What calls the requester" is the same question as "what unpacks stage 4",
+not a way around it.** `scripts/stage4_requester.py` walks back from the
+requester's call sites to the nearest executed code:
+
+    +0x1654c  requester call site 1     never executed, DEAD PAGE
+    +0x16900  requester call site 2     never executed, DEAD PAGE
+    +0x03e70  requester, first half     never executed, live page
+    +0x03ee0  requester, second half    never executed, live page
+    +0x03f40  server, first half        never executed, live page
+    +0x04090  server, second half       never executed, live page
+
+**The protocol's implementation is unpacked and executing; the code that invokes
+it is in the packed two-thirds.** Stage 4 carries working rendezvous machinery
+nothing can reach, because its caller has not been decrypted.
+
+Six levels back from both sites, **not one executed caller** -- so this is not a
+declined branch near the surface, there is no point where live code evaluated a
+condition and chose not to enter. The whole subtree is dark. **And no indirect
+route**: zero literal dword references to the requester or either call site
+anywhere in the image, which is exactly how the *server* side IS reached, so the
+asymmetry is real rather than a limit of the search.
+
+Edges come from an **encoding search** (`E8` + `T-(A+5)`) rather than a
+disassembly sweep, because a linear capstone pass silently drops every site
+after a desync -- that is what made `hash_call_sites.py` report 45 where there
+were 65. A false edge can only add a candidate path, never hide one, which is
+the safe direction when the answer is "no path exists".
+
+**Correcting `0ai`:** it recorded that stage 4 runs the server side and not the
+requester side. That was measured before the create validated its path.
+**Neither side runs now**, consistent with `e686848`. The server functions being
+in live pages is why they were reachable then.
+
+**THE QUESTION, with three candidates now eliminated by measurement:** export
+tables and `ApiSetMap` (`0c`, `0d`), a granted host (`0af`, `0ah`, `c9f3918`),
+and an unreached rendezvous (this). What remains is the original: **what would
+decrypt the other 42 pages?** Nothing in the executed stub decrypts, allocates a
+payload region or transfers control into them, and the body is not decrypted in
+place under any run tried -- 4 pages written faithfully, 5 with hosts served.
+
+Read, in `docs/ROADMAP.md`:
+
+    Item 1 - the rendezvous is unpacked, its caller is not
+
 ### Pick up here — 02 Sep, a host is not what unpacks stage 4
 
 **The candidate answer from earlier today is wrong, and the record already held
