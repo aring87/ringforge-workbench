@@ -501,6 +501,106 @@ the reading it replaced.
 
 ---
 
+## Unreleased
+
+Work on top of `v1.11.0`, not yet cut as a release. Two of these were found by
+the tooling failing against real data rather than by review, and are written up
+that way.
+
+### Deferred stage — a run now names the gap it cannot close
+
+A run that installs persistence with a future logon or boot trigger has a stage
+it will never watch. `run_dynamic_analysis` lives inside one boot in the guest,
+while a gated capture spans a reboot and needs the host to drive a logon — so
+the orchestrator **detects the condition, writes it into the run summary, and
+renders it as a report card** carrying the exact procedure, rather than staying
+silent about something it cannot observe.
+
+It deliberately does not run the capture. A function claiming to observe the
+deferred stage while structurally unable to would be worse than one that
+declines and hands over the steps.
+
+The card is a `card-alert` under the crash warning: the entry, what it launches,
+the six-step gated procedure, and its own statement that it is not scored and is
+**not** a claim the deferred stage is malicious — only that nothing looked at it.
+
+**The measured case it exists for:** a sample scored *Likely Malicious, 140* on
+its installer while the resident RAT its `ONLOGON` task launches — beaconing
+every 17 s, reporting the machine to an operator, carrying a ransom capability —
+was in no run at all, and nothing in the report said so.
+
+**And its first live run found a false negative in it.** The module read
+`added_tasks`; the task differ writes `new_tasks`. On real data the
+scheduled-task branch matched nothing — and it rendered anyway, because Autoruns
+independently enumerates Task Scheduler and the other branch caught the same
+task with a weaker record. *A false negative concealed by a second collector is
+exactly the failure this module exists to prevent, occurring inside the module.*
+Fixed to scan every key rather than stopping at the first that yields, and to
+merge one persistence entry seen by two collectors into one.
+
+### Emulator resolves the path it is given, not the leaf it can extract
+
+`Emulator.backing` answered file opens by taking the last path component and
+looking it up in `SysWOW64` then `System32`. That silently repaired every
+malformed path a payload built.
+
+A stage-4 host walk asks for `\??\C:C:\Windows\System32\compact.exe` — a name
+that reaches nothing on any machine, measured against the real API — and the
+leaf lookup answered all twelve candidates with real bytes. **The harness was
+granting eleven process creations a real machine would refuse**, and the single
+candidate it skipped was not the sample being selective but the bench having no
+WordPad installed.
+
+It now resolves through the same resolver the creation side uses, so both halves
+of an open-then-create agree about what exists, and refusals are recorded rather
+than vanishing as an uncounted empty read.
+
+### C2 interaction
+
+For driving a recovered command protocol rather than guessing at it:
+
+- **Commands carry the fields their handler reads.** A command file line may
+  name key/value pairs; a bare name still means a bare packet, so existing files
+  parse unchanged.
+- **Typed values.** `int:` encodes four raw little-endian bytes and `b64:`
+  arbitrary bytes, because an `Integer` field on the wire is *not* decimal text —
+  sending digits threw inside the client and ended a session with eleven
+  commands unsent.
+- **`FATAL_WITHOUT` refuses a shape, not a name.** A command can be safe to send
+  and lethal to send bare. Withholding by name covers that badly in both
+  directions: it hides a capability that is safe when asked properly and says
+  nothing about the shape that actually kills.
+- **`--allow NAME`** releases one withheld command for a run designed to measure
+  it, and **`--start-after NAME`** resumes a sweep that ended early.
+- **`build_command_sweep.py`** generates a sweep and refuses to emit a field name
+  no source says the client reads, or a destructive sub-action wearing a
+  read-only command's name.
+- **`read_beacon_run.py`** reads a capture back by what each frame says about
+  itself, separating a reply that names a *different command* from a status
+  reply that names none.
+
+### Detection
+
+Three YARA rules for a .NET RAT family, benign rate **0 of 13,174** PE files
+across System32, both .NET Framework trees, the dotnet install and this
+repository.
+
+One of them was renamed. `RingForge_Raton_Build_ce0d08be` claimed to identify an
+operator; three of its four strings turned out to be things the *builder* ships —
+an unpatched config placeholder, a Windows interface GUID, and the author's own
+channel shipped as a default. It is now `RingForge_Raton_Default_Config`, and its
+header says a hit means *an unconfigured build* and must not be used to link
+campaigns.
+
+### Housekeeping
+
+- Test suite **1,311 → 1,383**.
+- Three `SyntaxWarning`s fixed — invalid escapes in docstrings in
+  `gui/api_window.py`, `gui/unified_report_window.py` and
+  `scripts/benign_survey.py`. The tree compiles clean.
+
+---
+
 ## What's New in v1.11.0
 
 `v1.11.0` replaces five separate scoring systems with one, and the reason is
