@@ -570,8 +570,28 @@ The dev workstation reports `Sysmon / FakeNet / Memory: not installed` and
 that is correct -- those install kernel drivers and a system-wide traffic
 diverter, and `bootstrap_tools.ps1` refuses physical hardware without
 `-Force`. The strip is captioned now so it says which machine it describes.
-Closing the actual gap means running `scriptsootstrap_tools.ps1` in the
-analysis VM, then re-snapshotting; nothing on the dev box needs changing.
+**Closed 04 Sep.** `bootstrap_tools.ps1` ran in the guest and all five
+collectors verify green *after a reboot*, which is the check that matters --
+a driver that installs but does not survive a restart is the failure worth
+catching before baselining:
+
+    sysmon    available, channel registered, service running
+    capture   dumpcap at C:\Program Files\Wireshark\dumpcap.exe
+    fakenet   available
+    memory    procdump64.exe available, elevated
+    npcap     Running  (checked by hand -- see below)
+
+Guest baseline snapshot taken in the **contained** state, so every revert
+lands with the internet-facing adapter off rather than relying on someone
+remembering. Nothing on the dev box was changed.
+
+**`capture_status()` does not probe Npcap.** It reports `available: True`
+on finding `dumpcap.exe` on disk, and nothing in `dynamic_analysis/` looks
+at the driver -- so a failed or declined Npcap install reads as `Capture:
+ready` and fails at runtime. Verified by hand this time (`Get-Service
+npcap`). Worth an `npcap_available` field so the strip cannot overstate
+itself; same shape as the YARA `rule_file_count` problem, where a probe
+answered a nearby question and was read as answering the real one.
 
 The other things carried forward:
 
