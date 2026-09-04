@@ -2450,6 +2450,13 @@ def run_dynamic_analysis(
 
         if pcap_enabled:
             if pcap_preflight.get("available"):
+                # **A preflight that is available can still be compromised.**
+                # dumpcap on disk with no Npcap driver starts cleanly and
+                # captures nothing, so the run log has to say so before the
+                # silence gets read as an absence of network activity.
+                pcap_warning = str(pcap_preflight.get("warning") or "")
+                if pcap_warning:
+                    _emit(status_cb, f"Packet capture warning: {pcap_warning}.")
                 _emit(status_cb, "Starting packet capture...")
                 packet_capture = PacketCapture(
                     output_path=pcap_file,

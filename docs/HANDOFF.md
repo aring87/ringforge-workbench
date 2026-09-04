@@ -585,13 +585,22 @@ Guest baseline snapshot taken in the **contained** state, so every revert
 lands with the internet-facing adapter off rather than relying on someone
 remembering. Nothing on the dev box was changed.
 
-**`capture_status()` does not probe Npcap.** It reports `available: True`
-on finding `dumpcap.exe` on disk, and nothing in `dynamic_analysis/` looks
-at the driver -- so a failed or declined Npcap install reads as `Capture:
-ready` and fails at runtime. Verified by hand this time (`Get-Service
-npcap`). Worth an `npcap_available` field so the strip cannot overstate
-itself; same shape as the YARA `rule_file_count` problem, where a probe
-answered a nearby question and was read as answering the real one.
+**`capture_status()` now probes Npcap**, fixed 04 Sep. It used to report
+`available: True` on finding `dumpcap.exe` and never looked at the driver,
+so a failed or declined Npcap install read as `Capture: ready` and captured
+nothing -- and a run with no packets looks exactly like a sample that made
+no connections. Same shape as `rule_file_count`.
+
+`npcap_available` is tri-state and rides in `pcap_preflight`, so it reaches
+the run summary as well as the strip:
+
+    Capture: ready
+    Capture: ready -- Npcap driver is not running; dumpcap will capture nothing
+    Capture: ready -- could not confirm the Npcap driver
+
+The orchestrator emits the warning into the run log too; it previously
+spoke only when capture was *unavailable*, so a compromised-but-available
+capture was silent in a headless run.
 
 The other things carried forward:
 

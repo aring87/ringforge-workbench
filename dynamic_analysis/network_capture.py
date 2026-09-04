@@ -488,15 +488,59 @@ def network_isolation_status(
     }
 
 
+def npcap_available() -> bool | None:
+    """Whether the Npcap driver is actually running.
+
+    **dumpcap on disk is not a capture.** `capture_status` reported
+    `available: True` on finding `dumpcap.exe` and never looked at the driver
+    underneath it, so a Wireshark install whose Npcap component failed or was
+    declined read as `Capture: ready` and failed at the moment of detonation --
+    a probe answering a nearby question and being taken for the real one, the
+    same shape as `rule_file_count` counting rule files that never compiled.
+
+    Tri-state on purpose. `None` means the question could not be asked, which
+    is not the same as the driver being absent, and a caller must not collapse
+    one into the other.
+    """
+    if os.name != "nt":
+        return None
+    for service in ("npcap", "npf"):
+        try:
+            result = subprocess.run(
+                ["sc", "query", service],
+                capture_output=True, text=True, timeout=20, errors="replace",
+            )
+        except Exception:
+            return None
+        if result.returncode == 0 and "RUNNING" in (result.stdout or "").upper():
+            return True
+    return False
+
+
 def capture_status(dumpcap_path: str | Path | None = None) -> dict[str, Any]:
     """Preflight summary describing whether packet capture can run."""
     dumpcap = find_dumpcap(dumpcap_path)
     tshark = find_tshark()
     pktmon = pktmon_available()
+    npcap = npcap_available()
 
+    warning = ""
     if dumpcap is not None:
         backend, available = "dumpcap", True
         note = "dumpcap found; captures will be written as pcapng."
+        # dumpcap drives Npcap. Without the driver the binary starts and
+        # captures nothing, so this must reach the operator before a run
+        # rather than after one.
+        if npcap is False:
+            warning = ("Npcap driver is not running; dumpcap will capture "
+                       "nothing")
+            note += (" WARNING: the Npcap driver is not running, so dumpcap "
+                     "will not capture. Reinstall Wireshark with the Npcap "
+                     "component, or start the npcap service.")
+        elif npcap is None:
+            warning = "could not confirm the Npcap driver"
+            note += (" The Npcap driver could not be checked, so whether a "
+                     "capture will record anything is unknown.")
     elif pktmon:
         backend, available = "pktmon", True
         note = (
@@ -517,6 +561,10 @@ def capture_status(dumpcap_path: str | Path | None = None) -> dict[str, Any]:
         "tshark_path": str(tshark) if tshark else "",
         "tshark_available": tshark is not None,
         "pktmon_available": pktmon,
+        # True / False / None -- see `npcap_available`. Only meaningful for the
+        # dumpcap backend; pktmon does not use it.
+        "npcap_available": npcap,
+        "warning": warning,
         "note": note,
         "parse_note": (
             "" if tshark is not None
