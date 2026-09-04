@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.ioc_extract import _is_valid_domain, _looks_like_dotted_code
+from static_triage_engine.ioc_extract import _is_valid_domain, _looks_like_dotted_code
 
 
 class ADottedNameIsNotAHostname(unittest.TestCase):

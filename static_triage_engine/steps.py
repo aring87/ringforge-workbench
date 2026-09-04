@@ -19,11 +19,11 @@ try:
 except Exception:
     tqdm = None  # type: ignore
 
-from scripts.ioc_extract import build_iocs, write_iocs_json, write_iocs_csv  # type: ignore
+from static_triage_engine.ioc_extract import build_iocs, write_iocs_json, write_iocs_csv  # type: ignore
 
 try:
-    from scripts.pe_meta import extract_pe_metadata, write_pe_metadata  # type: ignore
-    from scripts.dotnet_summary import (  # type: ignore
+    from static_triage_engine.pe_meta import extract_pe_metadata, write_pe_metadata  # type: ignore
+    from static_triage_engine.dotnet_summary import (  # type: ignore
         extract_dotnet_metadata, write_dotnet_metadata)
 except Exception:
     extract_pe_metadata = None
@@ -32,7 +32,7 @@ except Exception:
     write_dotnet_metadata = None
 
 try:
-    from scripts.lief_meta import extract_lief_metadata, write_lief_metadata  # type: ignore
+    from static_triage_engine.lief_meta import extract_lief_metadata, write_lief_metadata  # type: ignore
 except Exception:
     extract_lief_metadata = None
     write_lief_metadata = None

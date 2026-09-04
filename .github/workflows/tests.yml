@@ -1,0 +1,84 @@
+# The suite runs on every push and pull request.
+#
+# **Windows only, and that is not laziness.** The engine shells out to Procmon,
+# reads `ctypes.windll` for elevation, and the whole dynamic module observes a
+# Windows guest. A green Linux job would be testing a configuration nobody
+# runs. If the pure-verdict packages are ever split out, they are the part
+# worth a second platform.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push supersedes the first; no reason to finish the old run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: pytest (windows, 3.12)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package and its test dependencies
+        run: python -m pip install -e ".[dev,gui]"
+
+      # `slow` writes a real minidump of the test process to check the dump
+      # parser against something the OS produced. Worth having locally, tens of
+      # seconds on a cold cache, and not worth it on every push.
+      - name: Run the suite
+        run: python -m pytest -m "not slow" --durations=10
+
+      # `cases/` and most of `tools/` are gitignored, so a runner sees neither.
+      # Tests that need them skip; this makes the count visible rather than
+      # letting silent skips hide a suite that stopped covering anything.
+      - name: Report what skipped
+        if: always()
+        run: python -m pytest -m "not slow" -q -rs 2>&1 | Select-String -Pattern "SKIPPED|passed|failed"
+
+  package:
+    name: build and install
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the wheel and sdist
+        run: |
+          python -m pip install build
+          python -m build
+
+      # **This job exists because of a real defect.** Five pipeline modules --
+      # `ioc_extract`, `pe_meta`, `dotnet_summary`, `lief_meta`, `dotnet_meta`
+      # -- lived in `scripts/`, which is bench tooling and is not packaged. The
+      # engine imported them and it worked, because everything ran from the
+      # repo root. The first install outside that directory failed on
+      # `ModuleNotFoundError: No module named 'scripts'`.
+      #
+      # Importing from a directory the repo happens to be sitting in is not a
+      # thing the suite can catch. Installing the wheel somewhere else is.
+      - name: Install the wheel into a clean environment and import the engine
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
+          python -m venv "$env:RUNNER_TEMP/fresh"
+          & "$env:RUNNER_TEMP/fresh/Scripts/python.exe" -m pip install --quiet $wheel
+          $check = Join-Path $PWD "scripts/check_installed_package.py"
+          Push-Location $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP/fresh/Scripts/python.exe" $check
+          if ($LASTEXITCODE -ne 0) { throw "installed package is not importable" }
+          & "$env:RUNNER_TEMP/fresh/Scripts/ringforge-scan.exe" --help
+          Pop-Location

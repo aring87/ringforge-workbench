@@ -1,29 +1,18 @@
+"""Human entry point. The launcher itself is `gui/__main__.py`, which is
+what ships in the package; this keeps the familiar path working and keeps the
+project root on `sys.path` for a source checkout."""
+
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 import traceback
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gui.startup_app import StartupApp
-from gui.main_app import App
-
-
-def main():
-    print("[DEBUG] Starting RingForge")
-    print("[DEBUG] argv =", sys.argv)
-    if "--static-analysis" in sys.argv:
-        print("[DEBUG] Launch mode: Static Analysis")
-        app = App()
-    else:
-        print("[DEBUG] Launch mode: Startup Launcher")
-        app = StartupApp()
-
-    print("[DEBUG] Entering mainloop")
-    app.mainloop()
+from gui.__main__ import main  # noqa: E402
 
 
 if __name__ == "__main__":

@@ -160,3 +160,6 @@ release/
 # file is per-machine -- it accumulates absolute scratchpad paths, including
 # ones from other projects entirely -- so it stays out.
 .claude/settings.local.json
+
+# Packaging output (`python -m build`). `dist/` is already above.
+*.egg-info/
