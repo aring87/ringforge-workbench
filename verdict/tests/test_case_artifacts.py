@@ -251,6 +251,35 @@ class TheFindings(unittest.TestCase):
         self.assertIn("YARA produced no matches",
                       build_findings(detect_artifacts(case))["static"])
 
+    def test_a_failed_yara_scan_is_not_reported_as_no_matches(self) -> None:
+        """`run_yara_scan` returns `matched: False, match_count: 0` on the
+        record it writes when the scan *errored* -- those are initialised
+        values, not observations. Found on a real case page: the stored
+        summary for `c14cb5b6` says the rule set failed to compile and "no
+        matches", and the same sample against the same rules today matches
+        two rules.
+        """
+        case = _case(**{"yara_results.json": {
+            "matched": False, "match_count": 0, "rule_file_count": 1593,
+            "error": "YARA scan failed: undefined identifier \"filepath\""}})
+
+        static = build_findings(detect_artifacts(case))["static"]
+
+        self.assertNotIn("YARA produced no matches", static)
+        self.assertTrue(any("YARA error" in line for line in static))
+        self.assertTrue(any("not scanned, never as clean" in line
+                            for line in static))
+
+    def test_a_clean_scan_is_still_allowed_to_say_so(self) -> None:
+        """The fix must not swallow a genuine clean result."""
+        case = _case(**{"yara_results.json": {
+            "matched": False, "match_count": 0, "rule_file_count": 1594,
+            "error": None}})
+
+        static = build_findings(detect_artifacts(case))["static"]
+
+        self.assertIn("YARA produced no matches", static)
+
     def test_a_spawn_count_is_taken_before_the_preview_is_truncated(self) -> None:
         """The count is a measurement and the name list is presentation.
         Counting the truncated list would report ten spawns for forty."""

@@ -322,6 +322,24 @@ def static_findings(data: Mapping[str, Any]) -> list[str]:
         if key in data:
             out.append(_line(label, data[key]))
 
+    # **A failed scan has no result to report**, corrected 04 Sep after the
+    # case page said it out loud. `run_yara_scan` returns `matched: False` and
+    # `match_count: 0` on the record it writes when the scan *errored* -- those
+    # are the initialised values, not observations -- so this printed "YARA
+    # produced no matches" beside the error that says nothing was scanned.
+    #
+    # Measured on `cases/c14cb5b6_payload`, whose stored summary says exactly
+    # that: the same sample against the same rules today matches two rules.
+    # The rule set could not compile at all, and "no matches" is the one
+    # sentence that cannot be said about a scan that did not run.
+    scan_error = data.get("error")
+    if scan_error:
+        out.append(_line("YARA error", scan_error))
+        if "matched" in data or "match_count" in data:
+            out.append("YARA did not complete, so the counts above are not a "
+                       "result -- read them as not scanned, never as clean")
+        return out
+
     if data.get("matched") is True:
         out.append("YARA produced one or more matches")
     elif data.get("matched") is False:
@@ -332,9 +350,6 @@ def static_findings(data: Mapping[str, Any]) -> list[str]:
         names = [str(m.get("rule", "unknown")) if isinstance(m, Mapping) else str(m)
                  for m in matches[:10]]
         out.append("Matched rules: " + ", ".join(names))
-
-    if data.get("error"):
-        out.append(_line("YARA error", data["error"]))
     return out
 
 
