@@ -565,6 +565,14 @@ identified the analyst's machine and was read by nothing.
 Next on that track: an OCSF Detection Finding exporter over `schema_version`
 1.0, emitting NDJSON to a spool directory.
 
+**Bench coverage is a guest question, not a host one**, established 04 Sep.
+The dev workstation reports `Sysmon / FakeNet / Memory: not installed` and
+that is correct -- those install kernel drivers and a system-wide traffic
+diverter, and `bootstrap_tools.ps1` refuses physical hardware without
+`-Force`. The strip is captioned now so it says which machine it describes.
+Closing the actual gap means running `scriptsootstrap_tools.ps1` in the
+analysis VM, then re-snapshotting; nothing on the dev box needs changing.
+
 The other things carried forward:
 
 * The spec domain's two views disagree -- see "Worth a look, spec" above. That

@@ -1347,6 +1347,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
             row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10)
         )
 
+        # Captions the telemetry strip with which machine it describes. Hidden
+        # on an analysis VM, where the strip means what it says.
+        self.bench_caption_label = ttk.Label(
+            header, text="", style="Warning.TLabel", wraplength=980,
+            justify="left")
+        self.bench_caption_label.grid(
+            row=6, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 10)
+        )
+        self.bench_caption_label.grid_remove()
+
         self._refresh_telemetry_availability()
 
     #: How often the containment strip re-reads the network, in milliseconds.
@@ -1515,8 +1525,28 @@ class DynamicAnalysisWindow(tk.Toplevel):
         if not self._is_running_as_admin():
             parts.append("(capture needs admin)")
 
+        # **Say which machine this describes.** On a developer workstation
+        # every "not installed" here is correct and desirable -- Sysmon and
+        # Npcap install kernel drivers, FakeNet installs a system-wide traffic
+        # diverter, and `bootstrap_tools.ps1` refuses physical hardware without
+        # `-Force`. Uncaptioned, the strip reads as a broken bench and invites
+        # exactly the wrong fix on exactly the wrong machine.
+        try:
+            from dynamic_analysis.bench_profile import telemetry_caption
+
+            caption = telemetry_caption()
+        except Exception:
+            caption = ""
+
         try:
             self.telemetry_status_label.configure(text="  |  ".join(parts))
+            if getattr(self, "bench_caption_label", None) is not None:
+                self.bench_caption_label.configure(text=caption)
+                # A bench says nothing; only the surprising case takes space.
+                if caption:
+                    self.bench_caption_label.grid()
+                else:
+                    self.bench_caption_label.grid_remove()
         except Exception:
             pass
 
