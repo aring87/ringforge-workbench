@@ -1920,8 +1920,20 @@ does not mention.
 
 ### The snapshot tree, and why descriptions are not optional
 
-    tooling-baseline-5e1a31c     <- 22 Aug, kept as the fallback
-    └── tooling-baseline         <- 24 Aug at faedb81, current
+    tooling-baseline-5e1a31c          <- 22 Aug, kept as the fallback
+    └── tooling-baseline              <- 24 Aug at faedb81
+        └── tooling-baseline-0b74864  <- 04 Sep, CURRENT
+
+**`tooling-baseline-0b74864`, 04 Sep** (UUID `c33195f7`). The first baseline
+carrying the full tier-1 set: `bootstrap_tools.ps1` installed Sysmon
+(SwiftOnSecurity config with ProcessTampering on), Wireshark + Npcap,
+FakeNet-NG, ProcDump, crash dumps, UPX and capa. All four workbench probes
+verify **after a reboot** -- a driver that installs and does not survive a
+restart is the thing worth catching before baselining -- and the npcap driver
+was checked by hand, because `capture_status()` reports `available: True` off
+`dumpcap.exe` alone and never looks at the driver. Contained: NIC1 cable off.
+Its description records both, plus two things not verified at snapshot time
+(a possible stray `query` file, and whether `pip install -e .` was run).
 
 **Cleaned on 24 Aug.** Three older snapshots were merged away and six orphaned
 differencing disks removed. Two of the merges refused at first --
