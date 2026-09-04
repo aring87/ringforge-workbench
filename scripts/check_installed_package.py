@@ -37,6 +37,7 @@ REQUIRED = (
     "verdict",
     "verdict.case_artifacts",
     "verdict.case_summary",
+    "ringforge.cli",
 )
 
 

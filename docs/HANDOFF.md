@@ -553,7 +553,14 @@ The reusable checks, for anything added later:
 
 ## NEXT
 
-Nothing is queued. The only things carried forward:
+**Packaging, CI and the `ringforge` CLI landed 04 Sep.** `pip install .` works,
+the suite runs on every push, and `ringforge combine <case> --json` puts the
+verdict on stdout. Next on that track, in order: a `schema_version` /
+`case_id` / `generated_utc` on `combined_verdict.json` plus provenance (rule
+set hash, tool versions), then an OCSF Detection Finding exporter over the
+top. `case_dir` should leave the payload -- it is an absolute Windows path.
+
+The other things carried forward:
 
 * The spec domain's two views disagree -- see "Worth a look, spec" above. That
   is a product decision, not a defect.

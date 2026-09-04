@@ -481,7 +481,14 @@ def band(
     # every collector failed would otherwise report the cleanest verdict this
     # model can produce, which is the project's most expensive recurring
     # mistake wearing a new hat.
-    if not present and categories and not collected_any:
+    # **`and categories` was the hole.** The guard covered a run whose
+    # collectors all failed, and missed the case where no module contributed at
+    # all -- an empty contribution mapping makes `categories` empty, the
+    # condition false, and the fall-through hands back `Low` / `No Evidence`:
+    # the cleanest band this model can produce, for a case nobody looked at.
+    # Reachable by `ringforge combine` on a path that is not a case, and by any
+    # case whose artifacts are all missing.
+    if not present and not collected_any:
         severity, band_name = "Unknown", NOTHING_COLLECTED
 
     # **The dissent floor.** Removing VirusTotal from the verdict removes an

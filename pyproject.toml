@@ -17,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ringforge-workbench"
-version = "1.12.0.dev0"
+version = "1.12.0"
 description = "Static, dynamic, API-spec and browser-extension triage with one corroboration-based verdict model"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -54,13 +54,15 @@ emulation = ["unicorn", "capstone"] # scripts/ only: the native-stub emulator
 dev = ["pytest>=8"]
 
 [project.scripts]
-# Static triage only, today. The other four modules are importable but still
-# GUI-driven; a full `ringforge <module>` surface is the next step and is what
-# an automated pipeline or a SIEM exporter would drive.
+# `ringforge` is the command line; `ringforge-gui` opens the workbench. That is
+# the way round the convention expects, and it is what a pipeline or a SIEM
+# exporter drives. `ringforge-scan` is kept as an alias for the one entry point
+# that existed before the subcommands.
+ringforge = "ringforge.cli:main"
 ringforge-scan = "static_triage_engine.static_triage_cli:main"
 
 [project.gui-scripts]
-ringforge = "gui.__main__:main"
+ringforge-gui = "gui.__main__:main"
 
 [project.urls]
 Documentation = "https://github.com/aring/ringforge-workbench/blob/main/README.md"
@@ -74,6 +76,7 @@ include = [
     "dynamic_analysis*",
     "verdict*",
     "gui*",
+    "ringforge",
 ]
 
 [tool.setuptools]

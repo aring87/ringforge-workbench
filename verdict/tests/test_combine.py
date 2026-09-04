@@ -196,10 +196,40 @@ class TheOutputIsSelfDescribing(unittest.TestCase):
         self.assertEqual(result["score_model"], "corroboration-v1")
 
     def test_nothing_at_all_is_insufficient_coverage(self) -> None:
+        """**This test's name was right and its assertion was not.** It pinned
+        `Low` / `No Evidence` -- the cleanest band the model can produce -- for
+        a case where no module contributed anything at all.
+
+        The `NOTHING_COLLECTED` guard required `categories` to be non-empty, so
+        it covered a run whose collectors all failed and missed the run that
+        never happened. Found by pointing `ringforge combine` at an empty
+        directory and being told "No Indicators Found".
+        """
         result = combine({})
 
-        self.assertEqual(result["severity"], "Low")
+        self.assertEqual(result["severity"], "Unknown")
+        self.assertEqual(result["band"], "Nothing Collected")
+        self.assertEqual(result["verdict"], "Insufficient Coverage")
         self.assertEqual(result["modules_run"], [])
+
+    def test_a_run_that_collected_nothing_is_still_covered(self) -> None:
+        """The case the guard already handled, kept so the widened condition
+        does not quietly replace it."""
+        uncollected = _cat("stripped_metadata", "static",
+                           collected=False, present=False)
+        result = combine({"static": ([uncollected], 0)})
+
+        self.assertEqual(result["severity"], "Unknown")
+        self.assertEqual(result["band"], "Nothing Collected")
+
+    def test_a_module_that_ran_and_found_nothing_still_reads_clean(self) -> None:
+        """The distinction the whole model exists to draw: this one *is*
+        `No Evidence`, and widening the guard must not swallow it."""
+        clean = _cat("stripped_metadata", "static", present=False)
+        result = combine({"static": ([clean], 0)})
+
+        self.assertEqual(result["band"], "No Evidence")
+        self.assertNotEqual(result["severity"], "Unknown")
 
 
 if __name__ == "__main__":
