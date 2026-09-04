@@ -515,7 +515,7 @@ builder, which gained an **optional verdict** -- two of them have none, and the
 right fix is to let a report say nothing rather than invent a band for it.
 
 The dynamic module's *fallback* report was the one actually wrong rather than
-merely inconsistent: it runs when the full generator fails, and it rendered a
+merely inconsistent: it runs when a case has findings but no run summary, and it rendered a
 bare stack of cards titled "Dynamic Analysis Report", identical in name to the
 real one and nothing like it in shape. It announces itself now, and tells the
 reader to treat an empty section as *not rendered* rather than *nothing found*.
@@ -681,11 +681,56 @@ The fallback report moved to `dynamic_analysis/html_report.py`, deliberately
 into the same file as the report it stands in for, so what it is *not*
 producing is visible beside it.
 
+### Redacting the API report changed its security findings
+
+The worst of the set, because it is a correctness bug wearing a security
+control's clothes. `save_html_report` redacted the response headers and body
+**in place** and then handed those same variables to `analyze_response`, so the
+findings were computed from text with the evidence already removed. Ticking the
+redact box changed the result in both directions:
+
+- `Set-Cookie: sid=x; HttpOnly; Secure; SameSite=Strict` became
+  `Set-Cookie: [REDACTED]` — the flags went with the value, and a correctly
+  configured cookie was reported **Medium, "one missing httponly, secure,
+  samesite"**. A finding about nothing.
+- `{"access_token": "…"}` became `{"access_token": "[REDACTED]"}`, so the
+  **High** "credential-shaped values in the body" finding vanished — the real
+  finding, suppressed by the act of preparing the report that exists to warn
+  about it.
+
+The page's headline band flipped from High to Medium, and the window's own
+analysis pane — which reads the unredacted text — disagreed with the file it
+had just written. Redaction is a presentation step and runs last now: analyse
+the exchange, then redact what goes on the page, finding text included.
+
+The patterns moved to `static_triage_engine/api_redaction.py` **unchanged**,
+verified byte-for-byte against the original across a dozen inputs, and are
+pinned by tests — including the parts that are arguably wrong, like
+`Authorization: Bearer x` losing the scheme along with the token. Changing that
+would be a change, not a fix.
+
+### A request that never completed reported as a clean test
+
+When a request produces no HTTP response — refused connection, DNS failure,
+unfinished TLS handshake — the window sets the status to `Error` and puts the
+client's exception where the body goes. The checks then ran over that exception
+text, found nothing in it, and the exported page came out **`Info · 1
+finding(s)` in the same neutral chip a clean `200` gets**, with the status badge
+also neutral because `Error` starts with no digit.
+
+Every count on that page was zero because nothing was received, not because
+nothing was found. The page now leads with an alert saying so, bands as *No
+response received*, and its findings section says **none were run** rather than
+none were found.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,563**. All six extractions are testable for the
+- Test suite **1,383 -> 1,594**. All seven extractions are testable for the
   first time; none had a single test before.
 - Every `report_page` caller now names its producing module in the footer.
+- The "there is no response to save yet" check runs before the unredacted-save
+  confirmation, so approving that dialog can no longer be followed by being
+  told there was nothing to save.
 
 ---
 

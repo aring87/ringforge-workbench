@@ -2921,13 +2921,23 @@ def write_dynamic_html_report(summary_path: Path, output_html: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 def build_fallback_dynamic_report(summary: dict[str, Any], case_name: str = "") -> str:
-    """The page written when `build_dynamic_html_report` above fails.
+    """The page written from `dynamic_findings.json` when there is no summary.
 
-    **It lives here so the gap between the two is visible in one file.** It sat
-    in `gui/dynamic_window.py`, which is how it came to render a bare stack of
-    cards titled "Dynamic Analysis Report" -- the same name as the real one,
-    looking nothing like it, with no way for a reader holding the file to tell
-    which they had. Everything above this line is what it is *not* producing.
+    **When this is reached, precisely.** `_export_dynamic_report` looks for a
+    `dynamic_run_summary.json` first and renders the real report above from it.
+    Only when no summary exists anywhere -- and a `dynamic_findings.json` does
+    -- does the export fall back to this. A completed run writes the summary,
+    so an ordinary export never reaches here; a run that died before the
+    scorer, or a case folder holding findings from an older layout, does. If
+    the real generator *raises*, the export reports the error and writes
+    nothing; it does not land here.
+
+    **It lives beside the real report so the gap between them is visible in
+    one file.** It sat in `gui/dynamic_window.py`, which is how it came to
+    render a bare stack of cards titled "Dynamic Analysis Report" -- the same
+    name as the real one, looking nothing like it, with no way for a reader
+    holding the file to tell which they had. Everything above this line is
+    what it is *not* producing.
 
     It carries no verdict for the same reason it carries no sections: it never
     reached the scorer. `Fallback` in the banner is a statement about the
@@ -2959,11 +2969,12 @@ def build_fallback_dynamic_report(summary: dict[str, Any], case_name: str = "") 
 <section class="card card-alert">
   <div class="section-head"><h2>Fallback Report</h2></div>
   <p class="muted">
-    The full dynamic report could not be generated, so this page was written
-    from the run summary alone. <b>It carries a fraction of what the full
-    report does</b> -- no evidence categories, no memory or network sections,
-    no verdict. Read an empty section here as "not rendered", never as
-    "nothing found", and re-export once the full generator succeeds.
+    No run summary was found for this case, so this page was written from the
+    findings file alone. <b>It carries a fraction of what the full report
+    does</b> -- no evidence categories, no memory or network sections, no
+    verdict, because none of them were ever produced. Read an empty section
+    here as "not rendered", never as "nothing found", and re-export once a run
+    summary exists.
   </p>
 </section>
 <section class="card">

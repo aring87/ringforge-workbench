@@ -223,15 +223,15 @@ because everything above the handshake is TLS.
 ### Pick up here — 03 Sep, the module-polish thread (NOT malware work)
 
 **A different subject from everything below this line.** The sample work is at
-rest; this is the workbench itself. **All six modules are done.**
+rest; this is the workbench itself. **All seven modules are done.**
 
 ## The pattern, which is the reusable part
 
 **A data function inside a `Toplevel` is an untested function.** Each module
 kept analysis or presentation logic as methods on its window, where it
 referenced no widget, could not be imported without a display, and therefore had
-no tests. Sixteen real defects were living in exactly that space, most of them
-in a release whose headline was *One Verdict Model*.
+no tests. Nineteen real defects were living in exactly that space, most of
+them in a release whose headline was *One Verdict Model*.
 
 Static and Dynamic are the variation worth remembering: their analysis and
 their reports were *already* modules, and the untested logic had simply moved
@@ -256,7 +256,7 @@ invent a band -- and a footer note naming the producing module. Consolidated:
 page shell now.
 
 **`dynamic_window`'s fallback was wrong, not merely inconsistent.** It runs when
-the full generator fails and rendered a bare stack of cards titled *"Dynamic
+a case has findings but no run summary, and rendered a bare stack of cards titled *"Dynamic
 Analysis Report"* -- the same name as the real one, looking nothing like it,
 with no way for a reader holding the file to tell which they had. It announces
 itself now and says to read an empty section as *not rendered*.
@@ -408,7 +408,35 @@ detonation may start, behind a display, with no test.
 
 50 tests.
 
-Suite 1,383 -> **1,563**.
+**Manual API Tester -- `static_triage_engine/api_redaction.py`.** Its report was
+extracted earlier in this thread; this is the window's own data work, which is
+where the worst defect of the whole pass was.
+
+* **Redaction fed the analysis.** `save_html_report` redacted the response
+  headers and body *in place*, then handed those same variables to
+  `analyze_response`. Ticking the redact box changed the findings **in both
+  directions**: a cookie with `HttpOnly; Secure; SameSite` became
+  `Set-Cookie: [REDACTED]` and was reported Medium for missing all three, while
+  a leaked `access_token` in the body became `[REDACTED]` and its High finding
+  disappeared. The banner band flipped High -> Medium, and the window's own
+  analysis pane -- reading unredacted text -- disagreed with the file it had
+  just written. **Redaction is a presentation step**; it runs after the
+  analysis now, over the finding text too.
+* **A request that never completed reported as a clean test.** Status `Error`,
+  the client's exception in the body slot, the checks run over it, and the page
+  comes out `Info &middot; 1 finding(s)` in `sev-none` -- the banner and chip a
+  clean `200` gets. It bands `No response received` now, leads with an alert,
+  and its findings section says *none were run* rather than none were found.
+* The "no response to save yet" check ran *after* the unredacted-save
+  confirmation, so an analyst could approve that dialog and then be told there
+  was nothing to save.
+
+The patterns moved **unchanged** -- verified byte-for-byte against the original
+across a dozen inputs -- and are pinned, warts included: `Authorization: Bearer
+x` loses the scheme with the token, which would be a change rather than a fix.
+54 tests.
+
+Suite 1,383 -> **1,594**.
 
 ## Worth a look, spec: the two views ask different questions
 
@@ -427,8 +455,8 @@ shape worth a decision.
 
 ## The count, and the pass is done
 
-**Six modules, sixteen defects, every one in code no test could import.** Two
-questions found most of them.
+**Seven modules, nineteen defects, every one in code no test could import.**
+Two questions found most of them, and the last module found a third.
 
 The first, which found eight:
 
@@ -440,17 +468,28 @@ noticed is the same each time: the wording changed at `v1.11.0`, every consumer
 pattern-matching the old vocabulary silently stopped matching, and nothing
 failed. **A band read from text does not break loudly; it goes grey.**
 
-The second, which found four:
+The second, which found six:
 
 > **What does this do when it could not tell?**
 
 `external_control_surface` raised. The static report called a skipped
 VirusTotal lookup a found report. The dynamic report painted `Unknown` and
 `Cancelled` with the clean chip. The preflight said nothing at all about a
-Procmon config it could not read. Every one of them turned *I do not know* into
+Procmon config it could not read. The API report called a refused connection
+`Info &middot; 1 finding(s)`. Every one of them turned *I do not know* into
 *nothing is wrong*, which is the single error this project's scoring model was
 rewritten to prevent -- and it had colonised the presentation layer while the
 model was being made careful about it.
+
+The third arrived last, in the API window, and is the one worth carrying:
+
+> **Does anything modify the evidence before it is measured?**
+
+`save_html_report` redacted the response and then analysed the redacted copy.
+The control that exists to make a report safe to share was changing what the
+report said -- inventing a cookie finding and suppressing a credential one, in
+the same pass. Nothing about it looked like a scoring bug; it looked like
+tidying up before writing a file.
 
 The reusable checks, for anything added later:
 
@@ -460,6 +499,10 @@ The reusable checks, for anything added later:
 2. Find every branch that handles the unreadable, the absent and the
    uncollected. If it falls through to the same outcome as *checked, and fine*,
    it is lying.
+3. Trace the order of *sanitise* against *measure*. Redaction, truncation,
+   pretty-printing and normalisation are all presentation, and every one of
+   them destroys evidence. If any of them runs first, the analysis is being
+   done on a document that never existed.
 
 ## NEXT
 
@@ -472,10 +515,12 @@ Nothing is queued. The only things carried forward:
   a run whose findings write failed could pair a summary with another run's
   findings. Latent, not demonstrated -- both are written together in the
   ordinary case.
-* `gui/api_window.py` (1,323 lines) and `gui/unified_report_window.py` (1,163)
-  had their *reports* extracted in this thread's earlier passes but never a
-  survey of their own data work, which is what Static and Dynamic turned out to
-  be hiding. Same measurement, same two questions.
+* **`gui/unified_report_window.py` (1,163 lines) is the last one.** Its
+  verdict functions were extracted to `verdict/case_summary.py` early in this
+  thread, but its own data work -- how it detects which modules ran, what it
+  reads out of each module's artifacts -- has never been surveyed. That is
+  exactly the gap Static, Dynamic and the API window each turned out to be
+  hiding. Same measurement, now three questions.
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
 

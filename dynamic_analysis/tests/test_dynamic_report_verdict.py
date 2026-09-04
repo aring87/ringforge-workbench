@@ -114,7 +114,8 @@ class TheBanner(unittest.TestCase):
 
 
 class TheFallbackPage(unittest.TestCase):
-    """It runs when the real generator fails, and must not look like it."""
+    """Written when a case has findings but no run summary, and it must not
+    look like the report that would have been written from one."""
 
     SUMMARY = {
         "sample": {"sample_name": "payload.exe", "sample_path": "C:/s/payload.exe",

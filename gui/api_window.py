@@ -11,6 +11,11 @@ from typing import Any
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from static_triage_engine.api_redaction import (
+    redact,
+    redact_fields,
+    redact_findings,
+)
 from static_triage_engine.api_report import build_api_report
 from static_triage_engine.api_response_analysis import analyze_response
 from gui import theme as T
@@ -722,45 +727,13 @@ class APIAnalysisWindow(tk.Toplevel):
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
         
     def _redact_secrets(self, value: Any) -> str:
-        """
-        Redact common API secrets before displaying or exporting reports.
+        """Thin delegation. The rules are
+        `static_triage_engine.api_redaction`, where they can be tested --
+        which matters more here than anywhere else in this workbench, because
+        this is the only screen that routinely holds live credentials."""
+        return redact(value)
 
-        This protects exported HTML reports from accidentally storing bearer tokens,
-        API keys, cookies, passwords, client secrets, and similar values.
-        """
-        text = "" if value is None else str(value)
 
-        patterns = [
-            # HTTP headers
-            (r"(?im)^(Authorization\s*:\s*Bearer\s+)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(Authorization\s*:\s*Basic\s+)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(Authorization\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(X-Api-Key\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(Api-Key\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(Cookie\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(Set-Cookie\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-
-            # JSON-style secrets
-            (r'(?i)("?(?:api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd)"?\s*:\s*")[^"]+(")', r"\1[REDACTED]\2"),
-            (r"(?i)('?(?:api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd)'?\s*:\s*')[^']+(')", r"\1[REDACTED]\2"),
-
-            # Query-string or form-style secrets
-            (r"(?i)\b(api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd)=([^&\s]+)", r"\1=[REDACTED]"),
-
-            # Bearer tokens appearing inside body/raw output
-            (r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]"),
-            
-            # Reflected public IP/origin fields from test APIs like HTTPBin
-            (r'(?i)("origin"\s*:\s*")[^"]+(")', r"\1[REDACTED]\2"),
-            (r"(?im)^(X-Forwarded-For\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-            (r"(?im)^(X-Real-IP\s*:\s*)[^\r\n]+", r"\1[REDACTED]"),
-        ]
-
-        for pattern, replacement in patterns:
-            text = re.sub(pattern, replacement, text)
-
-        return text
-        
     def _get_active_case_dir(self) -> Path:
         r"""
         Resolve the current RingForge case folder from the parent app context.
@@ -1190,22 +1163,58 @@ class APIAnalysisWindow(tk.Toplevel):
         raw = self._get_text(self.response_raw_text)
         analysis = self._get_text(self.response_analysis_text)
 
+        # **Asked before anything is redacted, and before anything is
+        # analysed** -- but after the "is there anything to save" check below
+        # used to run, so an analyst could approve an unredacted export and
+        # then be told there was no response.
+        if not body and not raw:
+            messagebox.showinfo(
+                "Save HTML Report",
+                "There is no response to save yet.",
+                parent=self,
+            )
+            return
+
+        # **The analysis runs on the response as it came back.** It used to run
+        # on the redacted copy, because redaction overwrote these variables
+        # first -- so ticking the redact box changed the findings. A cookie
+        # with HttpOnly, Secure and SameSite became `Set-Cookie: [REDACTED]`
+        # and was reported Medium for missing all three; a leaked
+        # `access_token` in the body became `[REDACTED]` and its High finding
+        # disappeared. Redaction is a presentation step and runs after this.
+        try:
+            analysis_result = analyze_response(
+                method=method,
+                url=url,
+                status=status,
+                response_headers=headers,
+                body=body or raw,
+            )
+        except Exception:
+            # A report that renders without findings is worth more than no
+            # report. The section says "no findings" is a statement about the
+            # checks that ran, so an empty result cannot read as a clearance.
+            analysis_result = {"findings": [], "counts": {}}
+
         redaction_count: int | None = None
         if self.redact_report_var.get():
-            before = sum(f.count("[REDACTED]") for f in
-                         (request_headers, request_body, headers, body, raw, analysis))
-            request_headers = self._redact_secrets(request_headers)
-            request_body = self._redact_secrets(request_body)
-            headers = self._redact_secrets(headers)
-            body = self._redact_secrets(body)
-            raw = self._redact_secrets(raw)
-            analysis = self._redact_secrets(analysis)
-            # Counted rather than asserted: "redaction was on" and "redaction
-            # removed nothing" are different facts, and a reader deciding how
-            # to handle the file needs the second one.
-            after = sum(f.count("[REDACTED]") for f in
-                        (request_headers, request_body, headers, body, raw, analysis))
-            redaction_count = max(after - before, 0)
+            fields, redaction_count = redact_fields({
+                "request_headers": request_headers,
+                "request_body": request_body,
+                "headers": headers,
+                "body": body,
+                "raw": raw,
+                "analysis": analysis,
+            })
+            request_headers = fields["request_headers"]
+            request_body = fields["request_body"]
+            headers = fields["headers"]
+            body = fields["body"]
+            raw = fields["raw"]
+            analysis = fields["analysis"]
+            analysis_result = dict(analysis_result)
+            analysis_result["findings"] = redact_findings(
+                analysis_result.get("findings"))
         else:
             proceed = messagebox.askyesno(
                 "Save Unredacted Report",
@@ -1214,14 +1223,6 @@ class APIAnalysisWindow(tk.Toplevel):
             )
             if not proceed:
                 return
-
-        if not body and not raw:
-            messagebox.showinfo(
-                "Save HTML Report",
-                "There is no response to save yet.",
-                parent=self,
-            )
-            return
 
         path = filedialog.asksaveasfilename(
             title="Save HTML Report",
@@ -1238,20 +1239,6 @@ class APIAnalysisWindow(tk.Toplevel):
         # away the severities that `analyze_response` had already worked out --
         # so the one module whose purpose is scoring a response was the only
         # one that could not show a severity.
-        try:
-            analysis_result = analyze_response(
-                method=method,
-                url=url,
-                status=status,
-                response_headers=headers,
-                body=body or raw,
-            )
-        except Exception:
-            # A report that renders without findings is worth more than no
-            # report. The section says "no findings" is a statement about the
-            # checks that ran, so an empty result cannot read as a clearance.
-            analysis_result = {"findings": [], "counts": {}}
-
         html = build_api_report(
             method=method,
             url=url,

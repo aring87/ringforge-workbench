@@ -163,6 +163,71 @@ class Rendering(unittest.TestCase):
         self.assertIn("Manual API Tester", _report())
 
 
+class ARequestThatNeverCompleted(unittest.TestCase):
+    """A connection that was refused is not a clean test.
+
+    The window sets the status to `Error` when the request produced no HTTP
+    response and puts the client's exception where the body goes. The checks
+    then ran over that exception text, found nothing in it, and the page came
+    out `Info &middot; 1 finding(s)` in `sev-none` -- the banner and the chip a
+    clean `200` gets. Every count on it was zero because nothing was received,
+    not because nothing was found.
+    """
+
+    def _failed(self):
+        return _report(
+            status="Error", elapsed="—", content_type="—", size="—",
+            response_headers="", response_body="ConnectionError: refused",
+            response_raw="ConnectionError: refused",
+            analysis={"findings": [{"severity": "Info",
+                                    "message": "No response findings generated."}],
+                      "counts": {"Info": 1}})
+
+    def test_the_banner_does_not_report_a_finding_count(self) -> None:
+        self.assertIn('<div class="verdict sev-med">No response received</div>',
+                      self._failed())
+
+    def test_the_status_chip_is_not_the_clean_one(self) -> None:
+        self.assertIn('<span class="badge sev-med">Status: Error</span>',
+                      self._failed())
+
+    def test_the_page_says_so_above_its_zeros(self) -> None:
+        html = self._failed()
+
+        self.assertIn('<section class="card card-alert">', html)
+        self.assertIn("No response was received", html)
+        self.assertIn("Nothing below describes the endpoint", html)
+
+    def test_the_findings_section_says_none_were_run(self) -> None:
+        """Not "no findings" -- there was nothing to check."""
+        html = self._failed()
+
+        self.assertIn("None were run. There was no response to check.", html)
+
+    def test_verdict_for_ignores_the_counts_when_there_was_no_response(self) -> None:
+        self.assertEqual(verdict_for({"High": 3}, "Error"),
+                         ("No response received", "sev-med"))
+
+    def test_a_real_response_is_unaffected(self) -> None:
+        html = _report()
+
+        self.assertNotIn("No response was received", html)
+        self.assertIn('<div class="verdict sev-none">No findings</div>', html)
+
+    def test_every_status_family_still_reads(self) -> None:
+        for status, expected in (("200 OK", "sev-none"), ("301", "sev-low"),
+                                 ("404 Not Found", "sev-med"),
+                                 ("500 Internal Server Error", "sev-high")):
+            with self.subTest(status=status):
+                self.assertIn(f'<span class="badge {expected}">Status: {status}',
+                              _report(status=status))
+
+    def test_an_empty_status_counts_as_no_response(self) -> None:
+        """A saved page with the status field blank cannot claim a clean test
+        either."""
+        self.assertEqual(verdict_for({}, "")[0], "No response received")
+
+
 class TheSharedPageShell(unittest.TestCase):
     """`report_page` gained an optional verdict so reports need not invent one."""
 

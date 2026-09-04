@@ -50,18 +50,47 @@ def _esc(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def no_response(status: Any) -> bool:
+    """Whether the request produced an HTTP response at all.
+
+    The window sets the status to `Error` when the request never completed --
+    connection refused, DNS failure, a TLS handshake that did not finish -- and
+    puts the exception text where the body goes. Every count below is then
+    zero because nothing was received, not because nothing was found.
+    """
+    return not str(status or "").strip()[:1].isdigit()
+
+
 def _status_class(status: str) -> str:
+    """The status badge's colour.
+
+    **A status that is not a status is not `sev-none`.** Anything unparseable
+    used to take the first-character lookup's default, which is the same chip a
+    `200 OK` gets -- so a connection failure wore the colour of a clean
+    request.
+    """
     text = str(status or "").strip()
+    if no_response(text):
+        return "sev-med"
     return _STATUS_CLASS.get(text[:1], "sev-none")
 
 
-def verdict_for(counts: Mapping[str, int]) -> tuple[str, str]:
+def verdict_for(counts: Mapping[str, int],
+                status: Any = "200") -> tuple[str, str]:
     """The banner's verdict, and never more than the counts support.
 
     The worst band present, named plainly. **No findings is stated rather than
     implied** -- an empty page and a clean result are different outcomes, and
     the reader of an exported file cannot tell them apart from silence.
+
+    **A request that never completed does not get a finding count.** It used
+    to: `status` was `Error`, the checks ran over an exception message and
+    raised nothing, and the banner read `Info &middot; 1 finding(s)` in the
+    same neutral chip a clean `200` gets. Nothing was received, so there is
+    nothing to have found, and the page says that instead.
     """
+    if no_response(status):
+        return "No response received", "sev-med"
     for level in SEVERITY_ORDER:
         if int(counts.get(level, 0) or 0) > 0:
             total = sum(int(counts.get(k, 0) or 0) for k in SEVERITY_ORDER)
@@ -157,8 +186,42 @@ def _redaction_section(redacted: bool, replaced: int | None) -> str:
     </section>"""
 
 
-def _findings_section(analysis: Mapping[str, Any]) -> str:
+def _no_response_section(status: Any) -> str:
+    """The first thing on a page about a request that never completed.
+
+    Everything below it is a zero produced by nothing having been received,
+    and a page of zeros reads as a clean test.
+    """
+    if not no_response(status):
+        return ""
+    return f"""
+    <section class="card card-alert">
+      <div class="section-head">
+        <h2>No response was received</h2>
+        <span class="badge sev-med">{_esc(status or "Error")}</span>
+      </div>
+      <p class="muted">
+        The request did not produce an HTTP response -- a refused connection, a
+        name that did not resolve, a TLS handshake that did not complete, or a
+        timeout. <b>Nothing below describes the endpoint.</b> The body and raw
+        sections hold the client's error, not the server's answer, and the
+        absence of findings here says nothing about whether this endpoint is
+        safe.
+      </p>
+    </section>"""
+
+
+def _findings_section(analysis: Mapping[str, Any], status: Any = "200") -> str:
     """Findings as rows with severity badges, ordered worst first."""
+    if no_response(status):
+        return """
+    <section class="card">
+      <div class="section-head"><h2>Response Findings</h2></div>
+      <p class="muted">
+        None were run. There was no response to check.
+      </p>
+    </section>"""
+
     findings = list(analysis.get("findings") or [])
     counts = analysis.get("counts") or {}
 
@@ -233,7 +296,7 @@ def build_api_report(
 ) -> str:
     """One exported page for one request/response pair."""
     analysis = analysis or {"findings": [], "counts": {}}
-    verdict, verdict_class = verdict_for(analysis.get("counts") or {})
+    verdict, verdict_class = verdict_for(analysis.get("counts") or {}, status)
 
     exchange = f"""
     <section class="card">
@@ -252,9 +315,10 @@ def build_api_report(
     </section>"""
 
     body_html = "\n".join([
+        _no_response_section(status),
         _redaction_section(redacted, redactions),
         exchange,
-        _findings_section(analysis),
+        _findings_section(analysis, status),
         _header_table("Request Headers", request_headers),
         _pre_section("Request Body", request_body, "No request body was sent."),
         _header_table("Response Headers", response_headers),
