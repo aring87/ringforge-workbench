@@ -1,11 +1,18 @@
-# `core.autocrlf` is true on this bench, but docs/HANDOFF.md was committed with
-# CRLF already in the blob. Left alone, every edit to it stages as a whole-file
-# rewrite -- 2,700 lines changed to show 60 -- which buries the actual change and
-# breaks `git log` as the incident record for the one file that most depends on
-# being readable that way.
+# `core.autocrlf` is true on this bench. `-text` tells git to store
+# docs/HANDOFF.md's bytes as they are, so an edit stages as the lines that
+# changed rather than as a whole-file rewrite -- 12,000 lines changed to show
+# 60 -- which would bury the actual change and break `git log` as the incident
+# record for the one file that most depends on being readable that way.
 #
-# `-text` tells git to store the bytes as they are, so the existing CRLF blob
-# stays and diffs stay small. The alternative, normalising to LF, is a one-time
-# whole-file commit; worth doing deliberately some day, not as a side effect of
-# an edit.
+# **The blob is LF, and the guard cuts both ways**, corrected 03 Sep. This note
+# used to say the blob was CRLF; it had drifted to LF at some point, and `-text`
+# was faithfully preserving that. A patch script using `Path.write_text` then
+# converted the working copy to CRLF on the way past -- Windows translates `\n`
+# on write -- and the file staged as 25,053 changed lines to show a paragraph.
+# Reverted in the commit after.
+#
+# So: when scripting an edit to this file, write bytes or pass `newline="\n"`.
+# Whichever ending it holds, the rule is that a commit must not change it as a
+# side effect. Normalising deliberately is fine; doing it by accident costs the
+# history.
 docs/HANDOFF.md -text
