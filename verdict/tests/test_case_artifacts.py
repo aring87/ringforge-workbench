@@ -344,6 +344,14 @@ class TheFindings(unittest.TestCase):
 
 
 class AgainstARealCaseFolder(unittest.TestCase):
+    """Read against the folder as it is, never against a snapshot of it.
+
+    These pinned the 20 Aug contents of `cases/c14cb5b6_payload` and broke the
+    first time static analysis was re-run on it. A case folder is a mutable
+    artifact; the invariant is that detection agrees with the filesystem and
+    the findings agree with the files.
+    """
+
     CASE = Path("cases/c14cb5b6_payload")
 
     def setUp(self) -> None:
@@ -351,23 +359,19 @@ class AgainstARealCaseFolder(unittest.TestCase):
             self.skipTest("reference case folder is not checked out")
 
     def test_it_detects_the_static_module(self) -> None:
-        artifacts = detect_artifacts(self.CASE)
+        self.assertTrue(detect_artifacts(self.CASE)["Static Analysis"]["found"])
 
-        self.assertTrue(artifacts["Static Analysis"]["found"])
+    def test_case_verdict_detection_agrees_with_the_filesystem(self) -> None:
+        on_disk = ((self.CASE / "combined_verdict.json").exists()
+                   or (self.CASE / "metadata" / "combined_verdict.json").exists())
 
-    def test_this_folder_predates_combined_verdict_json(self) -> None:
-        """It carries the retired `combined_score.json`, which is a different
-        file with a different shape -- and correctly does not register as a
-        case verdict."""
-        artifacts = detect_artifacts(self.CASE)
+        self.assertEqual(detect_artifacts(self.CASE)[CASE_VERDICT]["found"], on_disk)
 
-        self.assertTrue((self.CASE / "combined_score.json").exists())
-        self.assertFalse(artifacts[CASE_VERDICT]["found"])
-
-    def test_the_findings_read_off_the_folder(self) -> None:
+    def test_the_static_findings_quote_the_summary(self) -> None:
+        raw = json.loads((self.CASE / "summary.json").read_text(encoding="utf-8"))
         findings = build_findings(detect_artifacts(self.CASE))
 
-        self.assertIn("Verdict: SUSPICIOUS", findings["static"])
+        self.assertIn(f"Verdict: {raw['verdict']}", findings["static"])
 
 
 if __name__ == "__main__":

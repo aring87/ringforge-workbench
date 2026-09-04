@@ -421,37 +421,51 @@ class TheTileEndToEnd(unittest.TestCase):
 
 
 class AgainstARealCaseFolder(unittest.TestCase):
-    """A fixture can agree with the reader and disagree with the engine."""
+    """A fixture can agree with the reader and disagree with the engine.
+
+    **These assert invariants, not a snapshot.** They used to pin the values
+    that happened to be in `cases/c14cb5b6_payload` on 20 Aug -- score 21,
+    `SUSPICIOUS`, a skipped VirusTotal lookup, no severity. Re-running static
+    analysis on that case broke all three, which is the tests' fault and not
+    the run's: a case folder is a mutable artifact, and a test that freezes
+    its contents fails the first time someone does the ordinary thing.
+    """
 
     CASE = Path("cases/c14cb5b6_payload")
 
     def setUp(self) -> None:
         if not (self.CASE / "summary.json").exists():
             self.skipTest("reference case folder is not checked out")
+        self.raw = json.loads((self.CASE / "summary.json").read_text(encoding="utf-8"))
 
-    def test_it_reads_the_headline_off_the_folder(self) -> None:
+    def test_the_headline_matches_what_the_folder_says(self) -> None:
         headline = result_headline(load_case_result(self.CASE))
 
-        self.assertEqual(headline["score"], "21")
-        self.assertEqual(headline["verdict"], "SUSPICIOUS")
-        self.assertEqual(headline["confidence"], "Moderate confidence")
+        expected_score = self.raw.get("score", self.raw.get("risk_score"))
+        self.assertEqual(headline["score"], str(expected_score))
+        self.assertEqual(headline["verdict"], str(self.raw["verdict"]))
+        self.assertEqual(headline["confidence"], str(self.raw["confidence"]))
 
-    def test_this_pre_rewrite_folder_is_exactly_the_one_that_used_to_colour(self) -> None:
-        """It carries no `severity`, so it falls back to the word -- and the
-        word is retired vocabulary the colour map has always known. That is
-        why the regression was invisible: the only case folder on disk was one
-        the broken path happened to handle.
-        """
+    def test_whatever_the_folder_holds_reaches_the_tile_coloured(self) -> None:
+        """The invariant that actually matters, and it holds for a folder
+        written before the scoring rewrite (only a retired one-word verdict)
+        and after it (a severity beside a sentence)."""
         headline = result_headline(load_case_result(self.CASE))
 
-        self.assertEqual(headline["severity"], "")
+        self.assertTrue(band_for(headline))
         self.assertNotEqual(T.status_colors(band_for(headline)), DEFAULT)
 
-    def test_the_skipped_virustotal_record_does_not_read_as_found(self) -> None:
-        view = virustotal_view(raw=load_virustotal(self.CASE))
+    def test_the_virustotal_record_never_invents_a_report(self) -> None:
+        """This folder's record carries a permalink built from the sha256
+        whether or not the lookup found anything -- which is the trap."""
+        record = load_virustotal(self.CASE)
+        view = virustotal_view(raw=record)
 
-        self.assertEqual(view["status"], "VirusTotal: skipped")
-        self.assertFalse(view["found"])
+        if not record.get("found") and not any(
+                int(record.get(k, 0) or 0)
+                for k in ("malicious", "suspicious", "harmless", "undetected")):
+            self.assertFalse(view["found"])
+            self.assertNotEqual(view["status"], "VirusTotal: report found")
 
 
 if __name__ == "__main__":
