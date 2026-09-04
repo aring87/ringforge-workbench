@@ -555,10 +555,15 @@ The reusable checks, for anything added later:
 
 **Packaging, CI and the `ringforge` CLI landed 04 Sep.** `pip install .` works,
 the suite runs on every push, and `ringforge combine <case> --json` puts the
-verdict on stdout. Next on that track, in order: a `schema_version` /
-`case_id` / `generated_utc` on `combined_verdict.json` plus provenance (rule
-set hash, tool versions), then an OCSF Detection Finding exporter over the
-top. `case_dir` should leave the payload -- it is an absolute Windows path.
+verdict on stdout. **The verdict envelope landed 04 Sep too**: `schema_version`,
+`generated_utc`, `case_id` (the sample sha256, so a re-run updates rather than
+duplicates), `case_name`, a `sample` block and `provenance` carrying the
+analyzer version, the git commit, the library versions and what the YARA scan
+actually compiled. `case_dir` is gone -- an absolute Windows path that
+identified the analyst's machine and was read by nothing.
+
+Next on that track: an OCSF Detection Finding exporter over `schema_version`
+1.0, emitting NDJSON to a spool directory.
 
 The other things carried forward:
 

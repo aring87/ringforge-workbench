@@ -27,6 +27,11 @@ from typing import Any
 from verdict.combine import categories_from_json, combine
 
 from static_triage_engine.categories import spec_categories, static_categories
+from verdict.provenance import (
+    SCHEMA_VERSION,
+    analyzer_provenance,
+    yara_collector,
+)
 from static_triage_engine.scoring import (
     _extract_techniques,
     capa_namespaces,
@@ -226,6 +231,27 @@ def static_categories_for_case(
     )
 
 
+#: Fields that identify the sample rather than the run. Copied out of
+#: `summary.json` rather than recomputed, so the verdict describes the file the
+#: analysis actually saw.
+_SAMPLE_FIELDS = ("sha256", "md5", "sha1", "filename", "size_bytes")
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z")
+
+
+def _sample_identity(summary: dict[str, Any] | None) -> dict[str, Any]:
+    """What was analysed, as far as the case records it."""
+    block = (summary or {}).get("sample")
+    if not isinstance(block, dict):
+        return {}
+    return {key: block[key] for key in _SAMPLE_FIELDS if block.get(key)}
+
+
 def combine_case(
     case_dir: str | Path,
     write_output: bool = True,
@@ -272,7 +298,33 @@ def combine_case(
     dissent, dissent_detail = virustotal_dissent(loaded["summary"])
     result = combine(contributions, third_party_dissent=dissent,
                      dissent_detail=dissent_detail)
-    result["case_dir"] = str(home)
+
+    # --- The envelope -------------------------------------------------------
+    #
+    # `combine` answers "what is the band"; these say "about what, produced by
+    # what, and when". Anything downstream -- a diff between two runs, a SIEM
+    # event, a case reopened in six months -- needs the second half, and until
+    # 04 Sep the document carried none of it.
+    #
+    # `case_dir` is gone. It was an absolute Windows path, so it identified the
+    # analyst's machine rather than the case, changed when a folder moved, and
+    # was read by nothing.
+    sample = _sample_identity(loaded["summary"])
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_utc": _utc_now(),
+        # Stable across re-runs of the same sample, which is what a downstream
+        # consumer needs to update a finding rather than duplicate it. Falls
+        # back to the case name when no hash was recorded.
+        "case_id": sample.get("sha256") or home.name,
+        "case_name": home.name,
+        "sample": sample,
+        "provenance": {
+            "analyzer": analyzer_provenance(),
+            "collectors": {"yara": yara_collector(loaded["yara_results"])},
+        },
+        **result,
+    }
 
     if write_output:
         payload = json.dumps(result, indent=2)
