@@ -938,12 +938,16 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.run_btn.grid(row=0, column=0, sticky="w")
 
+        # Red, like the Static module's Cancel. Its old `Side.Action.TButton`
+        # style mapped to the primary variant, which put two solid blue calls
+        # to action side by side and gave stopping a detonation the same weight
+        # as starting one.
         self.cancel_btn = RoundedButton(
             actions,
             text="Cancel Analysis",
             command=self._cancel_dynamic_analysis,
             state="disabled",
-            variant="primary",
+            variant="danger",
         )
         self.cancel_btn.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
