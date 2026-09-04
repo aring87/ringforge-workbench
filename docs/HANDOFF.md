@@ -5546,6 +5546,18 @@ C2 address from a smart contract.** Gap 5's carve branch has its first
 identified payload, and the file is off the guest at
 `G:\ringforge-artifacts\c14cb5b6_carved\` — it survives reverts now.
 
+**Static was re-run on this case on 03 Sep and the verdict moved**, from
+`SUSPICIOUS` / 21 to `Elevated Attention` / High / Corroborated / 43. The
+20 Aug run's YARA scan had failed to compile the whole rule set --
+`general_cloaking.yar` uses `filepath`, an external variable the scanner did
+not declare until `05305d5` on 27 Aug -- so `known_malware_signature` sat at
+`unknown` and held the band down. It matches two rules now,
+`RingForge_EtherHiding_eth_call` and `RingForge_Clipper_c14cb5b6_wallets`.
+The pre-re-run case folder is kept at
+`G:\ringforge-artifacts\c14cb5b6-static-pre-rerun-03sep`, with a
+README comparing the two; `cases/` is gitignored, so that copy is the only
+record of the earlier state.
+
 ### What it is
 
 x64 PE, GUI subsystem, 258,048 bytes, **not .NET, not packed** (max section
