@@ -1,16 +1,27 @@
+# The exact bench environment, pinned. `pyproject.toml` declares what the
+# package needs to import; this reproduces one machine, transitive pins and
+# all. Install with `pip install -r requirements.txt` to rebuild the bench,
+# or `pip install -e ".[dev]"` to work on the engine.
 #
-#               (needs a compiler on Windows, which is why it is not pinned)
-#               browser instead
+# Genuinely optional, and deliberately left uninstalled. Listed here so "not
+# installed" stays a decision on record rather than a gap nobody noticed.
+#
 #   ssdeep      fuzzy hash; steps._best_effort_ssdeep returns None without it
+#               (needs a compiler on Windows, which is why it is not pinned)
 #   tlsh        fuzzy hash; steps._best_effort_tlsh returns None without it
 #   tqdm        progress bars only; steps.py falls back to None
 #   weasyprint  direct PDF output; without it, print the HTML report from a
-# above -- those two were undeclared for a while and each silently cost the
+#               browser instead
+#
 # Every one of these has a working degradation path, unlike lief and PyYAML
-# Genuinely optional, and deliberately left uninstalled.
-# Listed here so "not installed" stays a decision on record rather than a gap
-# nobody noticed.
+# below -- those two were undeclared for a while and each silently cost the
 # pipeline a capability (a scoring input, and half the accepted spec formats).
+#
+# **PySimpleGUI was removed 04 Sep.** Version 5 is licensed Proprietary and
+# nothing in this repository imports it -- it was left behind by a `pip
+# freeze`. A reader auditing this file for a commercial release would have
+# had to establish that themselves. See THIRD-PARTY-NOTICES.md.
+
 altgraph==0.17.4
 certifi==2025.1.31
 charset-normalizer==3.4.1
@@ -29,7 +40,6 @@ pyarrow==21.0.0
 pyasn1==0.6.1
 pyinstaller-hooks-contrib==2025.8
 pyinstaller==6.15.0
-PySimpleGUI==5.0.8.3
 python-dateutil==2.9.0.post0
 pytz==2025.2
 pywin32-ctypes==0.2.3

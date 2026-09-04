@@ -22,6 +22,7 @@ description = "Static, dynamic, API-spec and browser-extension triage with one c
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
+# Dependency licences and the redistribution posture: THIRD-PARTY-NOTICES.md
 authors = [{ name = "Adam Ring" }]
 keywords = ["malware-analysis", "triage", "dfir", "yara", "sandbox"]
 classifiers = [
