@@ -43,12 +43,20 @@ from typing import Any, Mapping
 INSUFFICIENT = "Insufficient Coverage"
 NOTHING = "Nothing Collected"
 
-#: The module names `_detect_artifacts` reports, used to decide whether a case
-#: is spec-only or extension-only.
+#: The module names `case_artifacts.detect_artifacts` reports, used to decide
+#: whether a case is spec-only or extension-only.
+#:
+#: **`Case Verdict` was `Combined Score` here**, corrected 03 Sep. That is the
+#: name the module had before `combined_score.json` became
+#: `combined_verdict.json`, and nothing has produced it since -- so the peer
+#: test could never see a case verdict. It was masked: `overall_verdict`
+#: returns the combined verdict before it reaches either list. It stops being
+#: masked the moment a case has a `combined_verdict.json` that cannot be
+#: parsed, which is exactly when getting this right matters.
 _SPEC_PEERS = ("Static Analysis", "Dynamic Analysis", "Manual API Tester",
-               "Browser Extension Analysis", "Combined Score")
+               "Browser Extension Analysis", "Case Verdict")
 _EXTENSION_PEERS = ("Static Analysis", "Dynamic Analysis", "Manual API Tester",
-                    "Spec Analysis", "Combined Score")
+                    "Spec Analysis", "Case Verdict")
 
 
 def _found(artifacts: Mapping[str, Any], name: str) -> bool:

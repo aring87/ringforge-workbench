@@ -223,15 +223,15 @@ because everything above the handshake is TLS.
 ### Pick up here — 03 Sep, the module-polish thread (NOT malware work)
 
 **A different subject from everything below this line.** The sample work is at
-rest; this is the workbench itself. **All seven modules are done.**
+rest; this is the workbench itself. **All eight modules are done.**
 
 ## The pattern, which is the reusable part
 
 **A data function inside a `Toplevel` is an untested function.** Each module
 kept analysis or presentation logic as methods on its window, where it
 referenced no widget, could not be imported without a display, and therefore had
-no tests. Nineteen real defects were living in exactly that space, most of
-them in a release whose headline was *One Verdict Model*.
+no tests. Twenty-three real defects were living in exactly that space, most
+of them in a release whose headline was *One Verdict Model*.
 
 Static and Dynamic are the variation worth remembering: their analysis and
 their reports were *already* modules, and the untested logic had simply moved
@@ -436,7 +436,35 @@ across a dozen inputs -- and are pinned, warts included: `Authorization: Bearer
 x` loses the scheme with the token, which would be a change rather than a fix.
 54 tests.
 
-Suite 1,383 -> **1,594**.
+**Unified Report -- `verdict/case_artifacts.py`.** The last one. Its verdict
+functions went to `case_summary.py` early in this thread; this is the other
+half -- artifact detection and finding extraction, ~500 widget-free lines
+behind a display.
+
+* **The case page never showed the case verdict.** `_detect_artifacts` emitted
+  the key `Case Verdict`; `_build_detailed_findings` and the findings renderer
+  both asked for `Combined Score`, the name from before
+  `combined_score.json` -> `combined_verdict.json`. The section for the file
+  the whole model exists to produce was **empty on every case that had one**,
+  directly under an artifact list reading `[FOUND] Case Verdict`. The same
+  retired name sat in `case_summary`'s `_SPEC_PEERS` / `_EXTENSION_PEERS`,
+  masked because `overall_verdict` checks `combined` first -- and unmasked the
+  moment a `combined_verdict.json` will not parse.
+* **A stale legacy file could outrank the engine's output.** Candidate lists
+  are written canonical-first and the loader sorted them by mtime. A case with
+  both `static_analysis/summary.json` and a legacy root `summary.json` used
+  whichever was touched last, and with no combined verdict the case page takes
+  the static module's -- so a sample the engine called `Likely Malicious` could
+  read `LOW_RISK`. **First existing candidate wins** now; run history still
+  resolves newest-first, because there time really is the question.
+* The extension extractor was written out twice and the copies had drifted:
+  only one reported risk notes when the summary block was missing.
+* The case page printed spec auth scheme names raw, so it said `bearerAuth`
+  where the spec report said `bearer`. Through `auth_line` now.
+
+31 tests.
+
+Suite 1,383 -> **1,625**.
 
 ## Worth a look, spec: the two views ask different questions
 
@@ -455,8 +483,9 @@ shape worth a decision.
 
 ## The count, and the pass is done
 
-**Seven modules, nineteen defects, every one in code no test could import.**
-Two questions found most of them, and the last module found a third.
+**Eight modules, twenty-three defects, every one in code no test could
+import.** Three questions found most of them, and a fourth pattern runs under
+all of them.
 
 The first, which found eight:
 
@@ -491,6 +520,19 @@ report said -- inventing a cookie finding and suppressing a credential one, in
 the same pass. Nothing about it looked like a scoring bug; it looked like
 tidying up before writing a file.
 
+And the last module showed the pattern under all three:
+
+> **A rename is a silent breakage across a seam nothing tests.**
+
+Eight of the twenty-three are one name changing on one side of a boundary.
+`MALICIOUS` -> `Likely Malicious` broke five colour lookups. `combined_score`
+-> `combined_verdict` broke the case page's verdict section and two peer
+lists. `auth_summary` scheme names were never canonical on one side at all.
+None of them raised; each turned into a grey chip, an empty section or a
+finding about nothing. **The compiler cannot see a string used as a key, and
+neither could any test, because the code holding the key was behind a
+display.**
+
 The reusable checks, for anything added later:
 
 1. If a screen or a page colours, sorts or thresholds something, find where
@@ -503,6 +545,11 @@ The reusable checks, for anything added later:
    pretty-printing and normalisation are all presentation, and every one of
    them destroys evidence. If any of them runs first, the analysis is being
    done on a document that never existed.
+4. When a name is written on both sides of a seam -- a dict key, a filename, a
+   verdict word -- put it in one constant and import it. Where that is not
+   possible, write the test that asserts the producer's output is what the
+   consumer asks for. `MODULES` in `case_artifacts` is that constant; the
+   assertion is `test_the_producer_and_the_consumer_agree_on_the_name`.
 
 ## NEXT
 
@@ -515,12 +562,9 @@ Nothing is queued. The only things carried forward:
   a run whose findings write failed could pair a summary with another run's
   findings. Latent, not demonstrated -- both are written together in the
   ordinary case.
-* **`gui/unified_report_window.py` (1,163 lines) is the last one.** Its
-  verdict functions were extracted to `verdict/case_summary.py` early in this
-  thread, but its own data work -- how it detects which modules ran, what it
-  reads out of each module's artifacts -- has never been surveyed. That is
-  exactly the gap Static, Dynamic and the API window each turned out to be
-  hiding. Same measurement, now three questions.
+* **Nothing is left to survey.** All eight windows have had the pass. The next
+  file added to `gui/` is the one to run it on, and the four checks above are
+  the whole method.
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
 

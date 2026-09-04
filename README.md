@@ -723,9 +723,43 @@ nothing was found. The page now leads with an alert saying so, bands as *No
 response received*, and its findings section says **none were run** rather than
 none were found.
 
+### The case page never showed the case verdict
+
+The last module, and the defect is the Unified Report's headline input being
+silently absent. `_detect_artifacts` reported the module under the name
+**`Case Verdict`**; `_build_detailed_findings` and the findings renderer both
+looked it up as **`Combined Score`** — the name it had before
+`combined_score.json` became `combined_verdict.json`. So the section for the
+file the whole `corroboration-v1` model exists to produce was **permanently
+empty**, on every case that had one, while the artifact list directly above it
+said `[FOUND] Case Verdict` with the path. Nothing failed; a section was blank.
+
+The same retired name was in `case_summary`'s peer lists, where it decides
+whether a case is spec-only or extension-only. That one was masked —
+`overall_verdict` returns the combined verdict before it reaches either list —
+and stops being masked the moment a case has a `combined_verdict.json` that
+cannot be parsed, which is exactly when getting it right matters.
+
+**A stale legacy file could outrank the engine's own output.** Every candidate
+list is written canonical-first, and the loader then sorted the whole list by
+*modification time* and took the newest. A case holding both
+`static_analysis/summary.json` and a legacy root `summary.json` reported
+whichever had been touched last — and since the case verdict falls back to the
+static module's when there is no combined one, a case the engine called *Likely
+Malicious* could show the retired `LOW_RISK` off a stale file. The rule is one
+line now: the first candidate that exists wins, and the caller orders its
+candidates. Run history still resolves newest-first, because there the
+question genuinely is which run happened last.
+
+Two smaller things came out with it. The extension extractor was written twice,
+once for a run directory and once for a file, and the copies had drifted — only
+one reported risk notes when the summary block was missing. And the case page
+printed API auth scheme names as the spec author wrote them, so it said
+`bearerAuth` where the spec report, reading the same file, said `bearer`.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,594**. All seven extractions are testable for the
+- Test suite **1,383 -> 1,625**. All eight extractions are testable for the
   first time; none had a single test before.
 - Every `report_page` caller now names its producing module in the footer.
 - The "there is no response to save yet" check runs before the unredacted-save
