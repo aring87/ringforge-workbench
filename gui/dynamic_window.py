@@ -40,7 +40,7 @@ from dynamic_analysis.preflight import (
 from dynamic_analysis.procmon_config import DEFAULT_PROCMON_CONFIG_NAME
 from static_triage_engine.combine_case import combine_case
 from gui import theme as T
-from gui.components import Checkbox, HeaderBar
+from gui.components import Card, Checkbox, HeaderBar, RoundedButton, StatTile, card_title
 
 
 def isolation_signature(status: dict) -> tuple:
@@ -666,8 +666,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         frm.rowconfigure(0, weight=0)
         frm.rowconfigure(1, weight=1)
 
-        header = ttk.LabelFrame(frm, text="Dynamic Analysis Setup")
-        header.grid(row=0, column=0, sticky="ew")
+        header_card = Card(frm, parent_bg=T.BG)
+        header_card.grid(row=0, column=0, sticky="ew")
+        card_title(header_card.body, "Dynamic Analysis Setup")
+        header = tk.Frame(header_card.body, bg=T.SURFACE)
+        header.pack(fill="both", expand=True)
         header.columnconfigure(1, weight=1)
 
         ttk.Label(header, text="Sample:").grid(row=0, column=0, sticky="w", padx=(10, 0), pady=(10, 0))
@@ -680,18 +683,18 @@ class DynamicAnalysisWindow(tk.Toplevel):
         sample_btns.columnconfigure(0, weight=1)
         sample_btns.columnconfigure(1, weight=1)
 
-        ttk.Button(
+        RoundedButton(
             sample_btns,
             text="Use Main Sample",
-            style="Side.Action.TButton",
             command=self._use_main_sample,
+            variant="primary",
         ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
-        ttk.Button(
+        RoundedButton(
             sample_btns,
             text="Browse...",
-            style="Side.Action.TButton",
             command=self._browse_sample,
+            variant="primary",
         ).grid(row=0, column=1, sticky="ew")
 
         ttk.Label(header, text="Timeout (seconds):").grid(row=1, column=0, sticky="w", padx=(10, 0), pady=(8, 10))
@@ -846,8 +849,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
 
-        settings = ttk.LabelFrame(parent, text="Dynamic Settings")
-        settings.grid(row=0, column=0, sticky="nsew")
+        settings_card = Card(parent, parent_bg=T.BG)
+        settings_card.grid(row=0, column=0, sticky="nsew")
+        card_title(settings_card.body, "Dynamic Settings")
+        settings = tk.Frame(settings_card.body, bg=T.SURFACE)
+        settings.pack(fill="both", expand=True)
         settings.columnconfigure(1, weight=1)
         settings.rowconfigure(3, weight=0)
         settings.rowconfigure(4, weight=0)
@@ -858,11 +864,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ttk.Entry(settings, textvariable=self.dynamic_output_dir_var, width=100).grid(
             row=0, column=1, sticky="ew", padx=8, pady=(10, 0)
         )
-        ttk.Button(
+        RoundedButton(
             settings,
             text="Browse...",
-            style="Side.Action.TButton",
             command=self._browse_dynamic_output_dir,
+            variant="primary",
         ).grid(row=0, column=2, sticky="ew", padx=(0, 10), pady=(10, 0))
 
         ttk.Label(settings, text="Procmon path:").grid(
@@ -871,11 +877,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ttk.Entry(settings, textvariable=self.procmon_path_var, width=100).grid(
             row=1, column=1, sticky="ew", padx=8, pady=(8, 0)
         )
-        ttk.Button(
+        RoundedButton(
             settings,
             text="Browse...",
-            style="Side.Action.TButton",
             command=self._browse_procmon,
+            variant="primary",
         ).grid(row=1, column=2, sticky="ew", padx=(0, 10), pady=(8, 0))
 
         ttk.Label(settings, text="Procmon config:").grid(
@@ -884,15 +890,18 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ttk.Entry(settings, textvariable=self.procmon_config_var, width=100).grid(
             row=2, column=1, sticky="ew", padx=8, pady=(8, 0)
         )
-        ttk.Button(
+        RoundedButton(
             settings,
             text="Browse...",
-            style="Side.Action.TButton",
             command=self._browse_procmon_config,
+            variant="primary",
         ).grid(row=2, column=2, sticky="ew", padx=(0, 10), pady=(8, 0))
 
-        notes = ttk.LabelFrame(settings, text="Analyst Notes")
-        notes.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
+        notes_card = Card(settings, parent_bg=T.BG)
+        notes_card.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
+        card_title(notes_card.body, "Analyst Notes")
+        notes = tk.Frame(notes_card.body, bg=T.SURFACE)
+        notes.pack(fill="both", expand=True)
         notes.columnconfigure(0, weight=1)
 
         compact = bool(getattr(self, "_compact_ui", False))
@@ -920,21 +929,21 @@ class DynamicAnalysisWindow(tk.Toplevel):
         actions.grid(row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 10))
         actions.columnconfigure(2, weight=1)
 
-        self.run_btn = ttk.Button(
+        self.run_btn = RoundedButton(
             actions,
             text="Run Dynamic Analysis",
-            style="Action.TButton",
             width=20,
             command=self._start_dynamic_analysis,
+            variant="primary",
         )
         self.run_btn.grid(row=0, column=0, sticky="w")
 
-        self.cancel_btn = ttk.Button(
+        self.cancel_btn = RoundedButton(
             actions,
             text="Cancel Analysis",
-            style="Side.Action.TButton",
             command=self._cancel_dynamic_analysis,
             state="disabled",
+            variant="primary",
         )
         self.cancel_btn.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
@@ -945,8 +954,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         ).grid(row=0, column=2, sticky="e", padx=(12, 0))
 
     def _build_run_status_section(self, parent):
-        panel = ttk.LabelFrame(parent, text="Run Status")
-        panel.grid(row=0, column=0, sticky="nsew")
+        panel_card = Card(parent, parent_bg=T.BG)
+        panel_card.grid(row=0, column=0, sticky="nsew")
+        card_title(panel_card.body, "Run Status")
+        panel = tk.Frame(panel_card.body, bg=T.SURFACE)
+        panel.pack(fill="both", expand=True)
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(2, weight=1)
 
@@ -966,8 +978,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.overall_text = ttk.Label(progress_wrap, text="0%")
         self.overall_text.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
-        summary = ttk.LabelFrame(panel, text="Quick Status")
-        summary.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        summary_card = Card(panel, parent_bg=T.BG)
+        summary_card.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        card_title(summary_card.body, "Quick Status")
+        summary = tk.Frame(summary_card.body, bg=T.SURFACE)
+        summary.pack(fill="both", expand=True)
         summary.columnconfigure(1, weight=1)
 
         rows = [
@@ -987,8 +1002,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 row=idx, column=1, sticky="w", padx=(8, 0), pady=(0 if idx == 0 else 6, 0)
             )
 
-        steps_panel = ttk.LabelFrame(panel, text="Execution Steps")
-        steps_panel.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        steps_panel_card = Card(panel, parent_bg=T.BG)
+        steps_panel_card.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        card_title(steps_panel_card.body, "Execution Steps")
+        steps_panel = tk.Frame(steps_panel_card.body, bg=T.SURFACE)
+        steps_panel.pack(fill="both", expand=True)
         steps_panel.columnconfigure(0, weight=1)
         steps_panel.rowconfigure(0, weight=1)
 
@@ -997,8 +1015,11 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.steps_frame.columnconfigure(1, weight=1)
 
     def _build_output_section(self, parent):
-        outwrap = ttk.LabelFrame(parent, text="Output")
-        outwrap.grid(row=0, column=0, sticky="nsew", pady=(2, 0))
+        outwrap_card = Card(parent, parent_bg=T.BG)
+        outwrap_card.grid(row=0, column=0, sticky="nsew", pady=(2, 0))
+        card_title(outwrap_card.body, "Output")
+        outwrap = tk.Frame(outwrap_card.body, bg=T.SURFACE)
+        outwrap.pack(fill="both", expand=True)
         outwrap.columnconfigure(0, weight=1)
         outwrap.rowconfigure(0, weight=1)
 
@@ -1024,8 +1045,10 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.output.configure(yscrollcommand=ysb.set)
 
     def _build_findings_summary_section(self, parent):
-        panel = ttk.LabelFrame(parent, text="Findings Summary")
-        panel.grid(row=0, column=0, sticky="nsew")
+        panel_card = Card(parent, parent_bg=T.BG)
+        card_title(panel_card.body, "Findings Summary")
+        panel = tk.Frame(panel_card.body, bg=T.SURFACE)
+        panel.pack(fill="both", expand=True)
         panel.columnconfigure(1, weight=1)
         panel.rowconfigure(8, weight=1)
 
@@ -1063,29 +1086,32 @@ class DynamicAnalysisWindow(tk.Toplevel):
             pady=(10, 8),
         )
 
-        report_actions = ttk.LabelFrame(panel, text="Report Actions")
-        report_actions.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        report_actions_card = Card(panel, parent_bg=T.BG)
+        report_actions_card.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        card_title(report_actions_card.body, "Report Actions")
+        report_actions = tk.Frame(report_actions_card.body, bg=T.SURFACE)
+        report_actions.pack(fill="both", expand=True)
         report_actions.columnconfigure(0, weight=1)
 
-        ttk.Button(
+        RoundedButton(
             report_actions,
             text="Open Case Folder",
-            style="Secondary.TButton",
             command=self._open_case_folder,
+            variant="secondary",
         ).grid(row=0, column=0, sticky="ew", padx=8, pady=(6 if getattr(self, "_compact_ui", False) else 10, 4), ipady=1)
 
-        ttk.Button(
+        RoundedButton(
             report_actions,
             text="Open Dynamic Output Folder",
-            style="Secondary.TButton",
             command=self._open_dynamic_output_folder,
+            variant="secondary",
         ).grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4), ipady=1)
 
-        ttk.Button(
+        RoundedButton(
             report_actions,
             text="Open Latest Report",
-            style="Secondary.TButton",
             command=self._open_latest_dynamic_html,
+            variant="secondary",
         ).grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6 if getattr(self, "_compact_ui", False) else 10), ipady=1)
 
     # -------------------------------------------------------------------------

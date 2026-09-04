@@ -19,7 +19,7 @@ from static_triage_engine.api_redaction import (
 from static_triage_engine.api_report import build_api_report
 from static_triage_engine.api_response_analysis import analyze_response
 from gui import theme as T
-from gui.components import Checkbox, HeaderBar
+from gui.components import Card, Checkbox, HeaderBar, RoundedButton, StatTile, card_title
 from gui.styles import apply_window_theme
 
 try:
@@ -253,8 +253,12 @@ class APIAnalysisWindow(tk.Toplevel):
         self._banner_logo_img = getattr(header, "_logo_image", None)
 
     def _build_request_setup(self, parent: tk.Misc) -> None:
-        frame = ttk.LabelFrame(parent, text="Request Setup", style="Section.TLabelframe")
-        frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        card = Card(parent, parent_bg=T.BG)
+        card.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_SM))
+        card_title(card.body, "Request Setup")
+
+        frame = tk.Frame(card.body, bg=T.SURFACE)
+        frame.pack(fill="x")
         frame.columnconfigure(0, weight=0, minsize=120)
         frame.columnconfigure(1, weight=1)
 
@@ -275,7 +279,7 @@ class APIAnalysisWindow(tk.Toplevel):
         self.preset_combo.grid(row=0, column=0, sticky="w")
         self.preset_combo.bind("<<ComboboxSelected>>", lambda e: self._load_preset())
 
-        self.load_preset_btn = ttk.Button(preset_row, text="Load Preset", style="Action.TButton", command=self._load_preset, width=12)
+        self.load_preset_btn = RoundedButton(preset_row, text="Load Preset", command=self._load_preset, width=12, variant="primary")
         self.load_preset_btn.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
         ttk.Label(frame, text="Method", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=label_padx, pady=6)
@@ -309,7 +313,7 @@ class APIAnalysisWindow(tk.Toplevel):
 
         self.upload_entry = ttk.Entry(upload_row, textvariable=self.upload_file_var)
         self.upload_entry.grid(row=0, column=0, sticky="ew")
-        self.browse_btn = ttk.Button(upload_row, text="Browse...", style="Secondary.TButton", command=self._browse_file, width=11)
+        self.browse_btn = RoundedButton(upload_row, text="Browse...", command=self._browse_file, width=11, variant="secondary")
         self.browse_btn.grid(row=0, column=1, sticky="w", padx=(10, 18))
         ttk.Label(upload_row, text="Form Field", style="Field.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 8))
         self.file_field_entry = ttk.Entry(upload_row, textvariable=self.file_field_var, width=12)
@@ -354,16 +358,20 @@ class APIAnalysisWindow(tk.Toplevel):
             state="readonly",
         ).grid(row=0, column=0, sticky="ew")
 
-        ttk.Button(
+        RoundedButton(
             case_row,
             text="Open Case API Folder",
-            style="Secondary.TButton",
             command=self.open_case_api_folder,
+            variant="secondary",
         ).grid(row=0, column=1, sticky="e", padx=(10, 0))
 
     def _build_request_editors(self, parent: tk.Misc) -> None:
-        frame = ttk.LabelFrame(parent, text="Request", style="Section.TLabelframe")
-        frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        card = Card(parent, parent_bg=T.BG)
+        card.grid(row=1, column=0, sticky="nsew", pady=(0, T.SPACE_MD))
+        card_title(card.body, "Request")
+
+        frame = tk.Frame(card.body, bg=T.SURFACE)
+        frame.pack(fill="both", expand=True)
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(1, weight=1)
@@ -386,32 +394,32 @@ class APIAnalysisWindow(tk.Toplevel):
         left = ttk.Frame(bar, style="App.TFrame")
         left.grid(row=0, column=0, sticky="w")
 
-        ttk.Button(
+        RoundedButton(
             left,
             text="Send Request",
-            style="Action.TButton",
             command=self.send_request,
+            variant="primary",
         ).grid(row=0, column=0, padx=(0, 6))
 
-        ttk.Button(
+        RoundedButton(
             left,
             text="Clear",
-            style="Secondary.TButton",
             command=self.clear_form,
+            variant="secondary",
         ).grid(row=0, column=1, padx=(0, 6))
 
-        ttk.Button(
+        RoundedButton(
             left,
             text="Copy Response",
-            style="Secondary.TButton",
             command=self.copy_response,
+            variant="secondary",
         ).grid(row=0, column=2, padx=(0, 6))
 
-        ttk.Button(
+        RoundedButton(
             left,
             text="Pretty JSON",
-            style="Secondary.TButton",
             command=self.pretty_json_response,
+            variant="secondary",
         ).grid(row=0, column=3)
 
         right = ttk.Frame(bar, style="App.TFrame")
@@ -424,28 +432,32 @@ class APIAnalysisWindow(tk.Toplevel):
             parent_bg=T.BG,
         ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
-        ttk.Button(
+        RoundedButton(
             right,
             text="Save HTML Report",
-            style="Secondary.TButton",
             command=self.save_html_report,
+            variant="secondary",
         ).grid(row=0, column=1, padx=(0, 6))
 
-        ttk.Button(
+        RoundedButton(
             right,
             text="Open HTML Report",
-            style="Secondary.TButton",
             command=self.open_html_report,
+            variant="secondary",
         ).grid(row=0, column=2)
 
     def _build_response_section(self, parent: tk.Misc) -> None:
-        outer = ttk.LabelFrame(parent, text="Response", style="Section.TLabelframe")
-        outer.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        card = Card(parent, parent_bg=T.BG)
+        card.grid(row=3, column=0, sticky="nsew", padx=T.SPACE_MD, pady=(0, T.SPACE_MD))
+        card_title(card.body, "Response")
+
+        outer = tk.Frame(card.body, bg=T.SURFACE)
+        outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(1, weight=1)
 
-        summary = ttk.Frame(outer, style="App.TFrame")
-        summary.grid(row=0, column=0, sticky="ew", padx=10, pady=(14, 10))
+        summary = tk.Frame(outer, bg=T.SURFACE)
+        summary.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_MD))
         for idx in range(4):
             summary.columnconfigure(idx, weight=1)
 
@@ -459,8 +471,8 @@ class APIAnalysisWindow(tk.Toplevel):
         self.type_value = self.type_card[1]
         self.size_value = self.size_card[1]
 
-        self.response_notebook = ttk.Notebook(outer, style="Api.TNotebook")
-        self.response_notebook.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.response_notebook = ttk.Notebook(outer, style="Card.TNotebook")
+        self.response_notebook.grid(row=1, column=0, sticky="nsew")
 
         self.analysis_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
         self.body_tab = ttk.Frame(self.response_notebook, style="App.TFrame")
@@ -489,15 +501,18 @@ class APIAnalysisWindow(tk.Toplevel):
             tab.columnconfigure(0, weight=1)
             tab.rowconfigure(0, weight=1)
 
-    def _build_summary_card(self, parent: tk.Misc, column: int, label: str, value: str) -> tuple[ttk.Frame, ttk.Label]:
-        card = ttk.Frame(parent, style="SummaryCard.TFrame")
-        card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0))
-        card.columnconfigure(0, weight=1)
+    def _build_summary_card(self, parent: tk.Misc, column: int, label: str, value: str):
+        """One metric readout, from the shared kit.
 
-        ttk.Label(card, text=label, style="SummaryLabel.TLabel").grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
-        value_label = ttk.Label(card, text=value, style="SummaryValue.TLabel")
-        value_label.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
-        return card, value_label
+        This was a hand-rolled `ttk.Frame` pretending to be a `StatTile` --
+        same idea, different padding, different corner radius, no accent rail.
+        `.value` is a `tk.Label`, so the `cget("text")` / `configure(text=...)`
+        the window already does still works.
+        """
+        tile = StatTile(parent, label, value, parent_bg=T.SURFACE)
+        tile.grid(row=0, column=column, sticky="ew",
+                  padx=(0 if column == 0 else T.SPACE_SM, 0))
+        return tile, tile.value
 
     def _build_textbox(self, parent: tk.Misc, row: int, column: int, outer_pad: int = 12) -> tk.Text:
         wrapper = ttk.Frame(parent, style="App.TFrame")

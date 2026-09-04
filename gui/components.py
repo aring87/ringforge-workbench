@@ -974,6 +974,32 @@ class SectionTitle(tk.Frame):
             )
 
 
+def card_title(parent, text, *, hint=None):
+    """A card's own heading row, with optional right-aligned hint text.
+
+    The counterpart to a `ttk.LabelFrame`'s caption, for content sitting on a
+    `Card`. It lived in `gui/main_sections.py` until 04 Sep, which is part of
+    why the Static module was the only screen built from this kit -- the other
+    five had no shared way to title a card, so they reached for `LabelFrame`
+    and inherited its outline instead of a card surface.
+
+    `parent` must be a card's `.body` (or anything else painted `T.SURFACE`).
+    """
+    head = tk.Frame(parent, bg=T.SURFACE)
+    head.pack(fill="x", pady=(0, T.SPACE_MD))
+
+    tk.Label(
+        head, text=text, bg=T.SURFACE, fg=T.TEXT, font=T.f_subheading(),
+    ).pack(side="left")
+
+    if hint:
+        tk.Label(
+            head, text=hint, bg=T.SURFACE, fg=T.TEXT_MUTED, font=T.f_small(),
+        ).pack(side="right")
+
+    return head
+
+
 class HeaderBar(Card):
     """Branded page header: logo, title, subtitle, description, right actions.
 

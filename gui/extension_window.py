@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from static_triage_engine.extension_analysis import analyze_extension
 from static_triage_engine.extension_report import build_extension_report
 from gui import theme as T
-from gui.components import HeaderBar, ScrolledText
+from gui.components import Card, HeaderBar, RoundedButton, ScrolledText, StatTile, card_title
 from gui.styles import apply_window_theme
 
 try:
@@ -138,27 +138,29 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             logo_size=72,
             parent_bg=T.BG,
         )
-        header.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_MD))
         self._banner_logo_img = getattr(header, "_logo_image", None)
     def _build_source_card(self, parent):
-        header = ttk.LabelFrame(parent, text="Extension Source", style="App.TLabelframe")
-        header.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        header_card = Card(parent, parent_bg=T.BG)
+        header_card.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        card_title(header_card.body, "Extension Source")
+        header = tk.Frame(header_card.body, bg=T.SURFACE)
+        header.pack(fill="both", expand=True)
         header.columnconfigure(0, weight=1)
 
         top = ttk.Frame(header, style="Card.TFrame")
         top.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 4))
         top.columnconfigure(1, weight=1)
 
-        ttk.Label(top, text="Path", style="FieldLabel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(top, text="Path", style="CardBody.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Entry(top, textvariable=self.source_var, style="Path.TEntry").grid(row=0, column=1, sticky="ew")
 
         browse_btns = ttk.Frame(top, style="Card.TFrame")
         browse_btns.grid(row=0, column=2, sticky="e", padx=(10, 0))
 
-        ttk.Button(browse_btns, text="Open Folder", style="Secondary.TButton", command=self._browse_folder).pack(side="left", padx=(0, 4))
-        ttk.Button(browse_btns, text="Open ZIP", style="Secondary.TButton", command=self._browse_zip).pack(side="left", padx=(0, 4))
-        ttk.Button(browse_btns, text="Open CRX", style="Secondary.TButton", command=self._browse_crx).pack(side="left", padx=(0, 4))
-        ttk.Button(browse_btns, text="Analyze", style="Action.TButton", command=self._analyze_selected).pack(side="left")
+        RoundedButton(browse_btns, text="Open Folder", command=self._browse_folder, variant="secondary").pack(side="left", padx=(0, 4))
+        RoundedButton(browse_btns, text="Open ZIP", command=self._browse_zip, variant="secondary").pack(side="left", padx=(0, 4))
+        RoundedButton(browse_btns, text="Open CRX", command=self._browse_crx, variant="secondary").pack(side="left", padx=(0, 4))
+        RoundedButton(browse_btns, text="Analyze", command=self._analyze_selected, variant="primary").pack(side="left")
 
         bottom = ttk.Frame(header, style="Card.TFrame")
         bottom.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
@@ -167,14 +169,17 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         save_btns = ttk.Frame(bottom, style="Card.TFrame")
         save_btns.grid(row=0, column=1, sticky="e")
 
-        ttk.Button(save_btns, text="Save JSON As", style="Secondary.TButton", command=self._export_json_as).pack(side="left", padx=(0, 4))
-        ttk.Button(save_btns, text="Save HTML As", style="Secondary.TButton", command=self._export_html_as).pack(side="left", padx=(0, 4))
-        ttk.Button(save_btns, text="Open Latest Report", style="Secondary.TButton", command=self._open_latest_report).pack(side="left", padx=(0, 4))
-        ttk.Button(save_btns, text="Open Case Files", style="Secondary.TButton", command=self._open_report_folder).pack(side="left")
+        RoundedButton(save_btns, text="Save JSON As", command=self._export_json_as, variant="secondary").pack(side="left", padx=(0, 4))
+        RoundedButton(save_btns, text="Save HTML As", command=self._export_html_as, variant="secondary").pack(side="left", padx=(0, 4))
+        RoundedButton(save_btns, text="Open Latest Report", command=self._open_latest_report, variant="secondary").pack(side="left", padx=(0, 4))
+        RoundedButton(save_btns, text="Open Case Files", command=self._open_report_folder, variant="secondary").pack(side="left")
 
     def _build_summary_card(self, parent):
-        summary = ttk.LabelFrame(parent, text="Summary", style="App.TLabelframe")
-        summary.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        summary_card = Card(parent, parent_bg=T.BG)
+        summary_card.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        card_title(summary_card.body, "Summary")
+        summary = tk.Frame(summary_card.body, bg=T.SURFACE)
+        summary.pack(fill="both", expand=True)
         summary.columnconfigure(0, weight=7)
         summary.columnconfigure(1, weight=3)
 
@@ -189,7 +194,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 10), pady=8)
         right.columnconfigure(0, weight=1)
 
-        ttk.Label(right, text="Assessment", style="FieldLabel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(right, text="Assessment", style="CardBody.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
 
         self.score_card = tk.Frame(
             right,
@@ -241,7 +246,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             anchor="w",
         ).grid(row=1, column=1, sticky="w", pady=(5, 0))
 
-        ttk.Label(right, text="Verdict", style="FieldLabel.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(right, text="Verdict", style="CardBody.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 4))
 
         self.risk_verdict_badge = tk.Frame(
             right,
@@ -264,7 +269,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         )
         self.risk_verdict_text.pack(fill="x")
 
-        ttk.Label(right, text="Loaded Extension", style="FieldLabel.TLabel").grid(row=4, column=0, sticky="w", pady=(2, 2))
+        ttk.Label(right, text="Loaded Extension", style="CardBody.TLabel").grid(row=4, column=0, sticky="w", pady=(2, 2))
         ttk.Label(
             right,
             textvariable=self.loaded_name_var,

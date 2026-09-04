@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from gui import theme as T
-from gui.components import HeaderBar
+from gui.components import Card, HeaderBar, RoundedButton, StatTile, card_title
 from gui.styles import apply_window_theme
 from typing import Any, Optional
 
@@ -167,11 +167,14 @@ class SpecAnalysisWindow(tk.Toplevel):
         self._banner_logo_img = getattr(header, "_logo_image", None)
 
     def _build_spec_controls(self, parent):
-        top = ttk.LabelFrame(parent, text="Spec Input", style="Section.TLabelframe")
-        top.grid(row=0, column=0, sticky="ew")
+        top_card = Card(parent, parent_bg=T.BG)
+        top_card.grid(row=0, column=0, sticky="ew")
+        card_title(top_card.body, "Spec Input")
+        top = tk.Frame(top_card.body, bg=T.SURFACE)
+        top.pack(fill="both", expand=True)
         top.columnconfigure(1, weight=1)
 
-        ttk.Label(top, text="API Spec", style="Field.TLabel").grid(
+        ttk.Label(top, text="API Spec", style="CardBody.TLabel").grid(
             row=0, column=0, sticky="w", padx=(12, 8), pady=10
         )
 
@@ -179,47 +182,50 @@ class SpecAnalysisWindow(tk.Toplevel):
             row=0, column=1, sticky="ew", padx=(0, 10), pady=10
         )
 
-        btns = ttk.Frame(top, style="App.TFrame")
+        btns = ttk.Frame(top, style="Card.TFrame")
         btns.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=8)
 
-        ttk.Button(
+        RoundedButton(
             btns,
             text="Browse",
-            style="Secondary.TButton",
             command=self._browse_spec,
+            variant="secondary",
         ).pack(side="left", padx=(0, 8))
 
-        ttk.Button(
+        RoundedButton(
             btns,
             text="Analyze Spec",
-            style="Secondary.TButton",
             command=self._parse_spec,
+            variant="secondary",
         ).pack(side="left", padx=(0, 8))
 
-        ttk.Button(
+        RoundedButton(
             btns,
             text="Open Latest Report",
-            style="Secondary.TButton",
             command=self._open_html_report,
+            variant="secondary",
         ).pack(side="left", padx=(0, 8))
 
-        ttk.Button(
+        RoundedButton(
             btns,
             text="Open Case Files",
-            style="Secondary.TButton",
             command=self._open_case_files,
+            variant="secondary",
         ).pack(side="left", padx=(0, 8))
 
-        ttk.Button(
+        RoundedButton(
             btns,
             text="Manual API Tester",
-            style="Secondary.TButton",
             command=self._open_manual_api_tester,
+            variant="secondary",
         ).pack(side="left")
 
     def _build_overview_cards(self, parent: tk.Misc) -> None:
-        metrics = ttk.LabelFrame(parent, text="Overview", style="Section.TLabelframe")
-        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        metrics_card = Card(parent, parent_bg=T.BG)
+        metrics_card.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        card_title(metrics_card.body, "Overview")
+        metrics = tk.Frame(metrics_card.body, bg=T.SURFACE)
+        metrics.pack(fill="both", expand=True)
         for i in range(5):
             metrics.columnconfigure(i, weight=1)
 
@@ -247,7 +253,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         self._build_endpoint_inventory(body)
 
     def _build_left_sidebar(self, parent: tk.Misc) -> None:
-        left = ttk.Frame(parent, style="App.TFrame")
+        left = ttk.Frame(parent, style="Card.TFrame")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=0)
@@ -256,8 +262,11 @@ class SpecAnalysisWindow(tk.Toplevel):
         left.rowconfigure(3, weight=1)
         left.rowconfigure(4, weight=0)
 
-        summary = ttk.LabelFrame(left, text="Summary", style="Section.TLabelframe")
-        summary.grid(row=0, column=0, sticky="ew")
+        summary_card = Card(left, parent_bg=T.BG)
+        summary_card.grid(row=0, column=0, sticky="ew")
+        card_title(summary_card.body, "Summary")
+        summary = tk.Frame(summary_card.body, bg=T.SURFACE)
+        summary.pack(fill="both", expand=True)
         summary.columnconfigure(0, weight=1)
 
         self.summary_label = ttk.Label(
@@ -272,11 +281,14 @@ class SpecAnalysisWindow(tk.Toplevel):
         self.top_risky_text = self._build_sidebar_box(left, 2, "Top Risky Endpoints", height=12)
         self.recommended_tests_text = self._build_sidebar_box(left, 3, "Recommended Tests", height=11)
 
-        getting_started = ttk.LabelFrame(left, text="Getting Started", style="Section.TLabelframe")
-        getting_started.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        getting_started_card = Card(left, parent_bg=T.BG)
+        getting_started_card.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        card_title(getting_started_card.body, "Getting Started")
+        getting_started = tk.Frame(getting_started_card.body, bg=T.SURFACE)
+        getting_started.pack(fill="both", expand=True)
         getting_started.columnconfigure(0, weight=1)
 
-        ttk.Label(getting_started, text="API Spec Analysis", style="SectionHeader.TLabel").grid(
+        ttk.Label(getting_started, text="API Spec Analysis", style="CardHeading.TLabel").grid(
             row=0, column=0, sticky="w", padx=12, pady=(10, 4)
         )
         ttk.Label(
@@ -288,7 +300,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         ttk.Label(
             getting_started,
             text="Supported formats: JSON, YAML, YML",
-            style="Muted.TLabel",
+            style="CardMuted.TLabel",
         ).grid(row=2, column=0, sticky="w", padx=12, pady=(8, 10))
 
     def _build_sidebar_box(self, parent: tk.Misc, row: int, title: str, height: int) -> tk.Text:
@@ -320,13 +332,16 @@ class SpecAnalysisWindow(tk.Toplevel):
         return text
 
     def _build_endpoint_inventory(self, parent: tk.Misc) -> None:
-        right = ttk.LabelFrame(parent, text="Endpoint Inventory", style="Section.TLabelframe")
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_card = Card(parent, parent_bg=T.BG)
+        right_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        card_title(right_card.body, "Endpoint Inventory")
+        right = tk.Frame(right_card.body, bg=T.SURFACE)
+        right.pack(fill="both", expand=True)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
         right.rowconfigure(1, weight=0)
 
-        table_wrap = ttk.Frame(right, style="App.TFrame")
+        table_wrap = ttk.Frame(right, style="Card.TFrame")
         table_wrap.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         table_wrap.columnconfigure(0, weight=1)
         table_wrap.columnconfigure(1, weight=0)

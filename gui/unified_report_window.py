@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from static_triage_engine.verdict_report import render_verdict_report
 from gui import theme as T
-from gui.components import HeaderBar, ScrolledText
+from gui.components import Card, HeaderBar, RoundedButton, ScrolledText, StatTile, card_title
 from gui.styles import apply_window_theme
 
 try:
@@ -105,7 +105,7 @@ class UnifiedReportWindow(tk.Toplevel):
     def _build_ui(self):
         apply_window_theme(self)
 
-        outer = ttk.Frame(self, style="App.TFrame", padding=12)
+        outer = ttk.Frame(self, style="Card.TFrame", padding=12)
         outer.pack(fill="both", expand=True)
 
         outer.columnconfigure(0, weight=1)
@@ -113,8 +113,11 @@ class UnifiedReportWindow(tk.Toplevel):
 
         self._build_top_banner(outer)
 
-        header = ttk.LabelFrame(outer, text="Case Source")
-        header.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        header_card = Card(outer, parent_bg=T.BG)
+        header_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        card_title(header_card.body, "Case Source")
+        header = tk.Frame(header_card.body, bg=T.SURFACE)
+        header.pack(fill="both", expand=True)
         header.columnconfigure(1, weight=1)
 
         ttk.Label(header, text="Path:").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 6))
@@ -124,13 +127,16 @@ class UnifiedReportWindow(tk.Toplevel):
         btns.grid(row=0, column=2, sticky="e", padx=8, pady=(8, 6))
 
         # "Generate Report" is the primary action here; the rest support it.
-        ttk.Button(btns, text="Browse", style="Secondary.TButton", command=self._browse_case_dir).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Scan", style="Secondary.TButton", command=self._scan_case_dir).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Generate Report", style="Action.TButton", command=self._generate_report).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Open Report Folder", style="Secondary.TButton", command=self._open_report_folder).pack(side="left")
+        RoundedButton(btns, text="Browse", command=self._browse_case_dir, variant="secondary").pack(side="left", padx=(0, 6))
+        RoundedButton(btns, text="Scan", command=self._scan_case_dir, variant="secondary").pack(side="left", padx=(0, 6))
+        RoundedButton(btns, text="Generate Report", command=self._generate_report, variant="primary").pack(side="left", padx=(0, 6))
+        RoundedButton(btns, text="Open Report Folder", command=self._open_report_folder, variant="secondary").pack(side="left")
 
-        summary = ttk.LabelFrame(outer, text="Summary")
-        summary.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        summary_card = Card(outer, parent_bg=T.BG)
+        summary_card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        card_title(summary_card.body, "Summary")
+        summary = tk.Frame(summary_card.body, bg=T.SURFACE)
+        summary.pack(fill="both", expand=True)
         for col in range(4):
             summary.columnconfigure(col, weight=1)
 
@@ -152,17 +158,17 @@ class UnifiedReportWindow(tk.Toplevel):
             panel.columnconfigure(0, weight=1)
             panel.rowconfigure(1, weight=1)
 
-        ttk.Label(left_panel, text="Detected Artifacts", style="SectionHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(left_panel, text="Detected Artifacts", style="CardHeading.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.artifacts_text = self._make_text(left_panel)
         self.artifacts_text.grid(row=1, column=0, sticky="nsew")
         self._set_text(self.artifacts_text, "No case scanned yet.")
 
-        ttk.Label(middle_panel, text="Findings Summary", style="SectionHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(middle_panel, text="Findings Summary", style="CardHeading.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.summary_text = self._make_text(middle_panel)
         self.summary_text.grid(row=1, column=0, sticky="nsew")
         self._set_text(self.summary_text, "Run a scan to summarize what is available.")
 
-        ttk.Label(right_panel, text="Generated Report Preview", style="SectionHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(right_panel, text="Generated Report Preview", style="CardHeading.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.preview_text = self._make_text(right_panel)
         self.preview_text.grid(row=1, column=0, sticky="nsew")
         self._set_text(self.preview_text, "Generate a report to preview the result.")
@@ -171,7 +177,7 @@ class UnifiedReportWindow(tk.Toplevel):
         footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         footer.columnconfigure(0, weight=1)
 
-        ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(footer, textvariable=self.status_var, style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
 
     def _build_top_banner(self, parent):
         """Branded page header, shared with every other workbench window."""

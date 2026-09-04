@@ -12,7 +12,15 @@ import tkinter as tk
 from tkinter import ttk
 
 from gui import theme as T
-from gui.components import Badge, Card, Checkbox, RoundedButton, StatTile, divider
+from gui.components import (
+    Badge,
+    Card,
+    Checkbox,
+    RoundedButton,
+    StatTile,
+    card_title,
+    divider,
+)
 from gui.gui_utils import PRESETS
 from gui.styles import console_text_options
 
@@ -110,23 +118,6 @@ def build_middle_row(app, workspace):
 # ---------------------------------------------------------------------------
 # Shared card chrome
 # ---------------------------------------------------------------------------
-
-def card_title(parent, text, *, hint=None):
-    """A card's own heading row, with optional right-aligned hint text."""
-    head = tk.Frame(parent, bg=T.SURFACE)
-    head.pack(fill="x", pady=(0, T.SPACE_MD))
-
-    tk.Label(
-        head, text=text, bg=T.SURFACE, fg=T.TEXT, font=T.f_subheading(),
-    ).pack(side="left")
-
-    if hint:
-        tk.Label(
-            head, text=hint, bg=T.SURFACE, fg=T.TEXT_MUTED, font=T.f_small(),
-        ).pack(side="right")
-
-    return head
-
 
 def _path_row(parent, row, label, variable, command, *, button="Browse", show=None):
     """One labelled path field with a trailing action button."""
