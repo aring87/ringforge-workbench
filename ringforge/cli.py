@@ -128,6 +128,34 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    """The verdict as a SIEM event.
+
+    Writes NDJSON and nothing else. Shipping is the forwarder's job -- it is
+    already configured, monitored and permissioned for it, and a tool that
+    opens its own socket is one that fails silently when the SIEM is down.
+    """
+    from static_triage_engine.combine_case import case_home, combine_case
+    from verdict.export_ocsf import to_ocsf, write_ndjson
+
+    home = case_home(Path(args.case_dir))
+    if not home.exists():
+        _err(f"case folder does not exist: {home}")
+        return 2
+
+    verdict = combine_case(home, write_output=False)
+    event = to_ocsf(verdict)
+
+    if args.spool:
+        path = write_ndjson(verdict, args.spool)
+        _err(f"appended one finding to {path}")
+        if not args.json:
+            return 0
+
+    _emit(event, args.pretty)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ringforge",
@@ -162,6 +190,23 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--pretty", action="store_true", help="indent the JSON")
     scan.add_argument("--no-progress", action="store_true")
     scan.set_defaults(func=cmd_scan)
+
+    export = sub.add_parser(
+        "export",
+        help="emit the case verdict as an OCSF Detection Finding",
+        description="Maps combined_verdict.json to an OCSF Detection Finding "
+                    "(class_uid 2004). Carries coverage as an enrichment, so a "
+                    "detection rule can tell a clean sample from one nobody "
+                    "looked at. Reads the case; never writes to it.")
+    export.add_argument("case_dir",
+                        help="case folder, or any module directory inside one")
+    export.add_argument("--spool", metavar="DIR",
+                        help="append the finding to DIR/findings.ndjson for a "
+                             "log forwarder to ship")
+    export.add_argument("--json", action="store_true",
+                        help="also write the event to stdout when spooling")
+    export.add_argument("--pretty", action="store_true", help="indent the JSON")
+    export.set_defaults(func=cmd_export)
 
     return parser
 

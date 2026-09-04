@@ -562,8 +562,21 @@ analyzer version, the git commit, the library versions and what the YARA scan
 actually compiled. `case_dir` is gone -- an absolute Windows path that
 identified the analyst's machine and was read by nothing.
 
-Next on that track: an OCSF Detection Finding exporter over `schema_version`
-1.0, emitting NDJSON to a spool directory.
+**The OCSF exporter landed 04 Sep.** `ringforge export <case> [--spool DIR]`
+maps `combined_verdict.json` to a Detection Finding (class_uid 2004) and
+appends NDJSON for a forwarder to ship. Nothing opens a socket: the
+customer's forwarder is already configured, monitored and permissioned,
+and a tool that ships its own events fails silently when the SIEM is down.
+
+The mapping's point is that **coverage survives it**. `Unknown` maps to
+OCSF severity 0 (Unknown), never to Informational, and `modules_run` /
+`modules_absent` / `uncollected_categories` ride as an enrichment -- so a
+detection rule can say *alert on Corroborated, and separately on Unknown
+where coverage was incomplete*. `finding_info.uid` is the sample sha256,
+so a re-analysis updates rather than duplicates.
+
+Next on that track: nothing queued. The remaining roadmap items are the
+labelled corpus / confusion matrix, and dynamic benign rates.
 
 **Bench coverage is a guest question, not a host one**, established 04 Sep.
 The dev workstation reports `Sysmon / FakeNet / Memory: not installed` and
