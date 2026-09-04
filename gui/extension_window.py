@@ -379,19 +379,17 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         # ------------------------------------------------------------------
         # Left: File inventory
         # ------------------------------------------------------------------
-        files_panel = ttk.Frame(workspace, style="App.TFrame")
-        files_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        files_panel.columnconfigure(0, weight=1)
-        files_panel.rowconfigure(1, weight=1)
+        files_card = Card(workspace, parent_bg=T.BG)
+        files_card.grid(row=0, column=0, sticky="nsew", padx=(0, T.SPACE_SM))
+        card_title(files_card.body, "File Inventory")
 
-        ttk.Label(
-            files_panel,
-            text="File Inventory",
-            style="SectionHeader.TLabel",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        files_panel = tk.Frame(files_card.body, bg=T.SURFACE)
+        files_panel.pack(fill="both", expand=True)
+        files_panel.columnconfigure(0, weight=1)
+        files_panel.rowconfigure(0, weight=1)
 
         self.file_list = self._make_listbox(files_panel)
-        self.file_list.grid(row=1, column=0, sticky="nsew")
+        self.file_list.grid(row=0, column=0, sticky="nsew")
 
         if self._file_listbox_widget is not None:
             self._file_listbox_widget.bind("<<ListboxSelect>>", self._on_file_selected)
@@ -399,19 +397,17 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         # ------------------------------------------------------------------
         # Center: Preview notebook
         # ------------------------------------------------------------------
-        center_panel = ttk.Frame(workspace, style="App.TFrame")
-        center_panel.grid(row=0, column=1, sticky="nsew", padx=8)
+        center_card = Card(workspace, parent_bg=T.BG)
+        center_card.grid(row=0, column=1, sticky="nsew", padx=T.SPACE_SM)
+        card_title(center_card.body, "Preview")
+
+        center_panel = tk.Frame(center_card.body, bg=T.SURFACE)
+        center_panel.pack(fill="both", expand=True)
         center_panel.columnconfigure(0, weight=1)
-        center_panel.rowconfigure(1, weight=1)
+        center_panel.rowconfigure(0, weight=1)
 
-        ttk.Label(
-            center_panel,
-            text="Preview",
-            style="SectionHeader.TLabel",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
-
-        notebook = ttk.Notebook(center_panel)
-        notebook.grid(row=1, column=0, sticky="nsew")
+        notebook = ttk.Notebook(center_panel, style="Card.TNotebook")
+        notebook.grid(row=0, column=0, sticky="nsew")
 
         preview_tab = ttk.Frame(notebook, style="Card.TFrame")
         preview_tab.columnconfigure(0, weight=1)
@@ -441,19 +437,17 @@ class ExtensionAnalysisWindow(tk.Toplevel):
         # ------------------------------------------------------------------
         # Right: Findings
         # ------------------------------------------------------------------
-        notes_panel = ttk.Frame(workspace, style="App.TFrame")
-        notes_panel.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
-        notes_panel.columnconfigure(0, weight=1)
-        notes_panel.rowconfigure(1, weight=1)
+        notes_card = Card(workspace, parent_bg=T.BG)
+        notes_card.grid(row=0, column=2, sticky="nsew", padx=(T.SPACE_SM, 0))
+        card_title(notes_card.body, "Findings")
 
-        ttk.Label(
-            notes_panel,
-            text="Findings",
-            style="SectionHeader.TLabel",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        notes_panel = tk.Frame(notes_card.body, bg=T.SURFACE)
+        notes_panel.pack(fill="both", expand=True)
+        notes_panel.columnconfigure(0, weight=1)
+        notes_panel.rowconfigure(0, weight=1)
 
         self.risk_text = self._make_text(notes_panel)
-        self.risk_text.grid(row=1, column=0, sticky="nsew")
+        self.risk_text.grid(row=0, column=0, sticky="nsew")
         self._set_text(
             self.risk_text,
             "Findings and risk notes will appear here after analysis.",
