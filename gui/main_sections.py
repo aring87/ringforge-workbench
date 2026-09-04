@@ -384,10 +384,22 @@ def build_results_section(app, parent):
     app.confidence_tile.grid(row=0, column=2, sticky="nsew", padx=(T.SPACE_SM, 0))
 
     # The verdict drives the tile colour, so a glance is enough to read it.
+    #
+    # **It reads `verdict_band`, not the sentence.** This passed
+    # `verdict_var.get()` straight in, and `verdict_var` holds wording written
+    # for a reader -- "Likely Malicious", "Needs Review", "Insufficient
+    # Coverage". Measured 03 Sep: all twelve sentences `corroboration-v1` can
+    # write missed `STATUS_COLORS` and took the neutral default, so the tile
+    # was grey for every case written since the scoring rewrite while older
+    # folders, which carry the retired one-word verdicts, still coloured.
+    # `ResultController` sets `verdict_band` from the model's severity, and
+    # falls back to the wording for a folder that predates the field.
     def _tint_verdict(*_args):
-        fg, _bg = T.status_colors(app.verdict_var.get())
+        band = str(getattr(app, "verdict_band", "") or "").strip()
+        fg, _bg = T.status_colors(band or app.verdict_var.get())
         app.verdict_tile.set_value_color(fg)
 
+    app.verdict_band = getattr(app, "verdict_band", "")
     app.verdict_var.trace_add("write", _tint_verdict)
     _tint_verdict()
 

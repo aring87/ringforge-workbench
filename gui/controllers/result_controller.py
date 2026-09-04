@@ -1,48 +1,52 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from static_triage_engine.case_result import (
+    band_for,
+    counts_line,
+    load_case_result,
+    load_virustotal,
+    result_headline,
+    virustotal_view,
+)
 
-def _read_json(path: Path) -> dict:
-    with Path(path).open("r", encoding="utf-8", errors="replace") as f:
-        data = json.load(f)
-    return data if isinstance(data, dict) else {}
+#: The counts line with nothing in it, for the reset and the empty case.
+_NO_COUNTS = counts_line({})
 
 
 class ResultController:
+    """Drives the main window's Results panel.
+
+    The reading is in `static_triage_engine.case_result`. It used to be here,
+    where it referenced no widget and could not be imported without a display
+    -- which is how the Verdict tile came to be grey for every case the
+    current scoring model produces.
+    """
+
     def __init__(self, app):
         self.app = app
-
-    def _safe_read_json(self, path: Path) -> dict:
-        try:
-            if path.exists():
-                return _read_json(path)
-        except Exception:
-            pass
-        return {}
-
-    def _load_static_result_from_case(self, case_dir: Path) -> dict:
-        candidates = [
-            case_dir / "report.json",
-            case_dir / "summary.json",
-            case_dir / "metadata" / "run_summary.json",
-        ]
-
-        merged = {}
-        for path in candidates:
-            data = self._safe_read_json(path)
-            if isinstance(data, dict) and data:
-                merged.update(data)
-
-        return merged
 
     def reload_combined_score_from_disk(self):
         return
 
+    def refresh_combined_score(self, case_dir=None):
+        return
+
+    def _show_virustotal(self, view) -> None:
+        app = self.app
+        app.vt_status_var.set(view["status"])
+        app.vt_name_var.set(f"VT Name: {view['name']}")
+        app.vt_counts_var.set(counts_line(view["counts"]))
+        app.vt_link = view["link"]
+        if getattr(app, "vt_open_btn", None) is not None:
+            app.vt_open_btn.configure(
+                state=("normal" if view["link"] else "disabled"))
+
     def reset_result_summary(self):
         app = self.app
 
+        app.verdict_band = ""
         app.score_var.set("-")
         app.verdict_var.set("-")
         app.confidence_var.set("-")
@@ -51,159 +55,34 @@ class ResultController:
         app.latest_dynamic_result = {}
         app.latest_spec_result = {}
 
-        if app.vt_api_key_var.get().strip():
-            app.vt_status_var.set("VirusTotal: waiting for result")
-        else:
-            app.vt_status_var.set("VirusTotal: disabled")
-
-        app.vt_name_var.set("VT Name: -")
-        app.vt_counts_var.set("Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
-        app.vt_link = ""
-        if getattr(app, "vt_open_btn", None) is not None:
-            app.vt_open_btn.configure(state="disabled")
-
-    def refresh_combined_score(self, case_dir=None):
-        return
+        self._show_virustotal({
+            "status": ("VirusTotal: waiting for result"
+                       if app.vt_api_key_var.get().strip()
+                       else "VirusTotal: disabled"),
+            "name": "-", "counts": {}, "link": "", "found": False,
+        })
 
     def update_result_summary_from_case(self, case_dir: Path):
         app = self.app
         case_dir = Path(case_dir)
 
-        data = self._load_static_result_from_case(case_dir)
+        data = load_case_result(case_dir)
         app.latest_static_result = data
 
-        score = data.get("score")
-        if score in (None, ""):
-            score = data.get("risk_score")
-        if score in (None, ""):
-            score = data.get("static_score")
-        if score in (None, ""):
-            score = data.get("total_score")
-        if score in (None, ""):
-            scoring = data.get("scoring", {})
-            if isinstance(scoring, dict):
-                score = scoring.get("score")
-                if score in (None, ""):
-                    score = scoring.get("risk_score")
-                if score in (None, ""):
-                    score = scoring.get("static_score")
-                if score in (None, ""):
-                    score = scoring.get("total_score")
-        if score in (None, ""):
-            summary = data.get("summary", {})
-            if isinstance(summary, dict):
-                score = summary.get("score")
-                if score in (None, ""):
-                    score = summary.get("risk_score")
-                if score in (None, ""):
-                    score = summary.get("static_score")
-                if score in (None, ""):
-                    score = summary.get("total_score")
-        if score in (None, ""):
-            score = "-"
+        headline = result_headline(data)
+        # **Set before `verdict_var`, which is what triggers the tint.**
+        # `verdict_var` holds wording written for a reader; `band_for` returns
+        # the model's severity where the folder has one and the wording where
+        # it does not. Assigning it afterwards would colour each case with the
+        # previous case's band.
+        app.verdict_band = band_for(headline)
 
-        verdict = data.get("verdict", "-")
-        if verdict in (None, ""):
-            summary = data.get("summary", {})
-            if isinstance(summary, dict):
-                verdict = summary.get("verdict", "-")
+        app.score_var.set(headline["score"])
+        app.verdict_var.set(headline["verdict"])
+        app.confidence_var.set(headline["confidence"])
 
-        confidence = data.get("confidence", "-")
-        if confidence in (None, ""):
-            summary = data.get("summary", {})
-            if isinstance(summary, dict):
-                confidence = summary.get("confidence", "-")
-
-        app.score_var.set(str(score))
-        app.verdict_var.set(str(verdict))
-        app.confidence_var.set(str(confidence))
-
-        vt_raw_path = case_dir / "virustotal.json"
-        vt = data.get("virustotal") if isinstance(data.get("virustotal"), dict) else {}
-
-        vt_raw = {}
-        if vt_raw_path.exists():
-            try:
-                vt_raw = _read_json(vt_raw_path)
-            except Exception:
-                vt_raw = {}
-
-        vt_display = vt_raw or vt
-
-        if not vt_display:
-            if vt_raw:
-                vt_status = str(vt_raw.get("status") or "").strip().lower()
-                lookup_status = str(vt_raw.get("lookup_status") or "").strip()
-                vt_error = str(vt_raw.get("error") or "").strip()
-
-                if vt_status == "skipped" or vt_error == "VT_API_KEY not set":
-                    app.vt_status_var.set("VirusTotal: skipped")
-                elif vt_status == "warning":
-                    app.vt_status_var.set(f"VirusTotal: warning ({lookup_status or 'unavailable'})")
-                elif vt_status == "done" and lookup_status == "not_found":
-                    app.vt_status_var.set("VirusTotal: hash not found")
-                else:
-                    app.vt_status_var.set("VirusTotal: no result available")
-            elif app.vt_api_key_var.get().strip():
-                app.vt_status_var.set("VirusTotal: no result available")
-            else:
-                app.vt_status_var.set("VirusTotal: disabled")
-
-            app.vt_name_var.set("VT Name: -")
-            app.vt_counts_var.set("Counts: mal=0 | susp=0 | harmless=0 | undetected=0")
-            app.vt_link = ""
-            if getattr(app, "vt_open_btn", None) is not None:
-                app.vt_open_btn.configure(state="disabled")
-            return
-
-        if isinstance(vt_display.get("last_analysis_stats"), dict):
-            stats = vt_display.get("last_analysis_stats", {}) or {}
-            mal = int(stats.get("malicious", 0) or 0)
-            susp = int(stats.get("suspicious", 0) or 0)
-            harmless = int(stats.get("harmless", 0) or 0)
-            undetected = int(stats.get("undetected", 0) or 0)
-            name = str(vt_display.get("meaningful_name", "") or vt_display.get("file_name", "") or "-")
-            link = str(vt_display.get("permalink", "") or "")
-            found = bool(vt_display.get("found", False))
-        else:
-            mal = int(vt_display.get("malicious", 0) or 0)
-            susp = int(vt_display.get("suspicious", 0) or 0)
-            harmless = int(vt_display.get("harmless", 0) or 0)
-            undetected = int(vt_display.get("undetected", 0) or 0)
-            name = str(
-                vt_display.get("meaningful_name", "")
-                or vt_display.get("file_name", "")
-                or vt_display.get("name", "")
-                or "-"
-            )
-            link = str(vt_display.get("permalink", "") or "")
-            found = bool(vt_display.get("found", False) or link or name != "-")
-
-        vt_status = str(vt_display.get("status") or vt_raw.get("status") or "").strip().lower()
-        lookup_status = str(vt_display.get("lookup_status") or vt_raw.get("lookup_status") or "").strip()
-        vt_error = str(vt_display.get("error") or vt_raw.get("error") or "").strip()
-
-        if vt_status == "skipped":
-            status = "VirusTotal: skipped"
-        elif vt_status == "warning":
-            status = f"VirusTotal: warning ({lookup_status or 'unavailable'})"
-        elif vt_status == "done" and found:
-            status = "VirusTotal: report found"
-        elif vt_status == "done" and lookup_status == "not_found":
-            status = "VirusTotal: hash not found"
-        elif found:
-            status = "VirusTotal: report found"
-        elif vt_error == "VT_API_KEY not set":
-            status = "VirusTotal: skipped"
-        else:
-            status = "VirusTotal: no report available"
-
-        app.vt_status_var.set(status)
-        app.vt_name_var.set(f"VT Name: {name}")
-        app.vt_counts_var.set(
-            f"Counts: mal={mal} | susp={susp} | harmless={harmless} | undetected={undetected}"
-        )
-        app.vt_link = link
-
-        if getattr(app, "vt_open_btn", None) is not None:
-            app.vt_open_btn.configure(state=("normal" if link else "disabled"))
+        self._show_virustotal(virustotal_view(
+            embedded=data.get("virustotal"),
+            raw=load_virustotal(case_dir),
+            api_key_present=bool(app.vt_api_key_var.get().strip()),
+        ))

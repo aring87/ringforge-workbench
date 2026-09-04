@@ -89,6 +89,36 @@ STATUS_COLORS = {
     # statement about the bench rather than the sample, so it reads as neutral
     # rather than as a clean result.
     "unknown": (NEUTRAL, NEUTRAL_SOFT),
+
+    # --- The verdict *sentences*, added 03 Sep -----------------------------
+    #
+    # **Measured: 12 of 12 rendered grey.** The main window's Verdict tile
+    # colours itself from this map and is handed the sentence, not the band --
+    # and the sentences arrived with `corroboration-v1` while this map still
+    # only knew the severities and the retired additive words. So every case
+    # folder written before the scoring rewrite coloured, and every one
+    # written after it did not, on the application's front page.
+    #
+    # The tile prefers `severity` now (see
+    # `static_triage_engine.case_result.band_for`), which is the real fix.
+    # These are here because anything holding only a sentence -- an old export,
+    # a badge built from a verdict string -- must still read as something.
+    #
+    # Malware domain:
+    "likely malicious": (DANGER, DANGER_SOFT),
+    "elevated attention": (DANGER, DANGER_SOFT),
+    "needs review": (WARNING, WARNING_SOFT),
+    "no indicators found": (SUCCESS, SUCCESS_SOFT),
+    "low suspicion": (SUCCESS, SUCCESS_SOFT),
+    "benign / clean baseline": (SUCCESS, SUCCESS_SOFT),
+    # Posture domain -- a specification or an API, not a sample:
+    "serious exposure": (DANGER, DANGER_SOFT),
+    "multiple weaknesses": (DANGER, DANGER_SOFT),
+    "no weaknesses found": (SUCCESS, SUCCESS_SOFT),
+    # Coverage, which is a statement about the bench and never a clean result:
+    "insufficient coverage": (NEUTRAL, NEUTRAL_SOFT),
+    "no findings, coverage incomplete": (NEUTRAL, NEUTRAL_SOFT),
+    "findings not scored": (NEUTRAL, NEUTRAL_SOFT),
 }
 
 

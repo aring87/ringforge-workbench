@@ -1099,6 +1099,7 @@ def _write_html(case_dir: Path, data: dict[str, Any]) -> Path:
         verdict,
         verdict_class,
         body_html,
+        footer_note="RingForge Workbench &bull; Static Analysis",
     )
 
     report_html.write_text(html_doc, encoding="utf-8", errors="replace")

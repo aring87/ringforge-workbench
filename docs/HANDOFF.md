@@ -223,16 +223,21 @@ because everything above the handshake is TLS.
 ### Pick up here — 03 Sep, the module-polish thread (NOT malware work)
 
 **A different subject from everything below this line.** The sample work is at
-rest; this is the workbench itself. Two modules are done, one is surveyed and
-ready, two are untouched.
+rest; this is the workbench itself. **All five modules are done.**
 
 ## The pattern, which is the reusable part
 
 **A data function inside a `Toplevel` is an untested function.** Each module
 kept analysis or presentation logic as methods on its window, where it
 referenced no widget, could not be imported without a display, and therefore had
-no tests. Two real defects were living in exactly that space, both in a release
-whose headline was *One Verdict Model*.
+no tests. Eleven real defects were living in exactly that space, most of them in
+a release whose headline was *One Verdict Model*.
+
+Static Analysis is the variation worth remembering: its analysis and its report
+were *already* modules, and the untested logic had simply moved to the main
+window's controller instead. **The shape is "widget-free logic behind a
+display", not "logic in a `Toplevel`"** -- so a module that looks done because
+its engine is extracted can still be carrying the whole defect.
 
 The fix each time: move the widget-free logic beside the data it works on, leave
 a thin delegating method behind, and write the tests the move makes possible.
@@ -344,7 +349,37 @@ corroboration band; the additive `spec_score_and_verdict` is rendered in the
 body labelled as *not the banner*. They disagree on the reference spec, and
 that is now visible on one page instead of across two. 25 tests.
 
-Suite 1,383 -> **1,473**.
+**Static Analysis -- `static_triage_engine/case_result.py`.** Different shape
+from the other three: its analysis and its report were already modules, so the
+untested logic was in the *main window's* Results panel --
+`gui/controllers/result_controller.py`, 142 lines of which about ninety were
+data work behind a display. The defect is the only one of the four on the
+application's front page:
+
+* **The Verdict tile was grey for every current case, 12 of 12.** It colours
+  from `gui.theme.STATUS_COLORS` and was handed the verdict *sentence*; that
+  map knew severities and the retired one-word verdicts and none of the twelve
+  sentences `corroboration-v1` writes. Folders written before the scoring
+  rewrite coloured, folders written after it did not -- and `summary.json`
+  carries `severity` beside `verdict`, unread. **This is why it was invisible:**
+  the only case folder on disk, `c14cb5b6_payload` from 20 Aug, is pre-rewrite
+  and carries `SUSPICIOUS`, which the map has always known.
+* **A skipped VirusTotal lookup read as a report found.** `found` was derived
+  from the permalink being non-empty, and `engine.py:244` builds that URL from
+  the sha256 in the *skipped* record, before any lookup.
+* **The case-folder merge preferred two dead names.** `dict.update` over
+  `report.json`, `summary.json`, `metadata/run_summary.json` -- last wins --
+  and nothing has written the first or the third for several releases. Had
+  either existed it would have overridden the engine's own output. Canonical
+  first now; a legacy name can only fill a gap.
+* A second VT status ladder was unreachable: guarded by `if vt_raw:` inside a
+  branch entered only when `vt_raw or embedded` is falsy. One ladder now.
+
+`static_triage_engine/report.py` gained the `footer_note` it was missing. 40
+tests, including one that drives the real controller against a fake app --
+which is what catches the tile being tinted before the band is assigned.
+
+Suite 1,383 -> **1,513**.
 
 ## Worth a look, spec: the two views ask different questions
 
@@ -361,19 +396,35 @@ category's case from a 300-spec corpus. But a spec with global auth and ten
 endpoints that never reference it currently fires nothing, and that is the
 shape worth a decision.
 
-## The count, four modules in
+## The count, and the pass is done
 
-Four extractions, seven defects, every one in code that no test could import.
-The question that found five of the seven is the cheap one: **does this read a
-band out of a sentence, or out of the model?** The spec module answered worse
-than that -- it read one out of the parser's opinion of its own reading.
+**Five modules, eleven defects, every one in code no test could import.** The
+question that found seven of the eleven is the cheap one:
 
-## NEXT: Static Analysis, not yet surveyed
+> **Does this read a band out of a sentence, or out of the model?**
 
-**Static Analysis** has not had this pass. Two `report_page` callers still pass
-no `footer_note` and so produce pages that do not name the screen that made
-them: `dynamic_analysis/html_report.py:2875` and
-`static_triage_engine/report.py:1096`.
+Four modules answered *out of a sentence*. The spec module answered worse --
+out of the parser's opinion of its own reading. And the reason none of them was
+noticed is the same each time: the wording changed at `v1.11.0`, every
+consumer pattern-matching the old vocabulary silently stopped matching, and
+nothing failed. **A band read from text does not break loudly; it goes grey.**
+
+The reusable check, for anything added later: if a screen or a page colours,
+sorts or thresholds something, find where that decision reads its input. If the
+answer is a string a human is meant to read, it is already wrong or one rename
+away from it.
+
+## NEXT
+
+Nothing is queued. Candidates, in the order they seem worth doing:
+
+* `dynamic_analysis/html_report.py:2875` is the last `report_page` caller with
+  no `footer_note`, so the dynamic module's main report does not name the
+  screen that made it.
+* The spec domain's two views disagree -- see the section above.
+* `gui/dynamic_window.py` is 2,586 lines and has not had this pass. Its report
+  is already `dynamic_analysis/html_report.py`, so the shape is Static's rather
+  than the other three's: look at the window's own data work, not its report.
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
 

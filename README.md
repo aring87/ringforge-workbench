@@ -614,12 +614,43 @@ the window's endpoint table was built with three flags where the report had
 four, so `upload` appeared on the exported page and never on screen. Both call
 one implementation now.
 
+### The main window's Verdict tile was grey for every current case
+
+The last module through this pass, and the only defect of the four that is on
+the application's front page rather than in an exported file.
+
+The Results panel's Verdict tile colours itself from `gui.theme.STATUS_COLORS`
+and was handed the verdict **sentence**. That map knew the severities (`High`,
+`Medium`, `Low`, `Unknown`) and the retired one-word verdicts (`MALICIOUS`,
+`SUSPICIOUS`, `BENIGN`) — and not one of the twelve sentences
+`corroboration-v1` writes. Measured: **12 of 12 fell through to the neutral
+default.** A case folder written before the scoring rewrite coloured; every one
+written after it did not. `summary.json` carries `severity` beside `verdict`
+and nothing read it.
+
+The tile takes the band now, falling back to the wording for a folder that
+predates the field, and the colour map learned the sentences so anything
+holding only one still reads as something. The reading that decides all of this
+moved to `static_triage_engine/case_result.py` — about ninety lines that were
+behind a display in `gui/controllers/result_controller.py`.
+
+Two smaller things went with it. **A skipped VirusTotal lookup reported a
+report found**: the panel derived `found` from the permalink being non-empty,
+and the engine builds that URL out of the sha256 in the record it writes when
+the lookup is *skipped*, so it is there whether or not VirusTotal was ever
+asked. And the case-folder merge ran `dict.update` in the order `report.json`,
+`summary.json`, `metadata/run_summary.json` — last wins — so two legacy names
+nothing has written for several releases took precedence over the file the
+engine writes every run. Canonical first now, and a legacy name can only fill a
+gap.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,473**. All four extractions are testable for the
+- Test suite **1,383 -> 1,513**. All five extractions are testable for the
   first time; none had a single test before.
-- The API Spec report now names its producing module in the footer, which it
-  was the one `report_page` caller not to do.
+- The API Spec and Static Analysis reports now name their producing module in
+  the footer. `dynamic_analysis/html_report.py` is the last `report_page`
+  caller that does not.
 
 ---
 
