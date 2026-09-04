@@ -138,7 +138,9 @@ class ExtensionAnalysisWindow(tk.Toplevel):
             logo_size=72,
             parent_bg=T.BG,
         )
+        header.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_MD))
         self._banner_logo_img = getattr(header, "_logo_image", None)
+
     def _build_source_card(self, parent):
         header_card = Card(parent, parent_bg=T.BG)
         header_card.grid(row=1, column=0, sticky="ew", pady=(0, 8))

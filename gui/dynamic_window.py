@@ -897,7 +897,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             variant="primary",
         ).grid(row=2, column=2, sticky="ew", padx=(0, 10), pady=(8, 0))
 
-        notes_card = Card(settings, parent_bg=T.BG)
+        notes_card = Card(settings, parent_bg=T.SURFACE)
         notes_card.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
         card_title(notes_card.body, "Analyst Notes")
         notes = tk.Frame(notes_card.body, bg=T.SURFACE)
@@ -978,7 +978,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         self.overall_text = ttk.Label(progress_wrap, text="0%")
         self.overall_text.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
-        summary_card = Card(panel, parent_bg=T.BG)
+        summary_card = Card(panel, parent_bg=T.SURFACE)
         summary_card.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         card_title(summary_card.body, "Quick Status")
         summary = tk.Frame(summary_card.body, bg=T.SURFACE)
@@ -1002,7 +1002,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 row=idx, column=1, sticky="w", padx=(8, 0), pady=(0 if idx == 0 else 6, 0)
             )
 
-        steps_panel_card = Card(panel, parent_bg=T.BG)
+        steps_panel_card = Card(panel, parent_bg=T.SURFACE)
         steps_panel_card.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
         card_title(steps_panel_card.body, "Execution Steps")
         steps_panel = tk.Frame(steps_panel_card.body, bg=T.SURFACE)
@@ -1046,48 +1046,40 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_findings_summary_section(self, parent):
         panel_card = Card(parent, parent_bg=T.BG)
+        panel_card.grid(row=0, column=0, sticky="nsew")
         card_title(panel_card.body, "Findings Summary")
         panel = tk.Frame(panel_card.body, bg=T.SURFACE)
         panel.pack(fill="both", expand=True)
         panel.columnconfigure(1, weight=1)
-        panel.rowconfigure(8, weight=1)
+        panel.rowconfigure(2, weight=1)
 
+        # **Metrics as tiles, not as a `label: value` list.** Static and the
+        # API tester both read their numbers off `StatTile`s; this panel spelt
+        # the same thing out as prose rows, which is the difference a reader
+        # notices before any of the wording.
         metrics = [
-            ("Score:", self.metric_score_var),
-            ("Processes:", self.metric_process_var),
-            ("Network Events:", self.metric_network_var),
-            ("File Writes:", self.metric_filewrite_var),
-            ("Suspicious Paths:", self.metric_suspicious_var),
-            ("Persistence Hits:", self.metric_persistence_var),
+            ("Score", self.metric_score_var),
+            ("Processes", self.metric_process_var),
+            ("Network Events", self.metric_network_var),
+            ("File Writes", self.metric_filewrite_var),
+            ("Suspicious Paths", self.metric_suspicious_var),
+            ("Persistence Hits", self.metric_persistence_var),
         ]
 
+        tiles = tk.Frame(panel, bg=T.SURFACE)
+        tiles.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, T.SPACE_MD))
+        for col in range(2):
+            tiles.columnconfigure(col, weight=1, uniform="metric")
+
         for idx, (label, var) in enumerate(metrics):
-            ttk.Label(panel, text=label).grid(
-                row=idx,
-                column=0,
-                sticky="w",
-                padx=(10, 0),
-                pady=(8 if idx == 0 else 5, 0),
-            )
-            ttk.Label(panel, textvariable=var).grid(
-                row=idx,
-                column=1,
-                sticky="w",
-                padx=(8, 10),
-                pady=(8 if idx == 0 else 5, 0),
+            StatTile(tiles, label, textvariable=var, parent_bg=T.SURFACE).grid(
+                row=idx // 2, column=idx % 2, sticky="ew",
+                padx=(0 if idx % 2 == 0 else T.SPACE_SM, 0),
+                pady=(0 if idx < 2 else T.SPACE_SM, 0),
             )
 
-        ttk.Separator(panel, orient="horizontal").grid(
-            row=6,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            padx=10,
-            pady=(10, 8),
-        )
-
-        report_actions_card = Card(panel, parent_bg=T.BG)
-        report_actions_card.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        report_actions_card = Card(panel, parent_bg=T.SURFACE)
+        report_actions_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(T.SPACE_MD, 0))
         card_title(report_actions_card.body, "Report Actions")
         report_actions = tk.Frame(report_actions_card.body, bg=T.SURFACE)
         report_actions.pack(fill="both", expand=True)

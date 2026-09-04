@@ -137,11 +137,27 @@ class UnifiedReportWindow(tk.Toplevel):
         card_title(summary_card.body, "Summary")
         summary = tk.Frame(summary_card.body, bg=T.SURFACE)
         summary.pack(fill="both", expand=True)
+        summary.rowconfigure(0, weight=1)
         for col in range(4):
-            summary.columnconfigure(col, weight=1)
+            summary.columnconfigure(col, weight=1, uniform="tile")
 
-        self._summary_row(summary, 0, "Case Name", self.case_name_var, "Modules Found", self.modules_var)
-        self._summary_row(summary, 1, "Overall Verdict", self.overall_verdict_var, "Report Path", self.report_path_var)
+        # **Tiles, not `label: value` rows.** The case verdict is the headline
+        # of this screen and it was set in body text beside three other fields.
+        for col, (label, var) in enumerate((
+                ("Case Name", self.case_name_var),
+                ("Overall Verdict", self.overall_verdict_var),
+                ("Modules Found", self.modules_var),
+                ("Report Path", self.report_path_var))):
+            tile = StatTile(summary, label, textvariable=var, parent_bg=T.SURFACE)
+            tile.grid(row=0, column=col, sticky="nsew",
+                      padx=(0 if col == 0 else T.SPACE_SM, 0))
+            if label in ("Modules Found", "Report Path"):
+                # Long paths and module lists are not metrics; keep them
+                # readable rather than rendering them at metric size.
+                tile.value.configure(font=T.f_body(), wraplength=260,
+                                     justify="left")
+            elif label == "Overall Verdict":
+                self.verdict_tile = tile
 
         lower = ttk.Panedwindow(outer, orient="horizontal")
         lower.grid(row=3, column=0, sticky="nsew")
@@ -158,20 +174,27 @@ class UnifiedReportWindow(tk.Toplevel):
             panel.columnconfigure(0, weight=1)
             panel.rowconfigure(1, weight=1)
 
-        ttk.Label(left_panel, text="Detected Artifacts", style="CardHeading.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.artifacts_text = self._make_text(left_panel)
-        self.artifacts_text.grid(row=1, column=0, sticky="nsew")
-        self._set_text(self.artifacts_text, "No case scanned yet.")
+        def pane(parent, title, placeholder):
+            card = Card(parent, parent_bg=T.BG)
+            card.grid(row=0, column=0, rowspan=2, sticky="nsew")
+            card_title(card.body, title)
+            holder = tk.Frame(card.body, bg=T.SURFACE)
+            holder.pack(fill="both", expand=True)
+            holder.columnconfigure(0, weight=1)
+            holder.rowconfigure(0, weight=1)
+            widget = self._make_text(holder)
+            widget.grid(row=0, column=0, sticky="nsew")
+            self._set_text(widget, placeholder)
+            return widget
 
-        ttk.Label(middle_panel, text="Findings Summary", style="CardHeading.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.summary_text = self._make_text(middle_panel)
-        self.summary_text.grid(row=1, column=0, sticky="nsew")
-        self._set_text(self.summary_text, "Run a scan to summarize what is available.")
-
-        ttk.Label(right_panel, text="Generated Report Preview", style="CardHeading.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.preview_text = self._make_text(right_panel)
-        self.preview_text.grid(row=1, column=0, sticky="nsew")
-        self._set_text(self.preview_text, "Generate a report to preview the result.")
+        self.artifacts_text = pane(
+            left_panel, "Detected Artifacts", "No case scanned yet.")
+        self.summary_text = pane(
+            middle_panel, "Findings Summary",
+            "Run a scan to summarize what is available.")
+        self.preview_text = pane(
+            right_panel, "Generated Report Preview",
+            "Generate a report to preview the result.")
 
         footer = ttk.Frame(outer)
         footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -197,12 +220,6 @@ class UnifiedReportWindow(tk.Toplevel):
         )
         header.grid(row=0, column=0, sticky="ew", pady=(0, T.SPACE_MD))
         self._banner_logo_img = getattr(header, "_logo_image", None)
-
-    def _summary_row(self, parent, row, label1, var1, label2, var2):
-        ttk.Label(parent, text=f"{label1}:").grid(row=row, column=0, sticky="w", padx=8, pady=4)
-        ttk.Label(parent, textvariable=var1, wraplength=360, justify="left").grid(row=row, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Label(parent, text=f"{label2}:").grid(row=row, column=2, sticky="w", padx=8, pady=4)
-        ttk.Label(parent, textvariable=var2, wraplength=360, justify="left").grid(row=row, column=3, sticky="ew", padx=8, pady=4)
 
     def _make_text(self, parent):
         return ScrolledText(
@@ -348,7 +365,13 @@ class UnifiedReportWindow(tk.Toplevel):
 
         found_modules = [name for name, meta in artifacts.items() if meta.get("found")]
         self.modules_var.set(", ".join(found_modules) if found_modules else "None")
-        self.overall_verdict_var.set(self._derive_overall_verdict(artifacts))
+        verdict = self._derive_overall_verdict(artifacts)
+        self.overall_verdict_var.set(verdict)
+        # The band the model wrote, coloured. `status_colors` learned the
+        # corroboration sentences when the Static window's tile was fixed.
+        tile = getattr(self, "verdict_tile", None)
+        if tile is not None:
+            tile.set_value_color(T.status_colors(verdict)[0])
 
         artifact_lines = []
         findings = self._build_detailed_findings()

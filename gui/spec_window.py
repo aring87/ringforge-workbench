@@ -272,6 +272,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         self.summary_label = ttk.Label(
             summary,
             textvariable=self.summary_var,
+            style="CardBody.TLabel",
             wraplength=420,
             justify="left",
         )
@@ -294,6 +295,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         ttk.Label(
             getting_started,
             text="Load an OpenAPI or Swagger definition to build endpoint inventory, summarize authentication, generate risk notes, and create an HTML report.",
+            style="CardBody.TLabel",
             wraplength=420,
             justify="left",
         ).grid(row=1, column=0, sticky="w", padx=12)
@@ -304,8 +306,12 @@ class SpecAnalysisWindow(tk.Toplevel):
         ).grid(row=2, column=0, sticky="w", padx=12, pady=(8, 10))
 
     def _build_sidebar_box(self, parent: tk.Misc, row: int, title: str, height: int) -> tk.Text:
-        section = ttk.LabelFrame(parent, text=title, style="Section.TLabelframe")
-        section.grid(row=row, column=0, sticky="nsew", pady=(10, 0))
+        card = Card(parent, parent_bg=T.BG)
+        card.grid(row=row, column=0, sticky="nsew", pady=(T.SPACE_MD, 0))
+        card_title(card.body, title)
+
+        section = tk.Frame(card.body, bg=T.SURFACE)
+        section.pack(fill="both", expand=True)
         section.columnconfigure(0, weight=1)
         section.rowconfigure(0, weight=1)
 
@@ -327,7 +333,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             pady=8,
             font=("Consolas", 10),
         )
-        text.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        text.grid(row=0, column=0, sticky="nsew")
 
         return text
 
