@@ -223,21 +223,23 @@ because everything above the handshake is TLS.
 ### Pick up here — 03 Sep, the module-polish thread (NOT malware work)
 
 **A different subject from everything below this line.** The sample work is at
-rest; this is the workbench itself. **All five modules are done.**
+rest; this is the workbench itself. **All six modules are done.**
 
 ## The pattern, which is the reusable part
 
 **A data function inside a `Toplevel` is an untested function.** Each module
 kept analysis or presentation logic as methods on its window, where it
 referenced no widget, could not be imported without a display, and therefore had
-no tests. Eleven real defects were living in exactly that space, most of them in
-a release whose headline was *One Verdict Model*.
+no tests. Sixteen real defects were living in exactly that space, most of them
+in a release whose headline was *One Verdict Model*.
 
-Static Analysis is the variation worth remembering: its analysis and its report
-were *already* modules, and the untested logic had simply moved to the main
-window's controller instead. **The shape is "widget-free logic behind a
-display", not "logic in a `Toplevel`"** -- so a module that looks done because
-its engine is extracted can still be carrying the whole defect.
+Static and Dynamic are the variation worth remembering: their analysis and
+their reports were *already* modules, and the untested logic had simply moved
+to a controller and to the window's own decision-making. **The shape is
+"widget-free logic behind a display", not "logic in a `Toplevel`"** -- so a
+module that looks done because its engine is extracted can still be carrying
+the whole defect. Dynamic's was not even presentation: it was the gate on
+whether a detonation may start.
 
 The fix each time: move the widget-free logic beside the data it works on, leave
 a thin delegating method behind, and write the tests the move makes possible.
@@ -379,7 +381,34 @@ application's front page:
 tests, including one that drives the real controller against a fake app --
 which is what catches the tile being tinted before the band is assigned.
 
-Suite 1,383 -> **1,513**.
+**Dynamic Analysis -- `dynamic_analysis/preflight.py`.** Static's shape again:
+its analysis is `orchestrator` and its report is `html_report`, so the untested
+logic was the window's own decision-making. ~150 lines gating whether a
+detonation may start, behind a display, with no test.
+
+* **`Unknown` read as clean, in the report banner.**
+  `html_report._severity_class_for_score` was a *second* severity mapper beside
+  `report_theme.severity_class_for_label`, and its vocabulary was missing
+  `Unknown` -- so it fell to the score fallback, where a run that collected
+  nothing scores 0 and comes out `sev-none`. The two verdicts hit are the two
+  that mean *do not read this as a result*: `Insufficient Coverage` and
+  `Findings Not Scored`. It defers to the shared mapper now.
+* **A cancelled run wore the clean chip.** `severity: "Info"` is what the
+  orchestrator writes when an analyst stops a detonation, and `Info` mapped to
+  `sev-none`. `sev-med` now: the sample was never fully watched.
+* **An unreadable Procmon config warned about nothing.** The check was
+  `if described.get("readable") and not described.get("captures_registry_reads")`,
+  so a config the parser could not read passed in silence -- about the one
+  setting `procmon_config` documents as unrecoverable. A run started that way,
+  found nothing, and the silence looked like a finding about the sample. It
+  warns now, carrying the parser's own reason.
+* The config checks ran whether or not Procmon was enabled. Gated now.
+* The fallback report moved into `html_report.py`, deliberately beside the
+  report it replaces so the gap between them is visible in one file.
+
+50 tests.
+
+Suite 1,383 -> **1,563**.
 
 ## Worth a look, spec: the two views ask different questions
 
@@ -398,33 +427,55 @@ shape worth a decision.
 
 ## The count, and the pass is done
 
-**Five modules, eleven defects, every one in code no test could import.** The
-question that found seven of the eleven is the cheap one:
+**Six modules, sixteen defects, every one in code no test could import.** Two
+questions found most of them.
+
+The first, which found eight:
 
 > **Does this read a band out of a sentence, or out of the model?**
 
 Four modules answered *out of a sentence*. The spec module answered worse --
-out of the parser's opinion of its own reading. And the reason none of them was
-noticed is the same each time: the wording changed at `v1.11.0`, every
-consumer pattern-matching the old vocabulary silently stopped matching, and
-nothing failed. **A band read from text does not break loudly; it goes grey.**
+out of the parser's opinion of its own reading. The reason none of them was
+noticed is the same each time: the wording changed at `v1.11.0`, every consumer
+pattern-matching the old vocabulary silently stopped matching, and nothing
+failed. **A band read from text does not break loudly; it goes grey.**
 
-The reusable check, for anything added later: if a screen or a page colours,
-sorts or thresholds something, find where that decision reads its input. If the
-answer is a string a human is meant to read, it is already wrong or one rename
-away from it.
+The second, which found four:
+
+> **What does this do when it could not tell?**
+
+`external_control_surface` raised. The static report called a skipped
+VirusTotal lookup a found report. The dynamic report painted `Unknown` and
+`Cancelled` with the clean chip. The preflight said nothing at all about a
+Procmon config it could not read. Every one of them turned *I do not know* into
+*nothing is wrong*, which is the single error this project's scoring model was
+rewritten to prevent -- and it had colonised the presentation layer while the
+model was being made careful about it.
+
+The reusable checks, for anything added later:
+
+1. If a screen or a page colours, sorts or thresholds something, find where
+   that decision reads its input. If the answer is a string a human is meant to
+   read, it is already wrong or one rename away from it.
+2. Find every branch that handles the unreadable, the absent and the
+   uncollected. If it falls through to the same outcome as *checked, and fine*,
+   it is lying.
 
 ## NEXT
 
-Nothing is queued. Candidates, in the order they seem worth doing:
+Nothing is queued. The only things carried forward:
 
-* `dynamic_analysis/html_report.py:2875` is the last `report_page` caller with
-  no `footer_note`, so the dynamic module's main report does not name the
-  screen that made it.
-* The spec domain's two views disagree -- see the section above.
-* `gui/dynamic_window.py` is 2,586 lines and has not had this pass. Its report
-  is already `dynamic_analysis/html_report.py`, so the shape is Static's rather
-  than the other three's: look at the window's own data work, not its report.
+* The spec domain's two views disagree -- see "Worth a look, spec" above. That
+  is a product decision, not a defect.
+* `_find_latest_dynamic_summary` and `_find_latest_dynamic_findings` in
+  `gui/dynamic_window.py` each pick the newest file by mtime independently, so
+  a run whose findings write failed could pair a summary with another run's
+  findings. Latent, not demonstrated -- both are written together in the
+  ordinary case.
+* `gui/api_window.py` (1,323 lines) and `gui/unified_report_window.py` (1,163)
+  had their *reports* extracted in this thread's earlier passes but never a
+  survey of their own data work, which is what Static and Dynamic turned out to
+  be hiding. Same measurement, same two questions.
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
 

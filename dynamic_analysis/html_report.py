@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from dynamic_analysis.network_capture import is_baseline_domain
-from dynamic_analysis.report_theme import badge, report_page
+from dynamic_analysis.report_theme import (
+    badge,
+    report_page,
+    severity_class_for_label,
+)
 
 
 def _esc(value: Any) -> str:
@@ -74,20 +78,42 @@ def _severity_class_for_count(value: Any) -> str:
 
 
 def _severity_class_for_score(score: Any, severity: Any = "") -> str:
+    """The banner's colour: the orchestrator's severity, else the score.
+
+    **This was a second severity mapper and it diverged.**
+    `report_theme.severity_class_for_label` is the one every other report in
+    this workbench uses; this one had its own vocabulary, and the vocabulary
+    was missing `Unknown` -- the band `verdict.model` writes when nothing was
+    collected or nothing could be weighed. `Unknown` fell past every rung to
+    the score fallback, where a run that collected nothing scores 0 and comes
+    out `sev-none`: the same chip as a clean detonation.
+
+    That is the error this project's whole scoring model exists to prevent,
+    on the banner of the module that produces the most of them. It defers to
+    the shared mapper now, which knows `unknown` and reads it as neutral --
+    a statement about the bench rather than about the sample.
+
+    `moderate` and `benign` are kept: this report has always accepted them and
+    the shared mapper does not know them.
+    """
     sev = str(severity or "").strip().lower()
-    score_i = _to_int(score, 0)
 
-    # Trust explicit orchestrator severity first.
-    if sev in {"critical", "high"}:
-        return "sev-high"
-    if sev in {"medium", "moderate"}:
+    if sev == "moderate":
         return "sev-med"
-    if sev in {"low"}:
-        return "sev-low"
-    if sev in {"info", "none", "benign"}:
+    if sev == "benign":
         return "sev-none"
+    if sev:
+        shared = severity_class_for_label(sev)
+        # `sev-none` from the shared mapper means "not a word I know", which
+        # is not the same as "clean" -- fall through to the score rather than
+        # painting an unrecognised severity as a clean result.
+        if shared != "sev-none":
+            return shared
+        if sev in {"info", "none"}:
+            return "sev-none"
 
-    # Fallback only when severity is missing.
+    # Fallback only when severity is missing or unrecognised.
+    score_i = _to_int(score, 0)
     if score_i >= 120:
         return "sev-high"
     if score_i >= 45:
@@ -2599,6 +2625,12 @@ def _derive_report_verdict(summary: dict[str, Any]) -> tuple[str, str]:
         label = verdict
         if severity and severity.lower() not in verdict.lower():
             label = f"{verdict} / {severity}"
+        # **A cancelled run is not a clean run.** The orchestrator writes
+        # `severity: "Info"` when the analyst stops a detonation, and `Info`
+        # maps to the same chip a completed run with no findings gets. The
+        # sample was never fully watched; that is a statement about the run.
+        if verdict.strip().lower() == "cancelled":
+            return label, "sev-med"
         return label, _severity_class_for_score(score, severity)
 
     score_i = _to_int(score, 0)
@@ -2872,7 +2904,8 @@ def build_dynamic_html_report(summary: dict[str, Any]) -> str:
 {_event_hits_table("Persistence Hits", findings.get("persistence_hits", []), emphasize=True, empty_text="No persistence hits were identified.")}
 """
 
-    return report_page(title, subtitle, verdict, verdict_class, body_html)
+    return report_page(title, subtitle, verdict, verdict_class, body_html,
+                       footer_note="RingForge Workbench &bull; Dynamic Analysis")
 
 
 def write_dynamic_html_report(summary_path: Path, output_html: Path) -> Path:
@@ -2881,3 +2914,81 @@ def write_dynamic_html_report(summary_path: Path, output_html: Path) -> Path:
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html_text, encoding="utf-8")
     return output_html
+
+
+# ---------------------------------------------------------------------------
+# The fallback, deliberately in the same file as the report it stands in for
+# ---------------------------------------------------------------------------
+
+def build_fallback_dynamic_report(summary: dict[str, Any], case_name: str = "") -> str:
+    """The page written when `build_dynamic_html_report` above fails.
+
+    **It lives here so the gap between the two is visible in one file.** It sat
+    in `gui/dynamic_window.py`, which is how it came to render a bare stack of
+    cards titled "Dynamic Analysis Report" -- the same name as the real one,
+    looking nothing like it, with no way for a reader holding the file to tell
+    which they had. Everything above this line is what it is *not* producing.
+
+    It carries no verdict for the same reason it carries no sections: it never
+    reached the scorer. `Fallback` in the banner is a statement about the
+    document, not a band.
+    """
+    summary = summary if isinstance(summary, dict) else {}
+    findings = summary.get("findings")
+    findings = findings if isinstance(findings, dict) else summary
+    highlights = (findings.get("highlights") or summary.get("highlights") or [])
+    counts = findings.get("counts") or summary.get("counts") or {}
+    sample = summary.get("sample") or {}
+
+    highlights_html = (
+        "<ul>" + "".join(f"<li>{_esc(x)}</li>" for x in highlights) + "</ul>"
+        if highlights else "<p class='muted'>None were recorded in the summary.</p>")
+
+    count_rows = "".join(
+        f"<tr><th>{label}</th><td>{_esc(counts.get(key, 0))}</td></tr>"
+        for key, label in (
+            ("interesting_events", "Interesting Events"),
+            ("process_creates", "Process Creates"),
+            ("network_events", "Network Events"),
+            ("file_write_events", "File Write Events"),
+            ("suspicious_path_hits", "Suspicious Path Hits"),
+            ("persistence_hits", "Persistence Hits"),
+        ))
+
+    body_html = f"""
+<section class="card card-alert">
+  <div class="section-head"><h2>Fallback Report</h2></div>
+  <p class="muted">
+    The full dynamic report could not be generated, so this page was written
+    from the run summary alone. <b>It carries a fraction of what the full
+    report does</b> -- no evidence categories, no memory or network sections,
+    no verdict. Read an empty section here as "not rendered", never as
+    "nothing found", and re-export once the full generator succeeds.
+  </p>
+</section>
+<section class="card">
+  <div class="section-head"><h2>Sample</h2></div>
+  <table class="kv">
+    <tr><th>Case</th><td>{_esc(case_name)}</td></tr>
+    <tr><th>Sample</th><td>{_esc(sample.get("sample_name", ""))}</td></tr>
+    <tr><th>Path</th><td>{_esc(sample.get("sample_path", ""))}</td></tr>
+    <tr><th>SHA256</th><td>{_esc(sample.get("sha256", ""))}</td></tr>
+  </table>
+</section>
+<section class="card">
+  <div class="section-head"><h2>Highlights</h2></div>
+  {highlights_html}
+</section>
+<section class="card">
+  <div class="section-head"><h2>Findings Counts</h2></div>
+  <table class="kv">{count_rows}</table>
+</section>"""
+
+    return report_page(
+        title="Dynamic Analysis Report (Fallback)",
+        subtitle=f"Case: {_esc(case_name)}",
+        verdict="Fallback",
+        verdict_class="sev-med",
+        body_html=body_html,
+        footer_note="RingForge Workbench &bull; Dynamic Analysis, fallback export",
+    )

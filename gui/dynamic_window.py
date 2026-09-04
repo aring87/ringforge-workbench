@@ -18,18 +18,27 @@ from typing import Dict, Optional
 
 from PIL import Image, ImageTk
 
-from dynamic_analysis.html_report import write_dynamic_html_report
+from dynamic_analysis.html_report import (
+    build_fallback_dynamic_report,
+    write_dynamic_html_report,
+)
 from dynamic_analysis.memory_dump import (
     DEFAULT_MAX_PROCESSES,
     DEFAULT_SPAWN_REDUMP_SECONDS,
 )
 from dynamic_analysis.orchestrator import ContainmentError, run_dynamic_analysis
-from dynamic_analysis.procmon_config import (
-    DEFAULT_PROCMON_CONFIG_NAME,
-    describe_procmon_filter,
+from dynamic_analysis.preflight import (
+    case_matches_sample,
+    case_mismatch_message,
+    find_autorunsc,
+    is_running_as_admin,
+    issues_message,
+    observation_conflict,
+    run_preflight,
+    warnings_message,
 )
+from dynamic_analysis.procmon_config import DEFAULT_PROCMON_CONFIG_NAME
 from static_triage_engine.combine_case import combine_case
-from dynamic_analysis.report_theme import report_page
 from gui import theme as T
 from gui.components import Checkbox, HeaderBar
 
@@ -1940,66 +1949,13 @@ class DynamicAnalysisWindow(tk.Toplevel):
             return None
 
     def _write_fallback_dynamic_html(self, data: Dict, output_html: Path, case_home: Path):
-        def esc(x):
-            return html.escape(str(x if x is not None else ""))
+        """Thin delegation. The page is
+        `dynamic_analysis.html_report.build_fallback_dynamic_report`, beside
+        the report it stands in for."""
+        output_html.write_text(
+            build_fallback_dynamic_report(data, case_home.name),
+            encoding="utf-8", errors="replace")
 
-        findings = data.get("findings", data) if isinstance(data, dict) else {}
-        highlights = findings.get("highlights", []) or data.get("highlights", []) or []
-        counts = findings.get("counts", {}) or data.get("counts", {}) or {}
-        sample = data.get("sample", {}) or {}
-
-        # **This is the fallback, and it now says so.** It runs when the full
-        # report generator fails, and it used to render a bare stack of cards
-        # titled "Dynamic Analysis Report" -- the same name as the real one,
-        # looking nothing like it, with no way for a reader holding the file to
-        # know which they had. A degraded output that does not announce itself
-        # is the same failure this project's collectors are built to avoid.
-        body_html = f"""
-<section class="card card-alert">
-  <div class="section-head"><h2>Fallback Report</h2></div>
-  <p class="muted">
-    The full dynamic report could not be generated, so this page was written
-    from the run summary alone. <b>It carries a fraction of what the full
-    report does</b> -- no evidence categories, no memory or network sections,
-    no verdict. Read an empty section here as "not rendered", never as
-    "nothing found", and re-export once the full generator succeeds.
-  </p>
-</section>
-<section class="card">
-  <div class="section-head"><h2>Sample</h2></div>
-  <table class="kv">
-    <tr><th>Case</th><td>{esc(case_home.name)}</td></tr>
-    <tr><th>Sample</th><td>{esc(sample.get("sample_name", ""))}</td></tr>
-    <tr><th>Path</th><td>{esc(sample.get("sample_path", ""))}</td></tr>
-    <tr><th>SHA256</th><td>{esc(sample.get("sha256", ""))}</td></tr>
-  </table>
-</section>
-<section class="card">
-  <div class="section-head"><h2>Highlights</h2></div>
-  {"<ul>" + "".join(f"<li>{esc(x)}</li>" for x in highlights) + "</ul>" if highlights else "<p class='muted'>None were recorded in the summary.</p>"}
-</section>
-<section class="card">
-  <div class="section-head"><h2>Findings Counts</h2></div>
-  <table class="kv">
-    <tr><th>Interesting Events</th><td>{esc(counts.get("interesting_events", 0))}</td></tr>
-    <tr><th>Process Creates</th><td>{esc(counts.get("process_creates", 0))}</td></tr>
-    <tr><th>Network Events</th><td>{esc(counts.get("network_events", 0))}</td></tr>
-    <tr><th>File Write Events</th><td>{esc(counts.get("file_write_events", 0))}</td></tr>
-    <tr><th>Suspicious Path Hits</th><td>{esc(counts.get("suspicious_path_hits", 0))}</td></tr>
-    <tr><th>Persistence Hits</th><td>{esc(counts.get("persistence_hits", 0))}</td></tr>
-  </table>
-</section>"""
-
-        html_doc = report_page(
-            title="Dynamic Analysis Report (Fallback)",
-            subtitle=f"Case: {esc(case_home.name)}",
-            verdict="Fallback",
-            verdict_class="sev-med",
-            body_html=body_html,
-            footer_note="RingForge Workbench &bull; Dynamic Analysis, fallback export",
-        )
-
-        output_html.write_text(html_doc, encoding="utf-8", errors="replace")
 
     def _open_latest_dynamic_html(self):
         try:
@@ -2028,79 +1984,24 @@ class DynamicAnalysisWindow(tk.Toplevel):
     # Dynamic preflight checks
     # -------------------------------------------------------------------------
 
+    # Elevation, Autorunsc discovery and the writability probe live in
+    # `dynamic_analysis.preflight` now, beside the decisions that use them.
     def _is_running_as_admin(self) -> bool:
-        """
-        Return True when RingForge is running with Administrator privileges.
-
-        Procmon, service snapshots, scheduled task snapshots, and Autoruns
-        collection are more reliable when the GUI is elevated.
-        """
-        if os.name != "nt":
-            return False
-
-        try:
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
-        except Exception:
-            return False
+        return is_running_as_admin()
 
     def _find_autorunsc_path(self) -> Optional[Path]:
-        """
-        Locate Autorunsc in the local tools folder.
+        return find_autorunsc(self._project_root())
 
-        Autorunsc is optional for Dynamic Analysis, so this is a warning-only
-        preflight item. The orchestrator can still run without Autoruns support.
-        """
-        tools_dir = self._project_root() / "tools"
-        candidates = [
-            tools_dir / "autorunsc64.exe",
-            tools_dir / "Autorunsc64.exe",
-            tools_dir / "autorunsc.exe",
-            tools_dir / "Autorunsc.exe",
-        ]
-
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        return None
-
-    def _check_case_folder_writable(self, folder: Path) -> tuple[bool, str]:
-        """
-        Confirm that the selected case/output folder can be created and written.
-        """
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            test_file = folder / ".ringforge_write_test"
-            test_file.write_text("ringforge write test", encoding="utf-8")
-            test_file.unlink(missing_ok=True)
-            return True, ""
-        except Exception as error:
-            return False, str(error)
-            
     def _confirm_case_sample_match(self, sample: Path, case_home: Path) -> bool:
-        sample_stem = self._safe_case_name(sample.stem).lower()
-        case_name = self._safe_case_name(case_home.name).lower()
-
-        if not sample_stem or not case_name:
+        if case_matches_sample(self._safe_case_name(sample.stem),
+                               self._safe_case_name(case_home.name)):
             return True
 
-        if case_name == sample_stem:
-            return True
-
-        if sample_stem in case_name or case_name in sample_stem:
-            return True
-
-        proceed = messagebox.askyesno(
+        return bool(messagebox.askyesno(
             "Case Folder Mismatch",
-            "The selected sample name does not appear to match the selected case folder.\n\n"
-            f"Sample:\n{sample.name}\n\n"
-            f"Case folder:\n{case_home}\n\n"
-            "This may mix dynamic results into the wrong case.\n\n"
-            "Continue anyway?",
+            case_mismatch_message(sample.name, case_home),
             parent=self,
-        )
-
-        return bool(proceed)
+        ))
 
     def _run_dynamic_preflight_checks(
         self,
@@ -2110,92 +2011,34 @@ class DynamicAnalysisWindow(tk.Toplevel):
         procmon_path: Path,
         procmon_config: str,
     ) -> bool:
+        """Show what `dynamic_analysis.preflight` decided, and ask.
+
+        **The deciding is not here any more.** It was ~90 lines of gates on
+        whether a detonation may start, behind a display, with no test.
         """
-        Professional preflight validation before starting Dynamic Analysis.
+        result = run_preflight(
+            sample=sample,
+            case_home=case_home,
+            dynamic_output=dynamic_output,
+            procmon_enabled=bool(self.procmon_enabled_var.get()),
+            procmon_path=procmon_path,
+            procmon_config=procmon_config,
+            project_root=self._project_root(),
+        )
 
-        Blocking issues stop the run. Warnings allow the analyst to continue.
-        """
-        issues: list[str] = []
-        warnings: list[str] = []
-
-        if not sample.exists():
-            issues.append(f"Sample file not found:\n{sample}")
-
-        if sample.exists() and not sample.is_file():
-            issues.append(f"Selected sample path is not a file:\n{sample}")
-
-        case_ok, case_error = self._check_case_folder_writable(case_home)
-        if not case_ok:
-            issues.append(f"Case folder is not writable:\n{case_home}\n\n{case_error}")
-
-        dynamic_ok, dynamic_error = self._check_case_folder_writable(dynamic_output)
-        if not dynamic_ok:
-            issues.append(f"Dynamic output folder is not writable:\n{dynamic_output}\n\n{dynamic_error}")
-
-        if self.procmon_enabled_var.get():
-            if not procmon_path.exists():
-                issues.append(f"Procmon is enabled but the executable was not found:\n{procmon_path}")
-            elif not procmon_path.is_file():
-                issues.append(f"Procmon path is not a file:\n{procmon_path}")
-
-        if procmon_config:
-            procmon_config_path = Path(procmon_config)
-            if not procmon_config_path.exists():
-                warnings.append(
-                    "Procmon config file was not found. RingForge will continue, "
-                    "but Procmon may run with default capture behavior:\n"
-                    f"{procmon_config_path}"
-                )
-            else:
-                # Ask the file, not the filename -- a config can be renamed.
-                # This is worth saying before the run rather than after: a
-                # registry read dropped at capture is gone, and re-exporting
-                # the PML afterwards cannot bring it back.
-                described = describe_procmon_filter(procmon_config_path)
-                if described.get("readable") and not described.get("captures_registry_reads"):
-                    warnings.append(
-                        "This Procmon config captures no registry reads, so a "
-                        "sample checking for a VM artifact could not be seen. "
-                        "The reads are dropped at capture and no later pass can "
-                        "recover them.\n\n"
-                        f"{procmon_config_path}\n\n"
-                        "Use tools/procmon-configs/dynamic_registry_reads.pmc "
-                        "instead."
-                    )
-
-        autorunsc_path = self._find_autorunsc_path()
-        if autorunsc_path is None:
-            warnings.append(
-                "Autorunsc was not found in the local tools folder. "
-                "Autoruns persistence diffing may be skipped.\n\n"
-                "Expected one of:\n"
-                f"{self._project_root() / 'tools' / 'autorunsc64.exe'}\n"
-                f"{self._project_root() / 'tools' / 'autorunsc.exe'}"
-            )
-
-        if os.name == "nt" and not self._is_running_as_admin():
-            warnings.append(
-                "RingForge is not running as Administrator. Procmon capture, "
-                "service snapshots, scheduled task snapshots, and Autoruns collection "
-                "may be incomplete."
-            )
-
-        if issues:
+        if result.blocked:
             messagebox.showerror(
                 "Dynamic Preflight Failed",
-                "Dynamic Analysis cannot start until these issues are fixed:\n\n"
-                + "\n\n".join(issues),
+                issues_message(result.issues),
                 parent=self,
             )
             self._set_step("Pre-checks", 100, "failed")
             return False
 
-        if warnings:
+        if result.warnings:
             proceed = messagebox.askyesno(
                 "Dynamic Preflight Warnings",
-                "Dynamic Analysis can start, but these warnings were found:\n\n"
-                + "\n\n".join(warnings)
-                + "\n\nContinue anyway?",
+                warnings_message(result.warnings),
                 parent=self,
             )
             if not proceed:
@@ -2203,6 +2046,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
                 return False
 
         return True
+
 
     def _cancel_dynamic_analysis(self):
         if not self.worker_thread or not self.worker_thread.is_alive():
@@ -2225,52 +2069,20 @@ class DynamicAnalysisWindow(tk.Toplevel):
         minimum_observation_seconds: int,
         post_exit_observation_seconds: int,
     ) -> bool:
-        """
-        Warn when the configured post-exit observation target cannot fully fit
-        inside the hard sample observation timeout.
-
-        This is allowed, especially for quick baseline tests like Notepad, but the
-        analyst should know the timeout will win.
-        """
-        if timeout_seconds <= 0:
+        """Ask, when `dynamic_analysis.preflight` says the windows do not fit."""
+        conflict = observation_conflict(
+            timeout_seconds, minimum_observation_seconds,
+            post_exit_observation_seconds)
+        if conflict is None:
             return True
 
-        if post_exit_observation_seconds <= 0:
-            return True
+        return bool(messagebox.askyesno(
+            "Observation Settings Notice",
+            conflict + "\n\nContinue anyway?",
+            parent=self,
+        ))
 
-        if post_exit_observation_seconds >= timeout_seconds:
-            return messagebox.askyesno(
-                "Observation Settings Notice",
-                "Post-exit observation is longer than or equal to the sample observation timeout.\n\n"
-                f"Sample observation timeout: {timeout_seconds} seconds\n"
-                f"Minimum observation: {minimum_observation_seconds} seconds\n"
-                f"Post-exit observation target: {post_exit_observation_seconds} seconds\n\n"
-                "The run can still continue, but RingForge will stop at the timeout before the full "
-                "post-exit observation window completes.\n\n"
-                "This is usually fine for quick baseline tests like Notepad. For larger installers, "
-                "increase the timeout.\n\n"
-                "Continue anyway?",
-                parent=self,
-            )
 
-        remaining_after_minimum = timeout_seconds - minimum_observation_seconds
-
-        if remaining_after_minimum > 0 and post_exit_observation_seconds > remaining_after_minimum:
-            return messagebox.askyesno(
-                "Observation Settings Notice",
-                "Post-exit observation may not fully fit after the minimum observation window.\n\n"
-                f"Sample observation timeout: {timeout_seconds} seconds\n"
-                f"Minimum observation: {minimum_observation_seconds} seconds\n"
-                f"Post-exit observation target: {post_exit_observation_seconds} seconds\n"
-                f"Maximum possible post-exit time after minimum observation: {remaining_after_minimum} seconds\n\n"
-                "The run can still continue, but RingForge may stop at the timeout before the full "
-                "post-exit observation window completes.\n\n"
-                "Continue anyway?",
-                parent=self,
-            )
-
-        return True
-    
     # -------------------------------------------------------------------------
     # Run dynamic analysis
     # -------------------------------------------------------------------------

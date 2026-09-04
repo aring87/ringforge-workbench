@@ -644,13 +644,48 @@ nothing has written for several releases took precedence over the file the
 engine writes every run. Canonical first now, and a legacy name can only fill a
 gap.
 
+### The dynamic report called a run with no coverage clean
+
+`_severity_class_for_score` was a **second** severity mapper living beside
+`report_theme.severity_class_for_label`, with its own vocabulary — and that
+vocabulary was missing `Unknown`, the band the model writes when nothing was
+collected or nothing could be weighed. It fell past every rung to the score
+fallback, where a run that collected nothing scores 0 and comes out `sev-none`:
+the chip a clean detonation gets. The two verdicts affected are exactly the two
+that mean *do not read this as a result* — "Insufficient Coverage" and
+"Findings Not Scored". A **cancelled** run was the same shape by a different
+route: the orchestrator writes `severity: "Info"` when an analyst stops a
+detonation, and `Info` mapped to the clean chip too.
+
+It defers to the shared mapper now, and an unrecognised severity falls to the
+score rather than being painted clean because it was not understood.
+
+### The gates on starting a detonation are testable
+
+About 150 lines in `gui/dynamic_window.py` decided whether a run may start —
+what blocks, what warns, and the wording of each — behind a display, with no
+tests. They are `dynamic_analysis/preflight.py` now, and the window shows what
+they decided.
+
+The defect they were hiding was in the Procmon config check, which warned only
+when the config could be *read* and said it captures no registry reads. **A
+config the parser could not read produced no warning at all** — and registry
+reads are dropped at capture, so a run started against an unreadable filter,
+found nothing, and the silence looked like a finding about the sample rather
+than about the capture. Not knowing what a filter captures is the thing worth
+saying, not the thing that excuses saying nothing. The config checks are also
+gated on Procmon actually being enabled now, so a run with it switched off
+stops warning about a filter that will never be loaded.
+
+The fallback report moved to `dynamic_analysis/html_report.py`, deliberately
+into the same file as the report it stands in for, so what it is *not*
+producing is visible beside it.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,513**. All five extractions are testable for the
+- Test suite **1,383 -> 1,563**. All six extractions are testable for the
   first time; none had a single test before.
-- The API Spec and Static Analysis reports now name their producing module in
-  the footer. `dynamic_analysis/html_report.py` is the last `report_page`
-  caller that does not.
+- Every `report_page` caller now names its producing module in the footer.
 
 ---
 
