@@ -1,6 +1,6 @@
 # RingForge Workbench
 
-[![Release](https://img.shields.io/badge/release-v1.11.1-blue)](https://github.com/aring87/ringforge-workbench/releases)
+[![Release](https://img.shields.io/badge/release-v1.12.0-blue)](https://github.com/aring87/ringforge-workbench/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/aring87/ringforge-workbench)
 [![Python](https://img.shields.io/badge/python-3.12-yellow)](https://www.python.org/)
 [![Analysis](https://img.shields.io/badge/analysis-static%20%7C%20dynamic%20%7C%20api%20%7C%20spec%20%7C%20browser%20extension-orange)](https://github.com/aring87/ringforge-workbench)
@@ -21,9 +21,9 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 | Field | Value |
 |---|---|
-| Version | `v1.11.1` |
-| Release Name | Deferred Stage |
-| Release Type | Feature and correctness release |
+| Version | `v1.12.0` |
+| Release Name | Standalone |
+| Release Type | Feature, packaging and correctness release |
 | Platform Focus | Windows analysis environment |
 | Language | Python |
 | License | MIT |
@@ -501,10 +501,21 @@ the reading it replaced.
 
 ---
 
-## Unreleased
+## What's New in v1.12.0
 
-Work on top of `v1.11.1`. One theme: **a data function inside a window is an
-untested function**, and two real defects were living in exactly that space.
+`v1.12.0` is two pieces of work that turned out to be the same one.
+
+The first was reports: **a data function inside a window is an untested
+function**, and two real defects were living in exactly that space. The second
+was distribution — a wheel, a command line, an OCSF exporter and finally a
+standalone executable.
+
+They met at a single question, which is the theme of the release: **where does
+a thing live?** A report that builds its own page has no shared verdict. A data
+file resolved from the repository root reaches no installed copy. A `tools/`
+directory derived from `__file__` is not the one beside the operator's
+executable. Each was invisible for the same reason — from a checkout, every
+wrong answer happens to be the right one.
 
 ### Every report renders through one page builder
 
@@ -756,6 +767,85 @@ once for a run directory and once for a file, and the copies had drifted — onl
 one reported risk notes when the summary block was missing. And the case page
 printed API auth scheme names as the spec author wrote them, so it said
 `bearerAuth` where the spec report, reading the same file, said `bearer`.
+
+### The workbench is installable, and has a command line
+
+`pip install` now works, and `pyproject.toml` declares the five things the
+engine actually imports rather than the `pip freeze` in `requirements.txt`,
+which pins PyInstaller and the scientific stack only `scripts/` touches. Both
+files stay: one describes the package, the other reproduces a machine.
+Collectors with a documented degradation path are extras, so "not installed"
+keeps being a decision on record rather than an import error.
+
+Packaging found a layering defect the suite structurally could not see. Five
+pipeline modules — `ioc_extract`, `pe_meta`, `dotnet_summary`, `lief_meta` and
+the 1,098-line `dotnet_meta` — lived in `scripts/`, which is bench tooling and
+is not shipped. The engine imported them and it worked, because everything runs
+from the repo root where the repo is on `sys.path`. The first install elsewhere
+died on `ModuleNotFoundError: No module named 'scripts'`. They moved into
+`static_triage_engine/`; `scripts/` keeps an alias for each that rebinds
+`sys.modules`, so every importer is untouched.
+
+CI runs the suite on push, **Windows only** — the engine shells out to Procmon
+and reads `ctypes.windll`, so a green Linux job would test a configuration
+nobody runs. A second job builds the wheel, installs it into a fresh
+environment *somewhere else* and imports the engine from there, because no test
+run from the repo root can catch the class of bug above.
+
+There is a command line:
+
+```powershell
+ringforge combine <case> [--json] [--pretty] [--no-write] [--fail-on BAND]
+ringforge scan    <sample> [--case NAME] [--json]
+ringforge export  <case> [--spool DIR] [--json]
+```
+
+`--json` owns stdout and everything human goes to stderr, so `| jq` works.
+`--no-write` matters: `cases/` is gitignored, so writing `combined_verdict.json`
+is an unversioned overwrite, and reading a verdict should not require mutating
+the case.
+
+The CLI immediately found a defect. Pointed at an empty directory it reported
+`No Indicators Found / Low` — the cleanest band the model can produce, for a
+folder containing nothing. The guard read `if not present and categories and
+not collected_any`, so it covered a run whose collectors all *failed* and
+missed the run that never *happened*. The comment directly above it already
+called this "the project's most expensive recurring mistake wearing a new hat".
+It was, one line lower.
+
+### A verdict says what it describes and what produced it
+
+At `schema_version` 1.0: `generated_utc`, `case_id` (the sample sha256, so a
+consumer updates rather than duplicates), `case_name`, a `sample` block, and
+`provenance` carrying the analyzer version, the commit, library versions and
+what the YARA scan actually compiled. `case_dir` is gone — an absolute Windows
+path that identified the analyst's machine and was read by nothing.
+
+The `provenance.collectors.yara` block earns its place. Against an archived
+20 Aug artifact and one from today:
+
+```text
+20 Aug   compiled=None   files=1593   error=YARA scan failed: ...
+today    compiled=1594   files=1594   error=None
+```
+
+`rule_file_count` counts files on disk and says nothing about whether any of
+them compiled. That was the only number in the artifact, which is why a rule
+set that never loaded read as a clean scan for a fortnight.
+
+### The verdict as an OCSF Detection Finding
+
+`ringforge export` maps a verdict to OCSF class `2004` and appends NDJSON for a
+forwarder to ship. Nothing opens a socket — the forwarder is already
+configured, monitored and permissioned for that, and a tool that opens its own
+socket is one that fails silently when the SIEM is down.
+
+The mapping exists to carry **coverage**. `Unknown` maps to OCSF severity `0`
+(Unknown) and never to Informational, and `modules_run` / `modules_absent` /
+`uncollected_categories` ride as an enrichment — so a detection rule can say
+*alert on Corroborated, and separately on Unknown where coverage was
+incomplete*. That distinction is what this whole model exists to draw, and it
+now survives one system boundary further out.
 
 ### The workbench ships as an executable, and two roots had to be told apart
 
