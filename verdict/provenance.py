@@ -25,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
+from static_triage_engine.proc import no_window
 
 #: The document's shape, not the scoring model's. `score_model` versions how a
 #: band is decided; this versions the envelope around it -- the field names, the
@@ -95,7 +96,7 @@ def git_commit(root: str | Path | None = None) -> str | None:
     try:
         out = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5, check=False)
+            capture_output=True, text=True, timeout=5, check=False, creationflags=no_window())
         commit = out.stdout.strip()
         if out.returncode == 0 and commit:
             return commit

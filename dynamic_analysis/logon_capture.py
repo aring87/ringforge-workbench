@@ -91,6 +91,7 @@ from pathlib import Path
 from typing import Any
 
 from dynamic_analysis.procmon_config import describe_procmon_filter
+from static_triage_engine.proc import no_window
 
 #: The task's name, and the name to look for when something unexplained appears
 #: in a task diff. Deliberately not disguised: an analyzer artifact that hides
@@ -323,7 +324,7 @@ def signal_ready(value: str, property_name: str = READY_PROPERTY) -> dict[str, A
         "--flags", "TRANSIENT",
     ]
     try:
-        completed = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=30, creationflags=no_window())
     except Exception as error:  # noqa: BLE001 -- the capture must not die here
         result["error"] = f"{type(error).__name__}: {error}"
         return result
@@ -580,7 +581,7 @@ def run_capture(
 
 def _run(argv: list[str]) -> dict[str, Any]:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60, creationflags=no_window())
     except Exception as error:  # noqa: BLE001
         return {"ok": False, "returncode": None, "stdout": "", "stderr": str(error)}
     return {

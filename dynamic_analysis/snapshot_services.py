@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from static_triage_engine.proc import no_window
 
 
 SERVICE_SNAPSHOT_PS_TEMPLATE = r"""
@@ -49,7 +50,7 @@ def _run_powershell_json_to_file() -> Any:
         ],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=180, creationflags=no_window(),
     )
 
     if result.returncode != 0:
@@ -93,7 +94,7 @@ def _snapshot_via_sc() -> list[dict[str, Any]]:
         capture_output=True,
         text=True,
         timeout=180,
-        errors="replace",
+        errors="replace", creationflags=no_window(),
     )
     if result.returncode not in (0, 1060):
         raise RuntimeError(

@@ -131,6 +131,7 @@ from dynamic_analysis.utils import (
     utc_now_iso,
     write_json,
 )
+from static_triage_engine.proc import no_window
 
 StatusCallback = Optional[Callable[[str], None]]
 CancelEvent = Optional[threading.Event]
@@ -332,7 +333,7 @@ def run_sample(
 
     _emit(status_cb, f"Launch command: {' '.join(launch_cmd)}")
 
-    proc = subprocess.Popen(launch_cmd)
+    proc = subprocess.Popen(launch_cmd, creationflags=no_window())
 
     if on_launch is not None:
         # A failure in a telemetry hook must never take down the detonation.
@@ -835,7 +836,7 @@ def _run_autorunsc_snapshot(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=timeout_seconds,
+                timeout=timeout_seconds, creationflags=no_window(),
             )
 
         result["returncode"] = int(proc.returncode)

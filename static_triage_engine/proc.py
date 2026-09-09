@@ -30,6 +30,31 @@ from pathlib import Path
 from typing import Sequence
 
 
+#: Keep a child process from opening a console window of its own.
+#:
+#: **This is only visible in a windowed build.** Started from a terminal, a
+#: child inherits the parent's console and nothing appears. Started from
+#: `ringforge-gui.exe`, which PyInstaller builds with no console at all,
+#: Windows gives every console child a brand new window -- so the containment
+#: watch, which re-reads the network every four seconds while the Dynamic
+#: Analysis window is open, flashed a command prompt every four seconds.
+#:
+#: Zero on anything that is not Windows, where the flag does not exist. It is
+#: also ignored for GUI children such as Procmon, which have no console to
+#: suppress.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def no_window(flags: int = 0) -> int:
+    """Add `NO_WINDOW` to `flags`, preserving whatever the caller already set.
+
+    Written to be combined rather than assigned, because two call sites need
+    `CREATE_NEW_PROCESS_GROUP` as well and dropping it would break their
+    cancellation.
+    """
+    return flags | NO_WINDOW
+
+
 def kill_tree(pid: int, grace: float = 5.0) -> int:
     """Kill a process and every descendant. Returns how many were killed.
 

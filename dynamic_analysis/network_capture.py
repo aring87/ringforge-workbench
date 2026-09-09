@@ -29,6 +29,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 from ringforge.resources import app_root
+from static_triage_engine.proc import no_window
 
 #: Ports that are ordinary for outbound traffic; anything else is worth a look.
 COMMON_PORTS = {80, 443, 53, 123, 8080, 8443, 445, 139, 22, 21, 25, 587, 993, 995}
@@ -147,7 +148,7 @@ def _list_interfaces_json(dumpcap: Path) -> list[dict[str, Any]]:
     try:
         result = subprocess.run(
             [str(dumpcap), "-D", "-M"],
-            capture_output=True, text=True, timeout=30, errors="replace",
+            capture_output=True, text=True, timeout=30, errors="replace", creationflags=no_window(),
         )
     except Exception:
         return []
@@ -185,7 +186,7 @@ def _list_interfaces_text(dumpcap: Path) -> list[dict[str, Any]]:
     """Fallback for Wireshark builds without ``-M``."""
     try:
         result = subprocess.run(
-            [str(dumpcap), "-D"], capture_output=True, text=True, timeout=30, errors="replace"
+            [str(dumpcap), "-D"], capture_output=True, text=True, timeout=30, errors="replace", creationflags=no_window()
         )
     except Exception:
         return []
@@ -326,7 +327,7 @@ def default_route_interfaces() -> list[dict[str, str]]:
     try:
         result = subprocess.run(
             ["route", "print", "-4"],
-            capture_output=True, text=True, timeout=30, errors="replace",
+            capture_output=True, text=True, timeout=30, errors="replace", creationflags=no_window(),
         )
     except Exception:
         return []
@@ -347,7 +348,7 @@ def has_ipv6_default_route() -> bool:
     try:
         result = subprocess.run(
             ["route", "print", "-6"],
-            capture_output=True, text=True, timeout=30, errors="replace",
+            capture_output=True, text=True, timeout=30, errors="replace", creationflags=no_window(),
         )
     except Exception:
         return False
@@ -510,7 +511,7 @@ def npcap_available() -> bool | None:
         try:
             result = subprocess.run(
                 ["sc", "query", service],
-                capture_output=True, text=True, timeout=20, errors="replace",
+                capture_output=True, text=True, timeout=20, errors="replace", creationflags=no_window(),
             )
         except Exception:
             return None
@@ -640,7 +641,7 @@ class PacketCapture:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                creationflags=no_window(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
             )
         except Exception as error:
             self.error = f"failed to start dumpcap: {error}"
@@ -668,7 +669,7 @@ class PacketCapture:
                     "--pkt-size", "0",
                     "-f", str(self._etl_path),
                 ],
-                capture_output=True, text=True, timeout=60, errors="replace",
+                capture_output=True, text=True, timeout=60, errors="replace", creationflags=no_window(),
             )
         except Exception as error:
             self.error = f"failed to start pktmon: {error}"
@@ -725,7 +726,7 @@ class PacketCapture:
         error = ""
         try:
             subprocess.run(
-                ["pktmon", "stop"], capture_output=True, text=True, timeout=timeout, errors="replace"
+                ["pktmon", "stop"], capture_output=True, text=True, timeout=timeout, errors="replace", creationflags=no_window()
             )
         except Exception as inner:
             error = f"failed to stop pktmon: {inner}"
@@ -738,7 +739,7 @@ class PacketCapture:
                         "pktmon", "etl2pcap", str(self._etl_path),
                         "-o", str(self.output_path),
                     ],
-                    capture_output=True, text=True, timeout=300, errors="replace",
+                    capture_output=True, text=True, timeout=300, errors="replace", creationflags=no_window(),
                 )
             except Exception as inner:
                 error = error or f"failed to convert pktmon ETL: {inner}"
@@ -775,7 +776,7 @@ def _tshark_fields(
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, errors="replace"
+            cmd, capture_output=True, text=True, timeout=timeout, errors="replace", creationflags=no_window()
         )
     except Exception:
         return []

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ringforge.resources import app_root
+from static_triage_engine.proc import no_window
 
 
 ROOT = app_root()
@@ -188,7 +189,7 @@ def run_cli_streaming(
         text=True,
         encoding="utf-8",
         errors="replace",
-        bufsize=1,
+        bufsize=1, creationflags=no_window(),
     )
 
     assert proc.stdout is not None

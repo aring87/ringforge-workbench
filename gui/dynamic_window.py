@@ -42,6 +42,7 @@ from static_triage_engine.combine_case import combine_case
 from ringforge.resources import app_root, asset, procmon_configs_dir
 from gui import theme as T
 from gui.components import Card, Checkbox, HeaderBar, RoundedButton, StatTile, card_title
+from static_triage_engine.proc import no_window
 
 
 def isolation_signature(status: dict) -> tuple:
@@ -1935,9 +1936,9 @@ class DynamicAnalysisWindow(tk.Toplevel):
             if os.name == "nt":
                 os.startfile(str(folder))
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(folder)])
+                subprocess.Popen(["open", str(folder)], creationflags=no_window())
             else:
-                subprocess.Popen(["xdg-open", str(folder)])
+                subprocess.Popen(["xdg-open", str(folder)], creationflags=no_window())
         except Exception as e:
             messagebox.showerror(title, str(e), parent=self)
 

@@ -30,6 +30,7 @@ from typing import Any, Optional
 from dynamic_analysis.findings import KNOWN_NOISE_PROCESSES
 from dynamic_analysis.utils import is_analyzer_image
 from ringforge.resources import app_root
+from static_triage_engine.proc import no_window
 
 SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
 
@@ -106,7 +107,7 @@ def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=timeout,
-        errors="replace",
+        errors="replace", creationflags=no_window(),
     )
 
 

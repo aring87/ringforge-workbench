@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from static_triage_engine.proc import no_window
 
 
 def browse_file_into_var(tk_var, title="Select File", filetypes=None):
@@ -33,9 +34,9 @@ def open_path(path: str | os.PathLike):
         if sys.platform.startswith("win"):
             os.startfile(path)
         elif sys.platform == "darwin":
-            subprocess.run(["open", path], check=False)
+            subprocess.run(["open", path], check=False, creationflags=no_window())
         else:
-            subprocess.run(["xdg-open", path], check=False)
+            subprocess.run(["xdg-open", path], check=False, creationflags=no_window())
         return True
     except Exception as exc:
         messagebox.showerror("Open Failed", f"Could not open:\n{path}\n\n{exc}")

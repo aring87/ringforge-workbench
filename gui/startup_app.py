@@ -19,6 +19,7 @@ from gui.styles import apply_app_theme
 from gui.extension_window import ExtensionAnalysisWindow
 from gui.unified_report_window import UnifiedReportWindow
 from gui import theme as T
+from static_triage_engine.proc import no_window
 
 
 class StartupApp(tk.Tk):
@@ -101,9 +102,9 @@ class StartupApp(tk.Tk):
     def open_static_analysis(self):
         try:
             if getattr(sys, "frozen", False):
-                subprocess.Popen([str(self.launch_target), "--static-analysis"])
+                subprocess.Popen([str(self.launch_target), "--static-analysis"], creationflags=no_window())
             else:
-                subprocess.Popen([sys.executable, str(self.launch_target), "--static-analysis"])
+                subprocess.Popen([sys.executable, str(self.launch_target), "--static-analysis"], creationflags=no_window())
         except Exception as e:
             messagebox.showerror("RingForge", f"Could not launch Static Analysis:\n{e}")
 

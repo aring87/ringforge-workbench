@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from tkinter import messagebox
+from static_triage_engine.proc import no_window
 
 
 class PathActionsController:
@@ -28,9 +29,9 @@ class PathActionsController:
             if sys.platform.startswith("win"):
                 os.startfile(str(p))
             elif sys.platform == "darwin":
-                subprocess.run(["open", str(p)], check=False)
+                subprocess.run(["open", str(p)], check=False, creationflags=no_window())
             else:
-                subprocess.run(["xdg-open", str(p)], check=False)
+                subprocess.run(["xdg-open", str(p)], check=False, creationflags=no_window())
         except Exception as e:
             messagebox.showerror("Open Failed", f"Could not open:\n{p}\n\n{e}")
 

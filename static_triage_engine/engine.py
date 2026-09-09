@@ -41,6 +41,7 @@ from .steps import (
     step_yara,
 )
 from .verdict_rationale import build_static_verdict_rationale
+from static_triage_engine.proc import no_window
 
 TRUST_OVERRIDE_TECH_PREFIXES = {
     "T1055",
@@ -506,7 +507,7 @@ def _verify_authenticode_powershell(
             # would be recorded as "not attempted" rather than as the partial
             # answer it is.
             errors="replace",
-            timeout=timeout_sec,
+            timeout=timeout_sec, creationflags=no_window(),
         )
         raw = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")
         result["raw"] = raw[:120000]
@@ -714,7 +715,7 @@ def _verify_authenticode_osslsigncode(
             [exe, "verify", "-in", str(p)],
             capture_output=True,
             text=True,
-            timeout=timeout_sec,
+            timeout=timeout_sec, creationflags=no_window(),
         )
 
         raw = (cp.stdout or "") + ("\n" + cp.stderr if cp.stderr else "")

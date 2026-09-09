@@ -4,6 +4,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Optional
+from static_triage_engine.proc import no_window
 
 
 class ProcmonError(Exception):
@@ -48,7 +49,7 @@ def start_procmon_capture(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
-            close_fds=True,
+            close_fds=True, creationflags=no_window(),
         )
     except Exception as e:
         raise ProcmonError(f"Failed to start Procmon: {e}") from e
@@ -60,7 +61,7 @@ def terminate_procmon_capture(procmon_path: str | Path) -> None:
     procmon = ensure_procmon_exists(procmon_path)
 
     cmd = [str(procmon), "/AcceptEula", "/Terminate"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=no_window())
 
     if result.returncode not in (0, None):
         raise ProcmonError(
@@ -91,7 +92,7 @@ def export_procmon_csv(
         "/SaveAs", str(csv_out),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, creationflags=no_window())
 
     if result.returncode not in (0, None):
         raise ProcmonError(

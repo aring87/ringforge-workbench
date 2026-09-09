@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 from dynamic_analysis.sysmon_collector import is_elevated
 from dynamic_analysis.utils import sha256_file
 from ringforge.resources import app_root
+from static_triage_engine.proc import no_window
 
 try:
     import psutil
@@ -1380,7 +1381,7 @@ class MemoryDumpSession:
             result = subprocess.run(
                 [str(self.procdump), "-accepteula", "-ma", str(pid), str(out_path)],
                 capture_output=True,
-                timeout=_DUMP_TIMEOUT_SECONDS,
+                timeout=_DUMP_TIMEOUT_SECONDS, creationflags=no_window(),
             )
             record["returncode"] = int(result.returncode)
             stdout_text = _decode_tool_output(result.stdout or b"")

@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from dynamic_analysis.utils import sha256_file
 from ringforge.resources import app_root
+from static_triage_engine.proc import no_window
 
 #: DNS request lines, e.g. "Received A request for domain 'evil.com'".
 _DNS_RE = re.compile(
@@ -418,7 +419,7 @@ class FakeNetSession:
                 stdout=subprocess.DEVNULL,
                 stderr=self._stderr_handle,
                 stdin=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                creationflags=no_window(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
             )
         except OSError as error:
             self.error = _describe_launch_error(error, binary)

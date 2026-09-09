@@ -28,6 +28,7 @@ from gui.gui_utils import (
 )
 
 from static_triage_engine.combine_case import combine_case
+from static_triage_engine.proc import no_window
 
 SUBFILE_TRIAGE_RE = re.compile(
     r"^\[subfile:triage\]\s+selected=(?P<selected>\d+)\s+limit=(?P<limit>\d+)",
@@ -338,7 +339,7 @@ class StaticAnalysisController:
                     errors="replace",
                     bufsize=1,
                     env=env,
-                    creationflags=creationflags,
+                    creationflags=no_window(creationflags),
                 )
                 app.active_process = proc
 
@@ -408,7 +409,7 @@ class StaticAnalysisController:
                         ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        timeout=10,
+                        timeout=10, creationflags=no_window(),
                     )
                 except Exception:
                     try:
