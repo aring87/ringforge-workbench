@@ -1878,6 +1878,8 @@ Service/task findings reviewed in installer context
 
 ## External Tooling Notice
 
+> Installing these: **[docs/TOOL_SETUP.md](docs/TOOL_SETUP.md)**. Licence terms and what may be redistributed: **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**.
+
 The `v1.9.0` release package does **not** include third-party tools, external binaries, malware-analysis utilities, generated case folders, Procmon captures, or old release folders.
 
 Users must download and configure external tools themselves.
@@ -2401,26 +2403,31 @@ The names are the same as the installed package's, so a script written against
 
 ### It expects `tools\` beside it
 
-The bundle is the engine, the GUI and the data this project authors. It is
-**not** the analysis toolchain. Procmon, Autorunsc, Sysmon, FLOSS, capa,
-FakeNet and the downloaded YARA ruleset are third-party binaries that may not
-be redistributed here, and none of them is in the zip.
+The bundle carries the engine, the GUI, the data this project authors, and two
+third-party tools that may legally be redistributed: **capa** and **FLOSS**,
+both Apache-2.0. `tools\VENDORED.txt` records which upstream release each came
+from and its SHA256.
 
-They belong in a `tools\` directory *next to the executable*, which is where
-`scripts\bootstrap_tools.ps1` and `scripts\bootstrap_yara_rules.ps1` put them:
+Static analysis works with nothing else installed.
+
+A full detonation needs more, and the rest cannot be shipped: Procmon,
+Autorunsc, Sysmon and ProcDump are under the Sysinternals EULA, which prohibits
+redistribution, and Npcap is proprietary. They go in a `tools\` directory *next
+to the executable*:
 
 ```text
 RingForge\
     ringforge.exe
     ringforge-gui.exe
     _internal\              the frozen code, and the data it ships
-    tools\                  what you bootstrap: Procmon, Sysmon, YARA rules
+    licenses\               third-party licence text for what is inside
+    tools\                  capa and FLOSS, plus what you install
     cases\                  written here unless a case root is set
 ```
 
-Anything missing from `tools\` is reported as a coverage gap exactly as it is
-in a source run — a band of *Insufficient Coverage* rather than a clean
-result. See **External Tooling Notice**.
+**See [docs/TOOL_SETUP.md](docs/TOOL_SETUP.md)** for what to install, the exact
+filenames the engine looks for, and how to verify each one is actually seen.
+Anything missing is reported as a coverage gap rather than a clean result.
 
 ### Building it yourself
 

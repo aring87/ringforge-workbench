@@ -47,6 +47,63 @@ jobs:
       - name: Run the suite
         run: python -m pytest -m "not slow" -q
 
+      # ---------------------------------------------------------------------
+      # The two external tools that may legally be redistributed.
+      # ---------------------------------------------------------------------
+      # capa and FLOSS are Apache-2.0, so they ship inside the zip and the
+      # workbench works out of the box for capability detection and string
+      # decoding. Everything else it drives -- Procmon, Autorunsc, Sysmon,
+      # Npcap -- may not be redistributed at all, and the user installs those
+      # via docs/TOOL_SETUP.md.
+      #
+      # Fetched from the upstream release rather than committed, because the
+      # archives carry the LICENSE.txt that Apache-2.0 requires travel with
+      # the binary, and because a 30 MB binary per tool does not belong in git.
+      - name: Vendor capa and FLOSS
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          function Get-Tool($repo, $dest, $match) {
+            # Resolve rather than pin: a hardcoded version that 404s breaks
+            # every release build. What actually ships is recorded below.
+            $rel = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
+            $asset = $rel.assets | Where-Object { $_.name -match $match } | Select-Object -First 1
+            if (-not $asset) { throw "no asset matching $match in $repo $($rel.tag_name)" }
+
+            $zip = Join-Path $env:RUNNER_TEMP $asset.name
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
+            $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            Expand-Archive -Path $zip -DestinationPath $dest -Force
+
+            # Some archives nest everything one level down; flatten it so the
+            # executable sits where the workbench looks for it.
+            $inner = Get-ChildItem $dest -Directory
+            if ($inner.Count -eq 1 -and -not (Get-ChildItem $dest -File)) {
+              Get-ChildItem $inner[0].FullName | Move-Item -Destination $dest -Force
+              Remove-Item $inner[0].FullName -Recurse -Force
+            }
+
+            $licensed = Get-ChildItem $dest -Recurse -File |
+                        Where-Object { $_.Name -match "(?i)license|copying|notice" }
+            if (-not $licensed) {
+              throw "$repo $($rel.tag_name) carried no licence file; refusing to redistribute it"
+            }
+
+            Write-Output "  $repo $($rel.tag_name)  $($asset.name)  sha256=$sha"
+            "$repo $($rel.tag_name) $($asset.name) sha256=$sha" |
+              Add-Content -Path "$PWD/tools/VENDORED.txt" -Encoding utf8
+          }
+
+          New-Item -ItemType Directory -Force -Path "$PWD/tools" | Out-Null
+          "Third-party tools redistributed in this build (both Apache-2.0):" |
+            Set-Content -Path "$PWD/tools/VENDORED.txt" -Encoding utf8
+
+          Get-Tool "mandiant/capa"        "$PWD/tools/capa"  "windows.*\.zip$"
+          Get-Tool "mandiant/flare-floss" "$PWD/tools/floss" "windows.*\.zip$"
+
       - name: Build
         run: python -m PyInstaller ringforge.spec --noconfirm
 
@@ -113,13 +170,23 @@ jobs:
           }
           Write-Output "  version $($a.version) commit $($a.commit)"
 
+      # Only what the smoke tests made. `tools/` now holds the vendored capa
+      # and FLOSS, so removing it wholesale -- as this step first did -- would
+      # have quietly shipped a bundle with neither.
       - name: Clean the smoke-test leavings out of the bundle
         shell: pwsh
         run: |
           $dist = Join-Path $PWD "dist/RingForge"
-          Remove-Item -Recurse -Force (Join-Path $dist "tools") -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force (Join-Path $dist "tools/yara") -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force (Join-Path $dist "cases") -ErrorAction SilentlyContinue
           Remove-Item -Force (Join-Path $dist "probe.bin") -ErrorAction SilentlyContinue
+
+          foreach ($keep in @("tools/capa", "tools/floss")) {
+            if (-not (Test-Path (Join-Path $dist $keep))) {
+              throw "$keep is missing from the bundle after cleanup"
+            }
+          }
+          Write-Output "  vendored tools intact"
 
       - name: Package
         shell: pwsh
