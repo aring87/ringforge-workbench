@@ -39,6 +39,7 @@ from dynamic_analysis.preflight import (
 )
 from dynamic_analysis.procmon_config import DEFAULT_PROCMON_CONFIG_NAME
 from static_triage_engine.combine_case import combine_case
+from ringforge.resources import app_root, asset, procmon_configs_dir
 from gui import theme as T
 from gui.components import Card, Checkbox, HeaderBar, RoundedButton, StatTile, card_title
 
@@ -214,7 +215,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
             )
         )
 
-        project_root = Path(__file__).resolve().parents[1]
+        project_root = app_root()
         # `or`, not `cfg.get(key, default)`. A *cleared* field is a key that
         # exists holding "", so `.get` returns the empty string and never
         # reaches the default -- and an empty Procmon config means the
@@ -228,7 +229,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
         )
         self.procmon_config_var = tk.StringVar(
             value=cfg.get("dynamic_procmon_config_path")
-            or str(project_root / "tools" / "procmon-configs" / DEFAULT_PROCMON_CONFIG_NAME)
+            or str(procmon_configs_dir() / DEFAULT_PROCMON_CONFIG_NAME)
         )
 
         # --- Tier 1 telemetry -------------------------------------------------
@@ -422,7 +423,8 @@ class DynamicAnalysisWindow(tk.Toplevel):
         return value or "dynamic_case"
 
     def _project_root(self) -> Path:
-        return Path(__file__).resolve().parents[1]
+        """Case folders, `config.json` and `tools/` all hang off this."""
+        return app_root()
 
     def _get_case_home_dir(self) -> Path:
         raw = self.case_dir_var.get().strip()
@@ -829,7 +831,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _build_top_banner(self, outer) -> None:
         """Branded page header, shared with every other workbench window."""
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        logo_path = asset("anvil.png")
 
         header = HeaderBar(
             self,
@@ -1886,7 +1888,7 @@ class DynamicAnalysisWindow(tk.Toplevel):
 
     def _browse_procmon_config(self):
         raw = self.procmon_config_var.get().strip()
-        start = Path(raw).parent if raw else (self._project_root() / "tools" / "procmon-configs")
+        start = Path(raw).parent if raw else procmon_configs_dir()
         chosen = filedialog.askopenfilename(
             title="Select Procmon config (.pmc)",
             initialdir=str(start),

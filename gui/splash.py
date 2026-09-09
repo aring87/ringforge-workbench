@@ -61,7 +61,7 @@ class SplashScreen(tk.Toplevel):
         else:
             tk.Label(
                 content,
-                text="[assets/anvil.png not found]",
+                text="[anvil.png not found]",
                 bg=panel,
                 fg=accent,
                 font=("Segoe UI", 12, "bold"),

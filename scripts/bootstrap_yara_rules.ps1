@@ -24,7 +24,7 @@
   otherwise mean zero scanning. The quarantine sits beside the rules directory,
   not inside it, because the scanner walks the rules directory recursively.
 
-  Hand-maintained rules belong in tools\yara\local\. The rules directory itself
+  Hand-maintained rules belong in ringforge\_data\yara\local\. The rules directory
   is deleted and rebuilt on every run, so anything that must survive is sourced
   from there and copied back in afterwards -- that is what keeps the memory
   self-test rule in place across updates.
@@ -33,7 +33,7 @@
     1) Downloads the repository archive
     2) Locates the directory holding .yar/.yara files
     3) Copies them into <repo_root>\tools\yara\rules\
-    4) Copies tools\yara\local\ rules into <repo_root>\tools\yara\rules\local\
+    4) Copies ringforge\_data\yara\local\ rules into <repo_root>\tools\yara\rules\local\
     5) Test-compiles the result and quarantines whatever fails
 
 .PARAMETER Destination
@@ -328,7 +328,9 @@ try {
   # Hand-maintained rules live outside the downloaded set and are copied in
   # afterwards. Nothing inside rules\ is precious -- it is deleted and rebuilt on
   # every run -- so anything that must survive has to be sourced from elsewhere.
-  $localSource = Join-Path $destFull "local"
+  # Authored rules ship with the package now; the operator-managed tree
+  # under tools\yara holds only what this script downloads.
+  $localSource = Join-Path $repoRoot "ringforge\_data\yara\local"
   if (Test-Path -LiteralPath $localSource) {
     $localFiles = @(Get-ChildItem -Path $localSource -File -Recurse -ErrorAction SilentlyContinue |
                     Where-Object { $_.Extension -in @(".yar", ".yara") })
@@ -343,7 +345,7 @@ try {
       Write-Ok ("Installed {0} local rule file(s) from {1}" -f $localFiles.Count, $localSource)
     }
   } else {
-    Write-Info "No tools\yara\local directory; skipping local rules."
+    Write-Info "No ringforge\_data\yara\local directory; skipping local rules."
   }
 
   # Swap only now, when the staged tree is known to hold rules.

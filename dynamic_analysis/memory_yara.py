@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 # with .instances in newer builds, (offset, identifier, data) tuples in older
 # ones -- and a second copy of that logic would drift.
 from static_triage_engine.yara_scan import _collect_rule_files, _parse_match
+from ringforge.resources import LOCAL_YARA_RULES, local_yara_rules_dir
 
 try:
     import yara
@@ -87,13 +88,14 @@ def resolve_rules_dir(configured: str | Path | None = None) -> Optional[Path]:
         return None
 
 
-#: Where hand-written rules are authored, relative to the repository root.
+#: Where hand-written rules are authored.
 #:
-#: This directory is tracked by git. `tools\\yara\\rules\\` is not -- it is deleted
-#: and rebuilt by `bootstrap_yara_rules.ps1`, which copies this one into it as
-#: its last step. So a rule can be written, reviewed, committed and pulled, and
-#: still never reach the scanner.
-LOCAL_RULES_RELATIVE = Path("tools") / "yara" / "local"
+#: This directory is shipped with the package -- see `ringforge.resources`.
+#: The downloaded rules directory is not: it is deleted and rebuilt by
+#: `bootstrap_yara_rules.ps1`, which copies this one into it as its last
+#: step. So a rule can be written, reviewed, committed and pulled, and still
+#: never reach the scanner.
+LOCAL_RULES_RELATIVE = LOCAL_YARA_RULES
 
 
 def _digest(path: Path) -> str:
@@ -121,8 +123,7 @@ def local_rule_drift(rules_dir: Path | None,
         "canonical_dir": "", "scanned_dir": "", "note": "",
     }
 
-    canonical = (Path(canonical_dir) if canonical_dir
-                 else Path(__file__).resolve().parents[1] / LOCAL_RULES_RELATIVE)
+    canonical = Path(canonical_dir) if canonical_dir else local_yara_rules_dir()
     result["canonical_dir"] = str(canonical)
     if rules_dir is None or not canonical.is_dir():
         result["note"] = (

@@ -1,0 +1,158 @@
+# Builds the frozen workbench and attaches it to a GitHub Release.
+#
+# **Windows only, and for a stronger reason than the suite.** `tests.yml`
+# builds on Windows because the engine shells out to Procmon and reads
+# `ctypes.windll`. A PyInstaller bundle goes further than that: it is a Windows
+# PE containing a Windows Python and Windows extension modules. There is no
+# such thing as cross-building it.
+#
+# **What this ships and what it does not.** The engine, the GUI and the data
+# under `ringforge/_data/`. Procmon, Autorunsc, Sysmon, FLOSS, capa, FakeNet
+# and the downloaded YARA set are not redistributable and are not here --
+# `scripts/bootstrap_tools.ps1` installs them into `tools/` beside the
+# executable, and their absence keeps being reported as a coverage gap.
+#
+# The binary is unsigned. SmartScreen will warn, and a malware-analysis tool
+# that bundles YARA trips a fair number of AV heuristics. Signing needs a
+# certificate this workflow does not have.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # So a build can be exercised without cutting a tag. Uploads the artifact
+  # and creates no release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build the executable (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package and the packaging toolchain
+        run: python -m pip install -e ".[gui]" pyinstaller==6.15.0
+
+      # The suite before the build, not after. A bundle of code that does not
+      # pass its own tests is not worth the four minutes it takes to freeze.
+      - name: Run the suite
+        run: python -m pytest -m "not slow" -q
+
+      - name: Build
+        run: python -m PyInstaller ringforge.spec --noconfirm
+
+      # ---------------------------------------------------------------------
+      # Smoke tests against the frozen build, from outside the source tree.
+      # ---------------------------------------------------------------------
+      # These exist because the failure they cover is invisible from a
+      # checkout. `app_root()` must resolve to the directory holding the
+      # executable; every path derived from `__file__` instead lands in
+      # `_internal/`, which holds no `tools/` and never will. Unfrozen the two
+      # are the same directory, so the suite cannot tell them apart.
+      - name: The CLI runs at all
+        shell: pwsh
+        run: |
+          $dist = Join-Path $PWD "dist/RingForge"
+          & (Join-Path $dist "ringforge.exe") --help
+          if ($LASTEXITCODE -ne 0) { throw "ringforge.exe --help failed" }
+
+      - name: tools/ resolves beside the executable, not inside the bundle
+        shell: pwsh
+        run: |
+          $dist = Join-Path $PWD "dist/RingForge"
+          $rules = Join-Path $dist "tools/yara/rules"
+          New-Item -ItemType Directory -Force -Path $rules | Out-Null
+
+          # A rule that exists nowhere but beside the executable. If the scan
+          # matches it, app_root() found it; if the rules directory were still
+          # derived from __file__ the scan would see zero rules and report a
+          # clean result, which is the exact defect this guards.
+          $rule = "rule Beside_The_Executable { strings: `$a = " +
+                  '"ringforge-frozen-probe"' + " condition: `$a }"
+          Set-Content -Path (Join-Path $rules "beside_the_exe.yar") -Value $rule -Encoding utf8
+          Set-Content -Path (Join-Path $dist "probe.bin") -Value "ringforge-frozen-probe" -NoNewline -Encoding utf8
+
+          Push-Location $dist
+          $out = & ./ringforge.exe scan probe.bin --case frozenprobe --json | ConvertFrom-Json
+          Pop-Location
+
+          $yara = $out.summary.yara
+          if (-not $yara.matched) {
+            throw "the frozen build did not find tools/ beside its executable"
+          }
+          if ($yara.top_rules -notcontains "Beside_The_Executable") {
+            throw "matched something, but not the rule placed beside the exe"
+          }
+          Write-Output "  app_root resolves: matched $($yara.top_rules -join ', ')"
+
+      - name: The verdict identifies the build that produced it
+        shell: pwsh
+        run: |
+          $dist = Join-Path $PWD "dist/RingForge"
+          Push-Location $dist
+          $v = & ./ringforge.exe combine cases/frozenprobe --json --no-write | ConvertFrom-Json
+          Pop-Location
+
+          $a = $v.provenance.analyzer
+          # A frozen build has neither git history nor distribution metadata,
+          # so both of these are stamped in at build time by ringforge.spec.
+          # Null here means a verdict nobody can trace to a build.
+          if (-not $a.version) { throw "provenance.analyzer.version is null in the frozen build" }
+          if (-not $a.commit)  { throw "provenance.analyzer.commit is null in the frozen build" }
+          foreach ($lib in $a.tools.PSObject.Properties) {
+            if (-not $lib.Value) { throw "provenance reports $($lib.Name) absent; its metadata was not bundled" }
+          }
+          Write-Output "  version $($a.version) commit $($a.commit)"
+
+      - name: Clean the smoke-test leavings out of the bundle
+        shell: pwsh
+        run: |
+          $dist = Join-Path $PWD "dist/RingForge"
+          Remove-Item -Recurse -Force (Join-Path $dist "tools") -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force (Join-Path $dist "cases") -ErrorAction SilentlyContinue
+          Remove-Item -Force (Join-Path $dist "probe.bin") -ErrorAction SilentlyContinue
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -like "refs/tags/*") {
+            $env:GITHUB_REF -replace "refs/tags/", ""
+          } else {
+            "dev-$($env:GITHUB_SHA.Substring(0,7))"
+          }
+          $zip = "RingForge-$version-win64.zip"
+          Compress-Archive -Path dist/RingForge -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Set-Content -Path "$zip.sha256" -Encoding utf8
+          Write-Output "  $zip  $hash"
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RingForge-win64
+          path: |
+            ${{ env.zip }}
+            ${{ env.zip }}.sha256
+
+      # `gh` is preinstalled on the runner, so this needs no third-party action
+      # in a repository whose whole subject is supply chain.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" `
+            "$env:zip" "$($env:zip).sha256" `
+            --title "$env:GITHUB_REF_NAME" `
+            --generate-notes `
+            --verify-tag

@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 from dynamic_analysis.findings import KNOWN_NOISE_PROCESSES
 from dynamic_analysis.utils import is_analyzer_image
+from ringforge.resources import app_root
 
 SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
 
@@ -110,8 +111,8 @@ def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def default_sysmon_path() -> Path:
-    """Where a bundled Sysmon binary is expected to live."""
-    return Path(__file__).resolve().parents[1] / "tools" / "sysmon64.exe"
+    """Where a bundled Sysmon binary is expected to live: <app_root>/tools/."""
+    return app_root() / "tools" / "sysmon64.exe"
 
 
 def find_sysmon(configured_path: str | Path | None = None) -> Optional[Path]:
@@ -121,7 +122,7 @@ def find_sysmon(configured_path: str | Path | None = None) -> Optional[Path]:
     if configured_path:
         candidates.append(Path(configured_path))
 
-    tools = Path(__file__).resolve().parents[1] / "tools"
+    tools = app_root() / "tools"
     candidates.extend([tools / "sysmon64.exe", tools / "sysmon.exe"])
 
     for name in ("sysmon64.exe", "sysmon.exe"):

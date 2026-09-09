@@ -13,6 +13,7 @@ from static_triage_engine.extension_report import build_extension_report
 from gui import theme as T
 from gui.components import Card, HeaderBar, RoundedButton, ScrolledText, StatTile, card_title
 from gui.styles import apply_window_theme
+from ringforge.resources import app_root, asset
 
 try:
     import tkinter.scrolledtext as scrolledtext
@@ -124,7 +125,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
     def _build_banner(self, parent) -> None:
         """Branded page header, shared with every other workbench window."""
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        logo_path = asset("anvil.png")
 
         header = HeaderBar(
             parent,
@@ -1083,7 +1084,7 @@ class ExtensionAnalysisWindow(tk.Toplevel):
 
 
     def _get_case_dir(self) -> Path:
-        project_root = Path(__file__).resolve().parents[1]
+        project_root = app_root()
 
         case_root = (
             Path(self.parent.case_root_var.get().strip())

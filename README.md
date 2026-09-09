@@ -757,10 +757,86 @@ one reported risk notes when the summary block was missing. And the case page
 printed API auth scheme names as the spec author wrote them, so it said
 `bearerAuth` where the spec report, reading the same file, said `bearer`.
 
+### The workbench ships as an executable, and two roots had to be told apart
+
+`pip install` produced a workbench with no logo, no Procmon filters and none of
+this project's own YARA rules. Those nine files were tracked in git and
+resolved relative to the repository root, which works for every run started
+from a checkout and for nothing else: `package-data` applies only to files
+inside a package, and neither `assets/` nor `tools/` is one. They live in
+`ringforge/_data/` now, and `ringforge.resources` is the only thing that
+resolves them. `scripts/check_installed_package.py` checks them alongside the
+imports, because a test run from the repo root cannot see either failure.
+
+Freezing then exposed the larger version of the same mistake. `get_app_root()`
+had understood `sys.frozen` since the beginning and so had `gui_utils.app_root()`
+— but twenty-odd other sites called neither and derived a root from `__file__`:
+every `_tools_dir()`, the Autorunsc and Sysmon defaults, the YARA rules
+directory, each window's `cases/` fallback. Under PyInstaller `__file__` points
+into the *unpacked code*, so `find_procdump` would have searched a directory
+that can never contain ProcDump, and `memory_dump_status` would have reported
+"Place procdump64.exe under tools/" — accurate about the miss, naming a
+`tools/` that is not the one beside the operator's executable.
+
+So there are two roots and they are named. `app_root()` for what the
+application does not ship — `tools/`, `cases/`, `logs/` — which follows the
+*executable*. `data_root()` for what it does ship, through
+`importlib.resources`, which answers identically for a checkout, a wheel and a
+bundle and therefore needs no frozen branch at all. Both live in one module;
+the two pre-existing helpers became delegates so their callers were untouched.
+
+The split is asserted rather than the individual paths, in
+`dynamic_analysis/tests/test_frozen_paths.py`: external state must land beside
+the executable and never inside the unpacked code, and shipped data must not
+follow the executable — which also catches anyone later "fixing" `data_root()`
+into the wrong convention. The two answers are identical in a source checkout,
+which is precisely why nothing caught this for as long as every run started
+from one.
+
+### A frozen verdict says which build produced it
+
+A PyInstaller bundle has no git history and no distribution metadata, so
+`provenance.analyzer` would have reported version and commit as `null` — an
+untraceable verdict, out of the envelope added in `v1.12` to make verdicts
+traceable. `ringforge.spec` stamps both in and `_baked()` reads them back.
+
+The guard on it is the interesting part. That generated module is written into
+the source tree, where it is gitignored but survives the build, so an
+unguarded fallback answers for source runs too — a developer who had once built
+an exe would get a stale commit reported against their working tree.
+`test_a_missing_git_checkout_is_not_an_error` caught exactly that. The fallback
+is frozen-only, and a real git answer still wins over the stamp.
+
+`lief` shipped as an extension module without its metadata, so provenance
+reported it absent while `_lief.pyd` sat in the bundle. That is
+`rule_file_count` wearing another hat, so the spec keeps its metadata list
+equal to `provenance._TRACKED` and the release workflow fails the build if any
+tracked library reports null.
+
+### Building it, and proving it works
+
+`ringforge.spec` is one-dir, not one-file: one-file unpacks the bundle to a new
+temporary directory on every launch, which moves `__file__` each run and puts a
+visible pause in front of a 60 MB toolchain. Two entry points share it,
+`ringforge.exe` and `ringforge-gui.exe`, named to match `[project.scripts]` so
+the commands are the same installed or unzipped.
+
+`.github/workflows/release.yml` builds on a `v*` tag and attaches the zip and
+its SHA256 to a release. Its smoke tests are the ones worth keeping: it places
+a YARA rule in `tools/yara/rules/` **beside the built executable** and fails
+unless the scan matches it. Nothing but a correct `app_root()` can find that
+file, and a source run cannot tell the difference.
+
 ### Housekeeping
 
-- Test suite **1,383 -> 1,625**. All eight extractions are testable for the
+- Test suite **1,383 -> 1,662**. All eight extractions are testable for the
   first time; none had a single test before.
+- `*.spec` was gitignored twice from a stock Python template, so the
+  hand-written build spec would never have been committed and CI would have had
+  nothing to build from.
+- `tools/procmon-configs/` and `tools/yara/local/` needed re-include stanzas in
+  `.gitignore` to rescue them from under an excluded parent. Both are gone:
+  `ringforge/_data/` sits under no exclusion.
 - Every `report_page` caller now names its producing module in the footer.
 - The "there is no response to save yet" check runs before the unredacted-save
   confirmation, so approving that dialog can no longer be followed by being
@@ -1900,8 +1976,8 @@ tools/procdump64.exe
   - Recommended paths:
 
 ```text
-tools/yara/rules/          downloaded ruleset, replaced on every bootstrap
-tools/yara/local/          hand-maintained rules, preserved across updates
+tools/yara/rules/                downloaded ruleset, replaced on every bootstrap
+ringforge/_data/yara/local/      hand-maintained rules, shipped with the package
 ```
 
 - **Procmon / Procmon64**
@@ -2168,14 +2244,16 @@ Note: some compatibility report names are intentionally retained so older GUI bu
 
 ```text
 ringforge-workbench/
-  assets/
   docs/
   dynamic_analysis/
   gui/
+  ringforge/
   scripts/
   static_triage_engine/
   test_specs/
   tools/
+  verdict/
+  ringforge.spec
   triage_inbox.py
   requirements.txt
   README.md
@@ -2186,14 +2264,16 @@ Important folders:
 
 | Folder | Purpose |
 |---|---|
-| `assets/` | Branding and UI assets |
+| `ringforge/` | The command line, and `_data/` — the branding, Procmon filter configs and authored YARA rules the package *ships*, resolved through `ringforge.resources` so a wheel and a frozen build find them too |
 | `docs/` | `WORKFLOW.md`, the detonation procedure and why each step is ordered as it is. `HANDOFF.md`, the current state of the work: what is validated, what is known-broken, and what is worth doing next |
 | `dynamic_analysis/` | Dynamic collection, parsing, scoring, and reporting. Includes `sysmon_collector.py`, `network_capture.py`, `fakenet_runner.py`, `memory_dump.py`, and `memory_yara.py` |
 | `gui/` | Tkinter GUI windows, launcher, controllers, and styles. `theme.py` holds the design tokens; `components.py` the shared widgets |
 | `scripts/` | Entry points and helper scripts, including `bootstrap_tools.ps1` (guest setup), `bootstrap_yara_rules.ps1` (YARA rules), `vm_hygiene.ps1` (guest noise reduction), and `vm_net.ps1` (host containment) |
 | `test_specs/` | Test inputs, including the `memory_canary/` memory-dump self-test |
 | `static_triage_engine/` | Static analysis engine, scoring, and reporting |
-| `tools/` | Local helper tool paths and configuration folders |
+| `tools/` | Third-party binaries an operator bootstraps — Procmon, Sysmon, Autorunsc, the downloaded YARA ruleset. Nothing here is tracked or redistributed, and it is resolved from `app_root()` so a frozen build looks beside its executable |
+| `verdict/` | The corroboration model, the case envelope and the OCSF exporter |
+| `ringforge.spec` | The PyInstaller build: one-dir, two entry points, with the version and commit stamped in |
 | `triage_inbox.py` | Helper entry point / inbox workflow |
 
 The release archive is intended to contain the packaged application and documentation. Local folders such as `.venv/`, generated `cases/`, and temporary build artifacts should not be included in source archives.
@@ -2301,6 +2381,63 @@ cd C:\RingForge_Analyzer\Static-Software-Malware-Analysis
 .\.venv\Scripts\Activate.ps1
 python .\scripts\static_triage_gui.py
 ```
+
+---
+
+## Standalone Executable
+
+A frozen build needs no Python, no virtual environment and no checkout. Take
+`RingForge-<version>-win64.zip` from the
+[releases page](https://github.com/aring87/ringforge-workbench/releases),
+unzip it, and run either executable:
+
+```powershell
+.\ringforge-gui.exe                       # the workbench window
+.\ringforge.exe combine <case> --json     # the command line
+```
+
+The names are the same as the installed package's, so a script written against
+`pip install ringforge-workbench` runs unchanged against the zip.
+
+### It expects `tools\` beside it
+
+The bundle is the engine, the GUI and the data this project authors. It is
+**not** the analysis toolchain. Procmon, Autorunsc, Sysmon, FLOSS, capa,
+FakeNet and the downloaded YARA ruleset are third-party binaries that may not
+be redistributed here, and none of them is in the zip.
+
+They belong in a `tools\` directory *next to the executable*, which is where
+`scripts\bootstrap_tools.ps1` and `scripts\bootstrap_yara_rules.ps1` put them:
+
+```text
+RingForge\
+    ringforge.exe
+    ringforge-gui.exe
+    _internal\              the frozen code, and the data it ships
+    tools\                  what you bootstrap: Procmon, Sysmon, YARA rules
+    cases\                  written here unless a case root is set
+```
+
+Anything missing from `tools\` is reported as a coverage gap exactly as it is
+in a source run — a band of *Insufficient Coverage* rather than a clean
+result. See **External Tooling Notice**.
+
+### Building it yourself
+
+```powershell
+pip install -e ".[gui]" pyinstaller
+python -m PyInstaller ringforge.spec --noconfirm
+```
+
+The output is `dist\RingForge\`. `ringforge.spec` stamps the version and the
+commit into the build, because a frozen build has neither git history nor
+distribution metadata, and every verdict carries the identity of the analyzer
+that produced it. Pushing a `v*` tag runs the same build in CI and attaches the
+zip and its SHA256 to a GitHub release.
+
+The binary is **unsigned**. SmartScreen will warn on first run, and a tool that
+bundles YARA and inspects malware trips some AV heuristics. Signing needs a
+certificate this project does not carry.
 
 ---
 

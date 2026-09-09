@@ -13,7 +13,10 @@ them, and only one of those two numbers was in the artifact.
 
 import json
 import tempfile
+import sys
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from static_triage_engine.combine_case import combine_case
@@ -102,6 +105,50 @@ class TheAnalyzerBlock(unittest.TestCase):
         from verdict.provenance import git_commit
 
         self.assertIsNone(git_commit(tempfile.mkdtemp()))
+
+
+class AFrozenBuildStillIdentifiesItself(unittest.TestCase):
+    """A PyInstaller bundle has no git history and no distribution metadata.
+
+    Both answers would be null, which is a verdict nobody can trace back to the
+    build that produced it -- in the envelope that exists to make verdicts
+    traceable. `ringforge.spec` stamps them in and `_baked` reads them back.
+    """
+
+    def _stub(self, **attributes):
+        """Stand in for the generated `ringforge._build_info`."""
+        module = types.ModuleType("ringforge._build_info")
+        for name, value in attributes.items():
+            setattr(module, name, value)
+        return mock.patch.dict(sys.modules, {"ringforge._build_info": module})
+
+    def test_the_stamp_answers_when_git_and_metadata_cannot(self) -> None:
+        from verdict.provenance import analyzer_version, git_commit
+
+        with mock.patch.object(sys, "frozen", True, create=True),                 self._stub(VERSION="9.9.9", COMMIT="deadbeef"),                 mock.patch("verdict.provenance._package_version", return_value=None):
+            self.assertEqual("deadbeef", git_commit(tempfile.mkdtemp()))
+            self.assertEqual("9.9.9", analyzer_version())
+
+    def test_the_stamp_never_answers_for_a_source_run(self) -> None:
+        # The spec writes `_build_info` into the source tree, where it is
+        # gitignored but survives the build. Unfrozen it must be ignored, or a
+        # developer who once built an exe gets a stale commit reported against
+        # whatever is in their working tree now.
+        from verdict.provenance import analyzer_version, git_commit
+
+        with self._stub(VERSION="9.9.9", COMMIT="deadbeef"),                 mock.patch("verdict.provenance._package_version", return_value=None):
+            self.assertIsNone(git_commit(tempfile.mkdtemp()))
+            self.assertIsNone(analyzer_version())
+
+    def test_a_real_checkout_still_beats_the_stamp(self) -> None:
+        # Frozen or not, a working git answer wins: the stamp is a fallback,
+        # not an override.
+        from verdict.provenance import git_commit
+
+        with mock.patch.object(sys, "frozen", True, create=True),                 self._stub(COMMIT="deadbeef"):
+            commit = git_commit(Path(__file__).resolve().parents[2])
+            if commit is not None:      # skipped where git is unavailable
+                self.assertNotEqual("deadbeef", commit)
 
 
 class TheEnvelope(unittest.TestCase):

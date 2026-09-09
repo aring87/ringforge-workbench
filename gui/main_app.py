@@ -16,6 +16,7 @@ from gui.api_window import APIAnalysisWindow
 from gui.dynamic_window import DynamicAnalysisWindow
 from gui.spec_window import SpecAnalysisWindow
 from gui.styles import apply_app_theme
+from ringforge.resources import asset
 from gui.gui_utils import (
     ROOT,
     DEFAULT_CASE_ROOT,
@@ -207,7 +208,7 @@ class App(tk.Tk):
         self._update_effective_label()
 
     def _build_top_banner(self, outer):
-        logo_path = ROOT / "assets" / "anvil.png"
+        logo_path = asset("anvil.png")
 
         header = HeaderBar(
             self,

@@ -34,10 +34,11 @@ from pathlib import Path
 
 import pytest
 
+from ringforge.resources import local_yara_rules_dir
+
 pytestmark = pytest.mark.slow
 
-RULES = (Path(__file__).resolve().parents[2] / "tools" / "yara" / "local"
-         / "ringforge_split_api_loader.yar")
+RULES = local_yara_rules_dir() / "ringforge_split_api_loader.yar"
 STAGE2 = Path(r"G:\ringforge-artifacts\422e30ed_stage2"
               r"\stage2_assembly_e139c422.xor9")
 

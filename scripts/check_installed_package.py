@@ -14,7 +14,9 @@ not shipped -- while the engine imported them. It worked for as long as nobody
 installed it. The first install outside the source tree failed on
 `ModuleNotFoundError: No module named 'scripts'`.
 
-No test can catch that from inside the directory that hides it.
+No test can catch that from inside the directory that hides it. The same is
+true of packaged *data*, which is why the shipped assets, Procmon configs
+and authored YARA rules are checked here too.
 """
 
 from __future__ import annotations
@@ -38,6 +40,23 @@ REQUIRED = (
     "verdict.case_artifacts",
     "verdict.case_summary",
     "ringforge.cli",
+    "ringforge.resources",
+)
+
+#: Data files the package ships: (accessor name, argument, glob). A glob of
+#: `None` means the accessor names one file rather than a directory.
+#:
+#: **These are here for the same reason the imports are.** They were tracked
+#: in git and resolved from the repo root, so they reached every run started
+#: from a checkout and no installed copy at all -- `package-data` applies
+#: only inside a package, and neither `assets/` nor `tools/` was one. A `pip
+#: install` produced a workbench with no logo, no Procmon filters and none of
+#: this project's own YARA rules, each absence reported as an ordinary
+#: coverage gap.
+REQUIRED_DATA = (
+    ("asset", "anvil.png", None),
+    ("procmon_configs_dir", None, "*.pmc"),
+    ("local_yara_rules_dir", None, "*.yar"),
 )
 
 
@@ -67,14 +86,34 @@ def main() -> int:
             failures.append(f"{name}: resolved from {origin}, which is not an "
                             f"installed package")
 
+    # Data files, checked only once the imports have proved out -- a failure
+    # here should mean "not packaged", not "could not import the accessor".
+    if not failures:
+        from ringforge import resources
+
+        for accessor, argument, glob in REQUIRED_DATA:
+            label = f"{accessor}({argument!r})" if argument else f"{accessor}()"
+            try:
+                function = getattr(resources, accessor)
+                path = function(argument) if argument else function()
+            except Exception as error:
+                failures.append(f"{label}: {type(error).__name__}: {error}")
+                continue
+            if glob is None:
+                if not path.is_file():
+                    failures.append(f"{label}: {path} is not a file")
+            elif not (path.is_dir() and any(path.glob(glob))):
+                failures.append(f"{label}: no {glob} under {path}")
+
     for name in failures:
         print(f"  FAIL {name}")
     if failures:
-        print(f"\n{len(failures)} of {len(REQUIRED)} imports did not come from "
-              f"an installed package.")
+        print(f"\n{len(failures)} check(s) failed across {len(REQUIRED)} imports "
+              f"and {len(REQUIRED_DATA)} data files.")
         return 1
 
     print(f"  all {len(REQUIRED)} modules import from the installed package")
+    print(f"  all {len(REQUIRED_DATA)} shipped data paths resolve")
     return 0
 
 

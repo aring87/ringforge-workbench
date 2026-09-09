@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dynamic_analysis.utils import sha256_file
+from ringforge.resources import app_root
 
 #: DNS request lines, e.g. "Received A request for domain 'evil.com'".
 _DNS_RE = re.compile(
@@ -142,7 +143,8 @@ def _describe_launch_error(error: OSError, binary: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _tools_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "tools"
+    """Beside the application, not beside the code -- see `app_root`."""
+    return app_root() / "tools"
 
 
 def find_fakenet(configured: str | Path | None = None) -> Optional[Path]:

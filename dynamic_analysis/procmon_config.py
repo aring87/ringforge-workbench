@@ -2,7 +2,7 @@
 
 This exists because of where gap 4's second half actually blocks. The handoff
 said the missing piece was `INTERESTING_OPS` not carrying `RegQueryValue`, and
-that is true but not the binding constraint: `tools/procmon-configs/
+that is true but not the binding constraint: `ringforge/_data/procmon-configs/
 dynamic_default.pmc` carries **sixteen Operation *include* rules**, and
 `DestructiveFilter` is 1. So a registry read is dropped at capture time, never
 reaches `export.csv`, and no amount of parser work can find one. Every PML this
@@ -414,7 +414,7 @@ def describe_procmon_filter(config_path: str | Path | None) -> dict[str, Any]:
         note = (
             f"{len(operations)} operation(s) included and no registry read among "
             "them, so a VM-artifact check could not have been seen. "
-            "tools/procmon-configs/dynamic_registry_reads.pmc captures them."
+            "ringforge/_data/procmon-configs/dynamic_registry_reads.pmc captures them."
         )
 
     if excluded_classes:

@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from gui import theme as T
 from gui.components import Card, HeaderBar, RoundedButton, StatTile, card_title
 from gui.styles import apply_window_theme
+from ringforge.resources import app_root, asset
 from typing import Any, Optional
 
 try:
@@ -107,7 +108,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         return "spec_case"
 
     def _ensure_spec_dir(self) -> Path:
-        project_root = Path(__file__).resolve().parents[1]
+        project_root = app_root()
         case_root = (
             Path(self.app.case_root_var.get().strip())
             if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()
@@ -149,7 +150,7 @@ class SpecAnalysisWindow(tk.Toplevel):
 
     def _build_top_banner(self, outer: dict[str, Any]) -> None:
         """Branded page header, shared with every other workbench window."""
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        logo_path = asset("anvil.png")
 
         header = HeaderBar(
             self,
@@ -404,7 +405,7 @@ class SpecAnalysisWindow(tk.Toplevel):
     # -------------------------------------------------------------------------
 
     def _browse_spec(self) -> None:
-        project_root = Path(__file__).resolve().parents[1]
+        project_root = app_root()
         start = Path(self.spec_path_var.get()).parent if self.spec_path_var.get().strip() else project_root
         chosen = filedialog.askopenfilename(
             title="Select API spec",
@@ -752,7 +753,7 @@ class SpecAnalysisWindow(tk.Toplevel):
             self._populate_result(result)
             self._save_report_files(result)
 
-            project_root = Path(__file__).resolve().parents[1]
+            project_root = app_root()
             case_root = (
                 Path(self.app.case_root_var.get().strip())
                 if hasattr(self.app, "case_root_var") and self.app.case_root_var.get().strip()

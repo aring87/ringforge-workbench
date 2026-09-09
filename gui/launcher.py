@@ -7,6 +7,7 @@ from tkinter import ttk
 
 from gui import theme as T
 from gui.components import Badge, Card, EmptyState, HeaderBar, RoundedButton, SectionTitle
+from ringforge.resources import asset
 
 #: The six analysis workflows, in launch order.
 #: (attribute on app, title, glyph, category accent, description)
@@ -109,7 +110,7 @@ class LauncherWindow(ttk.Frame):
         self._build_footer()
 
     def _build_header(self):
-        logo = Path(getattr(self.app, "project_root", Path.cwd())) / "assets" / "anvil.png"
+        logo = asset("anvil.png")
 
         header = HeaderBar(
             self,

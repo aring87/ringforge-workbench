@@ -21,6 +21,7 @@ from static_triage_engine.api_response_analysis import analyze_response
 from gui import theme as T
 from gui.components import Card, Checkbox, HeaderBar, RoundedButton, StatTile, card_title
 from gui.styles import apply_window_theme
+from ringforge.resources import app_root, asset
 
 try:
     from PIL import Image, ImageTk
@@ -235,7 +236,7 @@ class APIAnalysisWindow(tk.Toplevel):
 
     def _build_top_banner(self, outer: dict[str, Any]) -> None:
         """Branded page header, shared with every other workbench window."""
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        logo_path = asset("anvil.png")
 
         header = HeaderBar(
             self,
@@ -758,7 +759,7 @@ class APIAnalysisWindow(tk.Toplevel):
                 manual_api_latest.json
                 manual_api_latest.html
         """
-        project_root = Path(__file__).resolve().parents[1]
+        project_root = app_root()
 
         case_root = project_root / "cases"
         case_name = ""

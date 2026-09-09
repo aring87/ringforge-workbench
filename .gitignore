@@ -92,6 +92,10 @@ release/
 *.rar
 *.msi
 *.spec
+# ...except this one. `ringforge.spec` is not generated: it carries the
+# one-dir layout, the bundled data, the metadata provenance reads back and
+# the build-time identity stamp. The release workflow builds from it.
+!ringforge.spec
 scripts/static_triage_gui_v2.py
 scripts/static_triage_gui_v3.py
 scripts/static_triage_gui_v4.py
@@ -132,20 +136,18 @@ tools/*.exe
 tools/*.chm
 tools/*.txt
 
-# ----------------------------
-# Keep Procmon configs tracked
-# -----------------------------
-!tools/procmon-configs/
-!tools/procmon-configs/*.pmc
+# The Procmon configs used to need re-including here. They ship with the
+# package now -- ringforge/_data/procmon-configs/ -- which is not under an
+# excluded parent, so nothing has to be rescued back in.
 
 # ----------------------------
 # YARA rules
 # ----------------------------
 # The downloaded ruleset is hundreds of files installed by
 # bootstrap_yara_rules.ps1, and the quarantine holds whatever failed to compile.
-# Neither belongs in git. tools/yara/local/ is hand-maintained and IS tracked,
-# so these name the subdirectories rather than tools/yara/ as a whole -- git
-# cannot re-include anything under an excluded parent directory.
+# Neither belongs in git. The hand-maintained rules moved to
+# ringforge/_data/yara/local/ so that they reach an installed wheel, which
+# leaves tools/yara/ holding nothing tracked at all.
 tools/yara/rules/
 tools/yara/_broken/
 
@@ -163,3 +165,7 @@ release/
 
 # Packaging output (`python -m build`). `dist/` is already above.
 *.egg-info/
+
+# PyInstaller build output and the identity it stamps in.
+build/
+ringforge/_build_info.py

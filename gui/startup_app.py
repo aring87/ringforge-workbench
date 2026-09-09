@@ -8,6 +8,7 @@ from tkinter import messagebox
 import traceback
 
 from gui.gui_utils import load_config, DEFAULT_CASE_ROOT
+from ringforge.resources import app_root, asset
 
 from gui.api_window import APIAnalysisWindow
 from gui.dynamic_window import DynamicAnalysisWindow
@@ -24,9 +25,8 @@ class StartupApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.project_root = Path(__file__).resolve().parents[1]
-        self.assets_dir = self.project_root / "assets"
-        self.anvil_path = self.assets_dir / "anvil.png"
+        self.project_root = app_root()
+        self.anvil_path = asset("anvil.png")
 
         if getattr(sys, "frozen", False):
             self.launch_target = Path(sys.executable)

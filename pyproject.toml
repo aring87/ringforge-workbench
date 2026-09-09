@@ -83,5 +83,16 @@ include = [
 [tool.setuptools]
 py-modules = ["design_tokens"]
 
+# **Shipped data, and why it is under `ringforge/`.** `assets/anvil.png`, the
+# Procmon filter configs and the authored YARA rules were tracked in git and
+# resolved from the repo root, so they reached every run started from a
+# checkout and no installed wheel at all -- package data only applies to files
+# inside a package, and neither `assets/` nor `tools/` is one. They live in
+# `ringforge/_data/` now and `ringforge.resources` is the only thing that
+# resolves them. `tools/` stays the operator-managed install tree.
 [tool.setuptools.package-data]
-"*" = ["*.pmc", "*.sig"]
+"ringforge" = [
+    "_data/assets/*.png",
+    "_data/procmon-configs/*.pmc",
+    "_data/yara/local/*.yar",
+]

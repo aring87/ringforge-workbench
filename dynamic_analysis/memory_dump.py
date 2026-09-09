@@ -36,6 +36,7 @@ from typing import Any, Callable, Optional
 
 from dynamic_analysis.sysmon_collector import is_elevated
 from dynamic_analysis.utils import sha256_file
+from ringforge.resources import app_root
 
 try:
     import psutil
@@ -238,7 +239,8 @@ class MemoryDumpError(Exception):
 # ---------------------------------------------------------------------------
 
 def _tools_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "tools"
+    """Beside the application, not beside the code -- see `app_root`."""
+    return app_root() / "tools"
 
 
 def find_procdump(configured: str | Path | None = None) -> Optional[Path]:

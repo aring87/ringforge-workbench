@@ -1,9 +1,10 @@
 """The registry reads have to exist before anything can collect them.
 
 The handoff put gap 4's blocker in `INTERESTING_OPS`, and that was half of it.
-The binding constraint is `tools/procmon-configs/dynamic_default.pmc`: sixteen
-Operation *include* rules, none of them a read, with `DestructiveFilter` set to 1
-so a filtered event is dropped from the log rather than merely hidden. A
+The binding constraint is `ringforge/_data/procmon-configs/dynamic_default.pmc`:
+sixteen Operation *include* rules, none of them a read, with
+`DestructiveFilter` set to 1 so a filtered event is dropped from the log
+rather than merely hidden. A
 `RegQueryValue` never reaches `export.csv`, and no parser change can find one --
 nor can a second export pass over any PML this project has already written.
 
@@ -30,8 +31,9 @@ from dynamic_analysis.procmon_config import (
     with_operations_included,
     write_filter_rules,
 )
+from ringforge.resources import procmon_configs_dir
 
-CONFIGS = Path(__file__).resolve().parents[2] / "tools" / "procmon-configs"
+CONFIGS = procmon_configs_dir()
 DEFAULT = CONFIGS / "dynamic_default.pmc"
 WITH_READS = CONFIGS / "dynamic_registry_reads.pmc"
 

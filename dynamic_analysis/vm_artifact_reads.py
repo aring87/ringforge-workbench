@@ -410,7 +410,7 @@ def _note(
             "This run's Procmon filter did not capture registry reads, so a VM "
             "check would not have been seen. Zero artifacts read is a statement "
             "about the collection, not about the sample. Re-run with "
-            "tools/procmon-configs/dynamic_registry_reads.pmc to collect them."
+            "ringforge/_data/procmon-configs/dynamic_registry_reads.pmc to collect them."
         )
     if not hits:
         return (

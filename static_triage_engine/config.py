@@ -1,24 +1,19 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ringforge.resources import app_root
+
 
 def get_app_root() -> Path:
-    """
-    Return the project/app root.
+    """Return the project/app root. See `ringforge.resources.app_root`.
 
-    Source run:
-      repo_root/static_triage_engine/config.py -> parent.parent
-
-    PyInstaller/frozen run:
-      directory containing the executable
+    Kept as a name because callers use it; the definition lives in one place
+    now. There were two of these and twenty-odd sites that used neither.
     """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
+    return app_root()
 
 
 def _base_dir_default() -> Path:

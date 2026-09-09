@@ -19,10 +19,9 @@ from dynamic_analysis.logon_capture import (
     write_capture_shim,
 )
 
-REGISTRY_READS_PMC = (
-    Path(__file__).resolve().parent.parent.parent
-    / "tools" / "procmon-configs" / "dynamic_registry_reads.pmc"
-)
+from ringforge.resources import procmon_configs_dir
+
+REGISTRY_READS_PMC = procmon_configs_dir() / "dynamic_registry_reads.pmc"
 
 
 class TaskCommandTests(unittest.TestCase):

@@ -13,6 +13,7 @@ from typing import Any
 from .yara_scan import run_yara_scan, save_yara_results
 
 from .config import TriageConfig
+from ringforge.resources import app_root
 
 try:
     from tqdm import tqdm  # type: ignore
@@ -175,7 +176,7 @@ def _resolve_yara_rules_dir(cfg: TriageConfig) -> Path | None:
     candidates: list[Path] = []
     env_dir = os.getenv("YARA_RULES_DIR", "").strip()
     cfg_dir = getattr(cfg, "yara_rules_dir", None)
-    root = Path(__file__).resolve().parents[1]
+    root = app_root()
 
     if env_dir:
         candidates.append(Path(env_dir).expanduser())

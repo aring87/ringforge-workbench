@@ -11,11 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
-def app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[1]
+from ringforge.resources import app_root
 
 
 ROOT = app_root()

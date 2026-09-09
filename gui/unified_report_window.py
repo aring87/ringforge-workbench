@@ -10,6 +10,7 @@ from static_triage_engine.verdict_report import render_verdict_report
 from gui import theme as T
 from gui.components import Card, HeaderBar, RoundedButton, ScrolledText, StatTile, card_title
 from gui.styles import apply_window_theme
+from ringforge.resources import asset
 
 try:
     import tkinter.scrolledtext as scrolledtext
@@ -204,7 +205,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
     def _build_top_banner(self, parent):
         """Branded page header, shared with every other workbench window."""
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "anvil.png"
+        logo_path = asset("anvil.png")
 
         header = HeaderBar(
             parent,

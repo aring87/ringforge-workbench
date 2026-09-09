@@ -34,10 +34,9 @@ from dynamic_analysis.procmon_config import (
     with_operations_replaced,
 )
 
-CONFIG = (
-    Path(__file__).resolve().parent.parent.parent
-    / "tools" / "procmon-configs" / "dynamic_registry_reads.pmc"
-)
+from ringforge.resources import procmon_configs_dir
+
+CONFIG = procmon_configs_dir() / "dynamic_registry_reads.pmc"
 
 
 def _rule(column, value, action):

@@ -119,6 +119,7 @@ from dynamic_analysis.sysmon_collector import (
     summarize_sysmon_events,
     sysmon_status,
 )
+from ringforge.resources import app_root
 from dynamic_analysis.utils import (
     ANALYZER_TOOL_IMAGE_MARKERS,
     ensure_dir,
@@ -776,15 +777,13 @@ AUTORUNS_HIGH_SIGNAL_CATEGORIES = (
 
 
 def _default_autorunsc_path() -> Path:
-    """
-    Default RingForge tool path:
-        <project_root>\\tools\\autorunsc64.exe
+    """Where a bundled Autorunsc is expected to live: <app_root>/tools/.
 
-    This file lives in:
-        dynamic_analysis\\orchestrator.py
-    so parents[1] is the project root.
+    Derived from the application root rather than from this file, so a
+    frozen build looks beside its executable rather than inside the
+    directory PyInstaller unpacked the code into.
     """
-    return Path(__file__).resolve().parents[1] / "tools" / "autorunsc64.exe"
+    return app_root() / "tools" / "autorunsc64.exe"
 
 
 def _run_autorunsc_snapshot(
@@ -2979,7 +2978,7 @@ def run_dynamic_analysis(
                         status_cb,
                         "This Procmon config captured no registry reads, so a VM "
                         "check could not have been seen. Use "
-                        "tools/procmon-configs/dynamic_registry_reads.pmc to "
+                        "ringforge/_data/procmon-configs/dynamic_registry_reads.pmc to "
                         "collect them.",
                     )
                 else:

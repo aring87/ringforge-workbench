@@ -28,6 +28,7 @@ import signal
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
+from ringforge.resources import app_root
 
 #: Ports that are ordinary for outbound traffic; anything else is worth a look.
 COMMON_PORTS = {80, 443, 53, 123, 8080, 8443, 445, 139, 22, 21, 25, 587, 993, 995}
@@ -86,7 +87,8 @@ class NetworkCaptureError(Exception):
 # ---------------------------------------------------------------------------
 
 def _tools_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "tools"
+    """Beside the application, not beside the code -- see `app_root`."""
+    return app_root() / "tools"
 
 
 def _find_tool(name: str, configured: str | Path | None = None) -> Optional[Path]:

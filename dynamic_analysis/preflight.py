@@ -41,7 +41,7 @@ AUTORUNSC_NAMES = ("autorunsc64.exe", "Autorunsc64.exe",
 
 #: The config that does capture registry reads, named in the warning so the
 #: analyst has somewhere to go rather than only something to worry about.
-REGISTRY_READS_CONFIG = "tools/procmon-configs/dynamic_registry_reads.pmc"
+REGISTRY_READS_CONFIG = "ringforge/_data/procmon-configs/dynamic_registry_reads.pmc"
 
 
 @dataclass
