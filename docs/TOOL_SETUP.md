@@ -13,8 +13,11 @@ red. Believe it.
 
 ## What is already in the zip
 
-Nothing to do for these. Both are Apache-2.0, so they can be redistributed and
-they are:
+Both are Apache-2.0, so they can be redistributed, and a release build carries
+them. Check `tools\VENDORED.txt`: it lists what actually shipped and its
+SHA256, and if the file is missing then so are the tools -- a build omits any
+tool whose licence text was not beside the binary rather than shipping it bare.
+Where they are present there is nothing to do:
 
 | Tool | What it gives you |
 |---|---|

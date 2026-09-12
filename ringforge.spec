@@ -204,7 +204,15 @@ LICENSED = (
 #: Whole directories, not named binaries: the upstream release archives carry
 #: LICENSE.txt beside the executable, and Apache-2.0 requires that it travel
 #: with the binary. Copying the directory keeps them together by construction.
-VENDORED = ("tools/floss", "tools/capa", "tools/capa-rules")
+#: **`tools/capa-rules` is deliberately not here.** Three reasons, and the
+#: third settled it: capa's standalone build embeds its own rules, so the copy
+#: is redundant for the capa in this bundle; the rule paths run to 132
+#: characters relative, so a user unzipping into a deep folder blows MAX_PATH
+#: and gets a partial extract with no useful error; and the directory is
+#: gitignored, so a CI build never has it and a local build did -- the two
+#: produced different bundles. `bootstrap_capa_rules.ps1` installs them for
+#: anyone who wants a rules directory of their own.
+VENDORED = ("tools/floss", "tools/capa")
 
 
 def _stage_licences() -> None:
@@ -247,14 +255,28 @@ def _stage_licences() -> None:
     print(f"  staged licence text for {len(LICENSED)} distributions")
 
 
+#: Files copied to the bundle root as (source, name-in-the-bundle).
+#:
+#: `docs/INSTALL.md` becomes `README.md` because somebody who downloads only
+#: the zip has no repository to read, and the first thing they look for after
+#: unzipping is a README. `TOOL_SETUP.md` travels with it since the install
+#: guide sends them there for the tools that cannot be redistributed.
+NOTICES = (
+    ("LICENSE", "LICENSE"),
+    ("THIRD-PARTY-NOTICES.md", "THIRD-PARTY-NOTICES.md"),
+    ("docs/INSTALL.md", "README.md"),
+    ("docs/TOOL_SETUP.md", "TOOL_SETUP.md"),
+)
+
+
 def _stage_notices() -> None:
-    for name in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
-        source = SPEC_DIR / name
+    for relative, name in NOTICES:
+        source = SPEC_DIR / relative
         if source.is_file():
             shutil.copy2(source, DIST / name)
             print(f"  staged {name}")
         else:
-            print(f"  WARNING: {name} not found; the bundle ships without it")
+            print(f"  WARNING: {relative} not found; the bundle ships without it")
 
 
 def _stage_tools() -> None:
@@ -273,19 +295,25 @@ def _stage_tools() -> None:
             # still produces a working bundle that reports capa as missing.
             print(f"  skipped {relative} (not present)")
             continue
-        shutil.copytree(source, DIST / relative, dirs_exist_ok=True)
-
-        # Redistributing an Apache-2.0 binary means shipping its licence. If
-        # the tool arrived without one -- a bare `floss.exe` dropped into
-        # `tools/` by hand, say -- say so loudly rather than shipping it bare.
+        # Redistributing an Apache-2.0 binary means shipping its licence, so
+        # this refuses rather than warns. A warning in build output is a
+        # warning nobody reads at upload time, and the failure mode is
+        # publishing someone else's binary with no licence attached.
+        #
+        # The release workflow fetches both tools from the upstream archive,
+        # which carries LICENSE.txt. A hand-placed `floss.exe` does not, and is
+        # skipped here -- the bundle then reports the tool as missing, which is
+        # true and harmless, instead of shipping it bare.
         licensed = any(
             any(k in f.name.upper() for k in ("LICENSE", "COPYING", "NOTICE"))
             for f in source.rglob("*") if f.is_file()
         )
-        if licensed:
-            print(f"  staged {relative}")
-        else:
-            print(f"  staged {relative}  ** NO LICENCE TEXT -- do not publish **")
+        if not licensed:
+            print(f"  REFUSED {relative}: no licence text beside the binary")
+            continue
+
+        shutil.copytree(source, DIST / relative, dirs_exist_ok=True)
+        print(f"  staged {relative}")
 
 
 if DIST.is_dir():
