@@ -169,3 +169,10 @@ release/
 # PyInstaller build output and the identity it stamps in.
 build/
 ringforge/_build_info.py
+
+# Tool payloads fetched by bootstrap_tools.ps1 or the release workflow.
+# capa is 35 MB; neither belongs in git. The licence files come with them.
+tools/capa/capa.exe
+tools/capa/LICENSE.txt
+tools/floss/LICENSE.txt
+tools/VENDORED.txt

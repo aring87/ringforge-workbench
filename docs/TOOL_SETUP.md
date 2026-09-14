@@ -24,6 +24,13 @@ Where they are present there is nothing to do:
 | **capa** | Capability detection — what the binary is *able* to do |
 | **FLOSS** | Stack, tight and decoded strings that `strings` cannot see |
 
+The bundled capa runs on its **own embedded rule set**, so it works with
+nothing else installed. `scripts/bootstrap_capa_rules.ps1` installs the
+external `capa-rules` tree if you would rather curate your own; when it is
+present the engine passes it to capa instead, and the result records which was
+used. The rules are not in the zip: their paths run long enough to break
+extraction on Windows, and capa does not need them.
+
 `tools/VENDORED.txt` in the zip records which upstream release each came from
 and its SHA256.
 

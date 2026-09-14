@@ -56,9 +56,14 @@ jobs:
       # Npcap -- may not be redistributed at all, and the user installs those
       # via docs/TOOL_SETUP.md.
       #
-      # Fetched from the upstream release rather than committed, because the
-      # archives carry the LICENSE.txt that Apache-2.0 requires travel with
-      # the binary, and because a 30 MB binary per tool does not belong in git.
+      # Fetched rather than committed, because a 30 MB binary per tool does not
+      # belong in git.
+      #
+      # **The release archives do not contain a licence file.** Both are just
+      # the executable. Apache-2.0 requires a copy of the licence accompany a
+      # redistributed binary, so the licence is fetched separately from the
+      # repository root -- an earlier version of this step assumed the archive
+      # carried it and would have failed every release build on its own check.
       - name: Vendor capa and FLOSS
         shell: pwsh
         env:
@@ -86,10 +91,19 @@ jobs:
               Remove-Item $inner[0].FullName -Recurse -Force
             }
 
-            $licensed = Get-ChildItem $dest -Recurse -File |
+            # The licence, from the repository rather than the archive.
+            $root = gh api "repos/$repo/contents/" | ConvertFrom-Json
+            foreach ($f in $root | Where-Object { $_.name -match "(?i)^(license|licence|notice|copying)" }) {
+              Invoke-WebRequest -Uri $f.download_url -OutFile (Join-Path $dest $f.name)
+            }
+
+            $licensed = Get-ChildItem $dest -File |
                         Where-Object { $_.Name -match "(?i)license|copying|notice" }
             if (-not $licensed) {
-              throw "$repo $($rel.tag_name) carried no licence file; refusing to redistribute it"
+              throw "no licence file found for $repo; refusing to redistribute it"
+            }
+            if (-not (Get-ChildItem $dest -Filter "*.exe" -File)) {
+              throw "$repo extracted no executable; a security product may have removed it"
             }
 
             Write-Output "  $repo $($rel.tag_name)  $($asset.name)  sha256=$sha"

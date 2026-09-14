@@ -287,6 +287,30 @@ def step_strings(sample: Path, case_dir: Path, lite: bool = False) -> dict[str, 
             "string_count": len(found),
             "duration_sec": round(time.time() - start, 3)}
     
+def find_capa(configured: str | Path | None = None) -> str | None:
+    """Locate capa, preferring the copy beside the executable.
+
+    **capa was the only tool resolved purely from `PATH`.** `find_procdump`,
+    `find_floss`, `find_sysmon` and the rest all check `<app_root>/tools` first,
+    so a bundled capa was invisible to the one step that needed it -- a 35 MB
+    binary shipped in the zip and never once invoked.
+
+    Returns a command string for `run_cmd`, or `None` when capa is absent.
+    """
+    if configured:
+        candidate = Path(configured)
+        if candidate.is_file():
+            return str(candidate)
+
+    tools = app_root() / "tools"
+    for relative in ("capa/capa.exe", "capa.exe", "capa/capa"):
+        candidate = tools / relative
+        if candidate.is_file():
+            return str(candidate)
+
+    return shutil.which("capa") or shutil.which("capa.exe")
+
+
 def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int = 1800, max_size_mb: int = 100) -> dict[str, Any]:
     sample_size = sample.stat().st_size if sample.exists() else 0
     size_limit_bytes = max(1, int(max_size_mb)) * 1024 * 1024
@@ -309,8 +333,39 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
             "capa_txt": str(capa_txt),
         }
 
+    capa_cmd = find_capa(getattr(cfg, "capa_path", None))
+    if capa_cmd is None:
+        reason = ("capa did not run: capa was not found beside the executable, "
+                  "under tools/, or on PATH")
+        for stale in (capa_json, capa_txt):
+            try:
+                stale.unlink()
+            except Exception:
+                pass
+        return {
+            "returncode": 2,
+            "capa_run": False,
+            "reason": reason,
+            "stderr": reason,
+            "capa_json": str(capa_json),
+            "capa_txt": str(capa_txt),
+            "sample_size_bytes": sample_size,
+            "sample_size_mb": _format_mb(sample_size),
+            "max_size_mb": int(max_size_mb),
+        }
+
+    # **A missing rules directory is no longer a reason not to run.** The
+    # standalone capa build embeds its own rule set and runs without `-r`/`-s`;
+    # only a `pip install capa` needs them pointed at. Treating absent rules as
+    # fatal meant capability detection was off for everyone who had not also
+    # installed `capa-rules`, reported as "capa did not run".
+    rule_args: list[str] = []
+    embedded_rules = True
+    rules_note = ""
     try:
         ensure_capa_paths(cfg)
+        rule_args = ["-r", str(cfg.capa_rules), "-s", str(cfg.capa_sigs)]
+        embedded_rules = False
     except Exception as exc:
         # Missing or unusable rules must not abort the whole triage. step_yara
         # degrades on exactly this condition; step_capa used to raise, and that
@@ -326,22 +381,14 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
             except Exception:
                 pass
 
-        reason = f"capa did not run: {exc}"
-        return {
-            "returncode": 2,
-            "capa_run": False,
-            "reason": reason,
-            "stderr": reason,
-            "capa_json": str(capa_json),
-            "capa_txt": str(capa_txt),
-            "sample_size_bytes": sample_size,
-            "sample_size_mb": _format_mb(sample_size),
-            "max_size_mb": int(max_size_mb),
-        }
+        # Recorded, not fatal: the report should say which rule set produced
+        # the capabilities, because "no external rules" and "the rules I
+        # curated" are different provenance for the same field.
+        rules_note = f"external capa rules unavailable ({exc}); using capa's embedded rules"
 
     capa_timeout = max(60, int(capa_timeout))
 
-    cmd_json = ["capa", "-r", str(cfg.capa_rules), "-s", str(cfg.capa_sigs), "-j", str(sample)]
+    cmd_json = [capa_cmd, *rule_args, "-j", str(sample)]
     json_res = run_cmd(cmd_json, cwd=case_dir, timeout=capa_timeout)
 
     if json_res.get("returncode") == 0 and (json_res.get("stdout") or "").strip():
@@ -358,7 +405,7 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
             json_res["stderr"] = "[!] capa failed or produced empty stdout in -j mode"
         return {**json_res, "capa_json": str(capa_json), "capa_txt": str(capa_txt)}
 
-    cmd_text = ["capa", "-r", str(cfg.capa_rules), "-s", str(cfg.capa_sigs), str(sample)]
+    cmd_text = [capa_cmd, *rule_args, str(sample)]
     text_res = run_cmd(cmd_text, cwd=case_dir, timeout=capa_timeout)
     if (text_res.get("stdout") or "").strip():
         safe_write(capa_txt, text_res["stdout"])
@@ -367,6 +414,9 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
         **json_res,
         "capa_json": str(capa_json),
         "capa_txt": str(capa_txt),
+        "capa_path": capa_cmd,
+        "embedded_rules": embedded_rules,
+        "rules_note": rules_note,
         "sample_size_bytes": sample_size,
         "sample_size_mb": _format_mb(sample_size),
         "max_size_mb": int(max_size_mb),

@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,23 @@ TRUST_OVERRIDE_TECH_PREFIXES = {
     "T1218",
     "T1574",
 }
+
+def _progress(message: str) -> None:
+    """Emit a progress marker for whoever is driving this run.
+
+    **stderr, not stdout.** `ringforge scan --json` promises that stdout
+    carries the verdict and nothing else, so a consumer can pipe it straight
+    into `jq` or `ConvertFrom-Json`. These markers were going to stdout, which
+    broke that promise for any sample that had subfiles to triage -- and
+    silently, because a sample with none emitted nothing and looked fine.
+
+    The GUI is unaffected: it drives this as a subprocess with
+    `stderr=subprocess.STDOUT`, so it reads the markers exactly as before.
+    `gui.controllers.static_analysis_controller` holds the regexes that parse
+    them, and `test_progress_markers` pins this format to those regexes.
+    """
+    print(message, file=sys.stderr, flush=True)
+
 
 def _normalize_floss_summary(floss_summary: dict[str, Any] | None, case_dir: Path) -> dict[str, Any]:
     fs = floss_summary if isinstance(floss_summary, dict) else {}
@@ -1059,7 +1077,7 @@ def run_case(
     if triage_extracted_pes and enable_payload_extraction and bool(payload_result.get("success", False)):
         targets = select_subfile_targets(payload_result, limit=subfile_limit)
         sub_rollup["count"] = len(targets)
-        print(f"[subfile:triage] selected={len(targets)} limit={subfile_limit}", flush=True)
+        _progress(f"[subfile:triage] selected={len(targets)} limit={subfile_limit}")
 
         sub_results: list[dict[str, Any]] = []
         sub_base = case_dir / "subfiles"
@@ -1069,7 +1087,7 @@ def run_case(
 
         for idx, t in enumerate(targets, start=1):
             sub_name = f"{idx:02d}_{t.name}"
-            print(f"[subfile:start] {idx}/{total_subfiles} {sub_name}", flush=True)
+            _progress(f"[subfile:start] {idx}/{total_subfiles} {sub_name}")
 
             sub_dir = sub_base / sub_name
             sub_dir.mkdir(parents=True, exist_ok=True)
@@ -1181,10 +1199,9 @@ def run_case(
                 }
             )
             
-            print(
+            _progress(
                 f"[subfile:done] {idx}/{total_subfiles} {sub_name} "
-                f"score={sf_score} verdict={sf_verdict}",
-                flush=True,
+                f"score={sf_score} verdict={sf_verdict}"
             )
 
         sub_results_sorted = sorted(sub_results, key=lambda x: int(x.get("score", 0)), reverse=True)

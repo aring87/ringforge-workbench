@@ -204,15 +204,21 @@ LICENSED = (
 #: Whole directories, not named binaries: the upstream release archives carry
 #: LICENSE.txt beside the executable, and Apache-2.0 requires that it travel
 #: with the binary. Copying the directory keeps them together by construction.
+#: Redistributable third-party tools, as (directory, executable). Both are
+#: Apache-2.0. Everything else the workbench drives -- Procmon, Autorunsc,
+#: Sysmon, Npcap -- may not be redistributed at all. See docs/TOOL_SETUP.md.
+#:
 #: **`tools/capa-rules` is deliberately not here.** Three reasons, and the
 #: third settled it: capa's standalone build embeds its own rules, so the copy
-#: is redundant for the capa in this bundle; the rule paths run to 132
-#: characters relative, so a user unzipping into a deep folder blows MAX_PATH
-#: and gets a partial extract with no useful error; and the directory is
-#: gitignored, so a CI build never has it and a local build did -- the two
-#: produced different bundles. `bootstrap_capa_rules.ps1` installs them for
-#: anyone who wants a rules directory of their own.
-VENDORED = ("tools/floss", "tools/capa")
+#: is redundant; the rule paths run to 132 characters relative, so a user
+#: unzipping into a deep folder blows MAX_PATH and gets a partial extract with
+#: no useful error; and the directory is gitignored, so a CI build never has it
+#: and a local build did -- the two produced different bundles.
+#: `bootstrap_capa_rules.ps1` installs them for anyone who wants their own.
+VENDORED = (
+    ("tools/floss", "floss.exe"),
+    ("tools/capa", "capa.exe"),
+)
 
 
 def _stage_licences() -> None:
@@ -257,14 +263,16 @@ def _stage_licences() -> None:
 
 #: Files copied to the bundle root as (source, name-in-the-bundle).
 #:
-#: `docs/INSTALL.md` becomes `README.md` because somebody who downloads only
-#: the zip has no repository to read, and the first thing they look for after
-#: unzipping is a README. `TOOL_SETUP.md` travels with it since the install
-#: guide sends them there for the tools that cannot be redistributed.
+#: `docs/USER_GUIDE.md` becomes `README.md`: somebody who downloads the zip has
+#: no repository to read, and the first thing they open after unzipping should
+#: answer "what is this and how do I use it" rather than "how do I install the
+#: thing I have already installed". The install and tool guides travel beside
+#: it, because the user guide sends them there for the VM and the collectors.
 NOTICES = (
     ("LICENSE", "LICENSE"),
     ("THIRD-PARTY-NOTICES.md", "THIRD-PARTY-NOTICES.md"),
-    ("docs/INSTALL.md", "README.md"),
+    ("docs/USER_GUIDE.md", "README.md"),
+    ("docs/INSTALL.md", "INSTALL.md"),
     ("docs/TOOL_SETUP.md", "TOOL_SETUP.md"),
 )
 
@@ -288,12 +296,29 @@ def _stage_tools() -> None:
         shutil.copy2(record, DIST / "tools" / "VENDORED.txt")
         print("  staged tools/VENDORED.txt")
 
-    for relative in VENDORED:
+    for relative, executable in VENDORED:
         source = SPEC_DIR / relative
         if not source.is_dir():
-            # Absence is reportable, not fatal: a local build without capa
-            # still produces a working bundle that reports capa as missing.
+            # Absence is reportable, not fatal: a build without capa still
+            # produces a working bundle that reports capa as missing.
             print(f"  skipped {relative} (not present)")
+            continue
+
+        # **A directory is not a tool.** Downloading capa on a machine with
+        # Defender running left `tools/capa/` holding its licence and nothing
+        # else -- the binary had been removed. Staging the directory would have
+        # shipped a `tools/capa/` that looks installed and contains no capa.
+        binary = source / executable
+        if not binary.is_file():
+            print(f"  skipped {relative} ({executable} is not there)")
+            continue
+        try:
+            with binary.open("rb") as handle:
+                handle.read(2)
+        except OSError as error:
+            # Readable is not implied by existing: a security product can hold
+            # a file unreadable, and `copytree` would abort the whole build.
+            print(f"  skipped {relative} ({executable} cannot be read: {error.strerror})")
             continue
         # Redistributing an Apache-2.0 binary means shipping its licence, so
         # this refuses rather than warns. A warning in build output is a
