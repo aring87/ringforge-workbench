@@ -42,7 +42,12 @@ jobs:
       - name: Install the package and the packaging toolchain
         # `dev` carries pytest. Without it the suite step below fails on
         # "No module named pytest", which is what failed the v1.12.0 tag.
-        run: python -m pip install -e ".[dev,gui]" pyinstaller==6.15.0
+        # `lief` is not a declared dependency -- it is optional and lives in
+        # `requirements.txt` -- but `lief_meta` is a shipped pipeline module and
+        # a local build picks lief up from the bench. Installing it explicitly
+        # keeps a CI bundle equal to a local one; divergent bundles from one
+        # spec is the failure that got `capa-rules` dropped.
+        run: python -m pip install -e ".[dev,gui]" lief pyinstaller==6.15.0
 
       # The suite before the build, not after. A bundle of code that does not
       # pass its own tests is not worth the four minutes it takes to freeze.
@@ -181,8 +186,29 @@ jobs:
           # Null here means a verdict nobody can trace to a build.
           if (-not $a.version) { throw "provenance.analyzer.version is null in the frozen build" }
           if (-not $a.commit)  { throw "provenance.analyzer.commit is null in the frozen build" }
+
+          # **A null library version is only a defect when the library is
+          # actually in the bundle.** Two different things look the same in this
+          # field: a library we ship whose metadata we forgot to collect -- which
+          # is how `lief` was caught shipping as a bare `_lief.pyd`, reported
+          # absent while sitting right there -- and a library that is simply not
+          # installed, which is correct and is the posture the optional extras
+          # document. The first must fail the build; the second must not.
+          $internal = Join-Path $dist "_internal"
+          $importName = @{
+            "yara-python" = "yara"; "PyYAML" = "yaml"; "pillow" = "PIL"
+            "pefile" = "pefile"; "psutil" = "psutil"; "requests" = "requests"
+            "lief" = "lief"
+          }
           foreach ($lib in $a.tools.PSObject.Properties) {
-            if (-not $lib.Value) { throw "provenance reports $($lib.Name) absent; its metadata was not bundled" }
+            if ($lib.Value) { continue }
+            $module = $importName[$lib.Name]
+            if (-not $module) { $module = $lib.Name }
+            $shipped = Get-ChildItem $internal -Filter "$module*" -ErrorAction SilentlyContinue
+            if ($shipped) {
+              throw "$($lib.Name) is in the bundle but reports no version; its metadata was not collected"
+            }
+            Write-Output "  $($lib.Name): not installed, not bundled -- reported as absent, correctly"
           }
           Write-Output "  version $($a.version) commit $($a.commit)"
 
