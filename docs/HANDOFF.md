@@ -646,11 +646,173 @@ driver had to be checked by hand during the bootstrap.
 
 Suite 1,383 -> **1,679**.
 
+### Pick up here — 14 Sep, the two roots, and what a frozen build exposes
+
+**Packaging again, 11–14 Sep, and no analysis.** The 04 Sep entry above turned
+the bench into something installable. This turned it into something
+downloadable, and every defect below was found by the executable rather than by
+review. That is the pattern worth carrying: *freezing the app was a test, and
+it failed things the suite structurally could not reach.*
+
+**The one idea: there are two roots, and a checkout cannot tell them apart.**
+
+* `app_root()` — what the application does *not* ship. `tools/`, `cases/`,
+  `logs/`, `config.json`. Follows the **executable**.
+* `data_root()` — what it *does* ship. The logo, the Procmon filter configs,
+  the authored YARA rules. Resolved through `importlib.resources`, which
+  answers identically for a checkout, a wheel and a PyInstaller bundle, and
+  therefore needs no `sys.frozen` branch at all.
+
+Both live in `ringforge/resources.py`. `config.get_app_root()` and
+`gui_utils.ROOT` are one-line delegates now, so their callers were untouched.
+
+In a source checkout the two answers are the **same directory**. That is why
+nothing caught this for the life of the project, and it is why
+`dynamic_analysis/tests/test_frozen_paths.py` asserts the *split* rather than
+any individual path: external state must land beside the executable and never
+inside the unpacked code; shipped data must not follow the executable. The
+second half matters as much as the first — it catches someone later "fixing"
+`data_root()` into the wrong convention.
+
+**I got the starting diagnosis wrong and it is worth recording why.** The first
+claim was that `get_app_root()` was the only `sys.frozen` check in the tree. It
+was not: there are four, in three files, and `gui_utils.app_root()` was already
+correct. The grep that produced that claim was truncated at ten lines, all of
+which were `frozenset` and prose matches. The real defect was narrower and
+stranger — twenty-odd sites called *neither* helper and derived a root from
+`__file__`, so `memory_dump_status` would report *"Place procdump64.exe under
+tools/"*, which is accurate about the miss and names a `tools/` that is not the
+one beside the operator's executable. A correct message pointing at the wrong
+directory.
+
+### Four things the executable found that review had not
+
+**The wheel had been shipping without its data since it existed.** Nine tracked
+files — `assets/anvil.png`, three `.pmc` filter configs, five authored `.yar`
+rules — resolved from the repository root, so they reached every run started
+from a checkout and no installed copy at all: `package-data` applies only
+inside a package, and neither `assets/` nor `tools/` was one. A `pip install`
+produced a workbench with no logo, no Procmon filters and none of this
+project's own detection rules, each absence reported as an ordinary coverage
+gap. `scripts/check_installed_package.py` checks them beside the imports now,
+because a test run from the repo root cannot see either failure.
+
+**The windowed build flashed a command prompt every four seconds.** Reported by
+the operator, not found by me. `network_isolation_status()` shells out on
+`ISOLATION_POLL_MS` for as long as the Dynamic Analysis window is open, and a
+PyInstaller GUI has no console for a child to inherit, so Windows gave each one
+its own window. **This was never new** — from a terminal the child inherits the
+console and nothing appears, which is why it survived the whole life of the
+project. `proc.no_window()` is the flag and all 38 call sites pass it,
+combining rather than assigning because two need `CREATE_NEW_PROCESS_GROUP`
+as well. Measured under `pythonw.exe`, which is windowless in the same way:
+child without the flag owns a console, child with it does not; then 25 seconds
+against the real exe with the Dynamic window open gave 10 `ROUTE.EXE`, one
+`sc.exe`, three `dumpcap.exe`, zero `conhost`.
+
+**capa had never run for anyone without `capa-rules`.** Two faults stacked.
+`step_capa` invoked the bare string `"capa"` — the only tool in the engine
+resolved purely from `PATH`, while `find_procdump`, `find_floss`, `find_sysmon`
+and the rest all check `<app_root>/tools` first. And `ensure_capa_paths`
+raising on a missing rules directory was treated as *"capa did not run"*, when
+the standalone build **embeds its own rule set** and runs fine without
+`-r`/`-s`. So capability detection was off, and the reason blamed capa rather
+than the rules. `find_capa()` follows the established pattern; absent rules are
+recorded, not fatal, and the result carries `capa_path`, `embedded_rules` and a
+note, because capa's own rules and a curated set are different provenance for
+the same field.
+
+> **Consequence for comparisons: static scores move.** capa now runs where it
+> previously did not, so a sample re-scanned after v1.12.0 can band higher than
+> it did before. Any before/after against a pre-v1.12.0 case needs this
+> accounted for.
+
+**`--json` did not own stdout.** Three subfile progress markers printed there,
+so any sample with subfiles produced a stream that would not parse — and both
+new guides tell people to pipe it into `jq`. It hid because a sample with *no*
+subfiles emits no markers: the suite fixtures were fine, and so was the release
+workflow's own 22-byte probe. `notepad.exe` exposed it. The markers moved to
+stderr, which the GUI already merges (`stderr=subprocess.STDOUT`), so its
+progress parsing was untouched. The format was a contract between the engine and
+three regexes in `static_analysis_controller` with **no test**; there is one now.
+
+### Five build facts that cost time to learn
+
+* **Neither upstream archive carries a licence file.** `capa-*-windows.zip` and
+  `floss-*-windows.zip` contain the executable and nothing else. The spec
+  comment and the release workflow both assumed otherwise, and the workflow
+  would have failed **every** release build on its own licence check. Both
+  fetch the licence from the repository root now.
+* **Defender quarantined `capa.exe` mid-download**, leaving `tools/capa/`
+  holding its licence and nothing else. Staging that directory would have
+  shipped a `tools/capa/` that looks installed and contains no capa, so the
+  spec now requires the named binary to exist **and be readable** — existing is
+  not enough, a security product can hold a file unreadable and `copytree`
+  aborts the build. It released the file about an hour later with no entry in
+  `Get-MpThreatDetection`.
+* **`*.spec` was gitignored twice** from a stock Python template aimed at
+  auto-generated PyInstaller specs. `ringforge.spec` is hand-written and CI
+  builds from it, so it would never have been committed and the workflow would
+  have had nothing to build. There is a `!ringforge.spec` re-include.
+* **`tools/capa-rules` is deliberately not bundled.** Its rule paths run to 132
+  characters relative, which blew MAX_PATH while packaging and would have given
+  a user unzipping into a deep folder a partial extract with no useful error.
+  It is also redundant — capa embeds its rules — and gitignored, so CI never
+  had it while a local build did. Two different bundles from one spec was the
+  worst of the three.
+* **PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM.** It broke a YARA
+  rule in my own acceptance test. Worth recording because of how the product
+  behaved: `rule_file_count: 1, rules_compiled: 0, rules_skipped: 1, error:
+  "b.yar(1): non-ascii character"`. That is the 20 Aug failure being *caught*
+  rather than read as a clean scan — the provenance work validating itself
+  against a mistake nobody planned.
+
+### State, and what is not done
+
+`origin/main` is at `4d999af`. Suite **1,677**. The guest tracks `main` and
+this release moved paths it depends on, so it needs a pull before
+`bootstrap_yara_rules.ps1` will find the authored rules.
+
+A verified artifact exists at `release/RingForge-v1.12.0-win64.zip`, 111 MB,
+sha256 `741adf93c9c28b3dfd21f88644c25bb5d1115d791e0d7bae387dfa8d0115d391`,
+built from `4d999af` with a clean tree, extracted and driven from a clean
+directory. `release/` is gitignored, so it is not in the repository — rebuild
+with `python -m PyInstaller ringforge.spec --noconfirm` if it is gone, and note
+that PyInstaller is not byte-reproducible so the hash will differ.
+
+**`release.yml` has never executed.** It is on the remote now, so it can. Run
+it via `workflow_dispatch` before tagging: the vendoring step's `gh api` calls,
+archive flattening and licence fetch have only ever run here by hand, and a tag
+publishes a release rather than an artifact. `release/NOTES.md` holds drafted
+notes with the doc links pinned to `blob/v1.12.0/`.
+
+Not done, and neither is a defect:
+
+* **The binary is unsigned.** SmartScreen warns and AV objects. Azure Trusted
+  Signing is roughly $10/month against $400–700/yr for an EV certificate, which
+  is what actually buys immediate SmartScreen reputation. Deferred on purpose.
+* **`dynamic_analysis/logon_capture.py:611`** still defaults `script_path` to
+  `scripts/logon_capture.py`, which is packaged nowhere — broken in the wheel
+  and the exe both. It takes an explicit `script_path` and has no GUI caller, so
+  it is a `scripts/` boundary question rather than a bug, but it should be
+  decided rather than left.
+* **The non-redistributable tools are the real ceiling**, and worth its own
+  session. Procmon, Autorunsc, Sysmon and ProcDump are Sysinternals EULA and
+  Npcap is proprietary, so no licence wording lets them ship. Cloning Procmon
+  means a signed kernel minifilter and is not worth attempting. The tractable
+  route is dropping the *dependency*: ETW kernel providers for process, file and
+  registry instead of Procmon (weeks — the parsing, scoring and reporting sink
+  already exists, the risk is that ETW's shape forces `INTERESTING_OPS` and the
+  registry-reads work to be re-derived); enumerating ASEP locations instead of
+  Autorunsc (days); and `pktmon`, which `network_capture` already falls back to,
+  instead of Npcap.
+
 ## NEXT
 
-**Nothing on the engineering track is queued.** Packaging, CI, the CLI, the
-verdict envelope and the SIEM exporter are all done, and all eight windows have
-had the polish pass.
+**The engineering track has one item, and it is verification rather than
+building.** `release.yml` has never run — see the 14 Sep entry. Exercise it
+with `workflow_dispatch`, then tag. Everything else below needs samples or a
+decision rather than code.
 
 What is left needs samples rather than code:
 
@@ -671,6 +833,13 @@ Carried forward, neither urgent:
   `gui/dynamic_window.py` each pick the newest file by mtime independently, so a
   run whose findings write failed could pair a summary with another run's
   findings. Latent, not demonstrated.
+* **Code signing.** The released binary is unsigned. Costed in the 14 Sep entry.
+* **`logon_capture.py` defaults to a path in `scripts/`**, which is packaged
+  nowhere. A boundary question, not a bug — 14 Sep entry.
+* **Dropping the non-redistributable tools** — ETW instead of Procmon, ASEP
+  enumeration instead of Autorunsc, `pktmon` instead of Npcap. The largest
+  remaining piece of engineering and the one that would make the bundle
+  self-sufficient. Sized in the 14 Sep entry.
 
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
