@@ -807,12 +807,187 @@ Not done, and neither is a defect:
   Autorunsc (days); and `pktmon`, which `network_capture` already falls back to,
   instead of Npcap.
 
+## The run controller: designed, not built — 14 Sep
+
+**It is not a sandbox and should not be called one.** Asked whether a sandbox
+could be built *into* the program, the honest answer is no, in the sense that
+matters: a job object, a restricted token, an AppContainer or an integrity
+level is user-mode confinement, and confinement on the same kernel as the
+analyzer is a speed bump with a reassuring name. Malware escapes it routinely.
+The boundary that holds is the hypervisor, and this bench already has it.
+
+For this project in particular, shipping something called a sandbox that does
+not contain would be the exact failure the scoring model exists to prevent — a
+confident label the evidence cannot support. So: **run controller**, or batch
+runner. The name is part of the design.
+
+What *is* missing is the loop. `orchestrator.py` runs inside the guest and
+never touches the host, so every run is hand-driven. A host-side controller
+that reverts, boots, delivers a sample, waits, collects and reverts again is
+the thing that turns one detonation into a corpus.
+
+**That makes it the highest-leverage engineering left, above the ETW work.**
+`NEXT` asks for a labelled corpus and a confusion matrix: of N known-malicious,
+what band; of M known-benign, how many reached Corroborated. Nobody measures
+that by hand across a few hundred samples. The controller is the machinery that
+makes the measurement possible, and the measurement is the number a buyer asks
+for.
+
+### What already exists
+
+Almost all of it, which is why this is worth doing.
+
+| Piece | Where |
+|---|---|
+| Snapshot take / restore / baseline, headless | `vm_snapshot.ps1` |
+| Guest readiness wait, with a ping fallback | `vm_snapshot.ps1`, `Wait-GuestReady`, `-GuestAddress` |
+| Host-enforced containment | `vm_net.ps1 -Disconnect` |
+| Boot-to-signin, prove-then-act sequencing | `vm_gated_logon.ps1` |
+| Guest noise suppression | `vm_hygiene.ps1` |
+| In-guest collection, parsing, scoring | `dynamic_analysis/orchestrator.py` |
+| Pooled verdict, reports, OCSF export | `verdict/`, `ringforge export` |
+
+New code is the controller and one transport. Nothing else.
+
+### The loop
+
+```text
+for each sample:
+    1. vm_snapshot.ps1 -Restore <baseline>      guest is inert, known state
+    2. deliver the sample and a run spec        transport, see below
+    3. vm_net.ps1 -Disconnect                   containment BEFORE boot
+    4. start the VM headless
+    5. wait for the guest to signal "done"      or a hard wall-clock timeout
+    6. power the guest OFF                      not "wait for shutdown"
+    7. collect artifacts from the powered-off guest
+    8. vm_snapshot.ps1 -Restore <baseline>      before the next sample, always
+```
+
+Step 6 before step 7 is the load-bearing one. See *Escape surfaces*.
+
+### Transport: three options, and none is free
+
+**A. `VBoxManage guestcontrol`.** Copy in, copy out, execute, all from the
+host. Needs Guest Additions and guest credentials on the host.
+
+* *For:* no in-guest agent to write, and the host initiates everything, so the
+  guest never needs to reach out.
+* *Against:* Guest Additions is a large attack surface with a history of escape
+  CVEs, and it is exactly the component a VM-aware sample fingerprints. Credentials
+  for the guest now live on the host. `copyfrom` with guest-chosen filenames is
+  a path-traversal primitive aimed at the host.
+
+**B. A shared folder plus an in-guest watcher.** Host writes the sample into a
+drop folder; a task in the baseline snapshot notices it and runs the
+orchestrator.
+
+* *For:* no credentials, no Guest Additions dependency for the trigger, and the
+  watcher can be baked into the baseline so reverting restores it for free.
+* *Against:* a shared folder writable from the guest is a host filesystem write
+  surface for the duration of the run. Mount the delivery folder **read-only**
+  to the guest, and do not use a shared folder for results at all.
+
+**C. A second virtual disk for results.** Guest writes the case folder to a
+data disk; the host mounts it read-only after power-off.
+
+* *For:* nothing is shared while the sample is live, and the host reads static
+  bytes from an inert image.
+* *Against:* more moving parts, and the disk has to be reattached or re-imaged
+  per run so one sample's results cannot be read as the next one's.
+
+**Recommendation: B for delivery, C for collection.** Read-only in, disk out,
+nothing writable shared while the sample runs.
+
+### The trigger, and a lesson already paid for
+
+The obvious design is a scheduled task in the baseline that fires on boot and
+runs the orchestrator. **Do not trust its timing.** From `logon_capture.py`,
+measured 31 Aug: an `ONSTART` capture task was chosen because it "runs before
+any user session exists", and it started **3m51s after** the sample's `ONLOGON`
+payload. Task Scheduler delays and throttles boot-triggered tasks. `ONSTART` is
+earlier than `ONLOGON`; it is not early.
+
+So the controller must not assume the run began because the VM booted. Use the
+pattern `vm_gated_logon.ps1` already proves: **wait for the guest to signal
+that collection is actually up**, then let the run proceed, and treat the
+absence of that signal as a void run rather than a clean one. A run whose
+collection started late is the same failure class as a rule set that did not
+compile, and it must band as *Insufficient Coverage*, not as *No Evidence*.
+
+`Wait-GuestReady` is most of the mechanism.
+
+### Escape surfaces, which are the actual work
+
+The loop is a few days. Making it safe is the weeks, and it is where every
+public sandbox has had its CVEs. Three rules, each with a reason:
+
+**Read artifacts only from a powered-off guest.** Not "after the run
+finishes" — after the VM is off. A host process parsing a path a live guest
+controls is racing an attacker who can rewrite it mid-read. Powering off first
+turns the guest into static bytes and removes the race entirely. This is why
+the loop powers off rather than waiting for a clean shutdown: a sample can
+prevent shutdown, and a controller that waits for one hangs on exactly the
+samples worth analysing.
+
+**Treat every path, filename and JSON field from the guest as hostile input.**
+The case folder was written by a machine that ran malware. Names get sanitised
+against traversal and reserved device names, sizes get capped before parsing,
+and archives are never extracted into a host path derived from guest data. The
+existing parsers were written for files this tool produced; after this change
+they are parsing attacker-influenced input, and that is a different threat
+model for the same code.
+
+**Containment is armed before the guest boots, never after.** `vm_net.ps1`
+runs from the host for the reason already recorded: an adapter disabled inside
+the guest can be re-enabled by anything there with administrator rights. In a
+loop, the window between boot and arming is a window where the sample is live
+and online.
+
+One more, from this bench's own history: **revert before the next sample, not
+after the last one.** A controller that reverts on the way out leaves a dirty
+guest if it crashes, and the next run inherits it. The 04 Sep entry records
+what a dirty guest does to a persistence diff.
+
+### Open decisions, none of them mine
+
+* **Hypervisor.** The existing scripts are VirtualBox via `VBoxManage`. Hyper-V
+  or VMware would each need their own control layer. Staying on VirtualBox is
+  the cheap answer; it is also the least robust isolation of the three.
+* **Concurrency.** One VM at a time is simple and slow. Parallel guests need
+  distinct snapshots, distinct host-only subnets so runs cannot see each other,
+  and per-run FakeNet configuration. Worth deciding before the interface is
+  written, because it changes the controller's shape rather than extending it.
+* **What a void run does.** A timeout, a missing readiness signal or a guest
+  that will not boot must produce a recorded *Insufficient Coverage* case
+  rather than a gap in the corpus. Whether the controller retries, and how many
+  times before it gives up and records the void, is a measurement decision:
+  silently retrying until something works biases the corpus.
+* **Where results land.** `cases/` beside the executable is the current
+  convention and is fine for one run at a time. A corpus sweep wants a run id
+  and probably a manifest of what was attempted, so absent results are visible
+  rather than merely missing.
+
+### Effort, honestly
+
+A loop that works on the happy path: **days.** A loop trustworthy against real
+samples: **weeks**, most of it in the transport and the input-hardening above
+rather than in the orchestration. The corpus measurement it unlocks is then
+cheap, which is the point.
+
+It does not need a single change to the scoring model, the collectors or the
+reports. That is the argument for doing it before the ETW work.
+
 ## NEXT
 
 **The engineering track has one item, and it is verification rather than
 building.** `release.yml` has never run — see the 14 Sep entry. Exercise it
 with `workflow_dispatch`, then tag. Everything else below needs samples or a
 decision rather than code.
+
+**And one piece of engineering is now ranked above the rest** — see
+*The run controller*. It is what makes the corpus below measurable at all,
+it needs no change to the scoring model, the collectors or the reports, and it
+outranks the ETW work for that reason.
 
 What is left needs samples rather than code:
 
@@ -839,7 +1014,8 @@ Carried forward, neither urgent:
 * **Dropping the non-redistributable tools** — ETW instead of Procmon, ASEP
   enumeration instead of Autorunsc, `pktmon` instead of Npcap. The largest
   remaining piece of engineering and the one that would make the bundle
-  self-sufficient. Sized in the 14 Sep entry.
+  self-sufficient. Sized in the 14 Sep entry. Second to the run controller,
+  which unlocks a measurement rather than removing a dependency.
 
 
 ### Pick up here — 03 Sep, nothing stage 4 executes reaches the dead pages
