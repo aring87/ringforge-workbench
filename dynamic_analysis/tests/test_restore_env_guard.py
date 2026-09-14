@@ -21,6 +21,17 @@ from pathlib import Path
 
 import pytest
 
+# **`unicorn` is the `emulation` extra, and the extra is optional.** These
+# tests drive the native-stub emulator in `scripts/`, which imports unicorn at
+# module scope, so without it this module cannot even be collected -- a
+# collection error fails the whole run rather than reporting a gap. That is
+# what had kept CI red: the suite passes on a bench that installed
+# `requirements.txt` and had never once run on a clean runner.
+#
+# Skipping is the posture the extra already documents. `tests.yml` reports what
+# skipped, so the gap stays visible instead of silent.
+pytest.importorskip("unicorn", reason="the emulation extra is not installed")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from emulate_native_stub import Emulator          # noqa: E402

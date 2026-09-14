@@ -40,7 +40,9 @@ jobs:
           cache: pip
 
       - name: Install the package and the packaging toolchain
-        run: python -m pip install -e ".[gui]" pyinstaller==6.15.0
+        # `dev` carries pytest. Without it the suite step below fails on
+        # "No module named pytest", which is what failed the v1.12.0 tag.
+        run: python -m pip install -e ".[dev,gui]" pyinstaller==6.15.0
 
       # The suite before the build, not after. A bundle of code that does not
       # pass its own tests is not worth the four minutes it takes to freeze.
