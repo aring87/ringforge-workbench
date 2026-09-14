@@ -767,9 +767,85 @@ three regexes in `static_analysis_controller` with **no test**; there is one now
   rather than read as a clean scan — the provenance work validating itself
   against a mistake nobody planned.
 
+### The CI that had never run — later on 14 Sep
+
+**v1.12.0 was tagged and published, and the release workflow failed on the
+tag.** Not at the vendoring, the licence fetch or the release collision I had
+predicted: at **step 5 of 14**, `Run the suite`, on `No module named pytest`.
+`release.yml` installed `".[gui]"` and then ran the suite. Mine, and it meant
+the published bundle was hand-verified but never built or checked by the
+pipeline.
+
+Chasing that turned up something worse. **`tests` had been red since 04 Sep**,
+before any of this work, and nobody had looked. Three modules --
+`test_createprocess_path`, `test_emulator_backing`, `test_restore_env_guard` --
+reach into `scripts/` for the native-stub emulator, which imports `unicorn` at
+module scope. `unicorn` is the `emulation` extra, so a clean runner hit three
+**collection** errors, and a collection error fails a run rather than reporting
+a gap.
+
+It passed here because this bench installed `requirements.txt`, which pins
+unicorn. So *"suite green, 1,677"* had been true locally and had never once run
+on a machine that did not already have the whole bench on it. **That is the
+same shape as the five pipeline modules that lived in `scripts/` and resolved
+only because everything ran from the repo root** -- standing in the directory
+that hides the defect. Twice in one release, from opposite ends.
+
+`pytest.importorskip("unicorn")` is the fix, which is the posture the extra
+documents. `tests.yml` reports what skipped, so the gap is visible rather than
+silent.
+
+**Then the suite ran and found a real failure that only exists on a runner.**
+
+```text
+expected  C:\Users\RUNNER~1\AppData\Local\Temp\...\fakenet
+actual    C:\Users\runneradmin\AppData\Local\Temp\...\fakenet
+```
+
+`fakenet_root_from` resolves the config path before walking up, so it returns a
+resolved path. `tempfile.mkdtemp()` returns whatever `%TEMP%` holds, and on a
+machine whose username exceeds eight characters that is the **8.3 short form**.
+The runner is `runneradmin`; this bench is `aring`, short enough that nothing
+shortens and the comparison happened to hold. Four expectations now resolve.
+Reproducing it locally first -- `TEMP` pointed at a short path via
+`GetShortPathNameW` -- found a fourth site the CI log had not reached.
+
+`FindingTheInstallTheConfigBelongsTo` is now on its second environment-caused
+failure; its own docstring records the first, on 01 Sep, when the host had no
+FakeNet and the walk-up won by default. Anything in that class touching a real
+path or a real install wants pinning before it is trusted.
+
+**And one of my own guards failed a good build.** The provenance check demanded
+every tracked library report a version, which conflates two opposite things: a
+library the bundle *ships* whose metadata was not collected -- how `lief` was
+caught shipping as a bare `_lief.pyd` while reporting absent -- and a library
+that is simply **not installed**, which is correct and is what the optional
+extras document. `lief` is not a declared dependency, so a clean CI install has
+none and reporting it absent was right. The check now fails only when the
+module is present under `_internal` with a null version. `lief` is also
+installed for the release build, because a local build picks it up from the
+bench and CI would not have, and two different bundles from one spec is the
+failure that got `capa-rules` dropped.
+
+**The pipeline is proven now.** All 14 steps green on a `workflow_dispatch`
+run: the suite, capa `v9.4.0` and FLOSS `v3.1.1` vendored from upstream with
+hashes matching the manual fetch, the build, the CLI, provenance complete, and
+the frozen-path proof holding on a machine that had never seen this code --
+
+```text
+app_root resolves: matched Beside_The_Executable
+```
+
+That is the whole root audit reduced to one CI assertion, guarding the thing it
+was written for. Artifact `RingForge-win64`, 113.6 MB.
+
 ### State, and what is not done
 
-`origin/main` is at `4d999af`. Suite **1,677**. The guest tracks `main` and
+`origin/main` is at `767efd9`, and **v1.12.0 is published** from `4d999af` --
+four commits back, by a pipeline that had not run. The bundle was verified by
+hand and is sound; the commits since are CI and test fixes that no user of the
+exe would notice, so it was left rather than re-cut. Suite **1,677** here,
+**1,643 with 9 skips** on a clean runner. The guest tracks `main` and
 this release moved paths it depends on, so it needs a pull before
 `bootstrap_yara_rules.ps1` will find the authored rules.
 
@@ -780,11 +856,10 @@ directory. `release/` is gitignored, so it is not in the repository — rebuild
 with `python -m PyInstaller ringforge.spec --noconfirm` if it is gone, and note
 that PyInstaller is not byte-reproducible so the hash will differ.
 
-**`release.yml` has never executed.** It is on the remote now, so it can. Run
-it via `workflow_dispatch` before tagging: the vendoring step's `gh api` calls,
-archive flattening and licence fetch have only ever run here by hand, and a tag
-publishes a release rather than an artifact. `release/NOTES.md` holds drafted
-notes with the doc links pinned to `blob/v1.12.0/`.
+**`release.yml` has now run green end to end** -- see *The CI that had never
+run*. It failed on the v1.12.0 tag and took three commits to fix.
+`release/NOTES.md` holds the drafted notes, doc links pinned to
+`blob/v1.12.0/`.
 
 Not done, and neither is a defect:
 
@@ -979,10 +1054,10 @@ reports. That is the argument for doing it before the ETW work.
 
 ## NEXT
 
-**The engineering track has one item, and it is verification rather than
-building.** `release.yml` has never run — see the 14 Sep entry. Exercise it
-with `workflow_dispatch`, then tag. Everything else below needs samples or a
-decision rather than code.
+**The engineering track is clear again.** `release.yml` is proven green end to
+end, and both workflows are passing for the first time since 04 Sep -- see *The
+CI that had never run*. Everything below needs samples or a decision rather
+than code.
 
 **And one piece of engineering is now ranked above the rest** — see
 *The run controller*. It is what makes the corpus below measurable at all,
