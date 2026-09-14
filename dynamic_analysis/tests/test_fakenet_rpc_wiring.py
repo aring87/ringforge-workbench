@@ -404,7 +404,19 @@ class FindingTheInstallTheConfigBelongsTo(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp()) / "fakenet"
+        # **`.resolve()`, and this class has now been bitten by its
+        # environment twice.** `fakenet_root_from` resolves the config
+        # path before walking up, so it returns a resolved path.
+        # `tempfile.mkdtemp()` returns whatever `%TEMP%` holds, and on a
+        # machine whose username is longer than eight characters that is
+        # the 8.3 short form. The CI runner is `runneradmin`, so the
+        # expected value read `RUNNER~1` where the actual read
+        # `runneradmin`, and three tests failed on the runner having a
+        # longer name than this bench does.
+        #
+        # Compare resolved against resolved, or the assertion is partly
+        # about the username of whoever ran it.
+        self.root = Path(tempfile.mkdtemp()).resolve() / "fakenet"
         (self.root / "listeners" / "ssl_utils").mkdir(parents=True)
         (self.root / "configs").mkdir()
         self.config = self.root / "configs" / "default.ini"
@@ -422,7 +434,7 @@ class FindingTheInstallTheConfigBelongsTo(unittest.TestCase):
             self.assertEqual(fakenet_root_from(loose), self.root)
 
     def test_a_config_nowhere_near_an_install_gives_none(self) -> None:
-        stray = Path(tempfile.mkdtemp()) / "default.ini"
+        stray = Path(tempfile.mkdtemp()).resolve() / "default.ini"
         stray.write_text("[Diverter]\n", encoding="ascii")
 
         # With the locator pinned, this is an assertion about the walk-up
@@ -438,7 +450,7 @@ class FindingTheInstallTheConfigBelongsTo(unittest.TestCase):
         On a host with no FakeNet this branch never ran, so the ordering was
         asserted only in prose -- and prose is what the guest disagreed with.
         """
-        other = Path(tempfile.mkdtemp()) / "fakenet"
+        other = Path(tempfile.mkdtemp()).resolve() / "fakenet"
         (other / "listeners" / "ssl_utils").mkdir(parents=True)
 
         with mock.patch("scripts.make_fakenet_config.find_fakenet",
