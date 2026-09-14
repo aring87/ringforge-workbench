@@ -91,7 +91,8 @@ def kill_tree(pid: int, grace: float = 5.0) -> int:
     # No psutil: Windows can still do the whole tree in one call.
     try:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, timeout=grace + 5)
+                       capture_output=True, timeout=grace + 5,
+                       creationflags=no_window())
         killed = 1
     except Exception:
         pass
@@ -121,6 +122,12 @@ def run_bounded(
             text=True,
             encoding="utf-8",
             errors="replace",
+            # **This file defines `no_window` and still has to use it.** It was
+            # exempted from the sweep that added the flag everywhere else, on
+            # the reasoning that it owns the helper -- which left the two calls
+            # in the most-used path of all flashing a console. `run_bounded` is
+            # how capa, FLOSS, `file` and YARA are run.
+            creationflags=no_window(),
         )
     except (OSError, ValueError) as error:
         return {"returncode": -1, "stdout": "", "stderr": str(error),

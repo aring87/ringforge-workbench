@@ -28,9 +28,13 @@ from pathlib import Path
 #: `tests/` may spawn whatever it likes.
 PACKAGES = ("gui", "dynamic_analysis", "static_triage_engine", "verdict", "ringforge")
 
-#: `static_triage_engine/proc.py` defines the helper and is where the raw calls
-#: legitimately live.
-EXEMPT = {Path("static_triage_engine") / "proc.py"}
+#: Nothing is exempt.
+#:
+#: `proc.py` was, on the reasoning that it defines `no_window` and so owns the
+#: raw calls. That exemption hid two unflagged calls in the most-used path in
+#: the codebase -- `run_bounded` is how capa, FLOSS, `file` and YARA are run --
+#: for as long as it lasted. Defining the helper is not a reason to skip it.
+EXEMPT: set[Path] = set()
 
 SPAWNERS = {"run", "Popen", "check_output", "check_call", "call"}
 
