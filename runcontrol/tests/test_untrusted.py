@@ -80,17 +80,38 @@ class NamesThatMustBeRefused(unittest.TestCase):
     def test_an_empty_name_is_refused(self) -> None:
         self.assert_refused("", "empty")
 
-    def test_a_leading_dot_is_refused(self) -> None:
-        # The allow-list requires an alphanumeric first character, so dotfiles
-        # are out. Nothing this tool writes starts with a dot, and permitting it
-        # would admit `...` and friends.
-        self.assert_refused(".hidden", "allowed set")
+    def test_a_leading_hyphen_is_refused_as_argument_injection(self) -> None:
+        # The one first-character restriction that is about security rather
+        # than tidiness. The engine hands case-folder paths to capa, FLOSS,
+        # `file` and YARA as command arguments; a file called `-r` or
+        # `--version` arriving in a case folder is argument injection. `@` can
+        # mean "response file" to a number of Windows binaries.
+        for name in ("-r", "--version", "-rf.json", "@args.txt"):
+            with self.subTest(name=name):
+                self.assert_refused(name, "allowed set")
+
+    def test_a_name_of_only_punctuation_is_refused(self) -> None:
+        # Matches the character set and identifies nothing.
+        self.assert_refused(".-_", "alphanumeric")
+        self.assert_refused("...", "trailing")
 
 
 class NamesThatMustBeAccepted(unittest.TestCase):
     def assert_ok(self, name: str) -> None:
         verdict = check_component(name)
         self.assertTrue(verdict, f"{name!r} refused: {verdict.reason}")
+
+    def test_pe_section_dumps_are_accepted(self) -> None:
+        # **Found by pointing the checker at a real case rather than by
+        # review.** The first allow-list demanded an alphanumeric first
+        # character and refused nine files this tool had written itself: the PE
+        # section dumps under `extracted/`, whose names start with a dot
+        # because PE section names do. A checker that rejects its own tool's
+        # output degrades a case and reports it as hostile input.
+        for name in (".data", ".rdata", ".reloc", ".pdata", ".text",
+                     ".debug0", ".fptable", ".rsrc", "_RDATA", "_TEXT"):
+            with self.subTest(name=name):
+                self.assert_ok(name)
 
     def test_the_names_this_tool_actually_writes(self) -> None:
         # If any of these is refused the collector cannot import a real case,

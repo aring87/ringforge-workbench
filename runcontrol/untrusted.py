@@ -50,7 +50,35 @@ from dataclasses import dataclass
 #: escaped or replaced -- a rewritten name silently disagrees with the manifest
 #: the guest wrote, and a case whose files have been renamed is worse than a
 #: case that reported a refusal.
-_ALLOWED = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]*$")
+#:
+#: **A leading dot is allowed, and that was a correction.** The first version
+#: required an alphanumeric first character, which is tidy and wrong: pointed
+#: at a real case folder from this bench it refused nine files this tool had
+#: written itself -- `extracted/.data`, `.rdata`, `.reloc`, `.pdata` and the
+#: rest, the PE section dumps, whose names begin with a dot because PE section
+#: names do. A checker that rejects its own tool's output is worse than no
+#: checker, because it degrades a case and reports it as hostile input.
+#:
+#: Nothing is lost by allowing it. `.` and `..` are refused above by name, and
+#: anything ending in a dot is refused as a Windows-stripped name, so `...` and
+#: friends cannot arrive this way either.
+#:
+#: A leading underscore is allowed for the same reason, found the same way:
+#: `extracted/_RDATA` is a PE section too.
+#:
+#: **A leading hyphen is deliberately still refused**, and it is the one
+#: first-character restriction that is about security rather than tidiness. The
+#: engine passes case-folder paths to capa, FLOSS, `file` and YARA as command
+#: arguments. A file called `-r` or `--version` arriving in a case folder and
+#: then being handed to a tool is argument injection, and `@` can mean
+#: "response file" to a surprising number of Windows binaries. Neither has ever
+#: been the name of an artifact this tool writes.
+_ALLOWED = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._@+-]*$")
+
+#: And a name has to be more than punctuation. `.-_` matches the pattern above
+#: and identifies nothing; requiring one alphanumeric keeps the set to names
+#: that could plausibly be an artifact.
+_HAS_SUBSTANCE = re.compile(r"[A-Za-z0-9]")
 
 #: Reserved in every directory on Windows, with or without an extension.
 _DEVICE_NAMES = frozenset(
@@ -125,6 +153,9 @@ def check_component(name: str) -> Verdict:
 
     if not _ALLOWED.match(name):
         return _refuse("character outside the allowed set")
+
+    if not _HAS_SUBSTANCE.search(name):
+        return _refuse("no alphanumeric character")
 
     return ACCEPT
 
