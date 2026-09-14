@@ -254,14 +254,39 @@ jobs:
 
       # `gh` is preinstalled on the runner, so this needs no third-party action
       # in a repository whose whole subject is supply chain.
+      #
+      # Notes come from `docs/releases/<tag>.md` when it exists, so what gets
+      # published is reviewable in the repository rather than re-drafted at
+      # release time. The hash is appended here rather than written into that
+      # file: PyInstaller is not byte-reproducible, so a hash committed
+      # alongside the notes describes some other build.
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$env:GITHUB_REF_NAME" `
-            "$env:zip" "$($env:zip).sha256" `
-            --title "$env:GITHUB_REF_NAME" `
-            --generate-notes `
-            --verify-tag
+          $tag = $env:GITHUB_REF_NAME
+          $notes = Join-Path $PWD "docs/releases/$tag.md"
+          $ghArgs = @("$env:zip", "$($env:zip).sha256", "--title", $tag, "--verify-tag")
+
+          if (Test-Path $notes) {
+            $hash = (Get-Content "$($env:zip).sha256" -Raw).Trim()
+            $body = Join-Path $env:RUNNER_TEMP "release-body.md"
+            @(
+              (Get-Content $notes -Raw),
+              "",
+              "---",
+              "",
+              "``````text",
+              $hash,
+              "``````"
+            ) | Set-Content -Path $body -Encoding utf8
+            Write-Output "  notes: docs/releases/$tag.md, with the built hash appended"
+            $ghArgs += @("--notes-file", $body)
+          } else {
+            Write-Output "  notes: none in docs/releases/, falling back to generated"
+            $ghArgs += "--generate-notes"
+          }
+
+          gh release create $tag @ghArgs

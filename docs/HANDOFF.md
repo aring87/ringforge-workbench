@@ -858,8 +858,11 @@ that PyInstaller is not byte-reproducible so the hash will differ.
 
 **`release.yml` has now run green end to end** -- see *The CI that had never
 run*. It failed on the v1.12.0 tag and took three commits to fix.
-`release/NOTES.md` holds the drafted notes, doc links pinned to
-`blob/v1.12.0/`.
+Published notes live in `docs/releases/<tag>.md` and the workflow uses them
+when the file exists, so what reaches a release is reviewable in the repository
+rather than re-drafted at release time. The SHA256 is appended by the workflow
+rather than committed beside the notes: PyInstaller is not byte-reproducible,
+so a hash checked in next to the text describes some other build.
 
 Not done, and neither is a defect:
 
