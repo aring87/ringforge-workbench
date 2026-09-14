@@ -78,6 +78,7 @@ include = [
     "verdict*",
     "gui*",
     "ringforge",
+    "runcontrol*",
 ]
 
 [tool.setuptools]
