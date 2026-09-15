@@ -1294,6 +1294,37 @@ grew its guest-local log: a failure the host cannot see is the failure that
 costs a day.
 
 
+#### Done, and the new baseline is `corpus-agent-cold-e305d3f`
+
+Ran 15 Sep in an interactive `WIN11\csocr` session. The receipt:
+
+```json
+{ "commit_before": "5e87af1...", "commit_after":  "e305d3f...",
+  "version": "1.12.0", "pulled": true, "installed": true, "ok": true }
+```
+
+`analyzer_version()` answers `1.12.0` in the guest where it answered `None`,
+and the clone is at the same commit as the host -- so a corpus entry written
+there now names its analyzer rather than half-naming it. That the session was
+`csocr` rather than SYSTEM is also the evidence that a logged-on user reaches
+the share, which is the open question behind the `-OnLogon` switch.
+
+Then, host-side: ACPI shutdown (clean, 10s -- graceful is right *here*, where
+nothing was detonated and the disk will be restored hundreds of times; the
+power-off-don't-shutdown rule is about samples that refuse), snapshot taken
+from `poweroff`, and **the restore verified to land on `poweroff` rather than
+`saved`** -- the live-snapshot failure that cost the first controller run,
+checked rather than assumed this time. `check_ready` against the real
+`VirtualBox` then came back clean, with NIC1 down and NIC2 up.
+
+**`--baseline corpus-agent-cold-e305d3f` from now on.** Nothing in the code
+hardcodes a baseline -- it is a required argument on `runcontrol.sweep` and a
+field on `Guest` -- so this line is the only place the new name lives, which
+is why it is written here rather than left in the snapshot tree.
+`corpus-agent-cold` still exists and still works; it just produces verdicts
+with no version in them.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1310,11 +1341,10 @@ the loop:
   written before the first delivery -- see *The sweep, and a manifest of
   what was attempted*. Every test is host-side against a fake
   hypervisor, so the first sweep on real hardware is still a first.
-* `pip install -e .` in the guest -- machinery built and verified, the
-  guest half still to be typed at the console. See *Provisioning the
-  guest*. Not closed until the new powered-off baseline exists and
-  `--baseline` points at it; an install into a running guest is lost on
-  the next restore.
+* CLOSED, 15 Sep. The guest names its analyzer: clone at `e305d3f`,
+  `analyzer_version()` `1.12.0` where it was `None`. New baseline
+  **`corpus-agent-cold-e305d3f`**, taken from poweroff and verified to
+  restore to `poweroff`. See *Provisioning the guest*.
 * the `-OnLogon` trigger plus autologon, because the default `-OnStart` task
   detonates in SYSTEM context and that is a systematic bias for measurement,
   not a detail
