@@ -1548,10 +1548,20 @@ was booted *by hand*, bypassing the controller, so the share was never
 repointed and the agent was talking to the old exchange on `C:`. It worked
 perfectly the whole time, against the wrong directory.
 
-**HAZARD, still live:** `C:/Users/aring/Downloads/ringforge/current` holds a
-complete stale run -- `notepad.exe`, its case folder, and **both signal
-files**. Any boot that misses the repoint analyses the wrong sample and can
-read as finished before it starts. Worth clearing.
+**HAZARD, CLEARED 15 Sep.** `C:/Users/aring/Downloads/ringforge/current`
+held a complete stale run -- `notepad.exe`, its 64-file case folder, and
+**both signal files**. Any boot that missed the repoint analysed the wrong
+sample and could read as finished before it started; that is what cost ten
+minutes above. Archived whole to
+`G:/ringforge-artifacts/stale-exchange-15sep/current` and removed from the
+share, rather than deleted: `cases/` has no git safety net, and the run was
+verified redundant first -- same sample hash, same 64 files, already
+collected to `G:/ringforge-runs/exchange-move-proof/cases/notepad`.
+
+The *live* exchange keeps leftovers between runs by design and that is not
+the same hazard: `prepare_work` removes and recreates `current/` at the start
+of every run and `Signals.clear()` follows it, both pinned by tests. The
+danger was only ever a **second** exchange nobody was repointing at.
 
 #### A launch that lost a race
 
