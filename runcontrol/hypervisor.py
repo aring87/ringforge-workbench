@@ -79,6 +79,7 @@ class Hypervisor(Protocol):
     def start(self, vm: str, headless: bool = True) -> None: ...
     def power_off(self, vm: str) -> None: ...
     def set_link(self, vm: str, nic: int, connected: bool) -> None: ...
+    def link_connected(self, vm: str, nic: int) -> bool: ...
 
 
 @dataclass
@@ -115,6 +116,21 @@ class VirtualBox:
         )
 
     # -- running commands ---------------------------------------------------
+
+    def _require_destructive(self, what: str) -> None:
+        """Refuse before doing any work at all.
+
+        `_run` guards the command itself, which is enough when the command is
+        the first thing that happens. `set_link` has to read the VM's state to
+        choose between `modifyvm` and `controlvm`, so without this a read-only
+        caller would get a state-read failure instead of a refusal -- the wrong
+        error, and one that hides the guard.
+        """
+        if not self.destructive:
+            raise NotPermitted(
+                f"refusing to {what}: this VirtualBox was constructed "
+                f"read-only. Pass destructive=True to allow it."
+            )
 
     def _run(self, args: Sequence[str], *, changes_guest: bool) -> str:
         if changes_guest and not self.destructive:
@@ -221,13 +237,53 @@ class VirtualBox:
         """
         self._run(["controlvm", vm, "poweroff"], changes_guest=True)
 
+    #: States in which a VM has no running session to talk to.
+    _STOPPED = frozenset({"poweroff", "saved", "aborted", "aborted-saved"})
+
     def set_link(self, vm: str, nic: int, connected: bool) -> None:
         """Connect or cut a NIC's virtual cable, from the host.
 
         The host side is the point. An adapter disabled inside the guest can be
         re-enabled by anything running there with administrator rights,
         including the sample.
+
+        **Two different commands, chosen by state, and finding that out cost a
+        real run.** `controlvm setlinkstate` talks to a live VM and fails with
+        *"Machine is not currently running"* on a stopped one. But the loop
+        arms containment *before* boot on purpose -- any gap between starting
+        the guest and cutting its cable is a window where the sample is live
+        and online -- so the call that matters most is the one `controlvm`
+        cannot serve. `modifyvm --cableconnected` writes the setting into the
+        machine config instead, where it persists into the boot.
+
+        The `FakeHypervisor` in the tests could not have found this: it records
+        calls rather than running them. It took restoring a real snapshot and
+        watching the cable come back *on*, because `corpus-baseline-capa` was
+        saved connected.
         """
-        self._run(["controlvm", vm, f"setlinkstate{nic}",
-                   "on" if connected else "off"],
-                  changes_guest=True)
+        self._require_destructive(
+            f"change the cable on {vm!r} nic{nic}")
+        state = self.state(vm)
+        if state in self._STOPPED:
+            self._run(["modifyvm", vm,
+                       f"--cableconnected{nic}", "on" if connected else "off"],
+                      changes_guest=True)
+        else:
+            self._run(["controlvm", vm, f"setlinkstate{nic}",
+                       "on" if connected else "off"],
+                      changes_guest=True)
+
+    def link_connected(self, vm: str, nic: int) -> bool:
+        """Whether a NIC's cable is currently attached.
+
+        Containment is verified rather than assumed: a restore brings back
+        whatever cable state the snapshot was saved with, and a snapshot saved
+        online silently un-arms a sweep.
+        """
+        out = self._run(["showvminfo", vm, "--machinereadable"],
+                        changes_guest=False)
+        match = re.search(rf'^cableconnected{nic}="([^"]+)"', out, re.M)
+        if not match:
+            raise HypervisorError(
+                f"could not read the cable state of {vm!r} nic{nic}")
+        return match.group(1) == "on"

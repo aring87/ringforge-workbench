@@ -167,6 +167,63 @@ class ParsingVBoxManage(unittest.TestCase):
             vbox.state("x")
 
 
+class CuttingTheCable(unittest.TestCase):
+    """Two commands, chosen by state. Found by driving a real VM.
+
+    `controlvm setlinkstate` needs a live session and fails with *"Machine is
+    not currently running"* on a stopped VM -- but the loop arms containment
+    **before** boot on purpose, so the call that matters most is the one
+    `controlvm` cannot serve. `FakeHypervisor` records calls rather than
+    running them, so it passed either way.
+    """
+
+    def test_a_stopped_vm_uses_modifyvm(self) -> None:
+        vbox = _vbox({"showvminfo": 'VMState="poweroff"'}, destructive=True)
+        vbox.set_link("RingForge-Analysis", 1, False)
+        self.assertIn("modifyvm RingForge-Analysis --cableconnected1 off",
+                      vbox.log)
+        self.assertFalse([c for c in vbox.log if "setlinkstate" in c])
+
+    def test_a_running_vm_uses_controlvm(self) -> None:
+        vbox = _vbox({"showvminfo": 'VMState="running"'}, destructive=True)
+        vbox.set_link("RingForge-Analysis", 1, False)
+        self.assertIn("controlvm RingForge-Analysis setlinkstate1 off", vbox.log)
+        self.assertFalse([c for c in vbox.log if "modifyvm" in c])
+
+    def test_saved_and_aborted_count_as_stopped(self) -> None:
+        for state in ("saved", "aborted", "aborted-saved"):
+            with self.subTest(state=state):
+                vbox = _vbox({"showvminfo": 'VMState="' + state + '"'},
+                             destructive=True)
+                vbox.set_link("v", 1, False)
+                self.assertTrue([c for c in vbox.log if "modifyvm" in c])
+
+    def test_connecting_passes_on(self) -> None:
+        vbox = _vbox({"showvminfo": 'VMState="poweroff"'}, destructive=True)
+        vbox.set_link("v", 2, True)
+        self.assertIn("modifyvm v --cableconnected2 on", vbox.log)
+
+    def test_the_cable_state_can_be_read_back(self) -> None:
+        # Containment is verified, not assumed: a restore brings back whatever
+        # cable state the snapshot was saved with, and `corpus-baseline-capa`
+        # on this bench was saved **connected**.
+        fixture = 'cableconnected1="off"' + chr(10) + 'cableconnected2="on"'
+        vbox = _vbox({"showvminfo": fixture})
+        self.assertFalse(vbox.link_connected("v", 1))
+        self.assertTrue(vbox.link_connected("v", 2))
+
+    def test_an_unreadable_cable_state_raises(self) -> None:
+        vbox = _vbox({"showvminfo": "nothing here"})
+        with self.assertRaises(HypervisorError):
+            vbox.link_connected("v", 1)
+
+    def test_reading_the_cable_is_not_destructive(self) -> None:
+        # No NotPermitted: a read-only hypervisor must still be able to verify
+        # containment, which is the whole point of having the reader.
+        vbox = _vbox({"showvminfo": 'cableconnected1="on"'})
+        self.assertTrue(vbox.link_connected("v", 1))
+
+
 class TheGuestDescriptor(unittest.TestCase):
     def test_a_baseline_is_required(self) -> None:
         with self.assertRaises(GuestError) as caught:
