@@ -1422,6 +1422,73 @@ because that is how the case folder gets home. Read-only in, disk out, is the
 second half and it is a transport change rather than a path change.
 
 
+### `-OnLogon`, and a void run that destroyed its own evidence — 15 Sep
+
+The trigger switch is *not* finished; what follows is what the attempt taught,
+which is worth more than the switch.
+
+**The guest account could not be used.** `csocr` (display name "adam test",
+`csoc.ring@gmail.com`) is a **Microsoft account**, not a local one -- `net
+user csocr *` returns error 8646, *the system is not authoritative for the
+specified account*. That ruled out autologon for it twice over: the password
+lives online and this guest has no network by design, and autologon would have
+written a real Microsoft account password **in cleartext into the registry of
+a machine that detonates malware**, where any sample can read it. The script's
+"cleartext is an acceptable trade on a disposable guest" note assumes a
+throwaway local account; it does not cover this.
+
+The local account `adam` is used instead, password reset from an elevated
+session -- which works for a local account and is precisely what 8646 says is
+impossible for an MSA. A PIN had to come off it: Windows Hello takes
+precedence over `AutoAdminLogon` and the trigger never fires with one set.
+
+**The smoke run earned its place immediately.** One sample against
+`corpus-agent-onlogon-e305d3f`: `no_readiness`, void, 608s. Ten minutes rather
+than at sample 1 of 102. Cause, found by booting the guest by hand:
+`DefaultUserName` was still `csocr`, which had since been deleted, so the
+machine sat at the sign-in screen reporting *the user name or password is
+incorrect*. Windows had pre-filled that value from the last interactive logon
+and setting `AutoAdminLogon` alone does not change it.
+
+#### The finding: a void run had no evidence to examine
+
+The agent writes `C:\ProgramData\RingForge\agent.log` before it touches the
+share, specifically so a failure to *reach* the exchange is not invisible.
+Two things defeat that:
+
+* the loop's closing restore reverts the disk and takes the log with it
+* and here the agent **never ran at all**, so nothing inside the guest could
+  report anything -- there was no session for it to run in
+
+So the manifest said `void` and nothing else, and diagnosis cost a manual
+boot. Over 102 samples that is a column of indistinguishable voids.
+
+**`GuestAdditionsRunLevel` is the answer, and it is host-side.** Measured on
+this bench: **2** at the sign-in screen, **3** with a desktop session up. That
+separates the two failures that look identical in a manifest -- nobody logged
+on (autologon or the trigger) versus a session came up and the agent said
+nothing (the task, its account, or the share). No guest cooperation required,
+which is the point, because the failing case is the one where the guest is
+not cooperating.
+
+`VirtualBox.additions_runlevel` returns -1 rather than raising -- a diagnostic
+that can fail the run it is explaining is worse than no diagnostic, and this
+one runs inside the error path of a run that has already gone wrong. `run_one`
+asks **before powering off**, because a powered-off guest has no runlevel, and
+writes the answer into `RunReport.error`, so it reaches the manifest.
+
+Validated live against both states: 2 while the guest was stuck at sign-in, 3
+after a logon.
+
+#### Also paid for
+
+**VBoxManage re-splits its own arguments, so a double quote anywhere in
+`--description` terminates it** and the remainder arrives as stray
+parameters. The first baseline's description happened to contain none; this
+one quoted a display name and `snapshot take` failed outright. Strip quotes
+before the call. Same family as the backslash trap above.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1443,9 +1510,13 @@ the loop:
   `analyzer_version()` `1.12.0` where it was `None`. New baseline
   **`corpus-agent-cold-e305d3f`**, taken from poweroff and verified to
   restore to `poweroff`. See *Provisioning the guest*.
-* the `-OnLogon` trigger plus autologon, because the default `-OnStart` task
-  detonates in SYSTEM context and that is a systematic bias for measurement,
-  not a detail
+* the `-OnLogon` trigger plus autologon -- IN PROGRESS. Baseline
+  `corpus-agent-onlogon-e305d3f` exists and the account moved to local
+  `adam` (the old one is a Microsoft account, see *`-OnLogon`, and a
+  void run that destroyed its own evidence*). First smoke run was
+  `no_readiness`: `DefaultUserName` still named the deleted account.
+  Not closed until a boot reaches `adam`'s desktop unattended and a
+  smoke sample comes back usable.
 * the exchange is moved -- `G:/ringforge-exchange` on the external
   drive, repointed by the controller after every restore because a
   restore reverts it. The *read-only-in* half is NOT done: results

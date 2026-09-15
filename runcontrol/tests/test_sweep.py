@@ -44,6 +44,9 @@ class FakeHypervisor:
         #: "manifest exists before anything is detonated" test needs.
         self.on_restore = on_restore
         self._shares: dict[str, str] = {"ringforge": "C:/stale/from/baseline"}
+        #: What the guest got to. 3 is a desktop session; 2 is the
+        #: sign-in screen, which is what a broken autologon looks like.
+        self.runlevel = 3
 
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, *args))
@@ -85,6 +88,14 @@ class FakeHypervisor:
     def shared_folders(self, vm):
         self._record("shared_folders", vm)
         return dict(self._shares)
+
+    def additions_runlevel(self, vm):
+        self._record("additions_runlevel", vm)
+        return self.runlevel
+
+    def describe_runlevel(self, level):
+        return {2: "at the sign-in screen, no desktop session",
+                3: "a desktop session is up"}.get(level, f"runlevel {level}")
 
     def set_shared_folder(self, vm, name, host_path):
         self._record("set_shared_folder", vm, name, str(host_path))

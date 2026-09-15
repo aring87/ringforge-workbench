@@ -231,6 +231,39 @@ def ensure_stopped(hypervisor, vm: str, sleep=time.sleep,
     )
 
 
+def _why_no_readiness(hypervisor, vm: str) -> str:
+    """Which half of the transport failed, asked of the hypervisor.
+
+    Best effort and deliberately non-fatal: a diagnostic that can fail the
+    run it is explaining is worse than no diagnostic, so anything unexpected
+    comes back as "could not tell" rather than as an exception inside the
+    error path of a run that has already gone wrong.
+    """
+    try:
+        level = hypervisor.additions_runlevel(vm)
+    except Exception:                                # noqa: BLE001
+        return "The guest's session state could not be read."
+
+    if level < 0:
+        return "The guest's session state could not be read."
+
+    describe = getattr(hypervisor, "describe_runlevel", None)
+    detail = describe(level) if describe else f"runlevel {level}"
+
+    if level >= 3:
+        return (
+            f"The guest reached a desktop session ({detail}), so this is the "
+            f"agent rather than the logon: check the scheduled task is "
+            f"registered against the account that logged on, and that it can "
+            f"see the exchange."
+        )
+    return (
+        f"The guest never reached a desktop session ({detail}), so a "
+        f"logon-triggered agent cannot have fired. Check autologon -- "
+        f"DefaultUserName, and whether the account it names still exists."
+    )
+
+
 def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
             case_root: Path, *, limits: Limits | None = None,
             signals_override: Signals | None = None,
@@ -290,10 +323,18 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         if not signals.wait_for(signals.ready, guest.readiness_timeout,
                                 sleep=sleep):
             report.outcome = Outcome.NO_READINESS
+            # Asked *before* the guest is powered off, because it is the only
+            # thing that separates "nobody ever logged on" from "a session
+            # came up and the agent said nothing" -- and the closing restore
+            # discards the guest's own log, so nothing inside it survives to
+            # tell us. Measured 15 Sep: autologon pointed at a deleted
+            # account, the guest sat at the sign-in screen at runlevel 2, and
+            # the manifest said only `void`.
             report.error = (
                 f"collection never signalled ready within "
                 f"{guest.readiness_timeout:.0f}s. Nothing was observed, so this "
-                f"is a void run rather than a quiet sample."
+                f"is a void run rather than a quiet sample. "
+                f"{_why_no_readiness(hypervisor, guest.vm)}"
             )
             report.note("readiness", started, "TIMED OUT")
             return report

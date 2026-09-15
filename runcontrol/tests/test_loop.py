@@ -40,6 +40,9 @@ class FakeHypervisor:
         #: shared folders back wholesale, so the fake starts each run holding
         #: whatever the snapshot held rather than what the last run set.
         self._shares: dict[str, str] = {"ringforge": "C:/stale/from/baseline"}
+        #: What the guest got to. 3 is a desktop session; 2 is the
+        #: sign-in screen, which is what a broken autologon looks like.
+        self.runlevel = 3
 
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, *args))
@@ -82,6 +85,14 @@ class FakeHypervisor:
     def shared_folders(self, vm):
         self._record("shared_folders", vm)
         return dict(self._shares)
+
+    def additions_runlevel(self, vm):
+        self._record("additions_runlevel", vm)
+        return self.runlevel
+
+    def describe_runlevel(self, level):
+        return {2: "at the sign-in screen, no desktop session",
+                3: "a desktop session is up"}.get(level, f"runlevel {level}")
 
     def set_shared_folder(self, vm, name, host_path):
         self._record("set_shared_folder", vm, name, str(host_path))
@@ -383,6 +394,63 @@ class AVoidRunIsNotAQuietSample(LoopFixture):
         hv = FakeHypervisor()
         self.detonate(hv, sleep=self.guest_cooperates(ready=False))
         self.assertEqual(2, hv.names.count("restore"))
+
+
+class AVoidRunSaysWhichHalfFailed(LoopFixture):
+    """Measured 15 Sep, and it cost a manual boot to find out.
+
+    Autologon pointed at an account that had been deleted, the guest sat at
+    the sign-in screen, and the agent never ran -- so nothing inside the guest
+    could report it, and the closing restore discarded the guest-local log
+    that exists for exactly that case. The manifest said `void` and no more.
+
+    The runlevel is readable from the host with no guest cooperation at all,
+    and it separates the two failures that otherwise look identical.
+    """
+
+    def test_no_desktop_session_points_at_the_logon(self) -> None:
+        hv = FakeHypervisor()
+        hv.runlevel = 2                      # what a dead autologon looks like
+        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
+                                                               done=False))
+        self.assertIs(Outcome.NO_READINESS, report.outcome)
+        self.assertIn("never reached a desktop session", report.error)
+        self.assertIn("autologon", report.error.lower())
+
+    def test_a_desktop_session_points_at_the_agent_instead(self) -> None:
+        hv = FakeHypervisor()
+        hv.runlevel = 3
+        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
+                                                               done=False))
+        self.assertIn("reached a desktop session", report.error)
+        self.assertIn("scheduled task", report.error)
+
+    def test_it_is_asked_before_the_guest_is_powered_off(self) -> None:
+        # A powered-off guest has no runlevel, so asking after the fact
+        # answers nothing. The ordering is the whole value of the check.
+        hv = FakeHypervisor()
+        self.detonate(hv, sleep=self.guest_cooperates(ready=False, done=False))
+        self.assertLess(hv.index("additions_runlevel"), hv.index("power_off"))
+
+    def test_an_unreadable_runlevel_does_not_break_the_report(self) -> None:
+        # A diagnostic that can fail the run it is explaining is worse than no
+        # diagnostic, and this one runs inside the error path of a run that
+        # has already gone wrong.
+        hv = FakeHypervisor()
+        hv.additions_runlevel = mock.Mock(side_effect=OSError("no vbox"))
+        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
+                                                               done=False))
+        self.assertIs(Outcome.NO_READINESS, report.outcome)
+        self.assertIn("could not be read", report.error)
+
+    def test_the_diagnosis_reaches_the_manifest(self) -> None:
+        # It is only worth anything if it survives into the record; over 102
+        # samples nobody is reading a terminal.
+        hv = FakeHypervisor()
+        hv.runlevel = 2
+        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
+                                                               done=False))
+        self.assertIn("sign-in screen", report.error)
 
 
 class ARunTimeoutStillCollects(LoopFixture):

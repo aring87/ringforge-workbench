@@ -83,6 +83,7 @@ class Hypervisor(Protocol):
     def shared_folders(self, vm: str) -> dict[str, str]: ...
     def set_shared_folder(self, vm: str, name: str,
                           host_path: str) -> None: ...
+    def additions_runlevel(self, vm: str) -> int: ...
 
 
 @dataclass
@@ -308,6 +309,53 @@ class VirtualBox:
         # VBoxManage escapes backslashes in this output; the config holds one.
         return {names[i]: paths.get(i, "").replace("\\\\", "\\")
                 for i in names}
+
+    #: What `GuestAdditionsRunLevel` means, measured on this bench rather
+    #: than taken from the documentation. The one that matters is 3: a
+    #: desktop session exists, which is the difference between "nobody logged
+    #: on" and "somebody did and the agent still said nothing".
+    RUNLEVEL = {
+        0: "additions not running",
+        1: "additions system services only, nobody logged on",
+        2: "at the sign-in screen, no desktop session",
+        3: "a desktop session is up",
+    }
+
+    #: Below this, no interactive session exists and a logon-triggered task
+    #: cannot have fired.
+    RUNLEVEL_DESKTOP = 3
+
+    def additions_runlevel(self, vm: str) -> int:
+        """How far the guest got, from the host, with no guest cooperation.
+
+        **This exists because a void run destroyed its own evidence.** The
+        agent writes a guest-local log for exactly the case where it cannot
+        reach the exchange -- and the loop's closing restore reverts the disk,
+        taking the log with it. Worse, the failure measured 15 Sep was the
+        agent never running *at all*: autologon pointed at a deleted account,
+        the guest sat at the sign-in screen, and nothing inside it could
+        report that because nothing inside it ran.
+
+        The runlevel is readable from the host while the guest is still up,
+        and it separates the two failures that otherwise look identical in a
+        manifest: no session (autologon or the trigger) from a session that
+        came up and produced no signal (the agent). Over 102 samples that is
+        the difference between a diagnosable sweep and a column of `void`.
+
+        Returns -1 when it cannot be read, rather than raising: this is
+        diagnosis, and a diagnostic that can fail the run it is explaining is
+        worse than no diagnostic.
+        """
+        try:
+            out = self._run(["showvminfo", vm, "--machinereadable"],
+                            changes_guest=False)
+        except HypervisorError:
+            return -1
+        match = re.search(r"^GuestAdditionsRunLevel=(\d+)", out, re.M)
+        return int(match.group(1)) if match else -1
+
+    def describe_runlevel(self, level: int) -> str:
+        return self.RUNLEVEL.get(level, f"unknown runlevel {level}")
 
     def set_shared_folder(self, vm: str, name: str, host_path: str) -> None:
         """Point `name` at `host_path`, replacing whatever it pointed at.
