@@ -894,7 +894,7 @@ Not done, and neither is a defect:
   Autorunsc (days); and `pktmon`, which `network_capture` already falls back to,
   instead of Npcap.
 
-## The run controller: designed, not built — 14 Sep
+## The run controller — 14 Sep designed, 15 Sep running
 
 **It is not a sandbox and should not be called one.** Asked whether a sandbox
 could be built *into* the program, the honest answer is no, in the sense that
@@ -1064,6 +1064,94 @@ cheap, which is the point.
 It does not need a single change to the scoring model, the collectors or the
 reports. That is the argument for doing it before the ETW work.
 
+### What the first two runs taught — 15 Sep
+
+**It works.** One sample, start to finish, against `RingForge-Analysis`:
+
+```text
+stop             0.1s
+restore          0.3s   corpus-agent-cold
+contain          0.6s   nic1 off          (modifyvm, because stopped)
+deliver          0.6s   notepad.exe
+start            5.3s                     (headless)
+readiness      277.3s                     ONSTART throttle, 4m37s
+run            589.4s   finished
+power_off      590.0s
+collect         69 files, 2.3 MiB
+restore_after  590.8s   corpus-agent-cold
+
+completed   void=False   usable=True   591s
+```
+
+69 files imported with no refusals, and the verdict the *guest* produced reads
+on the host. `rules_compiled: 1545` of `rule_file_count: 1545`, none skipped --
+the number that read as a clean scan for a fortnight in August, now verified
+end to end through the controller.
+
+**A baseline must be captured powered off**, and this cost the first run.
+`corpus-agent-armed` was taken while the VM was running, which makes it a live
+snapshot: restoring it yields `VMState=saved`, and starting a saved VM
+*resumes from memory* rather than booting. An `ONSTART` task never fires
+because the machine never starts. Seven minutes of `no_readiness`, and nothing
+to do with the SYSTEM-versus-share theory being built at the time.
+`corpus-agent-cold` is taken from `poweroff` and the next run signalled ready
+at 277s. The requirement is written into the snapshot's own description,
+because the failure it produces looks exactly like an agent that will not
+start.
+
+**The void-run path proved itself first**, which is the more valuable of the
+two results. That failed run recorded `no_readiness`, `void=True`, no
+`collect` step and no collected object, and restored the guest afterwards. A
+guest that never woke up was recorded as having observed nothing rather than as
+a clean sample -- the distinction the whole scoring model rests on, working at
+the transport layer on real hardware.
+
+### A corpus bias, found on the first sample
+
+`notepad.exe` copied from the host's `System32` banded **Single Observation /
+Medium / Needs Review**. The guest recorded `signature_present: False` against
+a `CompanyName` of `Microsoft Corporation`, and the signer-mismatch detector
+fired. Correctly, on the file it was given.
+
+Windows system binaries are **catalog-signed**, not Authenticode-embedded. The
+signature lives in the host's catalog store keyed by file hash and does not
+travel with the file. Measured: the original and the copy both verify
+`status=Valid source=Catalog` on the host with identical hashes, and the copy
+reads unsigned in the guest, whose catalog is a different patch level and holds
+no entry for it.
+
+**So a benign corpus built by copying the host's system binaries into the guest
+produces systematic false positives on that detector**, and it would have gone
+straight into the confusion matrix as a benign-scored-malicious. Use
+embedded-signed benign samples -- third-party installers, of which `outputs/`
+already holds two -- or take system binaries from the guest's own `System32`.
+
+This is the first measurement the controller has produced, and it is about how
+to build the corpus rather than about a sample. Worth the entry on its own.
+
+### Loose ends from the two runs
+
+* **The guest's clone has never had `pip install -e .` run**, so
+  `importlib.metadata` finds no package, `analyzer_version()` returns `None`,
+  and verdicts produced there are half-identified. The git-commit fallback
+  worked, so `commit` is populated and `version` is not. One command in the
+  guest, and worth doing before a sweep so a corpus entry names its analyzer.
+* **Cases land at `cases/<name>/<name>/`.** The agent sets `CASE_ROOT_DIR` to
+  the work directory *and* passes `--case <name>`, so the host collects
+  `work/` into `cases/<name>/` and the segment doubles. Cosmetic until a
+  manifest quotes it.
+* **Readiness took 277s**, inside the 420s allowed but not by much. The
+  measured ONSTART delay on this bench was 231s in August and 277s now, so a
+  sweep wants the timeout kept generous rather than tuned down to what one run
+  happened to need.
+* The agent now logs to `C:\ProgramData\RingForge\agent.log` in the guest
+  before it touches the share, and records its identity, session id and
+  whether the share is reachable. Written because the exchange is the only
+  channel back to the host, so a failure to *reach* the exchange is invisible
+  on the host by construction. Not yet needed -- the guest still carries the
+  pre-logging agent, and the updated one is staged at
+  `<share>/agent-update/` rather than pulled.
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1071,10 +1159,20 @@ end, and both workflows are passing for the first time since 04 Sep -- see *The
 CI that had never run*. Everything below needs samples or a decision rather
 than code.
 
-**And one piece of engineering is now ranked above the rest** — see
-*The run controller*. It is what makes the corpus below measurable at all,
-it needs no change to the scoring model, the collectors or the reports, and it
-outranks the ETW work for that reason.
+**The run controller runs.** One sample end to end on real hardware, 591s, 69
+files imported, the guest's verdict readable on the host — and the void-run
+path proved itself first. See *The run controller*. What is left on it is not
+the loop:
+
+* a sweep over a directory, with a manifest of what was *attempted* so an
+  absent result is visible rather than merely missing
+* `pip install -e .` in the guest, so verdicts produced there name their
+  analyzer version rather than only their commit
+* the `-OnLogon` trigger plus autologon, because the default `-OnStart` task
+  detonates in SYSTEM context and that is a systematic bias for measurement,
+  not a detail
+* the exchange moved off the 4.8 GB working share to a dedicated read-only-in
+  directory, before anything unattended
 
 What is left needs samples rather than code:
 
