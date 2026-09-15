@@ -147,11 +147,39 @@ class TheOrderOfOperations(LoopFixture):
         call = next(c for c in hv.calls if c[0] == "set_link")
         self.assertEqual(("set_link", "RingForge-Analysis", 1, False), call)
 
-    def test_the_baseline_is_restored_before_anything_else(self) -> None:
+    def test_the_baseline_is_restored_before_anything_that_changes_it(self) -> None:
+        # `state` may come first: the loop checks whether the guest is running
+        # before restoring, because VirtualBox refuses to restore over a live
+        # machine. What must not precede the restore is anything that *changes*
+        # the guest.
         hv = FakeHypervisor()
         self.detonate(hv)
-        self.assertEqual("restore", hv.names[0])
-        self.assertEqual("corpus-baseline", hv.calls[0][2])
+        restore_at = hv.index("restore")
+        for name in hv.names[:restore_at]:
+            with self.subTest(before_restore=name):
+                self.assertIn(name, ("state", "power_off"),
+                              f"{name} ran before the baseline was restored")
+        self.assertEqual("corpus-baseline", hv.calls[restore_at][2])
+
+    def test_a_running_guest_is_stopped_before_the_restore(self) -> None:
+        # Only bites on the first run after somebody used the VM by hand -- in
+        # a sweep the previous iteration's finally-block already left it off.
+        # Which is exactly when a controller failing is least welcome. Found by
+        # driving a real guest: "Cannot delete the current state of the running
+        # machine".
+        hv = FakeHypervisor(running=True)
+        self.detonate(hv)
+        self.assertLess(hv.index("power_off"), hv.index("restore"),
+                        f"restored over a running guest: {hv.names}")
+
+    def test_an_already_stopped_guest_is_not_powered_off_first(self) -> None:
+        # A redundant poweroff is harmless but it is noise in the step record,
+        # and the record is what explains a corpus entry.
+        hv = FakeHypervisor(running=False)
+        report = self.detonate(hv)
+        before_restore = hv.names[:hv.index("restore")]
+        self.assertNotIn("power_off", before_restore)
+        self.assertIn("stop", [s[0] for s in report.steps])
 
     def test_the_guest_is_powered_off_before_collection(self) -> None:
         # Reading artifacts from a live guest races an attacker who can rewrite
@@ -174,8 +202,8 @@ class TheOrderOfOperations(LoopFixture):
     def test_the_steps_are_recorded_in_order(self) -> None:
         report = self.detonate()
         self.assertEqual(
-            ["restore", "contain", "deliver", "start", "readiness", "run",
-             "power_off", "collect", "restore_after"],
+            ["stop", "restore", "contain", "deliver", "start", "readiness",
+             "run", "power_off", "collect", "restore_after"],
             [s[0] for s in report.steps])
 
 

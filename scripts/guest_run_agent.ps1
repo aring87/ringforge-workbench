@@ -68,9 +68,54 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# **Declared before anything can fail.** Under StrictMode, referencing an
+# unassigned variable throws -- so the error handler's `if ($work)` threw when
+# the failure happened before `$work` was set, and the agent died reporting
+# nothing at all. A first run produced no signal, no error file and no way to
+# tell "the task never fired" from "the task fired and failed immediately".
+$work = ""
+$exchange = ""
+
+# **A guest-local log, written before the share is touched.** The exchange is
+# the only channel back to the host, so a failure to reach the exchange is
+# invisible on the host by construction. This log is on the guest's own disk,
+# so it survives that and is readable afterwards even when the share never
+# worked.
+$LogDir = "C:\ProgramData\RingForge"
+$LogFile = Join-Path $LogDir "agent.log"
+try { if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null } } catch { }
+
 function Write-Log($msg) {
   $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-  Write-Host "[$stamp] $msg"
+  $line = "[$stamp] $msg"
+  Write-Host $line
+  try { Add-Content -LiteralPath $LogFile -Value $line -Encoding utf8 } catch { }
+}
+
+function Write-Identity {
+  <#
+    Who am I and can I see the share. Both are recorded on every run because
+    they are the two things that decide whether this agent can work at all,
+    and neither is visible from the host.
+
+    **A SYSTEM-context task may not be able to reach the share.** VirtualBox
+    shared folders are mounted by VBoxService per interactive session; the
+    redirector is not necessarily present in session 0. If that is what is
+    happening, the transport and the trigger are coupled: a shared-folder
+    exchange needs the agent to run as a logged-on user, and a SYSTEM trigger
+    needs a transport SYSTEM can see -- a second virtual disk rather than a
+    share.
+  #>
+  $who = try { [Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { "unknown" }
+  Write-Log "identity: $who"
+  Write-Log "session : $([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+  $share = "\\VBOXSVR\ringforge"
+  foreach ($probe in @($share, "\\VBOXSVR")) {
+    $seen = try { Test-Path -LiteralPath $probe } catch { $false }
+    Write-Log "probe   : $probe -> $seen"
+  }
+  $drives = try { (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Name }) -join "," } catch { "?" }
+  Write-Log "drives  : $drives"
 }
 
 function Find-Exchange {
@@ -120,6 +165,8 @@ function Get-DeliveredSample {
 # ---------------------------------------------------------------------------
 
 try {
+  Write-Log "=== agent starting ==="
+  Write-Identity
   $exchange = Find-Exchange -Configured $Exchange -WorkDir $WorkDir
   $work = Join-Path $exchange $WorkDir
   Write-Log "exchange: $exchange"
@@ -205,7 +252,7 @@ catch {
   # failed run would present as a finished one with thin results.
   Write-Log "FAILED: $($_.Exception.Message)"
   try {
-    if ($work) {
+    if ($work -ne "") {
       "agent failed: $($_.Exception.Message)" |
         Set-Content -LiteralPath (Join-Path $work "ringforge-agent-error.txt") -Encoding utf8
     }

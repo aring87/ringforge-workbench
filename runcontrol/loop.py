@@ -63,6 +63,13 @@ from runcontrol.guest import Guest
 #: and cannot mistake a stale run for a new one: it is cleared before delivery.
 RUN_DIR = "current"
 
+#: Hypervisor states in which a guest has no running session.
+#:
+#: Mirrors `VirtualBox._STOPPED`, kept here rather than imported so the loop
+#: does not depend on a particular hypervisor for a fact about its own
+#: sequencing.
+STOPPED = frozenset({"poweroff", "saved", "aborted", "aborted-saved"})
+
 
 class Outcome(str, Enum):
     """How a run ended. `str` so it lands in JSON as its own name."""
@@ -188,6 +195,34 @@ def prepare_work(exchange: Path) -> Path:
     return work
 
 
+def ensure_stopped(hypervisor, vm: str, sleep=time.sleep,
+                   timeout: float = 60.0) -> None:
+    """Leave `vm` powered off, whatever state it was in.
+
+    **VirtualBox refuses to restore over a running machine** -- *"Cannot
+    delete the current state of the running machine"* -- and the loop's first
+    act is a restore. In a sweep the previous iteration's `finally` already
+    left the guest off, so this only bites on the *first* run after somebody
+    used the VM by hand. Which is exactly when a controller failing is least
+    expected and least welcome.
+
+    Polls rather than assuming the power-off took effect: `controlvm poweroff`
+    returns before the session has finished tearing down.
+    """
+    if hypervisor.state(vm) in STOPPED:
+        return
+    hypervisor.power_off(vm)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if hypervisor.state(vm) in STOPPED:
+            return
+        sleep(1.0)
+    raise RuntimeError(
+        f"{vm!r} did not stop within {timeout:.0f}s; it is "
+        f"{hypervisor.state(vm)!r} and a restore would be refused"
+    )
+
+
 def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
             case_root: Path, *, limits: Limits | None = None,
             signals_override: Signals | None = None,
@@ -208,7 +243,10 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
     started = time.monotonic()
 
     try:
-        # 1. A known starting point, named explicitly.
+        # 1. A known starting point, named explicitly -- and off first, because
+        #    VirtualBox will not restore over a running machine.
+        ensure_stopped(hypervisor, guest.vm, sleep=sleep)
+        report.note("stop", started)
         hypervisor.restore(guest.vm, guest.baseline)
         report.note("restore", started, guest.baseline)
 
