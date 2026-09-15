@@ -52,6 +52,22 @@ class Guest:
     #: NIC on the host-only network, used to reach the guest. Left connected.
     hostonly_nic: int = 2
 
+    #: The shared folder the guest sees the exchange through, by name. The
+    #: controller repoints it at the exchange **after every restore**, because
+    #: a restore brings the snapshot's shared folders back wholesale -- the
+    #: same reason the cable has to be re-cut. Measured, not assumed: a share
+    #: added to the machine config and then restored over is gone.
+    #:
+    #: The default names the share `guest_run_agent.ps1` discovers -- the
+    #: one called `ringforge`, which the agent reaches as a UNC path under
+    #: the VBOXSVR pseudo-host -- so moving the exchange on the *host*
+    #: needs no change inside the guest. That matters: there is no
+    #: remote-execution route into this VM by design, so every guest-side
+    #: change costs a trip to the console.
+    #:
+    #: Empty opts out, leaving whatever the baseline carries.
+    share_name: str = "ringforge"
+
     #: Seconds to wait for the guest to signal that collection is up. Generous
     #: on purpose: boot-triggered tasks are throttled, and the alternative to
     #: waiting is recording a void run.
@@ -76,6 +92,12 @@ class Guest:
                     f"{self.vm}: {label}={nic} is not a VirtualBox adapter "
                     f"number; they run 1 to 8"
                 )
+        if any(ch in self.share_name for ch in "/:" + chr(92)):
+            raise GuestError(
+                f"{self.vm}: share_name={self.share_name!r} is a name, not a "
+                f"path -- it is the share name the guest sees under "
+                f"the VBOXSVR pseudo-host, not a location on the host"
+            )
         if self.internet_nic == self.hostonly_nic:
             raise GuestError(
                 f"{self.vm}: internet_nic and hostonly_nic are both "

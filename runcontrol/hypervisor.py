@@ -80,6 +80,9 @@ class Hypervisor(Protocol):
     def power_off(self, vm: str) -> None: ...
     def set_link(self, vm: str, nic: int, connected: bool) -> None: ...
     def link_connected(self, vm: str, nic: int) -> bool: ...
+    def shared_folders(self, vm: str) -> dict[str, str]: ...
+    def set_shared_folder(self, vm: str, name: str,
+                          host_path: str) -> None: ...
 
 
 @dataclass
@@ -287,3 +290,60 @@ class VirtualBox:
             raise HypervisorError(
                 f"could not read the cable state of {vm!r} nic{nic}")
         return match.group(1) == "on"
+
+    def shared_folders(self, vm: str) -> dict[str, str]:
+        """Share name -> host path, as the machine config holds it.
+
+        Read as well as written because a restore brings back whatever the
+        snapshot was saved with, and a snapshot carrying a stale exchange
+        points the guest at last month's directory while everything else
+        about the run looks right.
+        """
+        out = self._run(["showvminfo", vm, "--machinereadable"],
+                        changes_guest=False)
+        names = dict(re.findall(
+            r'^SharedFolderNameMachineMapping(\d+)="([^"]*)"', out, re.M))
+        paths = dict(re.findall(
+            r'^SharedFolderPathMachineMapping(\d+)="([^"]*)"', out, re.M))
+        # VBoxManage escapes backslashes in this output; the config holds one.
+        return {names[i]: paths.get(i, "").replace("\\\\", "\\")
+                for i in names}
+
+    def set_shared_folder(self, vm: str, name: str, host_path: str) -> None:
+        """Point `name` at `host_path`, replacing whatever it pointed at.
+
+        **The exchange is snapshot state, which is the whole reason this
+        exists.** Measured on this bench rather than assumed: a shared folder
+        added to the machine config and then followed by
+        `snapshot restore` is *gone* -- the restore brings back the
+        snapshot's settings wholesale, exactly as it brings back the NIC cable
+        that `set_link` has to re-arm every run. A controller that configured
+        the exchange once at setup would have it silently reverted by its own
+        first step, and the guest would look for a delivery in whichever
+        directory the baseline was taken with.
+
+        So the loop sets this after the restore and before the boot, and the
+        exchange becomes controller configuration rather than something baked
+        into a snapshot. That removes the failure where a perfectly good
+        baseline carries the wrong path.
+
+        Persistent rather than `--transient`, because it is applied while the
+        guest is stopped -- transient shares need a running VM, and the point
+        is to have the share present *at* boot so auto-mount happens before
+        the agent's scheduled task looks for it.
+
+        Idempotent: a share already pointing where it should is left alone,
+        so a sweep does not rewrite the machine config once per sample.
+        """
+        self._require_destructive(
+            f"repoint the shared folder {name!r} on {vm!r}")
+        host_path = str(host_path)
+        existing = self.shared_folders(vm)
+        if existing.get(name) == host_path:
+            return
+        if name in existing:
+            self._run(["sharedfolder", "remove", vm, "--name", name],
+                      changes_guest=True)
+        self._run(["sharedfolder", "add", vm, "--name", name,
+                   "--hostpath", host_path, "--automount"],
+                  changes_guest=True)

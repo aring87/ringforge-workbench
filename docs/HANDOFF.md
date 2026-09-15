@@ -1325,6 +1325,103 @@ is why it is written here rather than left in the snapshot tree.
 with no version in them.
 
 
+### The exchange moved to the external drive, and the share is now per-run — 15 Sep
+
+`G:\ringforge-exchange`, on the 932 GB external. Three directories, and the
+separation is the point:
+
+| Directory | Written by | Holds |
+|---|---|---|
+| `G:\ringforge-exchange` | guest and host | only `current/` |
+| `G:\ringforge-runs` | host only | manifests and imported cases |
+| `G:\ringforge-artifacts` | host only | the existing manual archive |
+
+The exchange is deliberately **not** under `ringforge-artifacts`. The guest can
+write to the exchange; the artifact store holds evidence from every prior
+investigation, and a sample that walks its writable share should not find
+them.
+
+**The finding that changed the design: a snapshot restore reverts the shared
+folder.** Measured rather than assumed -- a probe share added to the machine
+config was *gone* after `snapshot restore`, the same way the NIC cable comes
+back however the snapshot saved it. So the exchange is snapshot state, and
+configuring it once at bench setup would be silently undone by the loop's own
+first step, with the guest then looking for its delivery in whichever
+directory the baseline happened to be taken with. That failure would present
+as `no_readiness`: a void run, blamed on the agent.
+
+So the controller sets it every run, between restore and boot, exactly where
+containment goes and for the same reason. The step list is now ten, with
+`share` as step 3. `Guest.share_name` defaults to `ringforge` -- the name the
+agent discovers -- so the host can move the exchange anywhere without a guest
+change, which matters because there is no remote-execution route into that VM.
+Empty opts out. The host path is not configured separately: it *is* the
+exchange the controller was given, which makes a mismatch between the two
+impossible rather than merely unlikely.
+
+`VirtualBox.set_shared_folder` is idempotent, and removes before it adds --
+`sharedfolder add` does not replace an existing name, so an add alone leaves
+the guest on the old path while the host believes it moved.
+
+**A bug the host tests could not have found.** `runcontrol.sweep`'s command
+line constructed `VirtualBox()`, which is read-only by default. That default
+is right for a class that can discard a guest, but a sweep restores a snapshot
+as its first act: it would have refused every sample and filled the manifest
+with `failed` rows blaming the hypervisor. Nothing host-side could see it --
+every test drives a fake, and `--dry-run` never constructs the real one. Fixed,
+with a test that patches the constructor and asserts `destructive=True`.
+
+### The first sweep on real hardware — 15 Sep
+
+One sample, driven by `runcontrol.sweep` rather than by hand, against the new
+baseline and the new exchange:
+
+```text
+stop               0.1s
+restore            0.3s   corpus-agent-cold-e305d3f
+contain            0.6s   nic1 off
+share              1.0s   ringforge -> G:\ringforge-exchange
+deliver            1.0s   notepad.exe
+start              5.7s
+readiness        207.8s
+run              505.8s   finished
+power_off        506.7s
+collect          506.8s   69 files, 2.3 MiB
+restore_after    507.7s   corpus-agent-cold-e305d3f
+
+completed   1 attempted, 1 usable, 0 void   508s
+```
+
+69 files and 0 refusals, identical to the 15 Sep hand-driven run, so the move
+cost nothing in collection. **Readiness came in at 207.8s against 277.3s**
+before -- a third measurement of the ONSTART throttle on this bench, after
+231s in August and 277s earlier today. The spread is 208-277s across three
+runs, which is the argument for leaving the 600s default alone rather than
+tuning it to whichever run is freshest.
+
+**And the guest's own verdict now names its analyzer.** From `combined.json`
+as the guest wrote it:
+
+```json
+"analyzer": { "name": "ringforge-workbench",
+              "version": "1.12.0",
+              "commit": "e305d3fb..." }
+```
+
+`version` was `null` in every verdict this guest had ever produced. Host and
+guest now agree on both fields, which is what makes a corpus entry
+attributable -- and the manifest records the host's copy independently, so the
+two disagreeing would be visible rather than silent.
+
+Guest left at `poweroff` on `corpus-agent-cold-e305d3f`, NIC1 down, NIC2 up.
+
+**Still open on the exchange:** the design calls for delivery mounted
+*read-only* to the guest, with results coming back on a separate disk. This
+move is only the first half -- the share is still writable from the guest,
+because that is how the case folder gets home. Read-only in, disk out, is the
+second half and it is a transport change rather than a path change.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1339,8 +1436,9 @@ the loop:
 
 * CLOSED, 15 Sep. The sweep over a directory exists, with the manifest
   written before the first delivery -- see *The sweep, and a manifest of
-  what was attempted*. Every test is host-side against a fake
-  hypervisor, so the first sweep on real hardware is still a first.
+  what was attempted*. It has now run on real hardware: one sample,
+  508s, 1 usable, 0 void, and it exposed a read-only-hypervisor bug no
+  host test could reach. See *The first sweep on real hardware*.
 * CLOSED, 15 Sep. The guest names its analyzer: clone at `e305d3f`,
   `analyzer_version()` `1.12.0` where it was `None`. New baseline
   **`corpus-agent-cold-e305d3f`**, taken from poweroff and verified to
@@ -1348,8 +1446,11 @@ the loop:
 * the `-OnLogon` trigger plus autologon, because the default `-OnStart` task
   detonates in SYSTEM context and that is a systematic bias for measurement,
   not a detail
-* the exchange moved off the 4.8 GB working share to a dedicated read-only-in
-  directory, before anything unattended
+* the exchange is moved -- `G:/ringforge-exchange` on the external
+  drive, repointed by the controller after every restore because a
+  restore reverts it. The *read-only-in* half is NOT done: results
+  still come back over the same writable share. See *The exchange
+  moved to the external drive*.
 
 What is left needs samples rather than code:
 

@@ -648,7 +648,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         from runcontrol.hypervisor import HypervisorError, VirtualBox
 
         try:
-            hypervisor = VirtualBox()
+            # **`destructive=True` is not optional here and was missing.**
+            # `VirtualBox` is read-only by default, which is the right default
+            # for a class that can discard a guest -- but a sweep restores a
+            # snapshot as its first act, so a read-only one refuses every
+            # sample and the manifest fills with `failed` rows blaming the
+            # hypervisor. Nothing host-side could catch it: every test drives
+            # a fake, and `--dry-run` never constructs this at all.
+            hypervisor = VirtualBox(destructive=True)
         except HypervisorError as error:
             print(f"error: {error}", file=sys.stderr)
             return 2

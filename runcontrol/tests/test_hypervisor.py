@@ -299,5 +299,70 @@ class PreFlight(unittest.TestCase):
         self.assertIn("cannot reach the hypervisor", problems[0])
 
 
+#: Real `showvminfo --machinereadable` shared-folder lines from this bench.
+#: VBoxManage doubles the backslashes on the way out; the machine config holds
+#: one, so the parser has to undo it or every path it reports is wrong.
+SHARED_FOLDERS = (
+    r'SharedFolderNameMachineMapping1="ringforge"' + "\n"
+    r'SharedFolderPathMachineMapping1="C:\\Users\\aring\\Downloads\\ringforge"'
+    + "\n"
+)
+
+
+class TheExchangeShare(unittest.TestCase):
+    """Repointing the share, which a restore undoes every single run.
+
+    Measured on the real hypervisor 15 Sep: a shared folder added to the
+    machine config is gone after `snapshot restore`. The exchange is therefore
+    snapshot state, exactly like the NIC cable, and the controller has to set
+    it per run rather than once at bench setup.
+    """
+
+    def test_the_path_is_unescaped(self) -> None:
+        vbox = _vbox({"showvminfo": SHARED_FOLDERS})
+        self.assertEqual(
+            {"ringforge": r"C:\Users\aring\Downloads\ringforge"},
+            vbox.shared_folders("RingForge-Analysis"))
+
+    def test_no_shared_folders_is_an_empty_map_not_an_error(self) -> None:
+        self.assertEqual({}, _vbox({"showvminfo": ""})
+                         .shared_folders("RingForge-Analysis"))
+
+    def test_repointing_is_refused_by_default(self) -> None:
+        with self.assertRaises(NotPermitted):
+            _vbox().set_shared_folder("RingForge-Analysis", "ringforge",
+                                      r"G:\ringforge-exchange")
+
+    def test_a_share_already_pointing_home_is_left_alone(self) -> None:
+        # Idempotent, so a sweep does not rewrite the machine config once per
+        # sample for no reason.
+        vbox = _vbox({"showvminfo": SHARED_FOLDERS}, destructive=True)
+        vbox.set_shared_folder("RingForge-Analysis", "ringforge",
+                               r"C:\Users\aring\Downloads\ringforge")
+        self.assertEqual([], [c for c in vbox.log if c.startswith("sharedfolder")])
+
+    def test_repointing_removes_before_it_adds(self) -> None:
+        # `sharedfolder add` does not replace an existing name, so an add
+        # without the remove leaves the guest on the old path while the host
+        # believes it moved.
+        vbox = _vbox({"showvminfo": SHARED_FOLDERS}, destructive=True)
+        vbox.set_shared_folder("RingForge-Analysis", "ringforge",
+                               r"G:\ringforge-exchange")
+        calls = [c for c in vbox.log if c.startswith("sharedfolder")]
+        self.assertEqual(2, len(calls), calls)
+        self.assertIn("remove", calls[0])
+        self.assertIn("add", calls[1])
+        self.assertIn(r"G:\ringforge-exchange", calls[1])
+        self.assertIn("--automount", calls[1])
+
+    def test_an_absent_share_is_only_added(self) -> None:
+        vbox = _vbox({"showvminfo": ""}, destructive=True)
+        vbox.set_shared_folder("RingForge-Analysis", "ringforge",
+                               r"G:\ringforge-exchange")
+        calls = [c for c in vbox.log if c.startswith("sharedfolder")]
+        self.assertEqual(1, len(calls), calls)
+        self.assertIn("add", calls[0])
+
+
 if __name__ == "__main__":
     unittest.main()

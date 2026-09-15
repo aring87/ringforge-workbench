@@ -5,29 +5,37 @@ paid for somewhere else in this project:
 
     1. restore the named baseline      guest inert, known state
     2. cut the internet, from the host
-    3. deliver the sample
-    4. start the guest
-    5. wait for it to signal collection is up
-    6. wait for it to signal the run is done
-    7. power off -- not "request shutdown"
-    8. collect, from a guest that is off
-    9. restore the baseline again
+    3. point the guest's share at the exchange
+    4. deliver the sample
+    5. start the guest
+    6. wait for it to signal collection is up
+    7. wait for it to signal the run is done
+    8. power off -- not "request shutdown"
+    9. collect, from a guest that is off
+   10. restore the baseline again
 
-**Containment before boot (2 before 4).** `vm_net.ps1` runs on the host
+**The share is repointed every run (3), not configured once.** A snapshot
+restore brings back the snapshot's shared folders wholesale -- measured on
+this bench by adding one and watching a restore delete it -- so an exchange
+configured at setup is reverted by the loop's own first step, and the guest
+then looks for its delivery in whichever directory the baseline happened to be
+taken with. Same class of fact as the cable, handled the same way.
+
+**Containment before boot (2 before 5).** `vm_net.ps1` runs on the host
 because an adapter disabled inside the guest can be re-enabled by anything
 there with administrator rights, including the sample. In a loop, any gap
 between boot and arming is a window where the sample is live and online.
 
-**Power off before collect (7 before 8).** Not a shutdown request: a sample can
+**Power off before collect (8 before 9).** Not a shutdown request: a sample can
 refuse to shut down, and a controller that waits for a clean one hangs on
 exactly the samples worth analysing. Reading artifacts from an inert guest is
 what removes the race against one rewriting them mid-read.
 
-**Restore after, as well as before (9 as well as 1).** A controller that only
+**Restore after, as well as before (10 as well as 1).** A controller that only
 reverts on the way out leaves a dirty guest when it crashes, and the next run
 inherits it. Both, so a crash costs one sample rather than the sweep.
 
-**Readiness is separate from the run (5 before 6), and its absence is a void
+**Readiness is separate from the run (6 before 7), and its absence is a void
 run rather than a quiet sample.** `logon_capture.py` measured an `ONSTART`
 capture starting 3m51s *after* the sample's `ONLOGON` payload: Task Scheduler
 throttles boot-triggered tasks. Booted is not started. A run whose collection
@@ -254,7 +262,15 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         hypervisor.set_link(guest.vm, guest.internet_nic, False)
         report.note("contain", started, f"nic{guest.internet_nic} off")
 
-        # 3. Delivery, into the controller's own subdirectory of the exchange.
+        # 3. The guest's view of the exchange, re-established after the
+        #    restore wiped it. Before the boot, so auto-mount has happened by
+        #    the time the agent's task looks for the share.
+        if guest.share_name:
+            hypervisor.set_shared_folder(guest.vm, guest.share_name, exchange)
+            report.note("share", started,
+                        f"{guest.share_name} -> {exchange}")
+
+        # 4. Delivery, into the controller's own subdirectory of the exchange.
         #    Recreated from empty, which clears any stale `done` signal: one
         #    left over from the previous sample would make this run look
         #    finished before it began, and present as a fast, quiet sample
@@ -266,11 +282,11 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         delivered.write_bytes(sample.read_bytes())
         report.note("deliver", started, delivered.name)
 
-        # 4. Boot.
+        # 5. Boot.
         hypervisor.start(guest.vm, headless=True)
         report.note("start", started)
 
-        # 5. Readiness. Its absence is a void run, not a quiet sample.
+        # 6. Readiness. Its absence is a void run, not a quiet sample.
         if not signals.wait_for(signals.ready, guest.readiness_timeout,
                                 sleep=sleep):
             report.outcome = Outcome.NO_READINESS
@@ -283,15 +299,15 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
             return report
         report.note("readiness", started)
 
-        # 6. The run itself.
+        # 7. The run itself.
         finished = signals.wait_for(signals.done, guest.run_timeout, sleep=sleep)
         report.note("run", started, "finished" if finished else "TIMED OUT")
 
-        # 7. Off, not shutdown. A sample can refuse to shut down.
+        # 8. Off, not shutdown. A sample can refuse to shut down.
         hypervisor.power_off(guest.vm)
         report.note("power_off", started)
 
-        # 8. Collect, from a guest that is off.
+        # 9. Collect, from a guest that is off.
         destination = Path(case_root) / case
         report.collected = collect_case(work, destination, limits)
         report.note("collect", started, report.collected.summary())
@@ -308,7 +324,7 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         return report
 
     finally:
-        # 9. Leave the guest at the baseline whatever happened, so a crash
+        # 10. Leave the guest at the baseline whatever happened, so a crash
         #    costs one sample rather than every sample after it.
         try:
             hypervisor.power_off(guest.vm)

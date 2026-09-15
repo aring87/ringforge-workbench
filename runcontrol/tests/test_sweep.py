@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from runcontrol.guest import Guest
 from runcontrol.hypervisor import Snapshot
@@ -42,6 +43,7 @@ class FakeHypervisor:
         #: Called on the first mutating step of every run. The hook the
         #: "manifest exists before anything is detonated" test needs.
         self.on_restore = on_restore
+        self._shares: dict[str, str] = {"ringforge": "C:/stale/from/baseline"}
 
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, *args))
@@ -63,6 +65,9 @@ class FakeHypervisor:
     def restore(self, vm, snapshot):
         self._record("restore", vm, snapshot)
         self._running = False
+        # See test_loop: a real restore discards shared folders the machine
+        # config gained since the snapshot.
+        self._shares = {"ringforge": "C:/stale/from/baseline"}
         if self.on_restore is not None:
             self.on_restore()
 
@@ -76,6 +81,14 @@ class FakeHypervisor:
 
     def set_link(self, vm, nic, connected):
         self._record("set_link", vm, nic, connected)
+
+    def shared_folders(self, vm):
+        self._record("shared_folders", vm)
+        return dict(self._shares)
+
+    def set_shared_folder(self, vm, name, host_path):
+        self._record("set_shared_folder", vm, name, str(host_path))
+        self._shares[name] = str(host_path)
 
     @property
     def names(self) -> list[str]:
@@ -327,7 +340,7 @@ class WhatARowSays(SweepFixture):
         attempt = self.rows_by_name(self.manifest())["a.exe"]["attempts"][0]
         steps = [step[0] for step in attempt["steps"]]
         self.assertEqual(
-            ["stop", "restore", "contain", "deliver", "start", "readiness",
+            ["stop", "restore", "contain", "share", "deliver", "start", "readiness",
              "run", "power_off", "collect", "restore_after"], steps)
 
     def test_a_guest_that_never_woke_up_is_void_and_not_usable(self) -> None:
@@ -513,6 +526,22 @@ class TheDryRun(SweepFixture):
                      "--dry-run"])
         self.assertEqual(0, code)
         self.assertEqual("dry_run", self.manifest()["state"])
+
+    def test_the_real_hypervisor_is_constructed_destructive(self) -> None:
+        # `VirtualBox` is read-only by default -- correct for a class that can
+        # discard a guest. But a sweep restores a snapshot as its first act,
+        # so a read-only one refuses every sample and the manifest fills with
+        # `failed` rows blaming the hypervisor. This shipped broken and no
+        # host-side test could see it: they all drive a fake, and `--dry-run`
+        # never constructs the real one.
+        import runcontrol.hypervisor as hypervisor_module
+
+        with mock.patch.object(hypervisor_module, "VirtualBox") as ctor:
+            ctor.side_effect = hypervisor_module.HypervisorError("no vbox")
+            main([str(self.corpus), "--vm", "RingForge-Analysis",
+                  "--baseline", "corpus-baseline",
+                  "--exchange", str(self.exchange), "--out", str(self.out)])
+        ctor.assert_called_once_with(destructive=True)
 
     def test_a_guest_that_cannot_be_described_is_a_usage_error(self) -> None:
         # Not a sweep that starts and fails on the first restore.

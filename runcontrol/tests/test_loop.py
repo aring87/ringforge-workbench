@@ -36,6 +36,10 @@ class FakeHypervisor:
         self.calls: list[tuple] = []
         self.fail_on = fail_on
         self._running = running
+        #: What the baseline carries. A real restore brings the snapshot's
+        #: shared folders back wholesale, so the fake starts each run holding
+        #: whatever the snapshot held rather than what the last run set.
+        self._shares: dict[str, str] = {"ringforge": "C:/stale/from/baseline"}
 
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, *args))
@@ -58,6 +62,11 @@ class FakeHypervisor:
     def restore(self, vm, snapshot):
         self._record("restore", vm, snapshot)
         self._running = False
+        # Modelled from the real thing, measured 15 Sep: a restore brings the
+        # snapshot's shared folders back and discards any the machine config
+        # had gained since. The fake says so, or the loop's re-pointing step
+        # would pass here while doing nothing on hardware.
+        self._shares = {"ringforge": "C:/stale/from/baseline"}
 
     def start(self, vm, headless=True):
         self._record("start", vm, headless)
@@ -69,6 +78,14 @@ class FakeHypervisor:
 
     def set_link(self, vm, nic, connected):
         self._record("set_link", vm, nic, connected)
+
+    def shared_folders(self, vm):
+        self._record("shared_folders", vm)
+        return dict(self._shares)
+
+    def set_shared_folder(self, vm, name, host_path):
+        self._record("set_shared_folder", vm, name, str(host_path))
+        self._shares[name] = str(host_path)
 
     # -- helpers for the assertions -----------------------------------------
     @property
@@ -181,6 +198,45 @@ class TheOrderOfOperations(LoopFixture):
         self.assertNotIn("power_off", before_restore)
         self.assertIn("stop", [s[0] for s in report.steps])
 
+    def test_the_share_is_repointed_after_the_restore_and_before_boot(self) -> None:
+        # Measured on the real hypervisor, 15 Sep: a shared folder added to
+        # the machine config is *gone* after `snapshot restore`. So the
+        # exchange is snapshot state, exactly like the NIC cable, and setting
+        # it once at bench setup would be undone by the loop's own first step
+        # -- with the guest then looking for its delivery in whichever
+        # directory the baseline happened to be taken with.
+        hv = FakeHypervisor()
+        self.detonate(hv)
+        self.assertGreater(hv.index("set_shared_folder"), hv.index("restore"),
+                           f"repointed before the restore wiped it: {hv.names}")
+        self.assertLess(hv.index("set_shared_folder"), hv.index("start"),
+                        f"repointed after boot: {hv.names}")
+
+    def test_the_share_points_at_the_exchange_the_host_is_using(self) -> None:
+        # The controller already knows where the exchange is; the guest should
+        # see *that*, not whatever the snapshot remembers. This is what makes
+        # a mismatch between the two impossible rather than merely unlikely.
+        hv = FakeHypervisor()
+        self.detonate(hv)
+        call = next(c for c in hv.calls if c[0] == "set_shared_folder")
+        self.assertEqual(("set_shared_folder", "RingForge-Analysis",
+                          "ringforge", str(self.exchange)), call)
+        # And by the end it has reverted, because step 10 restores the
+        # baseline. That is not a defect to fix; it is the reason this is a
+        # per-run step rather than a bench setup task, and asserting it here
+        # keeps the next reader from "optimising" the call out of the loop.
+        self.assertEqual("C:/stale/from/baseline", hv._shares["ringforge"])
+
+    def test_an_empty_share_name_leaves_the_baseline_alone(self) -> None:
+        # The opt-out, for a bench whose snapshot already carries the right
+        # share and would rather the controller did not touch its config.
+        guest = Guest(vm="RingForge-Analysis", baseline="corpus-baseline",
+                      readiness_timeout=0.15, run_timeout=0.15, share_name="")
+        hv = FakeHypervisor()
+        run_one(self.sample, guest, hv, self.exchange, self.cases,
+                sleep=self.guest_cooperates())
+        self.assertNotIn("set_shared_folder", hv.names)
+
     def test_the_guest_is_powered_off_before_collection(self) -> None:
         # Reading artifacts from a live guest races an attacker who can rewrite
         # them between the stat and the open.
@@ -202,7 +258,7 @@ class TheOrderOfOperations(LoopFixture):
     def test_the_steps_are_recorded_in_order(self) -> None:
         report = self.detonate()
         self.assertEqual(
-            ["stop", "restore", "contain", "deliver", "start", "readiness",
+            ["stop", "restore", "contain", "share", "deliver", "start", "readiness",
              "run", "power_off", "collect", "restore_after"],
             [s[0] for s in report.steps])
 
