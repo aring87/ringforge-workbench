@@ -234,33 +234,56 @@ def ensure_stopped(hypervisor, vm: str, sleep=time.sleep,
 def _why_no_readiness(hypervisor, vm: str) -> str:
     """Which half of the transport failed, asked of the hypervisor.
 
-    Best effort and deliberately non-fatal: a diagnostic that can fail the
-    run it is explaining is worse than no diagnostic, so anything unexpected
-    comes back as "could not tell" rather than as an exception inside the
-    error path of a run that has already gone wrong.
+    Two questions, in order of authority. **Is anybody logged on** --
+    `/VirtualBox/GuestInfo/OS/LoggedInUsers`, which the Additions maintain
+    for exactly this -- decides between the logon and the agent. The
+    Additions runlevel is reported alongside as colour only: it was tried as
+    the primary signal on 15 Sep and got this wrong, reading the same 2 for a
+    sign-in screen and for an autologon desktop with the agent running.
+
+    Best effort and deliberately non-fatal: this runs inside the error path
+    of a run that has already gone wrong, so anything unexpected comes back
+    as "could not tell".
     """
+    try:
+        count, names = hypervisor.logged_in_users(vm)
+    except Exception:                                # noqa: BLE001
+        return "The guest's logon state could not be read."
+
+    level = -1
     try:
         level = hypervisor.additions_runlevel(vm)
     except Exception:                                # noqa: BLE001
-        return "The guest's session state could not be read."
+        pass
 
-    if level < 0:
-        return "The guest's session state could not be read."
-
-    describe = getattr(hypervisor, "describe_runlevel", None)
-    detail = describe(level) if describe else f"runlevel {level}"
-
-    if level >= 3:
+    if level == 0:
         return (
-            f"The guest reached a desktop session ({detail}), so this is the "
-            f"agent rather than the logon: check the scheduled task is "
-            f"registered against the account that logged on, and that it can "
-            f"see the exchange."
+            "Guest Additions are not running in the guest, so nothing about "
+            "its state is readable and the share it needs may never have "
+            "mounted. That is a guest build problem, not a run problem."
         )
+
+    if count < 0:
+        return (
+            "The guest did not report its logon state. Guest Additions may "
+            "be too old or still starting; treat this run as undiagnosed "
+            "rather than as either failure."
+        )
+
+    if count == 0:
+        return (
+            "Nobody is logged on to the guest, so a logon-triggered agent "
+            "cannot have fired. Check autologon -- DefaultUserName, and "
+            "whether the account it names still exists."
+        )
+
+    who = ", ".join(names) if names else f"{count} user(s)"
     return (
-        f"The guest never reached a desktop session ({detail}), so a "
-        f"logon-triggered agent cannot have fired. Check autologon -- "
-        f"DefaultUserName, and whether the account it names still exists."
+        f"The guest is logged on as {who}, so the logon worked and this is "
+        f"the agent: check the scheduled task is registered against that "
+        f"account, that it can see the exchange, and read "
+        f"C:/ProgramData/RingForge/agent.log in the guest before the next "
+        f"restore discards it."
     )
 
 

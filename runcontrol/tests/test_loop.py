@@ -42,7 +42,10 @@ class FakeHypervisor:
         self._shares: dict[str, str] = {"ringforge": "C:/stale/from/baseline"}
         #: What the guest got to. 3 is a desktop session; 2 is the
         #: sign-in screen, which is what a broken autologon looks like.
-        self.runlevel = 3
+        self.runlevel = 2
+        #: (count, names). The authority on whether the logon
+        #: happened -- the runlevel is not, see test_loop.
+        self.logged_in = (1, ["adam"])
 
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, *args))
@@ -89,6 +92,10 @@ class FakeHypervisor:
     def additions_runlevel(self, vm):
         self._record("additions_runlevel", vm)
         return self.runlevel
+
+    def logged_in_users(self, vm):
+        self._record("logged_in_users", vm)
+        return self.logged_in
 
     def describe_runlevel(self, level):
         return {2: "at the sign-in screen, no desktop session",
@@ -397,60 +404,84 @@ class AVoidRunIsNotAQuietSample(LoopFixture):
 
 
 class AVoidRunSaysWhichHalfFailed(LoopFixture):
-    """Measured 15 Sep, and it cost a manual boot to find out.
+    """Measured 15 Sep, and the first version of this got it wrong.
 
-    Autologon pointed at an account that had been deleted, the guest sat at
-    the sign-in screen, and the agent never ran -- so nothing inside the guest
-    could report it, and the closing restore discarded the guest-local log
-    that exists for exactly that case. The manifest said `void` and no more.
+    The failure: autologon named an account that had been deleted, the guest
+    sat at the sign-in screen, the agent never ran -- so nothing inside the
+    guest could report it, and the closing restore discards the guest-local
+    log written for exactly that case. The manifest said `void` and no more.
 
-    The runlevel is readable from the host with no guest cooperation at all,
-    and it separates the two failures that otherwise look identical.
+    **The first fix used `GuestAdditionsRunLevel` and was wrong.** It read 2
+    at a sign-in screen and 3 in an interactive session, and generalised. An
+    autologon desktop with the agent running then also read 2, so it would
+    have reported "nobody logged on, check autologon" about a guest that had
+    logged on perfectly well. `/VirtualBox/GuestInfo/OS/LoggedInUsers` is
+    what the Additions maintain for this question, and it read 1/adam in the
+    session the runlevel got wrong.
     """
 
-    def test_no_desktop_session_points_at_the_logon(self) -> None:
-        hv = FakeHypervisor()
-        hv.runlevel = 2                      # what a dead autologon looks like
-        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
-                                                               done=False))
-        self.assertIs(Outcome.NO_READINESS, report.outcome)
-        self.assertIn("never reached a desktop session", report.error)
-        self.assertIn("autologon", report.error.lower())
+    def void(self, hv):
+        return self.detonate(hv, sleep=self.guest_cooperates(ready=False,
+                                                             done=False))
 
-    def test_a_desktop_session_points_at_the_agent_instead(self) -> None:
+    def test_nobody_logged_on_points_at_the_logon(self) -> None:
         hv = FakeHypervisor()
-        hv.runlevel = 3
-        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
-                                                               done=False))
-        self.assertIn("reached a desktop session", report.error)
+        hv.logged_in = (0, [])
+        report = self.void(hv)
+        self.assertIs(Outcome.NO_READINESS, report.outcome)
+        self.assertIn("Nobody is logged on", report.error)
+        self.assertIn("autologon", report.error)
+
+    def test_a_logged_on_guest_points_at_the_agent_and_names_the_user(self) -> None:
+        hv = FakeHypervisor()
+        hv.logged_in = (1, ["adam"])
+        report = self.void(hv)
+        self.assertIn("logged on as adam", report.error)
         self.assertIn("scheduled task", report.error)
+        # And it says to grab the log before the restore eats it, which is
+        # the mistake this whole check exists because of.
+        self.assertIn("agent.log", report.error)
 
-    def test_it_is_asked_before_the_guest_is_powered_off(self) -> None:
-        # A powered-off guest has no runlevel, so asking after the fact
-        # answers nothing. The ordering is the whole value of the check.
-        hv = FakeHypervisor()
-        self.detonate(hv, sleep=self.guest_cooperates(ready=False, done=False))
-        self.assertLess(hv.index("additions_runlevel"), hv.index("power_off"))
-
-    def test_an_unreadable_runlevel_does_not_break_the_report(self) -> None:
-        # A diagnostic that can fail the run it is explaining is worse than no
-        # diagnostic, and this one runs inside the error path of a run that
-        # has already gone wrong.
-        hv = FakeHypervisor()
-        hv.additions_runlevel = mock.Mock(side_effect=OSError("no vbox"))
-        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
-                                                               done=False))
-        self.assertIs(Outcome.NO_READINESS, report.outcome)
-        self.assertIn("could not be read", report.error)
-
-    def test_the_diagnosis_reaches_the_manifest(self) -> None:
-        # It is only worth anything if it survives into the record; over 102
-        # samples nobody is reading a terminal.
+    def test_the_runlevel_does_not_decide_it(self) -> None:
+        # The regression that matters: runlevel 2 with somebody logged on is
+        # the real autologon case, and it must not read as a failed logon.
         hv = FakeHypervisor()
         hv.runlevel = 2
-        report = self.detonate(hv, sleep=self.guest_cooperates(ready=False,
-                                                               done=False))
-        self.assertIn("sign-in screen", report.error)
+        hv.logged_in = (1, ["adam"])
+        report = self.void(hv)
+        self.assertIn("logged on as adam", report.error)
+        self.assertNotIn("Nobody is logged on", report.error)
+
+    def test_additions_not_running_is_its_own_answer(self) -> None:
+        # Runlevel 0 is the one thing the runlevel still tells us: no guest
+        # fact is readable, so neither half can be blamed.
+        hv = FakeHypervisor()
+        hv.runlevel = 0
+        hv.logged_in = (-1, [])
+        report = self.void(hv)
+        self.assertIn("Guest Additions are not running", report.error)
+
+    def test_an_unreported_logon_state_is_not_guessed_at(self) -> None:
+        hv = FakeHypervisor()
+        hv.logged_in = (-1, [])
+        report = self.void(hv)
+        self.assertIn("did not report its logon state", report.error)
+        self.assertIn("undiagnosed", report.error)
+
+    def test_it_is_asked_before_the_guest_is_powered_off(self) -> None:
+        # A powered-off guest reports nothing, so asking afterwards answers
+        # nothing. The ordering is the whole value of the check.
+        hv = FakeHypervisor()
+        self.void(hv)
+        self.assertLess(hv.index("logged_in_users"), hv.index("power_off"))
+
+    def test_a_broken_diagnostic_does_not_break_the_report(self) -> None:
+        # It runs inside the error path of a run that has already gone wrong.
+        hv = FakeHypervisor()
+        hv.logged_in_users = mock.Mock(side_effect=OSError("no vbox"))
+        report = self.void(hv)
+        self.assertIs(Outcome.NO_READINESS, report.outcome)
+        self.assertIn("could not be read", report.error)
 
 
 class ARunTimeoutStillCollects(LoopFixture):

@@ -84,6 +84,7 @@ class Hypervisor(Protocol):
     def set_shared_folder(self, vm: str, name: str,
                           host_path: str) -> None: ...
     def additions_runlevel(self, vm: str) -> int: ...
+    def logged_in_users(self, vm: str) -> tuple[int, list[str]]: ...
 
 
 @dataclass
@@ -310,20 +311,25 @@ class VirtualBox:
         return {names[i]: paths.get(i, "").replace("\\\\", "\\")
                 for i in names}
 
-    #: What `GuestAdditionsRunLevel` means, measured on this bench rather
-    #: than taken from the documentation. The one that matters is 3: a
-    #: desktop session exists, which is the difference between "nobody logged
-    #: on" and "somebody did and the agent still said nothing".
+    #: What `GuestAdditionsRunLevel` means -- and **it does not mean what an
+    #: earlier version of this file claimed.** That version read 2 at a
+    #: sign-in screen and 3 in an interactive session, generalised from those
+    #: two observations, and was wrong: measured 15 Sep, an *autologon*
+    #: desktop session with the agent already running also reports **2**.
+    #: Runlevel 3 appears to track VBoxTray, which an autologon session does
+    #: not necessarily start, rather than tracking whether anybody is logged
+    #: on.
+    #:
+    #: So this is colour, never the answer. `logged_in_users` is the answer.
+    #: Kept because the distinction between 0 and everything else is still
+    #: worth reporting: 0 means Guest Additions are not running, and then no
+    #: guest-side fact is readable at all.
     RUNLEVEL = {
-        0: "additions not running",
-        1: "additions system services only, nobody logged on",
-        2: "at the sign-in screen, no desktop session",
-        3: "a desktop session is up",
+        0: "Guest Additions not running",
+        1: "Guest Additions system services only",
+        2: "Guest Additions userland up",
+        3: "Guest Additions desktop services up",
     }
-
-    #: Below this, no interactive session exists and a logon-triggered task
-    #: cannot have fired.
-    RUNLEVEL_DESKTOP = 3
 
     def additions_runlevel(self, vm: str) -> int:
         """How far the guest got, from the host, with no guest cooperation.
@@ -356,6 +362,54 @@ class VirtualBox:
 
     def describe_runlevel(self, level: int) -> str:
         return self.RUNLEVEL.get(level, f"unknown runlevel {level}")
+
+    def logged_in_users(self, vm: str) -> tuple[int, list[str]]:
+        """Who is logged on, from the host, as the guest itself reports it.
+
+        **This replaces a wrong answer.** The first version of the void-run
+        diagnostic used `GuestAdditionsRunLevel`, on the strength of reading
+        2 at a sign-in screen and 3 in an interactive session. An autologon
+        session then read 2 as well, with the desktop up and the agent
+        running -- so the diagnostic would have said "nobody logged on, check
+        autologon" about a guest that had logged on fine. A confidently wrong
+        diagnostic is worse than none, which is the standard this check was
+        written to, so it was replaced rather than patched.
+
+        `/VirtualBox/GuestInfo/OS/LoggedInUsers` is what the Additions
+        actually maintain for this: measured `1` and `adam` in the session
+        that fooled the runlevel.
+
+        Returns `(-1, [])` when it cannot be read -- either the Additions are
+        not running or the property has never been set -- so a caller can
+        tell "nobody is logged on" from "the guest is not answering".
+        """
+        try:
+            count = self._guest_property(
+                vm, "/VirtualBox/GuestInfo/OS/LoggedInUsers")
+            names = self._guest_property(
+                vm, "/VirtualBox/GuestInfo/OS/LoggedInUsersList")
+        except HypervisorError:
+            return -1, []
+        if count is None:
+            return -1, []
+        try:
+            total = int(count)
+        except ValueError:
+            return -1, []
+        listed = [n for n in (names or "").split(",") if n.strip()]
+        return total, listed
+
+    def _guest_property(self, vm: str, key: str) -> str | None:
+        """One guest property, or None when it has no value.
+
+        `guestproperty get` prints `Value: <x>` or `No value set!`, and exits
+        0 for both -- so the absence has to be parsed rather than detected
+        from the return code.
+        """
+        out = self._run(["guestproperty", "get", vm, key],
+                        changes_guest=False)
+        match = re.search(r"^Value:\s*(.*)$", out.strip(), re.M)
+        return match.group(1).strip() if match else None
 
     def set_shared_folder(self, vm: str, name: str, host_path: str) -> None:
         """Point `name` at `host_path`, replacing whatever it pointed at.

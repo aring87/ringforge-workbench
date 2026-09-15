@@ -46,7 +46,10 @@ class FakeHypervisor:
         self._shares: dict[str, str] = {"ringforge": "C:/stale/from/baseline"}
         #: What the guest got to. 3 is a desktop session; 2 is the
         #: sign-in screen, which is what a broken autologon looks like.
-        self.runlevel = 3
+        self.runlevel = 2
+        #: (count, names). The authority on whether the logon
+        #: happened -- the runlevel is not, see test_loop.
+        self.logged_in = (1, ["adam"])
 
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, *args))
@@ -92,6 +95,10 @@ class FakeHypervisor:
     def additions_runlevel(self, vm):
         self._record("additions_runlevel", vm)
         return self.runlevel
+
+    def logged_in_users(self, vm):
+        self._record("logged_in_users", vm)
+        return self.logged_in
 
     def describe_runlevel(self, level):
         return {2: "at the sign-in screen, no desktop session",

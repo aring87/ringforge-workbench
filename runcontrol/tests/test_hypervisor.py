@@ -364,5 +364,39 @@ class TheExchangeShare(unittest.TestCase):
         self.assertIn("add", calls[0])
 
 
+class WhoIsLoggedOn(unittest.TestCase):
+    """The signal that replaced the runlevel, after the runlevel was wrong.
+
+    `guestproperty get` prints `Value: <x>` or `No value set!` and exits 0
+    for both, so absence has to be parsed rather than read off the exit code.
+    """
+
+    def test_a_logged_on_guest_is_counted_and_named(self) -> None:
+        vbox = _vbox({"guestproperty": "Value: 1\n"})
+        count, names = vbox.logged_in_users("RingForge-Analysis")
+        self.assertEqual(1, count)
+        self.assertEqual(["1"], names)   # same fixture for both properties
+
+    def test_nobody_logged_on_is_zero_not_unknown(self) -> None:
+        # The distinction the whole diagnostic rests on: zero users is an
+        # answer, and an unreadable property is not.
+        vbox = _vbox({"guestproperty": "Value: 0\n"})
+        self.assertEqual(0, vbox.logged_in_users("RingForge-Analysis")[0])
+
+    def test_an_unset_property_is_unknown_rather_than_zero(self) -> None:
+        vbox = _vbox({"guestproperty": "No value set!\n"})
+        self.assertEqual((-1, []), vbox.logged_in_users("RingForge-Analysis"))
+
+    def test_a_hypervisor_failure_is_unknown_rather_than_a_raise(self) -> None:
+        vbox = _vbox()
+        vbox._run = mock.Mock(side_effect=HypervisorError("gone"))
+        self.assertEqual((-1, []), vbox.logged_in_users("RingForge-Analysis"))
+
+    def test_reading_who_is_logged_on_is_not_destructive(self) -> None:
+        # It has to work on a read-only hypervisor: it is diagnosis.
+        vbox = _vbox({"guestproperty": "Value: 2\n"})
+        self.assertEqual(2, vbox.logged_in_users("RingForge-Analysis")[0])
+
+
 if __name__ == "__main__":
     unittest.main()
