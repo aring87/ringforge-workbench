@@ -46,8 +46,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+import shutil
+
 from runcontrol.collect import Collected, Limits, collect_case
 from runcontrol.guest import Guest
+
+#: The one subdirectory inside the exchange that the controller owns.
+#:
+#: **Never the exchange root.** On this bench the share the guest can see is
+#: `C:/Users/aring/Downloads/ringforge`, which holds 4.8 GB across 12,172 files
+#: of accumulated working history -- samples, scripts, results, months of runs.
+#: Collecting the root would import all of it for every sample, and the default
+#: caps (20,000 files, 24 GB) are loose enough that it would do so silently.
+#:
+#: A fixed name rather than a per-run one, so the guest agent watches one path
+#: and cannot mistake a stale run for a new one: it is cleared before delivery.
+RUN_DIR = "current"
 
 
 class Outcome(str, Enum):
@@ -147,21 +161,48 @@ class Signals:
         return path.exists()
 
 
+def prepare_work(exchange: Path) -> Path:
+    """Clear and recreate the controller's working directory in the exchange.
+
+    Cleared rather than reused, because a stale artifact from the previous
+    sample imported into this one's case is indistinguishable from evidence.
+
+    `shutil.rmtree` is safe against a junction planted by a sample on Python
+    3.12 -- measured, not assumed: a junction inside the tree is removed as a
+    link and its target survives. The project requires >=3.12, and
+    `test_a_junction_in_the_work_directory_is_not_followed` pins it, because
+    the alternative on an older runtime is deleting through it into whatever
+    the sample chose to point at.
+    """
+    exchange = Path(exchange)
+    work = exchange / RUN_DIR
+    if work.resolve() == exchange.resolve():
+        raise ValueError(
+            f"the working directory resolved to the exchange root "
+            f"({exchange}); refusing, because collecting the root would import "
+            f"everything the share holds"
+        )
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    return work
+
+
 def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
             case_root: Path, *, limits: Limits | None = None,
-            signals: Signals | None = None, sleep=time.sleep) -> RunReport:
+            signals_override: Signals | None = None,
+            sleep=time.sleep) -> RunReport:
     """Detonate one sample and bring its case folder home.
 
-    `exchange` is the directory both sides can see -- read-only to the guest
-    for delivery, and where the guest writes its signals. `case_root` is on the
-    host and receives the imported case.
+    `exchange` is the directory both sides can see. The controller works only
+    in `exchange/current`, which it recreates each run -- see `RUN_DIR`.
+    `case_root` is on the host and receives the imported case.
 
     Never raises for a run that went wrong: a sweep needs a report per sample,
     and an exception would lose the ones already done.
     """
     sample = Path(sample)
     exchange = Path(exchange)
-    signals = signals or Signals(exchange)
     case = sample.stem
     report = RunReport(sample=sample, case=case, outcome=Outcome.FAILED)
     started = time.monotonic()
@@ -175,11 +216,15 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         hypervisor.set_link(guest.vm, guest.internet_nic, False)
         report.note("contain", started, f"nic{guest.internet_nic} off")
 
-        # 3. Delivery. Signals cleared first so a stale `done` cannot make this
-        #    run look finished before it began.
+        # 3. Delivery, into the controller's own subdirectory of the exchange.
+        #    Recreated from empty, which clears any stale `done` signal: one
+        #    left over from the previous sample would make this run look
+        #    finished before it began, and present as a fast, quiet sample
+        #    rather than as a controller bug.
+        work = prepare_work(exchange)
+        signals = signals_override or Signals(work)
         signals.clear()
-        exchange.mkdir(parents=True, exist_ok=True)
-        delivered = exchange / sample.name
+        delivered = work / sample.name
         delivered.write_bytes(sample.read_bytes())
         report.note("deliver", started, delivered.name)
 
@@ -210,7 +255,7 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
 
         # 8. Collect, from a guest that is off.
         destination = Path(case_root) / case
-        report.collected = collect_case(exchange, destination, limits)
+        report.collected = collect_case(work, destination, limits)
         report.note("collect", started, report.collected.summary())
 
         # A run that ran out of window still collected real evidence: what

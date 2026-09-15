@@ -16,13 +16,17 @@ steps.
 from __future__ import annotations
 
 import shutil
+import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
+
+WINDOWS = sys.platform.startswith("win")
 
 from runcontrol.guest import Guest
 from runcontrol.hypervisor import Snapshot
-from runcontrol.loop import Outcome, RunReport, Signals, run_one
+from runcontrol.loop import RUN_DIR, Outcome, RunReport, Signals, run_one
 
 
 class FakeHypervisor:
@@ -89,7 +93,10 @@ class LoopFixture(unittest.TestCase):
         # and 1800 seconds; nothing here depends on the value.
         self.guest = Guest(vm="RingForge-Analysis", baseline="corpus-baseline",
                            readiness_timeout=0.15, run_timeout=0.15)
-        self.signals = Signals(self.exchange)
+        # The controller works in `exchange/current`, not the exchange root,
+        # so the signals the fake guest writes have to live there too.
+        self.work = self.exchange / RUN_DIR
+        self.signals = Signals(self.work)
 
     def guest_cooperates(self, ready: bool = True, done: bool = True,
                          write_case: bool = True):
@@ -104,7 +111,7 @@ class LoopFixture(unittest.TestCase):
                 return
             if done and not self.signals.done.exists():
                 if write_case:
-                    (self.exchange / "summary.json").write_text(
+                    (self.work / "summary.json").write_text(
                         '{"band":"No Evidence"}', encoding="utf-8")
                 self.signals.done.write_text("done", encoding="utf-8")
         return sleep
@@ -176,17 +183,26 @@ class DeliveryAndSignals(LoopFixture):
     def test_the_sample_is_delivered_to_the_exchange(self) -> None:
         self.detonate()
         self.assertEqual(b"MZ not really",
-                         (self.exchange / "thing.exe").read_bytes())
+                         (self.work / "thing.exe").read_bytes())
 
     def test_a_stale_done_signal_cannot_make_a_run_look_finished(self) -> None:
         # Left over from the previous sample, this would present as a fast,
         # quiet sample rather than as a controller bug.
+        #
+        # `prepare_work` deletes the whole working directory rather than
+        # unlinking two files, which is the stronger guarantee: a stale
+        # *artifact* is as misleading as a stale signal, and either imported
+        # into the next case is indistinguishable from evidence.
+        self.work.mkdir(parents=True, exist_ok=True)
         self.signals.done.write_text("stale", encoding="utf-8")
+        (self.work / "leftover.json").write_text("{}", encoding="utf-8")
         hv = FakeHypervisor()
 
         report = self.detonate(hv)
 
         self.assertIs(Outcome.COMPLETED, report.outcome)
+        self.assertEqual([], list((self.cases / "thing").glob("leftover.json")),
+                         "an artifact from the previous run reached this case")
         # Cleared before delivery, so it was the guest's own signal that ended
         # the wait, not the stale one.
         self.assertLess([s[0] for s in report.steps].index("deliver"),
@@ -195,6 +211,68 @@ class DeliveryAndSignals(LoopFixture):
     def test_the_case_is_imported_under_the_sample_stem(self) -> None:
         self.detonate()
         self.assertTrue((self.cases / "thing" / "summary.json").is_file())
+
+
+class TheWorkingDirectory(LoopFixture):
+    """Never the exchange root.
+
+    On this bench the share the guest can see holds 4.8 GB across 12,172 files
+    of accumulated history. Collecting the root would import all of it per
+    sample, and the default caps are loose enough that it would do so silently.
+    """
+
+    def test_only_the_working_directory_is_collected(self) -> None:
+        # Siblings in the exchange stand for that accumulated history.
+        (self.exchange / "samples").mkdir()
+        (self.exchange / "samples" / "other.exe").write_bytes(b"MZ")
+        (self.exchange / "results").mkdir()
+        (self.exchange / "results" / "old.json").write_text("{}", encoding="utf-8")
+
+        self.detonate()
+
+        imported = {p.name for p in (self.cases / "thing").rglob("*")}
+        self.assertNotIn("other.exe", imported)
+        self.assertNotIn("old.json", imported)
+        self.assertIn("summary.json", imported)
+
+    def test_the_siblings_are_left_alone(self) -> None:
+        (self.exchange / "samples").mkdir()
+        (self.exchange / "samples" / "other.exe").write_bytes(b"MZ")
+
+        self.detonate()
+
+        self.assertTrue((self.exchange / "samples" / "other.exe").is_file(),
+                        "the controller deleted something outside its own dir")
+
+    def test_the_exchange_root_is_refused(self) -> None:
+        from runcontrol.loop import prepare_work
+        with mock.patch("runcontrol.loop.RUN_DIR", "."):
+            with self.assertRaises(ValueError) as caught:
+                prepare_work(self.exchange)
+        self.assertIn("exchange root", str(caught.exception))
+
+    def test_a_junction_in_the_work_directory_is_not_followed(self) -> None:
+        # Pins Python 3.12's `rmtree` behaviour, which is what `prepare_work`
+        # relies on. Measured rather than assumed: a junction planted inside
+        # the tree is removed as a link and its target survives. On a runtime
+        # that recursed through it, clearing a guest-writable directory would
+        # delete whatever the sample chose to point at.
+        if not WINDOWS:
+            self.skipTest("junctions are a Windows construct")
+        import _winapi
+        from runcontrol.loop import prepare_work
+
+        precious = self.tmp / "precious"
+        precious.mkdir()
+        (precious / "keep.txt").write_text("keep", encoding="utf-8")
+        self.work.mkdir(parents=True, exist_ok=True)
+        _winapi.CreateJunction(str(precious), str(self.work / "trap"))
+
+        prepare_work(self.exchange)
+
+        self.assertTrue((precious / "keep.txt").is_file(),
+                        "rmtree deleted through the junction")
+        self.assertFalse((self.work / "trap").exists())
 
 
 class AVoidRunIsNotAQuietSample(LoopFixture):
@@ -235,7 +313,7 @@ class ARunTimeoutStillCollects(LoopFixture):
         def sleep(_seconds):
             if not self.signals.ready.exists():
                 self.signals.ready.write_text("up", encoding="utf-8")
-                (self.exchange / "partial.json").write_text("{}", encoding="utf-8")
+                (self.work / "partial.json").write_text("{}", encoding="utf-8")
 
         report = self.detonate(sleep=sleep)
         self.assertIs(Outcome.RUN_TIMEOUT, report.outcome)
