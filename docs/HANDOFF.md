@@ -1152,6 +1152,96 @@ to build the corpus rather than about a sample. Worth the entry on its own.
   pre-logging agent, and the updated one is staged at
   `<share>/agent-update/` rather than pulled.
 
+### The sweep, and a manifest of what was attempted — 15 Sep
+
+`runcontrol/sweep.py`, 30 tests, the whole thing exercisable on the host with
+no hypervisor at all. `run_one` was already most of a sweep; what it did not
+give is the thing the corpus measurement actually needs.
+
+**The manifest is written before the first sample is delivered.** Every
+planned sample is a row on disk saying `pending` before anything boots, and
+each row is rewritten as the sweep reaches it. That is the entire argument for
+the file: a confusion matrix built from a directory listing of `cases/`
+silently drops the samples the bench *failed* on, which is a bias towards
+whatever the bench happens to handle. An absent result now reads as `pending`
+or `not_attempted` with a reason, not as a gap.
+
+Written atomically every time — temp file, `os.replace` — because a sweep is
+hours long and a process killed during a plain write leaves a truncated JSON
+that reads as corrupted results rather than as an interrupted run.
+
+Results land in `<out>/<run_id>/`, manifest beside `cases/`, so two sweeps over
+one corpus do not overwrite each other. Measuring twice was the point of
+measuring.
+
+**What it refuses, and does not rename.** Both were found by pointing it at
+real directories rather than by reasoning:
+
+* **A shared case name skips *both* samples.** `run_one` names the case from
+  the stem, so `thing.exe` and `thing.dll` in one directory both want
+  `cases/thing` and the second overwrites the first with no error anywhere.
+  Skipping only the second still leaves a corpus row whose case folder a
+  reader cannot attribute, so both go, with both names in the reason.
+* **A filename the host allow-list refuses is a skipped row, not a rewrite.**
+  `-r.exe` becomes a command argument to capa, FLOSS or `file` on the way
+  back. Renaming it would put a name in the corpus that is not the operator's
+  name for the sample.
+
+**A consequence to know about before building the benign corpus:** the
+allow-list is the one in `untrusted.py`, which is ASCII and has no space in
+it. Pointed at the working share it refused `new 1.txt` — correctly by its own
+rules, and a real benign corpus of third-party installers will contain
+filenames with spaces. The refusal is visible rather than silent, so the
+operator renames and re-sweeps; the list was not widened, because the same
+name reaches capa as an argument in the guest. Recorded rather than fixed.
+
+**Retries are a measurement decision, so they are off.** `--attempts` above 1
+retries only a *void* outcome, never a run timeout or a completed run, and
+every try is its own row in the manifest — a corpus entry that needed three
+goes is visible as one that needed three goes. Silently retrying until
+something works biases the corpus towards samples that cooperate on a second
+boot.
+
+**`--abort-after N` stops the sweep after N consecutive void runs** (default
+3) and leaves the rest `not_attempted` with that reason. Three samples in a
+row that never signalled readiness is a guest problem, and the alternative is
+eight hours producing a hundred void corpus entries. A good run resets the
+count, so a scattering of unlucky samples does not abort a corpus that is
+fine.
+
+**Preflight refuses the sweep rather than dying on sample two.**
+`check_ready` runs first; its problems are written to every row as the reason
+they were never attempted. `--ignore-preflight` starts anyway and records both
+the flag and the problems, so a corpus built that way is identifiable as one.
+
+**`--dry-run` needs no VirtualBox** — it does not even import the hypervisor —
+and enumerates, hashes, finds the collisions and writes the complete manifest.
+That is how you check a corpus directory before committing a machine to it for
+eight hours, and it is what made the two refusals above findable on the host.
+
+**The doubled case segment is now resolved rather than guessed.** The manifest
+quotes `case_dir`, and a path a consumer will open is not the place to leave
+`cases/<name>/<name>/` implicit. `_case_folder` returns the inner directory
+where it exists and the outer one where it does not, so fixing the transport
+later changes nothing downstream. The loose end above is closed as *recorded*,
+not as fixed.
+
+Each row carries the sample's SHA-256, taken from the host's copy before
+delivery — that is how a manifest row joins to a label — its size, the
+per-attempt outcome, `void`, `usable`, the full step record from `RunReport`
+(the readiness time is in there and is nowhere else), the collected counts and
+every refusal. Header carries schema, run id, the host-side analyzer
+provenance, the guest descriptor, the collection limits and the policy.
+
+Driven as `python -m runcontrol.sweep <dir> --vm ... --baseline ... --exchange
+... --out ...`. Deliberately not a `ringforge` subcommand: the shipped CLI is
+the analyzer, and the run controller is bench machinery that does not belong
+in a frozen build handed to somebody else.
+
+One number corrected in passing: the suite was **1,807** before this, not the
+1,781 this file claimed. **1,837** with the sweep tests.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1164,8 +1254,10 @@ files imported, the guest's verdict readable on the host — and the void-run
 path proved itself first. See *The run controller*. What is left on it is not
 the loop:
 
-* a sweep over a directory, with a manifest of what was *attempted* so an
-  absent result is visible rather than merely missing
+* CLOSED, 15 Sep. The sweep over a directory exists, with the manifest
+  written before the first delivery -- see *The sweep, and a manifest of
+  what was attempted*. Every test is host-side against a fake
+  hypervisor, so the first sweep on real hardware is still a first.
 * `pip install -e .` in the guest, so verdicts produced there name their
   analyzer version rather than only their commit
 * the `-OnLogon` trigger plus autologon, because the default `-OnStart` task
