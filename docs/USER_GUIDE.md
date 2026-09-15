@@ -376,7 +376,10 @@ The binary is unsigned. Check the SHA256 against the published hash, then
 **My antivirus deleted part of it.**
 Expected, and it happens to the tools too — capa and FLOSS are routinely
 flagged because of what they are for. Add an exclusion for the install
-directory. Inside the VM, `bootstrap_tools.ps1 -AddExclusions` does it.
+directory. Inside the VM, `bootstrap_tools.ps1 -AddExclusions` does it for
+Defender; on your own machine, do it in whichever product is actually running
+there. Behavioural protection is usually a second, separate list that wants
+the executable named rather than the folder.
 
 **Everything comes back Insufficient Coverage.**
 Collectors are missing. Check the Telemetry line, and `modules_absent` in the

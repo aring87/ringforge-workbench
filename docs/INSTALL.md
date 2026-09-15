@@ -283,6 +283,21 @@ That installs Sysmon, Wireshark/Npcap, FakeNet-NG, ProcDump, UPX and capa.
 `-AddExclusions` adds Defender exclusions for `tools\` — FakeNet-NG is reliably
 flagged as a HackTool and will otherwise be quarantined mid-install.
 
+> **That switch is for the guest, and your host has its own antivirus.**
+> `-AddExclusions` adds *Windows Defender* exclusions inside the VM. If the
+> machine you develop on runs something else — Bitdefender, Sophos, CrowdStrike
+> — Defender is usually switched off there entirely, and that product will
+> quarantine capa, FLOSS and any carved payload you keep. Exclude the
+> repository, `cases\`, `tools\` and wherever your VM disks live.
+>
+> Behavioural engines are a second list. Bitdefender's Advanced Threat Defense,
+> and its equivalents, take an **application** rather than a folder, so
+> `capa.exe` and `floss.exe` need naming individually — both are PyInstaller
+> launchers that unpack to a temp directory and spawn a grandchild, which reads
+> behaviourally as a dropper. And a block there may never reach the Windows
+> event log: check the product's own notifications before deciding a collector
+> is broken.
+
 **Procmon and Autorunsc are not covered by that script.** Download the
 [Sysinternals Suite](https://learn.microsoft.com/sysinternals/downloads/sysinternals-suite)
 and copy `Procmon64.exe` and `autorunsc64.exe` into `tools\`.
@@ -405,7 +420,10 @@ anyway**. Signing needs a code-signing certificate this project does not carry.
 
 **Antivirus quarantines the download.** A tool that bundles YARA and inspects
 malware trips heuristics. Verify the hash, then exclude the install directory.
-Inside the VM, `bootstrap_tools.ps1 -AddExclusions` does this for `tools\`.
+Inside the VM, `bootstrap_tools.ps1 -AddExclusions` does this for `tools\`
+— but only for Defender. On the host, exclude it in whatever product is
+actually running there, which on a developer machine is often not Defender at
+all.
 
 **A collector hangs on the first run.** Procmon and Autorunsc show a EULA
 dialog on first launch. Run each once by hand.

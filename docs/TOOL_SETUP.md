@@ -78,6 +78,21 @@ repo alongside it, or copy the two `.ps1` files across.
   capability degrades to a reported gap rather than an error.
 - `-DisableRealtimeProtection` — when exclusions are not enough.
 
+> **That switch is for the guest, and your host has its own antivirus.**
+> `-AddExclusions` adds *Windows Defender* exclusions inside the VM. If the
+> machine you develop on runs something else — Bitdefender, Sophos, CrowdStrike
+> — Defender is usually switched off there entirely, and that product will
+> quarantine capa, FLOSS and any carved payload you keep. Exclude the
+> repository, `cases\`, `tools\` and wherever your VM disks live.
+>
+> Behavioural engines are a second list. Bitdefender's Advanced Threat Defense,
+> and its equivalents, take an **application** rather than a folder, so
+> `capa.exe` and `floss.exe` need naming individually — both are PyInstaller
+> launchers that unpack to a temp directory and spawn a grandchild, which reads
+> behaviourally as a dropper. And a block there may never reach the Windows
+> event log: check the product's own notifications before deciding a collector
+> is broken.
+
 **It does not install Procmon or Autorunsc.** Those two are manual, below.
 
 ---

@@ -743,13 +743,22 @@ three regexes in `static_analysis_controller` with **no test**; there is one now
   comment and the release workflow both assumed otherwise, and the workflow
   would have failed **every** release build on its own licence check. Both
   fetch the licence from the repository root now.
-* **Defender quarantined `capa.exe` mid-download**, leaving `tools/capa/`
-  holding its licence and nothing else. Staging that directory would have
-  shipped a `tools/capa/` that looks installed and contains no capa, so the
-  spec now requires the named binary to exist **and be readable** — existing is
-  not enough, a security product can hold a file unreadable and `copytree`
-  aborts the build. It released the file about an hour later with no entry in
-  `Get-MpThreatDetection`.
+* **The host's antivirus quarantined `capa.exe` mid-download**, leaving
+  `tools/capa/` holding its licence and nothing else. Staging that directory
+  would have shipped a `tools/capa/` that looks installed and contains no
+  capa, so the spec now requires the named binary to exist **and be readable**
+  — existing is not enough, a security product can hold a file unreadable
+  and `copytree` aborts the build. It released the file about an hour later.
+
+  **Corrected 14 Sep: this said "Defender", and Defender is not running on
+  this host.** Bitdefender is, which *Environment facts that are not in the
+  code* already recorded on 17 Aug — including that it is aggressive on
+  exactly this class of file. `Get-MpThreatDetection` came back empty and I
+  read that as "no detection recorded" when it means "Defender is off". The
+  fact was in this document and I did not look, so the entry contradicted it
+  for a day. **Host AV and guest AV are separate problems:**
+  `bootstrap_tools.ps1 -AddExclusions` is a *guest* Defender switch and does
+  nothing for a download onto the host.
 * **`*.spec` was gitignored twice** from a stock Python template aimed at
   auto-generated PyInstaller specs. `ringforge.spec` is hand-written and CI
   builds from it, so it would never have been committed and the workflow would
@@ -2598,6 +2607,20 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
   reads like an error and only means Defender's service is off. Carved payloads
   kept on disk want a password-protected zip rather than an AV exclusion — it
   stops on-access scanning of the contents without opening a hole.
+
+  **Extended 14 Sep, after it ate `capa.exe`.** Antivirus exceptions are in
+  place for the repo, `cases/`, `tools/` and `G:\VMs`; folder exceptions are
+  recursive, so the repo root covers the rest. Two things worth knowing next
+  time. **Advanced Threat Defense is a separate exception list** and takes an
+  *application*, not a folder — the toggle greys out for a directory,
+  because it judges process behaviour rather than file content. `capa.exe`
+  and `floss.exe` want ATD exceptions specifically: both are PyInstaller
+  launchers that unpack to temp and spawn a grandchild, which is behaviourally
+  a dropper. And **Bitdefender logs nothing to the Windows event log** —
+  blocks appear only in its own Notifications panel, so a collector that
+  mysteriously produced nothing is worth checking there before it is treated
+  as a tool bug. `docs/HANDOFF.md` is itself an exception, flagged for
+  containing C2 domains, hashes and rule fragments.
 
 - **The sample binaries are no longer on this host — 17 Aug.** Checked: nothing
   under `Downloads\ringforge\` or `G:\` holds them, and that `samples\`
