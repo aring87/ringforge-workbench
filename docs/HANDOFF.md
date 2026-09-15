@@ -1242,6 +1242,58 @@ One number corrected in passing: the suite was **1,807** before this, not the
 1,781 this file claimed. **1,837** with the sweep tests.
 
 
+### Provisioning the guest, and why it is typed rather than driven — 15 Sep
+
+`scripts/provision_guest.ps1`. The loose end was recorded as "one command in
+the guest". It is four things, and three of them are traps.
+
+**There is no host-side route into this guest, by construction.** Worth
+stating plainly, because it keeps being rediscovered: `guestcontrol` was
+rejected when the transport was chosen -- Guest Additions plus guest
+credentials on the host -- and the run agent *scans* what is delivered rather
+than executing it. Between them there is no remote-execution primitive, which
+is the correct posture and also means provisioning is a thing somebody types
+at the console. The guest password is not on the host and should not be. So
+the script exists to make it one paste rather than a session.
+
+**`pip install -e .` fails in this guest, and then the obvious fix fails
+too.** Both measured on the host against a venv built to look like the
+guest's:
+
+* build isolation fetches `setuptools>=68` from PyPI, and NIC1's cable is off
+* `--no-build-isolation` is not the answer: **since Python 3.12 a venv is
+  seeded with pip and not setuptools**, so the build then fails for the
+  opposite reason
+
+The form that works offline is `pip install --no-index --find-links <wheels>
+-e . --no-deps` -- build isolation satisfied from a directory rather than from
+PyPI, and it does not care whether the venv has setuptools. Verified end to
+end in a fresh 3.12 venv with no setuptools: the naive command fails, this one
+installs and `analyzer_version()` then answers `1.12.0` where it answered
+`None`. `--no-deps` because the runtime dependencies are already there and
+resolving them offline would fail on the first one.
+
+**The clone cannot pull, so the host ships a bundle.** `git bundle create
+<file> 5e87af1..main` is an offline `git fetch` in a file -- 29 KB for three
+commits. The guest fetches from it and `--ff-only` merges. Not a plain merge:
+this clone has carried hand-copied gitignored files before, and a merge commit
+created inside a VM that gets reverted is a commit that exists nowhere.
+
+**And the one that would have wasted the whole exercise: an install into a
+running guest is lost on the next restore.** Every run begins
+`restore corpus-agent-cold`. The install has to be followed by a **new
+snapshot taken from poweroff**, and the controller's `--baseline` repointed at
+it. Powered off for the reason already paid for once: a snapshot taken while
+the VM runs restores to `saved`, resumes from memory instead of booting, and
+the ONSTART agent never fires.
+
+The script writes a receipt JSON back into the drop directory, so the host
+reads the outcome off the share rather than the operator relaying it -- the
+same direction of trust as the run agent, and for the same reason the agent
+grew its guest-local log: a failure the host cannot see is the failure that
+costs a day.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1258,8 +1310,11 @@ the loop:
   written before the first delivery -- see *The sweep, and a manifest of
   what was attempted*. Every test is host-side against a fake
   hypervisor, so the first sweep on real hardware is still a first.
-* `pip install -e .` in the guest, so verdicts produced there name their
-  analyzer version rather than only their commit
+* `pip install -e .` in the guest -- machinery built and verified, the
+  guest half still to be typed at the console. See *Provisioning the
+  guest*. Not closed until the new powered-off baseline exists and
+  `--baseline` points at it; an install into a running guest is lost on
+  the next restore.
 * the `-OnLogon` trigger plus autologon, because the default `-OnStart` task
   detonates in SYSTEM context and that is a systematic bias for measurement,
   not a detail
