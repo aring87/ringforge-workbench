@@ -2599,6 +2599,21 @@ list as a lower bound; more rules than predicted is a pass, fewer is a failure.
 
       dotnet build de4dot.netcore.sln -c Release -f netcoreapp3.1 -p:LangVersion=9.0
 
+- **The guest's account is `csocr`, displayed as "adam test".** Recorded
+  because it was written nowhere: on 15 Sep I searched `docs/`, `cases/` and
+  `G:\ringforge-artifacts` for a `C:\Users\<name>` path that was not this
+  host's `aring`, and found none — every recorded path came from host-side
+  static runs. `vm_gated_logon.ps1` takes `-User` with no default and
+  `logon_capture.py` deliberately never touches `DefaultUserName`, so the
+  repository is silent by design.
+
+  It matters for the run controller: the guest-side trigger has to run as a
+  named account, and the `ONLOGON` throttling measured on 31 Aug means *which*
+  account and whether `AutoAdminLogon` is set changes when collection actually
+  starts. `VBoxManage guestproperty` will not tell you either — with nobody
+  logged on, `GuestInfo/OS/LoggedInUsersList` is unset even though Guest
+  Additions 7.1.4 is installed and reporting its components.
+
 - **The host's antivirus is Bitdefender, not Defender.** `WinDefend` is stopped
   and Defender registers as passive; Bitdefender is the active engine. Worth
   knowing for two reasons: it is the same engine whose `Gen:Variant.Rescoms`
