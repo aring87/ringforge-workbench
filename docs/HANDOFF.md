@@ -1489,6 +1489,83 @@ one quoted a display name and `snapshot take` failed outright. Strip quotes
 before the call. Same family as the backslash trap above.
 
 
+### `-OnLogon` works, and it is SLOWER — 15 Sep
+
+Baseline **`corpus-agent-onlogon-adam`**, taken from poweroff, verified to
+restore to `poweroff`. Use it for corpus measurement.
+
+Proven by a controller-driven run, not by inspection:
+
+```text
+restore        0.4s   corpus-agent-onlogon-adam
+contain        0.7s   nic1 off
+share          1.1s   ringforge -> G:/ringforge-exchange
+deliver        1.1s   AcPowerNotification_04a0fc28.exe
+start          5.5s
+readiness    409.6s
+run          705.6s   finished
+collect      706.4s   37 files, 1.7 MiB
+completed    1 attempted, 1 usable, 0 void   707s
+```
+
+**Band: `No Evidence`** on a signed third-party installer -- the right answer,
+and pointedly not the signer-mismatch false positive `notepad.exe` produced.
+That is the catalog-signed exclusion in the corpus filter doing its job, on
+the first real sample it saw. Analyzer recorded as `1.12.0` / `e305d3f`.
+
+**Readiness 409.6s against 208-277s for `ONSTART`.** The speed-up this file
+speculated about does not exist: Task Scheduler throttles triggered tasks
+generally, not boot-triggered ones specifically, and the logon task started
+about three minutes *after* the desktop appeared. So:
+
+| Trigger | Per sample | 102 samples | Context |
+|---|---|---|---|
+| `-OnStart` | ~508s | 14.4 h | SYSTEM, biased |
+| `-OnLogon` | ~707s | 20.0 h | real user session |
+
+Six hours is the price of fidelity and for *this* corpus it is worth paying:
+the open question is what a legitimate installer does, and installers are
+precisely the software whose behaviour differs between a user session and
+SYSTEM. A cheaper run measuring the wrong context is not cheaper.
+
+**Run the sweep with `--readiness-timeout 900`.** 409.6s against the 600s
+default is not enough headroom, and a sample that drifts over becomes a void
+rather than a result.
+
+#### What cost the time, and it was not the trigger
+
+The account. `csocr` is a **Microsoft account** -- `net user` returns 8646,
+*the system is not authoritative* -- so its password lives online, this guest
+has no network, and autologon would have written a real Microsoft password in
+cleartext where any sample can read it. Local `adam` instead. Then the first
+attempt still produced `no_readiness`, because **Windows pre-fills
+`DefaultUserName` from the last interactive logon and setting
+`AutoAdminLogon` does not change it**: it still named `csocr`, which had been
+deleted, so the guest sat at a sign-in screen.
+
+And then ten minutes were lost to a silence that was self-inflicted: the guest
+was booted *by hand*, bypassing the controller, so the share was never
+repointed and the agent was talking to the old exchange on `C:`. It worked
+perfectly the whole time, against the wrong directory.
+
+**HAZARD, still live:** `C:/Users/aring/Downloads/ringforge/current` holds a
+complete stale run -- `notepad.exe`, its case folder, and **both signal
+files**. Any boot that misses the repoint analyses the wrong sample and can
+read as finished before it starts. Worth clearing.
+
+#### A launch that lost a race
+
+`VBoxManage startvm` immediately after a power-off failed inside
+`LaunchVMProcess`; the identical command succeeded seconds later, the previous
+session not having finished releasing the machine. The loop powers off,
+restores and starts inside about a second, so it sits in that window.
+Intermittent -- which is why it needs handling rather than watching: across a
+hundred unattended samples it is a `failed` row nobody is present for.
+`start_with_retry` retries the launch three times and records
+`took N attempts` in the step record when it needed more than one, because a
+bench that needs two launches every time has a problem worth reading.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1510,13 +1587,12 @@ the loop:
   `analyzer_version()` `1.12.0` where it was `None`. New baseline
   **`corpus-agent-cold-e305d3f`**, taken from poweroff and verified to
   restore to `poweroff`. See *Provisioning the guest*.
-* the `-OnLogon` trigger plus autologon -- IN PROGRESS. Baseline
-  `corpus-agent-onlogon-e305d3f` exists and the account moved to local
-  `adam` (the old one is a Microsoft account, see *`-OnLogon`, and a
-  void run that destroyed its own evidence*). First smoke run was
-  `no_readiness`: `DefaultUserName` still named the deleted account.
-  Not closed until a boot reaches `adam`'s desktop unattended and a
-  smoke sample comes back usable.
+* CLOSED, 15 Sep. `-OnLogon` works: baseline
+  **`corpus-agent-onlogon-adam`**, one controller-driven sample
+  usable, band `No Evidence`. It is **slower**, not faster -- 707s a
+  sample against 508s, so 102 is 20 hours rather than 14. The gain is
+  fidelity. Run with `--readiness-timeout 900`. See *`-OnLogon`
+  works, and it is SLOWER*.
 * the exchange is moved -- `G:/ringforge-exchange` on the external
   drive, repointed by the controller after every restore because a
   restore reverts it. The *read-only-in* half is NOT done: results

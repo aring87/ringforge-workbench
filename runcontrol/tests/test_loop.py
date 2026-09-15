@@ -484,6 +484,64 @@ class AVoidRunSaysWhichHalfFailed(LoopFixture):
         self.assertIn("could not be read", report.error)
 
 
+class ALaunchThatLostARace(LoopFixture):
+    """`startvm` right after a power-off can fail, and did.
+
+    Measured 15 Sep: `LaunchVMProcess` failed on a boot issued seconds after
+    a power-off, and the identical command worked moments later -- the old
+    session had not finished releasing the machine. The loop powers off,
+    restores and starts inside about a second, so it lives in that window.
+    Intermittent, which is why it needs handling rather than watching: across
+    a hundred unattended samples it is a `failed` row nobody is present for.
+    """
+
+    def test_a_first_launch_failure_is_retried_not_recorded(self) -> None:
+        hv = FakeHypervisor()
+        real = hv.start
+        calls = {"n": 0}
+
+        def flaky(vm, headless=True):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("LaunchVMProcess failed")
+            return real(vm, headless=headless)
+
+        hv.start = flaky
+        report = self.detonate(hv)
+        self.assertIs(Outcome.COMPLETED, report.outcome, report.error)
+        self.assertEqual(2, calls["n"])
+
+    def test_the_retry_is_visible_in_the_step_record(self) -> None:
+        # A bench that needs two launches every time is a bench with a
+        # problem, and that should be readable rather than smoothed away.
+        hv = FakeHypervisor()
+        real = hv.start
+        calls = {"n": 0}
+
+        def flaky(vm, headless=True):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("LaunchVMProcess failed")
+            return real(vm, headless=headless)
+
+        hv.start = flaky
+        report = self.detonate(hv)
+        note = next(s[2] for s in report.steps if s[0] == "start")
+        self.assertEqual("took 2 attempts", note)
+
+    def test_a_clean_launch_says_nothing(self) -> None:
+        report = self.detonate()
+        self.assertEqual("", next(s[2] for s in report.steps
+                                  if s[0] == "start"))
+
+    def test_a_guest_that_never_starts_is_still_a_failure(self) -> None:
+        # Retrying is for a race, not for a guest that cannot boot.
+        hv = FakeHypervisor(fail_on="start")
+        report = self.detonate(hv)
+        self.assertIs(Outcome.FAILED, report.outcome)
+        self.assertIn("would not start after 3 attempts", report.error)
+
+
 class ARunTimeoutStillCollects(LoopFixture):
     def test_a_run_that_overran_is_not_void(self) -> None:
         # Collection was up, so what happened before the window closed is real

@@ -231,6 +231,39 @@ def ensure_stopped(hypervisor, vm: str, sleep=time.sleep,
     )
 
 
+def start_with_retry(hypervisor, vm: str, *, attempts: int = 3,
+                     sleep=time.sleep, delay: float = 5.0) -> int:
+    """Boot the guest, retrying a launch that lost a race with teardown.
+
+    **Measured 15 Sep, on the first try of a manual boot.** `VBoxManage
+    startvm` immediately after a power-off failed inside `LaunchVMProcess`,
+    and the identical command succeeded seconds later: the previous session
+    had not finished releasing the machine. The loop powers off, restores and
+    starts within about a second, so it sits squarely in that window.
+
+    It is intermittent, which is exactly why it needs handling rather than
+    watching. Over a hundred unattended samples an occasional launch failure
+    is a `failed` row -- a void, blamed on the hypervisor, in a corpus nobody
+    is sitting in front of.
+
+    Retries only the launch. Anything still failing after `attempts` is a
+    real failure and propagates, because a guest that will not boot at all is
+    not something to paper over. Returns which attempt worked, so the caller
+    can record that it took more than one.
+    """
+    last: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            hypervisor.start(vm, headless=True)
+            return attempt
+        except Exception as error:                   # noqa: BLE001
+            last = error
+            if attempt < attempts:
+                sleep(delay)
+    raise RuntimeError(
+        f"{vm!r} would not start after {attempts} attempts: {last}")
+
+
 def _why_no_readiness(hypervisor, vm: str) -> str:
     """Which half of the transport failed, asked of the hypervisor.
 
@@ -338,9 +371,10 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         delivered.write_bytes(sample.read_bytes())
         report.note("deliver", started, delivered.name)
 
-        # 5. Boot.
-        hypervisor.start(guest.vm, headless=True)
-        report.note("start", started)
+        # 5. Boot, retrying a launch that raced the previous teardown.
+        tries = start_with_retry(hypervisor, guest.vm, sleep=sleep)
+        report.note("start", started,
+                    "" if tries == 1 else f"took {tries} attempts")
 
         # 6. Readiness. Its absence is a void run, not a quiet sample.
         if not signals.wait_for(signals.ready, guest.readiness_timeout,
