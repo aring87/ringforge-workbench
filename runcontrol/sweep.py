@@ -73,6 +73,24 @@ from runcontrol.untrusted import check_component
 #: file, and "the keys I need are present" is not the same question.
 SCHEMA = 1
 
+
+class SweepExists(RuntimeError):
+    """A sweep was asked to write over a manifest that already exists.
+
+    **This happened, and it cost the record of 47 samples.** A 102-sample run
+    was interrupted by a host restart; the obvious recovery -- run the same
+    command again -- reused `--run-id benign-102`, and the new sweep wrote its
+    own manifest straight over the old one. The case folders survived, because
+    nothing deletes those. The record of which samples had been attempted,
+    what they banded, and how long they took did not.
+
+    That is the exact failure this file exists to prevent, one level up: the
+    manifest is written before the first delivery so an absent result is
+    visible rather than merely missing, and then the manifest itself turned
+    out to be silently destroyable. A record that can be clobbered by the
+    most natural recovery command is not a record.
+    """
+
 #: The manifest's name inside the sweep directory. Fixed, because the first
 #: thing anyone does with a sweep is look for it.
 MANIFEST_NAME = "manifest.json"
@@ -330,6 +348,55 @@ class SweepResult:
         return sum(1 for r in self.rows if r.state == ATTEMPTED)
 
 
+def _describe_existing(path: Path) -> str:
+    """What is already there, in enough detail to decide what to do.
+
+    Parsed rather than just named, because "a manifest exists" is not enough
+    to act on: a `completed` one means pick another run id, and a `running`
+    one means a sweep was interrupted and there is a partial corpus on disk
+    worth keeping. Unreadable is reported as unreadable rather than treated
+    as absent -- a corrupt manifest is the *last* thing to overwrite.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as error:                        # noqa: BLE001
+        return f"unreadable ({type(error).__name__}), which is more reason not to overwrite it"
+    totals = document.get("totals") or {}
+    return (
+        f"state={document.get('state')!r}, started={document.get('started')}, "
+        f"attempted={totals.get('attempted')}, usable={totals.get('usable')}, "
+        f"pending={totals.get('pending')} of {totals.get('planned')}"
+    )
+
+
+def _guard_existing(path: Path, *, force: bool) -> Path | None:
+    """Refuse to write over an existing manifest; move it aside under force.
+
+    Even the escape hatch does not destroy. `--force` renames the old
+    manifest to `manifest.superseded-<stamp>.json` beside the new one rather
+    than clobbering it, because the reason to force is usually impatience and
+    impatience should not be able to delete the only record of a run.
+    """
+    if not path.is_file():
+        return None
+
+    if not force:
+        raise SweepExists(
+            f"{path} already exists -- {_describe_existing(path)}.\n"
+            f"Refusing to overwrite it: that manifest is the only record of "
+            f"whatever was attempted under this run id, and the case folders "
+            f"beside it cannot say which samples were tried and skipped.\n"
+            f"Either choose a different --run-id, or pass --force, which "
+            f"keeps the old manifest alongside the new one rather than "
+            f"replacing it."
+        )
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    aside = path.with_name(f"manifest.superseded-{stamp}.json")
+    path.rename(aside)
+    return aside
+
+
 def sweep(
     source: Path,
     guest: Guest,
@@ -345,6 +412,7 @@ def sweep(
     abort_after_consecutive_void: int = 3,
     ignore_preflight: bool = False,
     dry_run: bool = False,
+    force: bool = False,
     limits: Limits | None = None,
     sleep: Callable[[float], None] = time.sleep,
     on_event: Callable[[str], None] | None = None,
@@ -421,9 +489,14 @@ def sweep(
             "limit": limit,
             "dry_run": dry_run,
             "preflight_ignored": ignore_preflight,
+            "force": force,
         },
         "preflight": [],
     }
+
+    superseded = _guard_existing(directory / MANIFEST_NAME, force=force)
+    if superseded:
+        header["policy"]["superseded"] = superseded.name
 
     manifest = Manifest(directory / MANIFEST_NAME, header)
 
@@ -620,6 +693,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="start despite preflight problems. Recorded in "
                              "the manifest, because a corpus built this way "
                              "should be identifiable as one")
+    parser.add_argument("--force", action="store_true",
+                        help="write into a run id that already has a "
+                             "manifest. The old one is kept beside the new "
+                             "as manifest.superseded-<stamp>.json rather "
+                             "than replaced -- forcing must not destroy the "
+                             "only record of a run")
     parser.add_argument("--dry-run", action="store_true",
                         help="enumerate and write the manifest; detonate "
                              "nothing, and never touch the hypervisor")
@@ -667,8 +746,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             extensions=args.ext, limit=args.limit, attempts=args.attempts,
             abort_after_consecutive_void=args.abort_after,
             ignore_preflight=args.ignore_preflight, dry_run=args.dry_run,
+            force=args.force,
             on_event=lambda message: print(message, flush=True),
         )
+    except SweepExists as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 3
     except (FileNotFoundError, NotADirectoryError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

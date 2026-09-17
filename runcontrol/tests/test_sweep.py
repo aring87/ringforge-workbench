@@ -27,7 +27,7 @@ from runcontrol.hypervisor import Snapshot
 from runcontrol.loop import RUN_DIR, Signals
 from runcontrol.sweep import (
     ATTEMPTED, MANIFEST_NAME, NOT_ATTEMPTED, PENDING, SCHEMA, SKIPPED,
-    Manifest, enumerate_samples, main, sha256_of, sweep,
+    Manifest, SweepExists, enumerate_samples, main, sha256_of, sweep,
 )
 
 
@@ -512,6 +512,121 @@ class WhenTheBenchIsBroken(SweepFixture):
                             abort_after_consecutive_void=2)
         self.assertEqual("completed", result.state)
         self.assertEqual(3, hv.runs)
+
+
+class AManifestIsNotOverwritable(SweepFixture):
+    """The failure this class exists because of, 16 Sep.
+
+    A 102-sample run was interrupted by a host restart at 47 samples. The
+    obvious recovery -- run the same command again -- reused the same
+    `--run-id`, and the second sweep wrote its manifest straight over the
+    first. The case folders survived; the record of what had been attempted
+    did not. A record that the most natural recovery command destroys is not
+    a record.
+    """
+
+    def existing(self, run_id: str = "sweep-test") -> Path:
+        return self.out / run_id / MANIFEST_NAME
+
+    def test_a_second_sweep_on_the_same_run_id_refuses(self) -> None:
+        self.sample("a.exe")
+        self.sweep()
+        with self.assertRaises(SweepExists):
+            self.sweep()
+
+    def test_the_refusal_does_not_touch_what_it_is_protecting(self) -> None:
+        # The whole point. A guard that damages the file on its way to
+        # refusing would be worse than no guard.
+        self.sample("a.exe")
+        self.sweep()
+        before = self.existing().read_bytes()
+        with self.assertRaises(SweepExists):
+            self.sweep()
+        self.assertEqual(before, self.existing().read_bytes())
+
+    def test_the_refusal_says_what_is_already_there(self) -> None:
+        # "File exists" is not actionable. Whether it is a finished run or an
+        # interrupted one decides what you do next.
+        self.sample("a.exe")
+        self.sweep()
+        with self.assertRaises(SweepExists) as caught:
+            self.sweep()
+        message = str(caught.exception)
+        self.assertIn("state='completed'", message)
+        self.assertIn("attempted=1", message)
+        self.assertIn("--run-id", message)
+        self.assertIn("--force", message)
+
+    def test_an_interrupted_sweep_is_also_protected(self) -> None:
+        # The dangerous case, and the one that actually happened: a manifest
+        # left in `running` by a crash is the only evidence of a partial
+        # corpus sitting in cases/.
+        self.sample("a.exe")
+        directory = self.out / "sweep-test"
+        directory.mkdir(parents=True)
+        self.existing().write_text(
+            '{"state": "running", "totals": {"attempted": 47}}',
+            encoding="utf-8")
+        with self.assertRaises(SweepExists) as caught:
+            self.sweep()
+        self.assertIn("state='running'", str(caught.exception))
+
+    def test_an_unreadable_manifest_is_the_last_thing_to_overwrite(self) -> None:
+        self.sample("a.exe")
+        directory = self.out / "sweep-test"
+        directory.mkdir(parents=True)
+        self.existing().write_text("{ truncated", encoding="utf-8")
+        with self.assertRaises(SweepExists) as caught:
+            self.sweep()
+        self.assertIn("unreadable", str(caught.exception))
+
+    def test_force_keeps_the_old_manifest_rather_than_replacing_it(self) -> None:
+        # Forcing is usually impatience, and impatience should not be able to
+        # delete the only record of a run.
+        self.sample("a.exe")
+        self.sweep()
+        old = self.existing().read_bytes()
+        self.sweep(force=True)
+        kept = list((self.out / "sweep-test").glob("manifest.superseded-*.json"))
+        self.assertEqual(1, len(kept), kept)
+        self.assertEqual(old, kept[0].read_bytes())
+        self.assertEqual("completed", self.manifest()["state"])
+
+    def test_force_is_recorded_in_the_manifest_it_wrote(self) -> None:
+        self.sample("a.exe")
+        self.sweep()
+        self.sweep(force=True)
+        policy = self.manifest()["policy"]
+        self.assertTrue(policy["force"])
+        self.assertTrue(policy["superseded"].startswith("manifest.superseded-"))
+
+    def test_a_dry_run_cannot_destroy_a_real_manifest_either(self) -> None:
+        # A dry run is harmless by reputation, which is exactly why it must
+        # not be the thing that clobbers a 20-hour record.
+        self.sample("a.exe")
+        self.sweep()
+        before = self.existing().read_bytes()
+        with self.assertRaises(SweepExists):
+            sweep(self.corpus, self.guest, None, self.exchange, self.out,
+                  run_id="sweep-test", dry_run=True)
+        self.assertEqual(before, self.existing().read_bytes())
+
+    def test_a_different_run_id_is_unaffected(self) -> None:
+        self.sample("a.exe")
+        self.sweep()
+        result = self.sweep(run_id="another")
+        self.assertEqual("completed", result.state)
+
+    def test_the_command_line_reports_a_collision_distinctly(self) -> None:
+        # Its own exit code, so a script can tell "you already have this" from
+        # "the corpus directory is missing".
+        self.sample("a.exe")
+        self.sweep()
+        code = main([str(self.corpus), "--vm", "RingForge-Analysis",
+                     "--baseline", "corpus-baseline",
+                     "--exchange", str(self.exchange), "--out", str(self.out),
+                     "--run-id", "sweep-test", "--dry-run"])
+        self.assertEqual(3, code)
 
 
 class TheDryRun(SweepFixture):

@@ -1576,6 +1576,83 @@ hundred unattended samples it is a `failed` row nobody is present for.
 bench that needs two launches every time has a problem worth reading.
 
 
+### The 102 ran, and they were never detonated — 16 Sep
+
+**Read this before trusting `G:/ringforge-runs/benign-102*`.**
+
+The corpus completed: 102 embedded-signed benign samples, in two parts
+because a host restart killed the first run at 47 and a resume covered the
+remaining 55 (`benign-102-resume-01`, 55/55 usable, 0 void, 11.8 h
+unattended). All 102 case folders are intact.
+
+| Band | Verdict | n | % |
+|---|---|---|---|
+| No Evidence | No Indicators Found | 87 | 85.3 |
+| Single Observation | Needs Review | 12 | 11.8 |
+| **Corroborated** | Elevated Attention | **3** | **2.9** |
+
+**Benign false-positive rate at Corroborated: 2.9%.** The three:
+`Docker-Desktop-Installer` (61), `AuraWallpaperService` (60),
+`Aura-Wallpaper-Service` (41) -- installers and a vendor service, the class
+you would predict. Worth reading individually before quoting the number.
+
+#### But `modules_run` is `['static']` on all 102
+
+`modules_absent` is `['dynamic', 'spec', 'api', 'extension']`. No Procmon, no
+Sysmon, no packet capture, no dumps. **Nothing was detonated.**
+
+The guest agent runs `ringforge.cli scan` and `ringforge.cli combine` --
+static triage. It has always done this; `guest_run_agent.ps1` says so in the
+two lines that invoke it. The run controller as it stands is a *remote static
+analysis* loop, not a sandbox. Three consequences:
+
+* **The `-OnLogon` work bought nothing for this measurement.** Its whole
+  justification was that SYSTEM context biases *detonation* -- `%APPDATA%`,
+  `HKCU`, no desktop. Static analysis is indifferent to session context. It
+  cost about six hours of extra runtime for a distinction that cannot apply.
+  The fidelity argument stands for the day the agent actually detonates.
+* **101 of the 102 samples were already analysed.** `G:/benign-managed-cases`
+  holds 124 cases from the same `managed-apps-staging` source, run 26 Aug,
+  the same static pipeline, the same artifacts -- at **28.5 seconds a sample
+  on the host** against ~700s through the VM. Overlap by filename: 101.
+* **The band distribution above may still be new**, because this file records
+  that per-category benign rates existed and the *bands* had never been
+  measured end to end. If so it was obtainable from the 26 Aug corpus in
+  minutes. Check before re-running anything.
+
+**So `NEXT`'s "dynamic benign rates" is still open and untouched.** The gap is
+the agent: it must invoke `dynamic_analysis/orchestrator.py`, not just
+`ringforge.cli scan`. Until it does, a sweep is a slow way to do something
+the host already does quickly.
+
+#### A manifest was destroyed, and now cannot be
+
+The restart at sample 47 was recoverable -- the case folders survived. What
+did not survive was the record: re-running the obvious command with the same
+`--run-id benign-102` wrote a fresh manifest straight over the old one, and
+with it the record of which 47 had been attempted, what they banded and how
+long they took. The manifest exists so an absent result is visible rather
+than merely missing, and it turned out to be silently destroyable by the most
+natural recovery command there is.
+
+`SweepExists` now refuses. The refusal names what is already there -- state,
+start time, attempted, usable, pending -- because *"file exists"* is not
+actionable and a `completed` manifest means something different from a
+`running` one. It is checked for `--dry-run` too: a dry run is harmless by
+reputation, which is exactly why it must not be the thing that clobbers a
+twenty-hour record. An unreadable manifest is refused hardest of all.
+
+`--force` exists and **does not destroy**: the old manifest is renamed to
+`manifest.superseded-<stamp>.json` beside the new one. Forcing is usually
+impatience, and impatience should not be able to delete the only record of a
+run. The flag and the superseded filename both land in the new manifest's
+policy block.
+
+Exit code 3 on the command line, distinct from 2, so a script can tell *you
+already have this* from *the corpus directory is missing*. Verified against
+the real `benign-102` directory.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1616,9 +1693,11 @@ What is left needs samples rather than code:
   end to end. Of N known-malicious, what band; of M known-benign, how many
   reached Corroborated. That is the number a buyer asks for, and
   `scripts/benign_rates.py` is most of the machinery.
-* **Dynamic benign rates.** Static has corpus backing. The dynamic categories
-  were built from a handful of samples, and what a *legitimate installer* does
-  is the missing measurement -- and the next false-positive class.
+* **Dynamic benign rates -- STILL OPEN, and the 102-sample run did not
+  touch it.** That sweep ran `modules_run: ['static']` on every sample:
+  the guest agent invokes `ringforge.cli scan`, not the orchestrator, so
+  nothing was detonated. **The blocking change is the agent**, not the
+  controller. See *The 102 ran, and they were never detonated*.
 
 Carried forward, neither urgent:
 
