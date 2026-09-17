@@ -455,21 +455,37 @@ try {
   # the scoring already thinks it matters" throws away exactly the dumps that
   # would disprove a wrong verdict, which is the failure this whole day was
   # spent undoing.
+  # **Wrapped, because this cost a finished run.** The first version threw on
+  # `Measure-Object -Property` -- the entries were `[ordered]@{}`, which is a
+  # dictionary rather than an object and has no properties to measure -- and
+  # the exception propagated out of a detonation that had taken 34 minutes and
+  # succeeded. No `done`, no case, a `run_timeout` and 0.4 MB collected.
+  #
+  # Saving disk is an optimisation. An optimisation that can destroy the
+  # evidence it was meant to make room for has its priorities backwards, so a
+  # failure here keeps the dumps and carries on to the copy.
   $pruned = @()
+  $prunedBytes = 0
   if (-not $KeepMemoryDumps) {
-    $dumps = @(Get-ChildItem -LiteralPath $caseHome -Recurse -File -Filter *.dmp -ErrorAction SilentlyContinue)
-    foreach ($d in $dumps) {
-      $hash = try { (Get-FileHash -LiteralPath $d.FullName -Algorithm SHA256).Hash } catch { "" }
-      $pruned += [ordered]@{
-        path   = $d.FullName.Substring($caseHome.Length).TrimStart('\')
-        bytes  = $d.Length
-        sha256 = $hash
+    try {
+      $dumps = @(Get-ChildItem -LiteralPath $caseHome -Recurse -File -Filter *.dmp -ErrorAction SilentlyContinue)
+      foreach ($d in $dumps) {
+        $hash = try { (Get-FileHash -LiteralPath $d.FullName -Algorithm SHA256).Hash } catch { "" }
+        $prunedBytes += $d.Length
+        $pruned += [pscustomobject][ordered]@{
+          path   = $d.FullName.Substring($caseHome.Length).TrimStart('\')
+          bytes  = $d.Length
+          sha256 = $hash
+        }
+        Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
       }
-      Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
-    }
-    if ($pruned.Count -gt 0) {
-      $total = ($pruned | Measure-Object -Property bytes -Sum).Sum
-      Write-Log ("pruned {0} memory dump(s), {1:N0} MB, before the copy" -f $pruned.Count, ($total / 1MB))
+      if ($pruned.Count -gt 0) {
+        Write-Log ("pruned {0} memory dump(s), {1:N0} MB, before the copy" -f $pruned.Count, ($prunedBytes / 1MB))
+      }
+    } catch {
+      Write-Log "PRUNING FAILED, keeping the dumps and carrying on: $($_.Exception.Message)"
+      $pruned = @()
+      $prunedBytes = 0
     }
   }
 
@@ -482,7 +498,9 @@ try {
   $record = [ordered]@{
     kept        = [bool]$KeepMemoryDumps
     count       = $pruned.Count
-    total_bytes = (($pruned | Measure-Object -Property bytes -Sum).Sum)
+    # Accumulated in the loop rather than measured afterwards. Measuring is
+    # what threw, and a total is not worth a second chance to lose the run.
+    total_bytes = $prunedBytes
     why         = ("Raw dumps are the input to the in-guest analysis, not its output. " +
                    "The YARA scan, PE carve, module integrity and crash evidence ran " +
                    "against them here and their results are kept. Re-asking a NEW " +
