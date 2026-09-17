@@ -62,7 +62,12 @@ param(
   [int]$WaitSeconds = 300,
   [string]$Repo = "C:\projects\RingForge_Analyzer\ringforge-workbench",
   [int]$Timeout = 240,
-  [switch]$WhatIfOnly
+  [switch]$WhatIfOnly,
+  # Refuse to apply a provisioning drop from the exchange. Use it for a
+  # malicious corpus: the exchange is guest-writable and survives a
+  # snapshot restore, so self-update is a persistence-across-revert path
+  # until delivery is mounted read-only.
+  [switch]$NoSelfUpdate
 )
 
 Set-StrictMode -Version Latest
@@ -151,6 +156,64 @@ function Find-Exchange {
          "attached?")
 }
 
+function Invoke-SelfUpdate {
+  <#
+    Apply the newest provisioning drop on the exchange, if it is newer than
+    this clone.
+
+    Runs the script *from the drop* rather than the copy in the clone. The
+    clone's copy is by definition the old one, and a provisioning step that
+    cannot deliver improvements to itself needs the trip to the console it
+    exists to remove.
+
+    The drop directory is named for the commit it carries, so the common case
+    -- already up to date -- costs one `git rev-parse` and no work. A name
+    that does not parse is treated as "might be newer" and applied, because
+    the script itself is idempotent: the fetch and `--ff-only` merge are no-ops
+    on a clone that already has the commit.
+  #>
+  param([string]$Exchange)
+
+  $drop = Get-ChildItem -LiteralPath $Exchange -Directory -Filter "provision-*" `
+    -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $drop) { Write-Log "self-update: no provisioning drop on the exchange"; return }
+
+  $script = Join-Path $drop.FullName "provision_guest.ps1"
+  if (-not (Test-Path -LiteralPath $script)) {
+    Write-Log "self-update: $($drop.Name) carries no provision_guest.ps1"
+    return
+  }
+
+  $head = ""
+  try {
+    Push-Location $Repo
+    try { $head = (& git rev-parse --short HEAD).Trim() } finally { Pop-Location }
+  } catch { }
+
+  $wanted = $drop.Name -replace '^provision-', ''
+  if ($head -and $wanted -and $wanted.StartsWith($head)) {
+    Write-Log "self-update: already at $head, $($drop.Name) has nothing to add"
+    return
+  }
+
+  Write-Log "self-update: applying $($drop.Name) over $head"
+  & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $script -Drop $drop.FullName -Repo $Repo
+  $code = $LASTEXITCODE
+
+  $now = ""
+  try {
+    Push-Location $Repo
+    try { $now = (& git rev-parse --short HEAD).Trim() } finally { Pop-Location }
+  } catch { }
+  # The commit is logged either way, and the log comes home. Which code a run
+  # was analysed by is provenance, not a detail -- the host's manifest records
+  # its own half and the two disagreeing has to be visible.
+  Write-Log "self-update: exit $code, clone now at $now"
+}
+
+
 function Get-DeliveredSample {
   <#
     The one file that is not ours. `ringforge-ready` and `ringforge-done` are
@@ -184,6 +247,42 @@ try {
 
   $readyFile = Join-Path $work "ringforge-ready"
   $doneFile = Join-Path $work "ringforge-done"
+
+  # **Self-update, and only on a boot that is not a run.**
+  #
+  # Every code fix has needed a trip to the guest console, because there is no
+  # remote-execution route in by design. The host already stages everything
+  # required -- a bundle, wheels, and the provisioning script itself -- in a
+  # `provision-<commit>` directory on the exchange, and the guest can apply it
+  # unaided.
+  #
+  # **It is gated on there being no sample, and that gate is the whole
+  # design.** The controller always delivers before it boots, so a sweep boot
+  # always has a sample and never updates. Without that, a corpus could have
+  # sample 1 and sample 60 analysed by different code with nothing recording
+  # the change -- the exact provenance failure the manifest exists to prevent.
+  #
+  # **Residual risk, stated rather than buried.** The exchange is writable by
+  # this guest, which means a sample running with administrator rights could
+  # plant its own `provision-*` directory. It would gain nothing *in* the
+  # guest, where it already has those rights, and the script runs here rather
+  # than on the host -- but the exchange is the one thing that survives a
+  # snapshot restore, so this is a persistence-across-revert path that did not
+  # exist before. It is reachable only on a later boot that carries no sample,
+  # which is a human provisioning boot rather than anything a sweep does.
+  # The real fix is the read-only-in delivery the design already calls for,
+  # and until that exists **pass -NoSelfUpdate for a malicious corpus.**
+  if (-not $NoSelfUpdate) {
+    if (Get-DeliveredSample -Work $work) {
+      Write-Log "self-update: skipped, a sample is present (this is a run)"
+    } else {
+      try { Invoke-SelfUpdate -Exchange $exchange } catch {
+        # Never fatal. A guest that refuses to analyse because an update
+        # failed turns a code problem into lost corpus samples.
+        Write-Log "self-update FAILED, continuing on the clone we have: $($_.Exception.Message)"
+      }
+    }
+  }
 
   # Wait for the sample. It is normally already there, because the host
   # delivers before it boots this machine.
