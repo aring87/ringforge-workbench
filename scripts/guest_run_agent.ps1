@@ -67,7 +67,13 @@ param(
   # malicious corpus: the exchange is guest-writable and survives a
   # snapshot restore, so self-update is a persistence-across-revert path
   # until delivery is mounted read-only.
-  [switch]$NoSelfUpdate
+  [switch]$NoSelfUpdate,
+  # Keep the raw .dmp files in the collected case. Off by default:
+  # one benign sample brings home 2.45 GB, almost all dumps, and a
+  # 102-sample corpus would want ~250 GB. Use it whenever the run
+  # might be worth re-interrogating later -- anything malicious, or a
+  # sample being worked rather than measured.
+  [switch]$KeepMemoryDumps
 )
 
 Set-StrictMode -Version Latest
@@ -421,8 +427,67 @@ try {
   # `done` written before this copy finishes would hand it a half-imported
   # case that looks complete. Ordering is the contract here exactly as it is
   # on the host side.
+  # **Raw memory dumps are pruned before the copy, and their absence is
+  # recorded rather than left to be noticed.** One benign sample brought home
+  # 2.45 GB, almost all of it dumps: a 102-sample corpus would want ~250 GB
+  # against 258 GB free, so space is the binding constraint on the sweep
+  # rather than time.
+  #
+  # What is discarded is the *input* to the in-guest analysis, not its
+  # output. The YARA scan, the PE carve, module integrity and the crash
+  # evidence all run here, before this, and their results are small and
+  # kept. What is lost is the ability to ask a *new* question of an old run.
+  #
+  # That is a real cost and this bench has paid it before: `rescan_memory_yara.py`
+  # exists because runs had to be re-scanned once the authored rules were
+  # found never to have reached the scan directory, and the 17 Sep proximity
+  # fix was itself validated by rescanning a previous run's dumps. Pass
+  # `-KeepMemoryDumps` whenever the run might be worth re-interrogating --
+  # anything malicious, or a sample being worked rather than measured.
+  #
+  # Deliberately NOT conditional on the band. "Keep the evidence only when
+  # the scoring already thinks it matters" throws away exactly the dumps that
+  # would disprove a wrong verdict, which is the failure this whole day was
+  # spent undoing.
+  $pruned = @()
+  if (-not $KeepMemoryDumps) {
+    $dumps = @(Get-ChildItem -LiteralPath $caseHome -Recurse -File -Filter *.dmp -ErrorAction SilentlyContinue)
+    foreach ($d in $dumps) {
+      $hash = try { (Get-FileHash -LiteralPath $d.FullName -Algorithm SHA256).Hash } catch { "" }
+      $pruned += [ordered]@{
+        path   = $d.FullName.Substring($caseHome.Length).TrimStart('\')
+        bytes  = $d.Length
+        sha256 = $hash
+      }
+      Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
+    }
+    if ($pruned.Count -gt 0) {
+      $total = ($pruned | Measure-Object -Property bytes -Sum).Sum
+      Write-Log ("pruned {0} memory dump(s), {1:N0} MB, before the copy" -f $pruned.Count, ($total / 1MB))
+    }
+  }
+
   Write-Log "copying the case to the exchange"
   Copy-Item -LiteralPath $caseHome -Destination $work -Recurse -Force
+
+  # Written after the copy, into the copy, so it describes what arrived. A
+  # reader who finds memory_yara.json referring to files that are not there
+  # gets an answer here rather than a mystery.
+  $record = [ordered]@{
+    kept        = [bool]$KeepMemoryDumps
+    count       = $pruned.Count
+    total_bytes = (($pruned | Measure-Object -Property bytes -Sum).Sum)
+    why         = ("Raw dumps are the input to the in-guest analysis, not its output. " +
+                   "The YARA scan, PE carve, module integrity and crash evidence ran " +
+                   "against them here and their results are kept. Re-asking a NEW " +
+                   "question of this run is what is no longer possible. Run with " +
+                   "-KeepMemoryDumps to retain them.")
+    dumps       = $pruned
+  }
+  try {
+    ($record | ConvertTo-Json -Depth 4) |
+      Set-Content -LiteralPath (Join-Path $work "$caseName\memory_dumps_pruned.json") -Encoding utf8
+  } catch { Write-Log "could not write the pruning record: $($_.Exception.Message)" }
   foreach ($f in @("scan.json", "detonate.json", "detonate.stderr.txt", "combined.json")) {
     $src = Join-Path $localRoot $f
     if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $work -Force }
