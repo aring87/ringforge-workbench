@@ -108,16 +108,50 @@ rule RingForge_Split_API_Injection_Loader
         $resolve    = "GetDelegateForFunctionPointer" ascii wide
 
     condition:
-        // Mandatory, and chosen for rarity rather than for completing a set: a
-        // library name split across two UTF-16 literals, plus the one API prefix
-        // that is not also ordinary UI text.
-        $k_kernel and $k_dll and $f_virtual
-        and $resolve
-        // Then enough of the rest to show this is a reassembly scheme and not a
-        // coincidence. `Open ` and `Close ` can help reach the threshold but
-        // cannot reach it alone.
+        // `GetDelegateForFunctionPointer` is present in any managed process,
+        // so it is a prerequisite and never evidence on its own.
+        $resolve
+        // Enough of the API set to show a reassembly scheme. `Open ` and
+        // `Close ` can help reach the threshold but cannot reach it alone.
         and 3 of ($f_write, $f_process, $f_open, $f_close, $f_find)
         and 3 of ($f_alloc, $f_protect, $f_memory, $f_handle)
+
+        // **PROXIMITY IS THE SIGNATURE, and its absence cost a false
+        // positive on 17 Sep.** The presence test above says these fragments
+        // exist somewhere in the scanned bytes, and the comment at the top of
+        // this file explains why that was thought rare: a normal program does
+        // not hold `kernel ` and `32.dll` as two separate UTF-16 literals.
+        // True -- but only because in this loader they are *consecutive
+        // literals in the user-string heap*. Nothing here required that, and
+        // presence alone does not survive a large process dump.
+        //
+        // Measured. In the true positive (stage2 e139c422, 892 KB) every
+        // fragment occurs exactly once, inside a 196-byte window, and
+        // `kernel ` -> `32.dll` is a 16-byte gap. In a 51 MB WerFault.exe
+        // dump of a *benign* signed Windows binary: `handle` 235 hits,
+        // `32.dll` 196, `protect` 158, `kernel ` 64, scattered from offset
+        // 10 KB to 51 MB -- and the whole rule fired. Across five benign
+        // dumps the closest forward `kernel ` -> `32.dll` gap ran from
+        // 106,080 to 952,742 bytes, and not one had a pair within 32.
+        //
+        // So: the library name must be split across two *adjacent* literals,
+        // with the API fragments in the same heap region. 64 bytes is four
+        // times the observed 16 and still three orders of magnitude below the
+        // nearest benign coincidence.
+        and for any i in (1..#k_kernel) : (
+            for any j in (1..#k_dll) : (
+                @k_dll[j] > @k_kernel[i]
+                and @k_dll[j] - @k_kernel[i] <= 64
+                // And `Virtual ` in the same neighbourhood, so a chance
+                // adjacency somewhere else in a dump cannot carry a match.
+                // Written as additions rather than subtractions: offsets are
+                // unsigned in spirit and a near-zero anchor must not wrap.
+                and for any v in (1..#f_virtual) : (
+                    @f_virtual[v] + 2048 > @k_kernel[i]
+                    and @k_kernel[i] + 2048 > @f_virtual[v]
+                )
+            )
+        )
 }
 
 rule RingForge_Loader_422e30ed_Stage2

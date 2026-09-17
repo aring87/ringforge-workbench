@@ -71,6 +71,7 @@ $receipt = [ordered]@{
   version       = $null
   pulled        = $false
   installed     = $false
+  rules_synced  = 0
   ok            = $false
   error         = ""
 }
@@ -142,6 +143,37 @@ try {
       & $py -m pip install --no-index --find-links $wheels -e . --no-deps
       if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
       $receipt.installed = $true
+    }
+
+    # -- the authored YARA rules, which a pull does not deliver -------------
+    #
+    # **`tools\yara\rules\` is gitignored, and it is what the guest scans.**
+    # The authored rules live in `ringforge\_data\yara\local\` and are
+    # tracked; the scanner reads the copies under `tools\yara\rules\local\`.
+    # So a fix to a rule arrives by bundle and then never reaches a scan --
+    # which this project has already paid for twice. Once when that directory
+    # did not exist on the guest at all, and every run scanned 1,542
+    # downloaded rules and none of its own; and again on 17 Sep, when a
+    # proximity fix to the split-API loader rule would have sat unread.
+    #
+    # `bootstrap_yara_rules.ps1` does this copy as step 4, but it also
+    # downloads the public ruleset, and this guest has no network by design.
+    # So just the offline half is done here.
+    $ruleSource = Join-Path $Repo "ringforge\_data\yara\local"
+    $ruleTarget = Join-Path $Repo "tools\yara\rules\local"
+    if (Test-Path -LiteralPath $ruleSource) {
+        if (-not (Test-Path -LiteralPath $ruleTarget)) {
+            New-Item -ItemType Directory -Force -Path $ruleTarget | Out-Null
+        }
+        $rules = @(Get-ChildItem -LiteralPath $ruleSource -File -Filter *.yar)
+        foreach ($r in $rules) {
+            Copy-Item -LiteralPath $r.FullName -Destination $ruleTarget -Force
+        }
+        Good "synced $($rules.Count) authored YARA rule file(s) into tools\yara\rules\local"
+        $receipt.rules_synced = $rules.Count
+    } else {
+        Warn "no authored rules at $ruleSource"
+        $receipt.rules_synced = 0
     }
 
     # -- prove it took ------------------------------------------------------
