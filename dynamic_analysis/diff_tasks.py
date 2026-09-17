@@ -32,6 +32,24 @@ SUSPICIOUS_PATH_HINTS = [
 ]
 
 
+#: Fields that describe a task's *runtime status* rather than what it does.
+#:
+#: **`state` alone produced seven false modifications on the first benign
+#: detonation, 17 Sep.** The diff compared whole dictionaries, so a built-in
+#: whose `state` went Ready -> Running during the observation window counted
+#: as a modified task. Measured on that run: `ScheduledDefrag`, `WinSAT`,
+#: `AnalyzeSystem`, two `Sysmain` tasks, `SystemRestore\\SR` and a OneDrive
+#: startup task, and in every one of the seven `state` was the *only* field
+#: that differed. Windows running its own maintenance is not the sample
+#: establishing persistence.
+_STATUS_ONLY_FIELDS = frozenset({"state"})
+
+
+def _behaviour(task: dict[str, Any]) -> dict[str, Any]:
+    """The task minus its runtime status: what it will do, not what it is doing."""
+    return {k: v for k, v in task.items() if k not in _STATUS_ONLY_FIELDS}
+
+
 def _norm(s: Any) -> str:
     return str(s or "").strip()
 
@@ -143,8 +161,17 @@ def diff_scheduled_tasks(
         b = before_map[key]
         a = after_map[key]
 
-        if b != a:
-            reasons = _task_is_suspicious(a)
+        if _behaviour(b) != _behaviour(a):
+            # **Suspicion on a modification is about what the change
+            # introduced, not about what the task always was.** Applying the
+            # heuristics to the after-state alone flagged a Windows built-in
+            # for using `rundll32` and OneDrive for living under `%APPDATA%`
+            # -- both true before the sample ran, neither established by it.
+            # A pre-existing logon trigger is what a logon task *is*; it only
+            # becomes evidence when something puts one there.
+            before_reasons = set(_task_is_suspicious(b))
+            all_reasons = _task_is_suspicious(a)
+            new_reasons = [r for r in all_reasons if r not in before_reasons]
             modified_tasks.append(
                 {
                     "identity": key,
@@ -152,8 +179,11 @@ def diff_scheduled_tasks(
                     "task_path": a.get("task_path", ""),
                     "before": b,
                     "after": a,
-                    "suspicious": len(reasons) > 0,
-                    "reasons": reasons,
+                    "suspicious": len(new_reasons) > 0,
+                    "reasons": new_reasons,
+                    # Kept so a reader can see the whole picture: this task is
+                    # lolbin-backed, it just always was.
+                    "pre_existing_reasons": sorted(before_reasons),
                 }
             )
 
