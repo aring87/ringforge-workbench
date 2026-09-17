@@ -75,6 +75,10 @@ $ErrorActionPreference = "Stop"
 # tell "the task never fired" from "the task fired and failed immediately".
 $work = ""
 $exchange = ""
+# Same reason as the two above, and the error handler now reads it: under
+# StrictMode an unassigned variable throws, so a failure before the local
+# work directory is chosen would kill the handler instead of being reported.
+$localRoot = ""
 
 # **A guest-local log, written before the share is touched.** The exchange is
 # the only channel back to the host, so a failure to reach the exchange is
@@ -222,7 +226,35 @@ try {
   # The run itself. Output lands in the work directory so the host collects it
   # from one bounded place rather than from the whole share.
   $caseName = [IO.Path]::GetFileNameWithoutExtension($sample.Name)
-  $env:CASE_ROOT_DIR = $work
+
+  # **The analysis runs on a LOCAL disk, never on the share.** Measured
+  # 17 Sep on the first real detonation: with the case directory on
+  # `\\VBOXSVR\...`, Procmon started, could not be terminated (rc=1), left
+  # its `procmon/` directory completely empty, and took the orchestrator
+  # down with it at "Exporting Procmon CSV" -- so no
+  # `dynamic_run_summary.json` was written and `combine` reported the
+  # dynamic module absent despite 891 MB of real evidence sitting on disk.
+  # Procmon's backing file is written by its kernel driver, which does not
+  # deal with a network share; procdump, running in user mode, wrote to the
+  # same UNC path without complaint, which is why this was not obvious.
+  #
+  # Working locally also stops ~900 MB being streamed over a shared folder
+  # *during* the run, and shrinks the window in which a machine executing
+  # malware is writing into a host directory. The finished case is copied
+  # to the exchange in one pass at the end, before `done` is signalled.
+  $localRoot = "C:\ProgramData\RingForge\work"
+  if (Test-Path -LiteralPath $localRoot) {
+    Remove-Item -LiteralPath $localRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  New-Item -ItemType Directory -Force -Path $localRoot | Out-Null
+  if (-not (Test-Path -LiteralPath $localRoot)) {
+    # Not a fallback to the share. Falling back would silently reproduce the
+    # empty-Procmon failure this exists to prevent, and a case with no
+    # process telemetry that looks complete is worse than a recorded void.
+    throw "could not create the local work directory '$localRoot'"
+  }
+  Write-Log "local work: $localRoot"
+  $env:CASE_ROOT_DIR = $localRoot
 
   Push-Location $Repo
   try {
@@ -231,7 +263,7 @@ try {
 
     Write-Log "running static triage"
     & $py -m ringforge.cli scan $sample.FullName --case $caseName --json |
-      Out-File -LiteralPath (Join-Path $work "scan.json") -Encoding utf8
+      Out-File -LiteralPath (Join-Path $localRoot "scan.json") -Encoding utf8
 
     # **The detonation, which this agent did not do for its first 102
     # samples.** It ran `scan` and `combine` and nothing else, so every swept
@@ -239,11 +271,24 @@ try {
     # folder full of capa and FLOSS output looks like a finished analysis
     # until you read `modules_run`. `scan` never runs anything; `detonate`
     # is the one that does.
-    $caseHome = Join-Path $work $caseName
+    $caseHome = Join-Path $localRoot $caseName
     Write-Log "detonating (this EXECUTES the sample)"
-    & $py -m ringforge.cli detonate $sample.FullName --case-dir $caseHome --json |
-      Out-File -LiteralPath (Join-Path $work "detonate.json") -Encoding utf8
-    $detonateExit = $LASTEXITCODE
+
+    # **Both streams are captured, and the first failure proved why.** The
+    # agent used to pipe stdout to a file and let stderr go to a console
+    # nobody would ever see again: the orchestrator threw, `detonate.json`
+    # came home empty, and the traceback died with the guest at the next
+    # restore. The cause had to be inferred from a status log instead of
+    # read. `Start-Process` rather than `2>` because PowerShell 5.1 wraps a
+    # native command's stderr in ErrorRecords and sets `$?` to false even on
+    # a clean exit, which would make every run look failed.
+    $detonateOut = Join-Path $localRoot "detonate.json"
+    $detonateErr = Join-Path $localRoot "detonate.stderr.txt"
+    $proc = Start-Process -FilePath $py -NoNewWindow -Wait -PassThru `
+      -ArgumentList @('-m', 'ringforge.cli', 'detonate', $sample.FullName,
+                      '--case-dir', $caseHome, '--json') `
+      -RedirectStandardOutput $detonateOut -RedirectStandardError $detonateErr
+    $detonateExit = $proc.ExitCode
 
     if ($detonateExit -eq 4) {
       # Containment refused the run. Fatal on purpose and it must stay fatal:
@@ -258,17 +303,38 @@ try {
       # as absent, which is the distinction this project exists to keep --
       # "we could not look" is not "we looked and found nothing".
       Write-Log "DETONATION FAILED (exit $detonateExit); continuing so the case comes home with the gap recorded"
+      $tail = try { (Get-Content -LiteralPath $detonateErr -Tail 5) -join " | " } catch { "" }
+      if ($tail) { Write-Log "detonate stderr tail: $tail" }
     } else {
       Write-Log "detonation finished"
     }
 
     Write-Log "combining"
     & $py -m ringforge.cli combine $caseHome --json |
-      Out-File -LiteralPath (Join-Path $work "combined.json") -Encoding utf8
+      Out-File -LiteralPath (Join-Path $localRoot "combined.json") -Encoding utf8
   }
   finally {
     Pop-Location
   }
+
+  # **The one pass onto the share, and it happens before `done`.** The host
+  # powers the guest off the moment `done` appears and then collects, so a
+  # `done` written before this copy finishes would hand it a half-imported
+  # case that looks complete. Ordering is the contract here exactly as it is
+  # on the host side.
+  Write-Log "copying the case to the exchange"
+  Copy-Item -LiteralPath $caseHome -Destination $work -Recurse -Force
+  foreach ($f in @("scan.json", "detonate.json", "detonate.stderr.txt", "combined.json")) {
+    $src = Join-Path $localRoot $f
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $work -Force }
+  }
+
+  # The agent's own log goes home too. It is written to a local disk so that
+  # a failure to *reach* the exchange is still recorded somewhere -- but the
+  # next restore discards the guest's disk, so a copy that never leaves is a
+  # copy nobody reads. This is what made the first detonation failure take an
+  # hour to diagnose instead of a minute.
+  try { Copy-Item -LiteralPath $LogFile -Destination (Join-Path $work "agent.log") -Force } catch { }
 
   "run finished at " + (Get-Date).ToUniversalTime().ToString("o") |
     Set-Content -LiteralPath $doneFile -Encoding utf8
@@ -284,6 +350,17 @@ catch {
     if ($work -ne "") {
       "agent failed: $($_.Exception.Message)" |
         Set-Content -LiteralPath (Join-Path $work "ringforge-agent-error.txt") -Encoding utf8
+      # **Especially on this path.** A failed run is the one whose log is
+      # worth reading, and it is also the one the host's closing restore is
+      # about to erase. Best effort: if the exchange is what failed, there is
+      # nothing to copy it to, and the guest-local copy is all there is.
+      try { Copy-Item -LiteralPath $LogFile -Destination (Join-Path $work "agent.log") -Force } catch { }
+      if ($localRoot -and (Test-Path -LiteralPath (Join-Path $localRoot "detonate.stderr.txt"))) {
+        try {
+          Copy-Item -LiteralPath (Join-Path $localRoot "detonate.stderr.txt") `
+            -Destination $work -Force
+        } catch { }
+      }
     }
   } catch { }
   exit 1
