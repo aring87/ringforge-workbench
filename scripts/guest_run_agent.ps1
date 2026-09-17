@@ -245,15 +245,11 @@ try {
   Write-Log "exchange: $exchange"
   Write-Log "work    : $work"
 
-  if (-not (Test-Path -LiteralPath $work)) {
-    throw ("'$work' does not exist. The host creates it before boot, so this " +
-           "means the guest booted without a delivery -- which the host will " +
-           "record as a void run rather than as a quiet sample.")
-  }
-
-  $readyFile = Join-Path $work "ringforge-ready"
-  $doneFile = Join-Path $work "ringforge-done"
-
+  # **Before the work-directory check, deliberately.** That check throws
+  # when the host has not delivered, which is exactly the boot a
+  # provisioning drop is applied on. Running the update after it meant a
+  # guest could never self-update unless a sample happened to be present,
+  # which is the one case the gate below refuses to update on.
   # **Self-update, and only on a boot that is not a run.**
   #
   # Every code fix has needed a trip to the guest console, because there is no
@@ -289,6 +285,16 @@ try {
       }
     }
   }
+
+
+  if (-not (Test-Path -LiteralPath $work)) {
+    throw ("'$work' does not exist. The host creates it before boot, so this " +
+           "means the guest booted without a delivery -- which the host will " +
+           "record as a void run rather than as a quiet sample.")
+  }
+
+  $readyFile = Join-Path $work "ringforge-ready"
+  $doneFile = Join-Path $work "ringforge-done"
 
   # Wait for the sample. It is normally already there, because the host
   # delivers before it boots this machine.
