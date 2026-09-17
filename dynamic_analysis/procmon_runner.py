@@ -54,7 +54,32 @@ def start_procmon_capture(
     except Exception as e:
         raise ProcmonError(f"Failed to start Procmon: {e}") from e
 
-    time.sleep(3)
+    # **`Popen` succeeding does not mean Procmon is capturing.** It is a GUI
+    # app: it forks, and the parent exits immediately whether or not the child
+    # ever began. With stdout and stderr on DEVNULL above, a Procmon that quit
+    # on startup left no trace at all -- measured 17 Sep, where a `/LoadConfig`
+    # pointing at a filter that had been moved into the package by v1.12.0
+    # made Procmon exit on launch. Nothing noticed for twenty-five minutes,
+    # until the export failed on a backing file that was never created and took
+    # the whole run down with it.
+    #
+    # Procmon creates the backing file as soon as it starts logging, so its
+    # appearance is the cheap proof that the capture is real. Polled rather
+    # than slept-then-checked, so a healthy start still costs about a second.
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if backing.exists():
+            return
+        time.sleep(0.5)
+
+    raise ProcmonError(
+        f"Procmon produced no backing file at {backing} within 15s, so it is "
+        f"not capturing. It exits silently on a bad /LoadConfig -- check "
+        f"{config_path!r} exists."
+        if config_path else
+        f"Procmon produced no backing file at {backing} within 15s, so it is "
+        f"not capturing."
+    )
 
 
 def terminate_procmon_capture(procmon_path: str | Path) -> None:

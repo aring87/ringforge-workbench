@@ -80,6 +80,7 @@ from dynamic_analysis.network_capture import (
     parse_pcap,
 )
 from dynamic_analysis.procmon_runner import (
+    ProcmonError,
     export_procmon_csv,
     start_procmon_capture,
     terminate_procmon_capture,
@@ -2499,12 +2500,25 @@ def run_dynamic_analysis(
             # knowing about now, not after the teardown.
             if not procmon_filter.get("captures_registry_reads"):
                 _emit(status_cb, f"Procmon filter: {procmon_filter.get('note', '')}")
-            start_procmon_capture(
-                procmon_path=procmon_path,
-                backing_file=procmon_backing,
-                config_path=procmon_config_path if procmon_config_path else None,
-            )
-            procmon_started = True
+            # **A collector that will not start is a coverage gap, not a dead
+            # run.** Everything else here degrades that way already; Procmon
+            # did not, and it cost two full detonations on 17 Sep -- the
+            # capture never began, and the failure surfaced twenty-five
+            # minutes later as an exception out of the export, losing the
+            # memory dumps, Sysmon, network capture and persistence diffs that
+            # had all worked. `procmon_started` stays False, the export block
+            # is skipped, and `_build_capture_quality` already reports
+            # "Procmon did not start."
+            try:
+                start_procmon_capture(
+                    procmon_path=procmon_path,
+                    backing_file=procmon_backing,
+                    config_path=procmon_config_path if procmon_config_path else None,
+                )
+                procmon_started = True
+            except ProcmonError as error:
+                _emit(status_cb,
+                      f"Procmon did not start, continuing without it: {error}")
 
         _raise_if_cancelled(cancel_event)
 
@@ -2904,14 +2918,33 @@ def run_dynamic_analysis(
             service_diff_summary = diff_services(services_before, services_after)
             write_json(service_diffs_json, service_diff_summary)
 
+            # Gated on the export having produced a CSV, not merely on Procmon
+            # having been asked to start. Everything below parses that file,
+            # and an empty or absent one must skip the chain rather than be
+            # parsed into zero events -- "Procmon ran and saw nothing" is
+            # precisely the false-clean this project exists to prevent.
+            procmon_exported = False
             if procmon_enabled and procmon_started:
                 _emit(status_cb, "Exporting Procmon CSV...")
-                export_procmon_csv(
-                    procmon_path=procmon_path,
-                    backing_file=procmon_backing,
-                    csv_path=procmon_csv,
-                )
+                try:
+                    export_procmon_csv(
+                        procmon_path=procmon_path,
+                        backing_file=procmon_backing,
+                        csv_path=procmon_csv,
+                    )
+                    procmon_exported = True
+                except ProcmonError as error:
+                    # Belt and braces behind the start check. Procmon can also
+                    # die mid-run, and the export is the last step before the
+                    # summary is written -- so an exception here discarded every
+                    # other collector's evidence for the sake of one. Measured
+                    # 17 Sep: two detonations lost their memory dumps, Sysmon,
+                    # network capture and persistence diffs to this.
+                    _emit(status_cb,
+                          f"Procmon export failed, continuing without it: {error}")
+                    procmon_started = False
 
+            if procmon_exported:
                 _emit(status_cb, "Parsing Procmon events...")
                 events = parse_procmon_csv(procmon_csv)
                 write_json(procmon_json, events)

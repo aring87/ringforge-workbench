@@ -50,6 +50,30 @@ from ringforge.resources import app_root, procmon_configs_dir
 DYNAMIC_SUBDIR = "dynamic_analysis"
 
 
+def _procmon_config(cfg: Mapping[str, Any]) -> str:
+    """The Procmon filter to load, falling back when the saved one is gone.
+
+    **A configured path that no longer exists is worse than no path at all,
+    and it cost two detonations on 17 Sep.** v1.12.0 moved the Procmon
+    filters out of `tools/procmon-configs/` and into the package; a
+    `config.json` written before that move still named the old location.
+    Procmon takes a `/LoadConfig` pointing at a missing file, exits
+    immediately and says nothing -- it is a GUI app, so the launching process
+    sees a clean `Popen` either way. The capture never started, and the run
+    only discovered it twenty-five minutes later when the export failed on a
+    backing file that was never created.
+
+    So an absent file falls back to the packaged default rather than being
+    passed through. The empty case falls back for the reason recorded in the
+    module docstring; this adds the *stale* case, which looks configured and
+    is not.
+    """
+    configured = str(cfg.get("dynamic_procmon_config_path") or "").strip()
+    if configured and Path(configured).is_file():
+        return configured
+    return str(procmon_configs_dir() / DEFAULT_PROCMON_CONFIG_NAME)
+
+
 def load_settings(root: Path | None = None) -> dict[str, Any]:
     """`config.json` as a plain dict, or empty when there is none.
 
@@ -106,9 +130,7 @@ def build_config(
         "procmon_path": str(
             cfg.get("dynamic_procmon_path")
             or root / "tools" / "Procmon64.exe"),
-        "procmon_config_path": str(
-            cfg.get("dynamic_procmon_config_path")
-            or procmon_configs_dir() / DEFAULT_PROCMON_CONFIG_NAME),
+        "procmon_config_path": _procmon_config(cfg),
 
         "sysmon_enabled": bool(cfg.get("dynamic_sysmon_enabled", True)),
         "pcap_enabled": bool(cfg.get("dynamic_pcap_enabled", True)),

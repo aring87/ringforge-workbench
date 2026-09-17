@@ -110,6 +110,32 @@ class AClearedFieldFallsBack(unittest.TestCase):
         self.assertTrue(config["procmon_config_path"].endswith(".pmc"),
                         config["procmon_config_path"])
 
+    def test_a_stale_procmon_config_falls_back_too(self) -> None:
+        # The case that cost two detonations. v1.12.0 moved the filters out of
+        # tools/procmon-configs/ into the package, and a config.json written
+        # before that move still named the old path. Procmon takes a
+        # /LoadConfig pointing at a missing file, exits immediately and says
+        # nothing, so the capture never starts and the run does not find out
+        # until the export fails twenty-five minutes later.
+        stale = str(Path("C:/projects/nope/tools/procmon-configs")
+                    / "dynamic_default.pmc")
+        config = build_config(Path("s.exe"), Path("cases/x"),
+                              settings={"dynamic_procmon_config_path": stale})
+        self.assertNotEqual(stale, config["procmon_config_path"])
+        self.assertTrue(Path(config["procmon_config_path"]).is_file(),
+                        config["procmon_config_path"])
+
+    def test_a_procmon_config_that_exists_is_left_alone(self) -> None:
+        # The fallback must not override a deliberate choice; a bench with a
+        # custom filter has usually chosen it for a reason.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "mine.pmc"
+            real.write_bytes(b"pmc")
+            config = build_config(Path("s.exe"), Path("cases/x"),
+                                  settings={"dynamic_procmon_config_path": str(real)})
+            self.assertEqual(str(real), config["procmon_config_path"])
+
     def test_an_empty_procmon_path_falls_back_to_the_bundled_tool(self) -> None:
         config = build_config(Path("s.exe"), Path("cases/x"),
                               settings={"dynamic_procmon_path": ""})
