@@ -364,6 +364,53 @@ class TheExchangeShare(unittest.TestCase):
         self.assertIn("add", calls[0])
 
 
+class TakingASnapshot(unittest.TestCase):
+    """The two traps that have each cost a real snapshot on this bench."""
+
+    def test_a_quoted_description_does_not_split_the_command(self) -> None:
+        # VBoxManage re-splits its own arguments, so a double quote inside
+        # --description terminates it and the rest arrives as stray
+        # parameters: "Invalid parameter 'exit'", and no snapshot. Hit twice
+        # on 17 Sep, the second time after the trap was already written down,
+        # which is why remembering it is not the fix.
+        vbox = _vbox({"showvminfo": 'VMState="poweroff"\n'}, destructive=True)
+        vbox.take_snapshot("RingForge-Analysis", "base",
+                           'it logged "done" and stopped')
+        call = next(c for c in vbox.log if c.startswith("snapshot"))
+        self.assertNotIn('"', call.split("--description", 1)[1])
+        self.assertIn("it logged 'done' and stopped", call)
+
+    def test_newlines_in_a_description_survive(self) -> None:
+        # The descriptions on this bench are paragraphs, and they round-trip.
+        self.assertEqual("a\n\nb", VirtualBox.safe_description("a\n\nb"))
+
+    def test_a_running_guest_is_refused_rather_than_snapshotted(self) -> None:
+        # A snapshot taken running restores to 'saved' and resumes from
+        # memory instead of booting, so no startup or logon trigger fires.
+        # That cost a run and seven minutes of no_readiness that looked like
+        # a broken agent.
+        vbox = _vbox({"showvminfo": 'VMState="running"\n'}, destructive=True)
+        with self.assertRaises(HypervisorError) as caught:
+            vbox.take_snapshot("RingForge-Analysis", "base")
+        self.assertIn("saved", str(caught.exception))
+        self.assertEqual([], [c for c in vbox.log if c.startswith("snapshot")])
+
+    def test_a_saved_guest_counts_as_stopped(self) -> None:
+        vbox = _vbox({"showvminfo": 'VMState="saved"\n'}, destructive=True)
+        vbox.take_snapshot("RingForge-Analysis", "base")
+        self.assertTrue(any(c.startswith("snapshot") for c in vbox.log))
+
+    def test_taking_a_snapshot_is_refused_by_default(self) -> None:
+        with self.assertRaises(NotPermitted):
+            _vbox().take_snapshot("RingForge-Analysis", "base")
+
+    def test_no_description_passes_no_flag(self) -> None:
+        vbox = _vbox({"showvminfo": 'VMState="poweroff"\n'}, destructive=True)
+        vbox.take_snapshot("RingForge-Analysis", "base")
+        call = next(c for c in vbox.log if c.startswith("snapshot"))
+        self.assertNotIn("--description", call)
+
+
 class WhoIsLoggedOn(unittest.TestCase):
     """The signal that replaced the runlevel, after the runlevel was wrong.
 

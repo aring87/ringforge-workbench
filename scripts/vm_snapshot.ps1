@@ -665,7 +665,23 @@ try {
     # Not $args: that is an automatic variable in PowerShell and assigning to it
     # inside a script is asking for trouble.
     $takeArgs = @("snapshot", $VMName, "take", $Take)
-    if ($Description) { $takeArgs += @("--description", $Description) }
+    if ($Description) {
+      # **VBoxManage re-splits its own arguments, so a double quote inside the
+      # description terminates it** and everything after arrives as stray
+      # parameters -- `Invalid parameter 'exit'`, and no snapshot. Hit twice
+      # on 17 Sep while writing descriptions that quoted a display name and a
+      # log line, the second time after the trap had already been written
+      # down. Remembering it is not a control; stripping it is.
+      #
+      # Replaced rather than escaped: there is no escape VBoxManage honours
+      # here, and a description is prose where a straight quote is never
+      # load-bearing.
+      $safe = $Description -replace '"', "'"
+      if ($safe -ne $Description) {
+        Write-Warn "Description contained double quotes; replaced with single quotes so VBoxManage does not split on them."
+      }
+      $takeArgs += @("--description", $safe)
+    }
     $taken = Invoke-VBox -Exe $exe -Arguments $takeArgs
     if ($taken.ExitCode -ne 0) {
       throw ("VBoxManage failed to take the snapshot: " + ($taken.Output -join ' '))

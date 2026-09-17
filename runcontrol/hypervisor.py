@@ -85,6 +85,8 @@ class Hypervisor(Protocol):
                           host_path: str) -> None: ...
     def additions_runlevel(self, vm: str) -> int: ...
     def logged_in_users(self, vm: str) -> tuple[int, list[str]]: ...
+    def take_snapshot(self, vm: str, name: str,
+                      description: str = "") -> None: ...
 
 
 @dataclass
@@ -398,6 +400,50 @@ class VirtualBox:
             return -1, []
         listed = [n for n in (names or "").split(",") if n.strip()]
         return total, listed
+
+    @staticmethod
+    def safe_description(description: str) -> str:
+        """A description VBoxManage will accept whole.
+
+        **It re-splits its own arguments, so a double quote inside the
+        description terminates it** and the remainder arrives as stray
+        parameters: `Invalid parameter 'exit'`, and no snapshot taken. Hit
+        twice on 17 Sep -- once on a description quoting a display name, and
+        again on one quoting a log line, *after* the trap had been written
+        down. A hazard you have to remember is not handled, so it is handled
+        here.
+
+        Replaced rather than escaped, because VBoxManage honours no escape at
+        this layer and a snapshot description is prose, where a straight
+        double quote is never load-bearing. Newlines are kept: they survive
+        the round trip and the descriptions on this bench depend on them.
+        """
+        return (description or "").replace('"', "'")
+
+    def take_snapshot(self, vm: str, name: str, description: str = "") -> None:
+        """Take a snapshot, from a guest that must already be powered off.
+
+        **Powered off is a requirement, not a preference, and this refuses
+        rather than warns.** A snapshot taken while the VM runs is a live
+        snapshot: restoring it yields `saved`, starting a saved VM resumes
+        from memory instead of booting, and a boot- or logon-triggered agent
+        therefore never fires. That cost this bench a run and seven minutes
+        of `no_readiness` that looked like a broken agent.
+        """
+        self._require_destructive(f"take a snapshot of {vm!r}")
+        state = self.state(vm)
+        if state not in self._STOPPED:
+            raise HypervisorError(
+                f"refusing to snapshot {vm!r} while it is {state!r}. A "
+                f"snapshot taken running restores to 'saved' and resumes "
+                f"from memory rather than booting, so no startup or logon "
+                f"trigger ever fires -- a failure that presents as an agent "
+                f"which will not start. Power it off first."
+            )
+        args = ["snapshot", vm, "take", name]
+        if description:
+            args += ["--description", self.safe_description(description)]
+        self._run(args, changes_guest=True)
 
     def _guest_property(self, vm: str, key: str) -> str | None:
         """One guest property, or None when it has no value.
