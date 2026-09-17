@@ -293,7 +293,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _force_utf8_streams() -> None:
+    """Write UTF-8 whatever the console or the redirection says.
+
+    **A run that had succeeded reported failure because of this.** `_emit`
+    uses `ensure_ascii=False`, so the payload can carry any character the
+    case does -- and when stdout is a redirected file rather than a console,
+    Python picks the locale encoding, which on this bench is cp1252. A single
+    U+FFFD in a dynamic run summary raised `UnicodeEncodeError` *after*
+    `Dynamic analysis completed`, so the analysis was whole, the summary was
+    on disk, `combine` scored it, and the command still exited 1 with an
+    empty `detonate.json`. The guest agent logged DETONATION FAILED on a run
+    that had worked.
+
+    Across a hundred samples that is every run in the corpus reporting a
+    failure it did not have, and a real failure becoming indistinguishable
+    from the noise.
+
+    stderr too: the status stream carries collector output, which is exactly
+    where a stray replacement character comes from in the first place.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            # Not a reconfigurable text stream -- a caller has replaced it
+            # with a StringIO, which is what the tests do, and those handle
+            # any character already.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

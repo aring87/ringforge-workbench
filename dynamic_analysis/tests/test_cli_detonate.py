@@ -113,6 +113,35 @@ class DetonateWiring(unittest.TestCase):
         self.assertEqual("Needs Review",
                          json.loads(out.getvalue())["verdict"])
 
+    def test_a_replacement_character_does_not_fail_a_finished_run(self) -> None:
+        # Measured 17 Sep. `ensure_ascii=False` lets the payload carry any
+        # character the case does, and a redirected stdout uses the locale
+        # encoding -- cp1252 here. One U+FFFD in a run summary raised
+        # UnicodeEncodeError *after* "Dynamic analysis completed": the
+        # analysis was whole and scored, and the command still exited 1 with
+        # an empty detonate.json, so the agent logged DETONATION FAILED on a
+        # run that had worked. Across a corpus that is every run reporting a
+        # failure it did not have.
+        import io
+        import json
+
+        raw = io.BytesIO()
+        stdout = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        summary = {"verdict": "No Evidence", "note": "bad byte � here"}
+
+        runner = mock.Mock(return_value=summary)
+        with mock.patch("dynamic_analysis.orchestrator.run_dynamic_analysis",
+                        runner):
+            with mock.patch("sys.stdout", stdout):
+                code = main(["detonate", str(self.sample),
+                             "--case-dir", str(self.case), "--json", "--quiet"])
+
+        self.assertEqual(0, code)
+        stdout.flush()
+        # And the character survives rather than being mangled into the file.
+        self.assertIn("�",
+                      raw.getvalue().decode("utf-8"))
+
     def test_the_status_stream_stays_off_stdout(self) -> None:
         import contextlib
         import io
