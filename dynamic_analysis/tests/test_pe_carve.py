@@ -21,6 +21,7 @@ from pathlib import Path
 from dynamic_analysis.pe_carve import (
     _classify,
     _is_framework_assembly,
+    _is_winrt_metadata,
     analyze_dump,
     carve_dumps,
     parse_pe_header,
@@ -805,6 +806,39 @@ class FrameworkAssemblyTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertEqual(self._classification(name), "framework_assembly")
+
+    def test_windows_runtime_metadata_is_suppressed(self) -> None:
+        # Measured 17 Sep, on the first benign detonation the run controller
+        # produced. Five unmapped images, all of them WinRT metadata, all of
+        # them inside WerFault.exe dumps -- Windows Error Reporting maps them
+        # as a matter of course. The sample's own process produced none. The
+        # suffix is why they were missed: `_is_framework_assembly` requires
+        # `.dll`, and these end `.winmd` under a `Windows.` namespace that is
+        # in neither prefix set.
+        for name in ("Windows.Management.winmd", "Windows.Foundation.winmd",
+                     "Windows.ApplicationModel.winmd"):
+            with self.subTest(name=name):
+                self.assertTrue(_is_winrt_metadata(name))
+                self.assertEqual(self._classification(name), "framework_assembly")
+
+    def test_winrt_metadata_is_matched_case_insensitively(self) -> None:
+        self.assertTrue(_is_winrt_metadata("WINDOWS.FOUNDATION.WINMD"))
+
+    def test_a_winmd_outside_the_reserved_namespaces_stays_evidence(self) -> None:
+        # Deliberately not "any `.winmd`". An injected image is free to name
+        # itself anything, and the reserved namespaces are what make this an
+        # identification rather than a naming convention.
+        for name in ("Contoso.Widgets.winmd", "Stage2.winmd", "a.winmd"):
+            with self.subTest(name=name):
+                self.assertFalse(_is_winrt_metadata(name))
+                self.assertEqual(self._classification(name), "unmapped")
+
+    def test_a_dll_in_the_windows_namespace_is_not_winrt_metadata(self) -> None:
+        # The suffix carries the meaning: `.winmd` is type metadata, a `.dll`
+        # is code. `Windows.` is not in the framework prefixes either, so this
+        # must remain evidence rather than falling through the new test.
+        self.assertFalse(_is_winrt_metadata("Windows.Foundation.dll"))
+        self.assertEqual(self._classification("Windows.Foundation.dll"), "unmapped")
 
     def test_a_native_payload_carries_no_managed_name_and_stays_evidence(self) -> None:
         # The 258 KB image in `SecurityHealthHost.exe`: native, so the metadata

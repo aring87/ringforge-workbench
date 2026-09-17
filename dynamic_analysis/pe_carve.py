@@ -541,6 +541,12 @@ _FRAMEWORK_EXACT = {
 }
 _FRAMEWORK_PREFIXES = ("system.", "microsoft.")
 
+#: Namespaces whose Windows Runtime metadata ships with the operating system.
+#: Deliberately not "any `.winmd`": a third-party or injected image is free to
+#: call itself `Contoso.Widgets.winmd`, and the reserved namespaces are what
+#: make this an identification rather than a naming convention.
+_WINMD_PREFIXES = ("windows.", "microsoft.")
+
 
 def _is_framework_assembly(module_name: str) -> bool:
     """True for a .NET assembly that ships with the framework."""
@@ -553,6 +559,32 @@ def _is_framework_assembly(module_name: str) -> bool:
     if not name.endswith(".dll"):
         return False
     return name.startswith(_FRAMEWORK_PREFIXES)
+
+
+def _is_winrt_metadata(module_name: str) -> bool:
+    """True for Windows Runtime metadata mapped to read type information.
+
+    **The same category as `_is_framework_assembly`, and it was missed
+    because of a suffix.** That test requires `.dll`, and WinRT metadata ends
+    `.winmd`; its namespace is `Windows.`, which is in neither prefix set. So
+    five of these counted as unmapped images on the first benign detonation,
+    17 Sep -- `Windows.Management.winmd` twice, `Windows.Foundation.winmd`
+    twice and `Windows.ApplicationModel.winmd` -- and helped carry a signed
+    Microsoft binary to Strongly Corroborated.
+
+    A `.winmd` is type metadata, not code: any modern Windows process that
+    touches a WinRT API maps them, and the sample need do nothing unusual to
+    produce a handful. Real, unmapped, and not evidence -- exactly the
+    wording the framework-assembly exclusion already carries.
+
+    Keyed on the image's own Module name and on the reserved namespaces, so a
+    custom assembly injected into a host process is untouched, which is the
+    property the surrounding exclusions are built to preserve.
+    """
+    name = (module_name or "").strip().lower()
+    if not name.endswith(".winmd"):
+        return False
+    return name.startswith(_WINMD_PREFIXES)
 
 
 def _rva_candidates(
@@ -717,7 +749,13 @@ def _classify(
     # measured the same way: benign and malicious `csc.exe` produce the identical
     # four. Keyed on the image's own Module name, so a *custom* assembly injected
     # into `RegSvcs` -- which is what `422e30ed` does -- is untouched by this.
-    if header is not None and _is_framework_assembly(header.get("dotnet_name", "")):
+    # WinRT metadata is classified the same way and for the same reason: it is
+    # type information a process maps, not something it was made to run. Sharing
+    # the classification rather than adding one keeps the counts, the report and
+    # the scorer unchanged -- the distinction is in why, not in what to do.
+    dotnet_name = header.get("dotnet_name", "") if header is not None else ""
+    if dotnet_name and (_is_framework_assembly(dotnet_name)
+                        or _is_winrt_metadata(dotnet_name)):
         return "framework_assembly", None
 
     return "unmapped", None
