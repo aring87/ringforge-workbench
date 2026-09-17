@@ -1653,6 +1653,69 @@ already have this* from *the corpus directory is missing*. Verified against
 the real `benign-102` directory.
 
 
+### The agent detonates now — 16 Sep
+
+`ringforge detonate`, `dynamic_analysis/run_config.py`, and three lines in
+`guest_run_agent.ps1`. This is the change that makes a sweep a sandbox run
+rather than a slow remote static scan.
+
+**Why there was no way to detonate headlessly.** `run_dynamic_analysis` takes
+a 24-key config dict, and the only thing that had ever built one was
+`gui/dynamic_window.py`, out of Tk variables. A detonation therefore required
+a human at a window. The agent called `ringforge.cli scan`, which never
+executes anything, so the controller could not detonate even in principle.
+
+`dynamic_analysis/run_config.py` lifts that mapping out of the GUI so both
+sides share it. Two rules it has to keep or a guest run silently differs from
+a bench run:
+
+* **Identical defaults.** Every fallback matches the Tk variable it replaces.
+  A guest defaulting Sysmon off while the GUI defaults it on would produce a
+  corpus whose coverage differs from every hand-driven run it is compared
+  against, and nothing would say so. `TheDefaultsMatchTheGui` pins each one.
+* **`or`, not `get(key, default)`, on the path fields.** A *cleared* field is
+  a key holding `""`, so `.get` never reaches the default -- the defect
+  `dynamic_window.py` already records, where an empty Procmon config made the
+  orchestrator pass `None` and Procmon ran on whatever filter it had saved.
+  `fakenet_config_path` is the deliberate exception: empty means the stock
+  config, which is a choice rather than a missing value.
+
+**`ringforge detonate <sample> --case-dir <case>`.** Status to stderr,
+summary to stdout, so `--json` keeps the contract the rest of the CLI keeps.
+The run lands at `<case>/dynamic_analysis/`, which is where `combine` looks
+for it -- put it anywhere else and the dynamic half is invisible to the thing
+that pools the verdict, which reads as *did not run*.
+
+**Exit 4 is containment, and the agent treats it as fatal.** A run refused
+because the guest was not contained is not an ordinary failure: carrying on
+would detonate the rest of a sweep on a machine that can reach the network.
+No `done` is written, so the host records a void run. Any *other* non-zero
+exit is logged and the agent continues to `combine`, so the case still comes
+home with static evidence and the dynamic module reported absent -- *we could
+not look* is not *we looked and found nothing*, and that distinction is the
+whole scoring model.
+
+#### Not yet proven
+
+Nothing here has detonated anything. The orchestrator is mocked in the tests,
+because these run on a host and the entire point of the subcommand is that it
+executes malware. What is asserted is the wiring: the config handed over is
+the one `run_config` builds, a missing sample is refused before anything
+runs, and `ContainmentError` is distinguishable from an ordinary failure.
+
+**The guest clone is at `e305d3f` and does not have any of this.** It needs
+`provision_guest.ps1` again with a fresh bundle, which is a trip to the
+console -- there is still no remote-execution route in, by design.
+
+**And the first real detonation may come back thin.** `corpus-agent-*`
+descends from `corpus-baseline-capa`, and whether that branch carries
+Procmon, Sysmon and the rest is unverified. Those degrade to recorded
+coverage gaps rather than failures, which is correct, but a first sweep whose
+dynamic half is all gaps measures nothing. Detonate one sample and read
+`modules_run` and the coverage block before committing hours to a corpus --
+the same check that would have caught the static-only sweep on sample one.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1693,11 +1756,13 @@ What is left needs samples rather than code:
   end to end. Of N known-malicious, what band; of M known-benign, how many
   reached Corroborated. That is the number a buyer asks for, and
   `scripts/benign_rates.py` is most of the machinery.
-* **Dynamic benign rates -- STILL OPEN, and the 102-sample run did not
-  touch it.** That sweep ran `modules_run: ['static']` on every sample:
-  the guest agent invokes `ringforge.cli scan`, not the orchestrator, so
-  nothing was detonated. **The blocking change is the agent**, not the
-  controller. See *The 102 ran, and they were never detonated*.
+* **Dynamic benign rates -- the agent can detonate now, nothing has.**
+  `ringforge detonate` exists and the agent calls it; see *The agent
+  detonates now*. Before any sweep: push the clone past `e305d3f` with
+  `provision_guest.ps1`, then detonate ONE sample and read
+  `modules_run` and the coverage block. The tools may not be on this
+  snapshot branch, and a dynamic half that is all coverage gaps
+  measures nothing.
 
 Carried forward, neither urgent:
 

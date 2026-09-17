@@ -128,6 +128,66 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_detonate(args: argparse.Namespace) -> int:
+    """Execute one sample under instrumentation, headless.
+
+    **The gap this closes.** Until now the only thing that could start a
+    dynamic run was the GUI, so the run controller's guest agent ran
+    `scan` -- static triage -- and every swept sample was analysed without
+    ever being executed. A corpus of 102 was collected that way before anyone
+    noticed, because a case folder full of capa and FLOSS output looks like a
+    finished analysis until you read `modules_run`.
+
+    Refuses rather than degrades when it is not actually going to detonate:
+    the sample must exist and be a file, and the caller must be told the run
+    is happening in a context that can observe it. Everything the collectors
+    themselves can degrade on -- an absent Procmon, no Sysmon -- stays a
+    recorded coverage gap, because a degraded run is still evidence and
+    refusing one would turn a thin bench into no bench.
+    """
+    from dynamic_analysis.orchestrator import (
+        ContainmentError, run_dynamic_analysis)
+    from dynamic_analysis.run_config import build_config
+    from static_triage_engine.combine_case import case_home as resolve_case_home
+
+    sample = Path(args.sample)
+    if not sample.is_file():
+        _err(f"no sample at {sample}")
+        return 2
+
+    case_name = args.case or sample.stem
+    home = resolve_case_home(Path(args.case_dir) if args.case_dir
+                             else Path(case_name))
+    home.mkdir(parents=True, exist_ok=True)
+
+    config = build_config(sample, home)
+    if args.timeout is not None:
+        config["timeout_seconds"] = args.timeout
+
+    # Status goes to stderr so `--json` owns stdout, the contract this file
+    # keeps everywhere else.
+    status = None if args.quiet else (lambda message: _err(f"[status] {message}"))
+
+    try:
+        summary = run_dynamic_analysis(config, status_cb=status)
+    except ContainmentError as error:
+        # Its own exit code. A run refused because the guest was not contained
+        # is not the same as one that failed, and a sweep should be able to
+        # stop rather than carry on detonating on a connected machine.
+        _err(f"containment: {error}")
+        return 4
+
+    if args.json:
+        _emit(summary, args.pretty)
+        return 0
+
+    print(f"case      : {config['case_home_dir']}")
+    print(f"run       : {summary.get('run_dir') or summary.get('run_id', '-')}")
+    print(f"verdict   : {summary.get('verdict', '-')}")
+    print(f"severity  : {summary.get('severity', '-')}")
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     """The verdict as a SIEM event.
 
@@ -190,6 +250,28 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--pretty", action="store_true", help="indent the JSON")
     scan.add_argument("--no-progress", action="store_true")
     scan.set_defaults(func=cmd_scan)
+
+    detonate = sub.add_parser(
+        "detonate",
+        help="execute one sample under instrumentation (runs it — guest only)",
+        description="Runs the sample and records what it does: Procmon, "
+                    "Sysmon, packet capture, memory dumps, persistence "
+                    "diffs. THIS EXECUTES THE SAMPLE. Intended for a "
+                    "contained analysis guest, and it is what `scan` is "
+                    "not -- `scan` never runs anything.")
+    detonate.add_argument("sample")
+    detonate.add_argument("--case", default=None,
+                          help="case name (default: the sample's stem)")
+    detonate.add_argument("--case-dir", default=None,
+                          help="case folder, if not derived from --case")
+    detonate.add_argument("--timeout", type=int, default=None, metavar="SECONDS",
+                          help="override the configured observation window")
+    detonate.add_argument("--json", action="store_true",
+                          help="write the run summary to stdout as JSON")
+    detonate.add_argument("--pretty", action="store_true", help="indent the JSON")
+    detonate.add_argument("--quiet", action="store_true",
+                          help="suppress the status stream on stderr")
+    detonate.set_defaults(func=cmd_detonate)
 
     export = sub.add_parser(
         "export",

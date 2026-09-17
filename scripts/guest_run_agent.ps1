@@ -233,8 +233,37 @@ try {
     & $py -m ringforge.cli scan $sample.FullName --case $caseName --json |
       Out-File -LiteralPath (Join-Path $work "scan.json") -Encoding utf8
 
+    # **The detonation, which this agent did not do for its first 102
+    # samples.** It ran `scan` and `combine` and nothing else, so every swept
+    # sample was statically analysed and none was ever executed -- a case
+    # folder full of capa and FLOSS output looks like a finished analysis
+    # until you read `modules_run`. `scan` never runs anything; `detonate`
+    # is the one that does.
+    $caseHome = Join-Path $work $caseName
+    Write-Log "detonating (this EXECUTES the sample)"
+    & $py -m ringforge.cli detonate $sample.FullName --case-dir $caseHome --json |
+      Out-File -LiteralPath (Join-Path $work "detonate.json") -Encoding utf8
+    $detonateExit = $LASTEXITCODE
+
+    if ($detonateExit -eq 4) {
+      # Containment refused the run. Fatal on purpose and it must stay fatal:
+      # carrying on would detonate the rest of a sweep on a guest that can
+      # reach the network. No `done` is written, so the host records a void
+      # run rather than a thin one.
+      throw "containment refused the detonation; see detonate.json"
+    }
+    if ($detonateExit -ne 0) {
+      # Anything else is a coverage gap, not a reason to lose the case. The
+      # static half is real evidence and `combine` reports the dynamic module
+      # as absent, which is the distinction this project exists to keep --
+      # "we could not look" is not "we looked and found nothing".
+      Write-Log "DETONATION FAILED (exit $detonateExit); continuing so the case comes home with the gap recorded"
+    } else {
+      Write-Log "detonation finished"
+    }
+
     Write-Log "combining"
-    & $py -m ringforge.cli combine (Join-Path $work $caseName) --json |
+    & $py -m ringforge.cli combine $caseHome --json |
       Out-File -LiteralPath (Join-Path $work "combined.json") -Encoding utf8
   }
   finally {
