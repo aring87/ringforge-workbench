@@ -2010,6 +2010,57 @@ then with it stubbed off, 9 BOMs across 3 cases came out, all 144 files parsed
 strictly afterwards, and every edited file differed from its original by the
 three BOM bytes and nothing else.
 
+#### The provision drop for after the corpus -- staged 18 Sep
+
+**`G:\ringforge-artifacts\provision-2f313e9-staging\`**, carrying
+`provision_guest.ps1`, `workbench.bundle` (5276ca6..main, 6 commits, 46 KB),
+`wheels\` (setuptools 84.0.0, wheel 0.48.0, packaging 26.3) and a
+`READ-ME-FIRST.txt` holding the sequence below, so the instructions travel
+with the drop rather than living only here.
+
+The guest is at **5276ca6**, confirmed from the corpus's own provenance rather
+than from memory (`combined_verdict.json` -> `provenance.analyzer.commit`,
+version 1.12.0, 1546 rules compiled). The commit that matters in the six is
+the BOM fix: until this is applied, every corpus this guest produces carries
+the defect `runcontrol.debom` exists to clean up afterwards.
+
+**It is deliberately NOT on the exchange yet, and that is the whole point of
+the entry.** The self-update fires on any boot carrying no sample. A sweep
+boot always has one, so a drop cannot update the guest mid-sweep -- but a
+*human* booting the guest to look at something during the corpus would trigger
+it, and then samples 1..N and N+1..102 would be analysed by different code.
+That is precisely the provenance failure the manifest exists to prevent, and
+it costs nothing to avoid by staging off the exchange until the run reads
+`completed`.
+
+Verified on the host before staging, because a bad drop is discovered at the
+console after a four-day wait:
+
+* **The bundle applies to a clone at 5276ca6.** A simulated guest clone was
+  built, then `reflog expire` + `gc --prune=now` so it genuinely lacked the new
+  objects -- a `--local` clone hardlinks the object store and would have made
+  the test meaningless -- and taken through the exact three commands
+  `provision_guest.ps1` runs: `git bundle verify`, `git fetch`,
+  `git merge --ff-only`. It landed at 2f313e9.
+* **The offline install works with no setuptools present.** A fresh Python
+  3.12 venv is seeded with pip and not setuptools, which is what the guest
+  has. `pip install --no-index --find-links wheels -e . --no-deps` succeeded;
+  the naive form without `--find-links` failed, as the 15 Sep entry says it
+  does. Both measured, not assumed.
+* **The five authored YARA rules are unchanged across the six commits**, so
+  `rules_synced` should read 5. `tools\yara\rules\local\` is gitignored and is
+  what the scanner reads -- see the trap below.
+
+Afterwards, in order: place the drop as
+`G:\ringforge-exchange\provision-2f313e9`; boot with **no sample** and watch
+for `self-update: applying provision-2f313e9 over 5276ca6`; read
+`provision-receipt.json` for `ok`, `commit_after`, `installed`,
+`rules_synced`; **power off hard and take a new snapshot from poweroff**,
+`corpus-agent-detonate-2f313e9`; repoint `--baseline` and re-register the
+logon task. **Skipping the snapshot undoes all of it silently** -- every run
+begins with a restore, and an install into a running guest is discarded by the
+next one.
+
 #### Traps paid for, in one place
 
 * **VBoxManage re-splits its own arguments**, so a double quote in
