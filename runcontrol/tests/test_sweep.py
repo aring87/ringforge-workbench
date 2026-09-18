@@ -26,8 +26,9 @@ from runcontrol.guest import Guest
 from runcontrol.hypervisor import Snapshot
 from runcontrol.loop import RUN_DIR, Signals
 from runcontrol.sweep import (
-    ATTEMPTED, MANIFEST_NAME, NOT_ATTEMPTED, PENDING, SCHEMA, SKIPPED,
-    Manifest, SweepExists, enumerate_samples, main, sha256_of, sweep,
+    ATTEMPTED, MANIFEST_NAME, NOT_ATTEMPTED, PENDING, RUNNING, SCHEMA, SKIPPED,
+    Manifest, SweepExists, SweepResumeError, enumerate_samples, main,
+    sha256_of, sweep,
 )
 
 
@@ -700,6 +701,391 @@ class TheFileItself(SweepFixture):
                             {"schema": SCHEMA})
         manifest.save()
         self.assertTrue(manifest.path.is_file())
+
+
+class ResumeFixture(SweepFixture):
+    """A run that stopped partway, which is the only thing resume is for.
+
+    Leg 1 is produced by the real abort path rather than by hand: the first
+    sample voids, `--abort-after 1` stops the sweep, and the rest of the rows
+    are left `not_attempted` with the reason. That is a genuine interrupted
+    manifest, written by the code under test.
+    """
+
+    def stopped_partway(self, *names: str):
+        for name in names or ("a.exe", "b.exe", "c.exe"):
+            self.sample(name)
+        hv = FakeHypervisor()
+        agent = FakeGuestAgent(self.work, hv, ready=False, done=False)
+        result = self.sweep(hypervisor=hv, agent=agent,
+                            abort_after_consecutive_void=1)
+        self.assertEqual("aborted", result.state)
+        return result
+
+    def resume(self, **kwargs):
+        hv = FakeHypervisor()
+        return self.sweep(hypervisor=hv, agent=FakeGuestAgent(self.work, hv),
+                          resume=True, **kwargs)
+
+    def rewrite(self, **changes) -> None:
+        """Edit the manifest on disk, to stage what a crash actually leaves."""
+        path = self.out / "sweep-test" / MANIFEST_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document.update(changes)
+        path.write_bytes(
+            json.dumps(document, indent=2).encode("utf-8") + b"\n")
+
+    def kill_on(self, name: str) -> None:
+        """What a hard kill leaves: a row `running`, with no attempt on it.
+
+        `manifest.save()` runs immediately after the row is set `running` and
+        before `run_one` is called, so this is the exact state on disk when
+        the host restarts mid-sample. No test can produce it by finishing,
+        which is the point -- it is the state nothing gets to clean up.
+        """
+        path = self.out / "sweep-test" / MANIFEST_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["state"] = "running"
+        document["finished"] = None
+        for row in document["samples"]:
+            if row["name"] == name:
+                row["state"] = RUNNING
+                row["reason"] = ""
+                row["attempts"] = []
+        path.write_bytes(
+            json.dumps(document, indent=2).encode("utf-8") + b"\n")
+
+
+class ResumingAnInterruptedSweep(ResumeFixture):
+    """The recovery the overwrite guard sends you to, 18 Sep.
+
+    The guard stopped the second run destroying the first one's record, and
+    left the operator with a partial corpus and no way to finish it under the
+    run id it belongs to. A 102-sample corpus is four to five days on this
+    bench, which puts an interruption at better than even odds.
+    """
+
+    def test_it_attempts_the_samples_that_never_ran(self) -> None:
+        self.stopped_partway()
+        result = self.resume()
+        self.assertEqual("completed", result.state)
+
+        rows = self.rows_by_name(self.manifest())
+        for name in ("b.exe", "c.exe"):
+            self.assertEqual(ATTEMPTED, rows[name]["state"])
+            self.assertTrue(rows[name]["attempts"][0]["usable"])
+
+    def test_it_does_not_re_attempt_a_sample_that_already_ran(self) -> None:
+        # The retry bias the module refuses, one level up: a resume that
+        # re-ran finished samples would file two corpus entries for whatever
+        # half of the run happened to complete.
+        self.stopped_partway()
+        before = self.rows_by_name(self.manifest())["a.exe"]
+        self.resume()
+        after = self.rows_by_name(self.manifest())["a.exe"]
+        self.assertEqual(before, after)
+        self.assertEqual(1, len(after["attempts"]))
+
+    def test_the_first_legs_record_is_added_to_not_rewritten(self) -> None:
+        # A corpus row produced under one commit must not end up filed under
+        # whichever commit happened to resume the sweep.
+        self.stopped_partway()
+        first = self.manifest()
+        self.resume()
+        second = self.manifest()
+
+        self.assertEqual(first["started"], second["started"])
+        self.assertEqual(first["run_id"], second["run_id"])
+        self.assertEqual(first["preflight"], second["preflight"])
+        self.assertEqual(first["policy"]["abort_after_consecutive_void"],
+                         second["policy"]["abort_after_consecutive_void"])
+
+    def test_the_row_the_controller_died_on_is_picked_up(self) -> None:
+        self.stopped_partway()
+        self.kill_on("b.exe")
+        self.resume()
+
+        row = self.rows_by_name(self.manifest())["b.exe"]
+        self.assertEqual(ATTEMPTED, row["state"])
+        self.assertTrue(row["attempts"][0]["usable"])
+
+    def test_which_sample_it_died_on_is_recorded(self) -> None:
+        # Its case folder holds a half-collected run, and after the resume
+        # nothing else on disk says which one it was.
+        self.stopped_partway()
+        self.kill_on("b.exe")
+        self.resume()
+        leg = self.manifest()["resumed"][-1]
+        self.assertEqual(["b"], leg["interrupted"])
+
+    def test_each_leg_carries_its_own_provenance(self) -> None:
+        self.stopped_partway()
+        self.resume(attempts=2)
+        legs = self.manifest()["resumed"]
+        self.assertEqual(1, len(legs))
+        leg = legs[0]
+        self.assertEqual(2, leg["leg"])
+        self.assertEqual("aborted", leg["from_state"])
+        self.assertEqual(2, leg["carried"])
+        self.assertEqual(2, leg["policy"]["attempts"])
+        self.assertIn("analyzer", leg["controller"])
+        self.assertIn("vm", leg["guest"])
+        self.assertIn("preflight", leg)
+        # And the header still says what the first leg was run with.
+        self.assertEqual(1, self.manifest()["policy"]["attempts"])
+
+    def test_the_reasons_it_carried_are_kept_rather_than_erased(self) -> None:
+        # Re-arming a row clears its reason, because "the sweep ended before
+        # reaching it" stops being true the moment it is reached. The sentence
+        # still has to survive somewhere.
+        self.stopped_partway()
+        self.resume()
+        reasons = self.manifest()["resumed"][-1]["carried_reasons"]
+        self.assertEqual(1, len(reasons))
+        [(sentence, count)] = reasons.items()
+        self.assertIn("consecutive void", sentence)
+        self.assertEqual(2, count)
+
+    def test_a_resumed_row_carries_no_stale_reason(self) -> None:
+        self.stopped_partway()
+        self.resume()
+        rows = self.rows_by_name(self.manifest())
+        self.assertEqual("", rows["b.exe"]["reason"])
+
+    def test_a_second_interruption_resumes_again(self) -> None:
+        self.stopped_partway("a.exe", "b.exe", "c.exe", "d.exe")
+        # Leg 2 aborts too, on the first row it carries.
+        hv = FakeHypervisor()
+        self.sweep(hypervisor=hv,
+                   agent=FakeGuestAgent(self.work, hv, ready=False, done=False),
+                   resume=True, abort_after_consecutive_void=1)
+        self.resume()
+
+        legs = self.manifest()["resumed"]
+        self.assertEqual([2, 3], [leg["leg"] for leg in legs])
+        self.assertEqual("aborted", legs[1]["from_state"])
+        rows = self.rows_by_name(self.manifest())
+        self.assertTrue(all(row["state"] == ATTEMPTED for row in rows.values()),
+                        {name: row["state"] for name, row in rows.items()})
+
+    def test_the_totals_count_every_leg(self) -> None:
+        self.stopped_partway()
+        self.resume()
+        totals = self.manifest()["totals"]
+        self.assertEqual(3, totals["planned"])
+        self.assertEqual(3, totals["attempted"])
+        self.assertEqual(2, totals["usable"])
+        self.assertEqual(1, totals["void"])
+        self.assertEqual(0, totals["pending"])
+        self.assertEqual(0, totals["not_attempted"])
+
+    def test_the_abort_count_starts_fresh_on_a_new_leg(self) -> None:
+        # Otherwise a resume of a run that aborted on void runs aborts again
+        # immediately, on a bench that has since been fixed.
+        self.stopped_partway()
+        result = self.resume(abort_after_consecutive_void=1)
+        self.assertEqual("completed", result.state)
+
+    def test_a_run_refused_by_preflight_can_be_resumed(self) -> None:
+        # Every row is `not_attempted`; the bench was the problem and the
+        # corpus directory never got touched.
+        for name in ("a.exe", "b.exe"):
+            self.sample(name)
+        broken = FakeHypervisor(known=False)
+        refused = self.sweep(hypervisor=broken,
+                             agent=FakeGuestAgent(self.work, broken))
+        self.assertEqual("refused", refused.state)
+
+        result = self.resume()
+        self.assertEqual("completed", result.state)
+        self.assertEqual(2, result.usable)
+
+
+class ResumeRefusesWhatItCannotHonestlyContinue(ResumeFixture):
+    def existing(self) -> Path:
+        return self.out / "sweep-test" / MANIFEST_NAME
+
+    def test_a_finished_run_is_not_resumable(self) -> None:
+        self.sample("a.exe")
+        self.sweep()
+        with self.assertRaises(SweepResumeError) as caught:
+            self.resume()
+        self.assertIn("completed", str(caught.exception))
+        self.assertIn("--run-id", str(caught.exception))
+
+    def test_a_dry_run_is_not_a_run_to_continue(self) -> None:
+        self.sample("a.exe")
+        sweep(self.corpus, self.guest, None, self.exchange, self.out,
+              run_id="sweep-test", dry_run=True)
+        with self.assertRaises(SweepResumeError) as caught:
+            self.resume()
+        self.assertIn("dry run is not a run", str(caught.exception))
+
+    def test_there_is_nothing_to_resume_without_a_manifest(self) -> None:
+        # A mistyped --run-id must not quietly become a new run the operator
+        # believes is a continuation.
+        self.sample("a.exe")
+        with self.assertRaises(SweepResumeError) as caught:
+            self.resume()
+        self.assertIn("nothing to resume", str(caught.exception))
+        self.assertFalse(self.existing().exists())
+
+    def test_an_unreadable_manifest_is_not_written_over(self) -> None:
+        self.sample("a.exe")
+        self.existing().parent.mkdir(parents=True)
+        self.existing().write_text("{ truncated", encoding="utf-8")
+        with self.assertRaises(SweepResumeError) as caught:
+            self.resume()
+        self.assertIn("cannot be read", str(caught.exception))
+        self.assertEqual("{ truncated",
+                         self.existing().read_text(encoding="utf-8"))
+
+    def test_a_schema_it_does_not_understand_is_refused(self) -> None:
+        self.stopped_partway()
+        self.rewrite(schema=SCHEMA + 99)
+        with self.assertRaises(SweepResumeError) as caught:
+            self.resume()
+        self.assertIn("schema", str(caught.exception))
+
+    def test_resuming_one_corpus_into_another_runs_record_is_refused(self) -> None:
+        self.stopped_partway()
+        other = self.tmp / "other-corpus"
+        other.mkdir()
+        (other / "a.exe").write_bytes(b"MZ not really")
+        hv = FakeHypervisor()
+        with self.assertRaises(SweepResumeError) as caught:
+            sweep(other, self.guest, hv, self.exchange, self.out,
+                  run_id="sweep-test", resume=True,
+                  sleep=FakeGuestAgent(self.work, hv).sleep)
+        self.assertIn("other-corpus", str(caught.exception))
+
+    def test_resume_and_force_ask_for_opposite_things(self) -> None:
+        self.stopped_partway()
+        with self.assertRaises(SweepResumeError):
+            self.resume(force=True)
+
+    def test_resume_and_dry_run_ask_for_opposite_things(self) -> None:
+        self.stopped_partway()
+        with self.assertRaises(SweepResumeError):
+            sweep(self.corpus, self.guest, None, self.exchange, self.out,
+                  run_id="sweep-test", resume=True, dry_run=True)
+
+    def test_a_refusal_leaves_the_manifest_exactly_as_it_found_it(self) -> None:
+        # The guard's own rule, applied to the recovery path: a refusal that
+        # damages what it is protecting is worse than no refusal.
+        self.stopped_partway()
+        before = self.existing().read_bytes()
+        with self.assertRaises(SweepResumeError):
+            self.resume(force=True)
+        self.assertEqual(before, self.existing().read_bytes())
+
+    def test_nothing_left_to_attempt_is_said_rather_than_run(self) -> None:
+        self.stopped_partway()
+        # Every carried sample disappears from the corpus directory.
+        for name in ("b.exe", "c.exe"):
+            (self.corpus / name).unlink()
+        with self.assertRaises(SweepResumeError) as caught:
+            self.resume()
+        self.assertIn("no sample left to attempt", str(caught.exception))
+
+    def test_the_command_line_reports_it_distinctly(self) -> None:
+        # Its own exit code, beside the collision's: "this run id is taken"
+        # and "this run cannot be continued" want different recoveries.
+        self.sample("a.exe")
+        self.sweep()
+        with mock.patch("runcontrol.hypervisor.VirtualBox") as constructor:
+            constructor.return_value = FakeHypervisor()
+            code = main([str(self.corpus), "--vm", "RingForge-Analysis",
+                         "--baseline", "corpus-baseline",
+                         "--exchange", str(self.exchange),
+                         "--out", str(self.out),
+                         "--run-id", "sweep-test", "--resume"])
+        self.assertEqual(4, code)
+
+    def test_the_collision_message_points_at_the_recovery(self) -> None:
+        # The message an operator meets on the natural recovery command is
+        # where --resume has to be discoverable, or it may as well not exist.
+        self.sample("a.exe")
+        self.sweep()
+        with self.assertRaises(SweepExists) as caught:
+            self.sweep()
+        self.assertIn("--resume", str(caught.exception))
+
+
+class ASampleThatChangedIsNotDetonatedUnderItsOldRow(ResumeFixture):
+    """A row's identity is its SHA-256, and a resume happens days later.
+
+    Nothing guards the corpus directory between legs. Re-hashing before
+    re-attempting is the difference between a row that records a detonation
+    of *these* bytes and one that records a detonation of whatever was at
+    that path later.
+    """
+
+    def test_changed_bytes_are_skipped_rather_than_attempted(self) -> None:
+        self.stopped_partway()
+        (self.corpus / "b.exe").write_bytes(b"MZ something else entirely")
+        self.resume()
+
+        row = self.rows_by_name(self.manifest())["b.exe"]
+        self.assertEqual(SKIPPED, row["state"])
+        self.assertEqual([], row["attempts"])
+        self.assertIn("changed since the plan", row["reason"])
+
+    def test_the_row_still_names_the_bytes_it_planned(self) -> None:
+        self.stopped_partway()
+        planned = self.rows_by_name(self.manifest())["b.exe"]["sha256"]
+        (self.corpus / "b.exe").write_bytes(b"MZ something else entirely")
+        self.resume()
+
+        row = self.rows_by_name(self.manifest())["b.exe"]
+        self.assertEqual(planned, row["sha256"])
+        self.assertIn(planned[:12], row["reason"])
+
+    def test_a_sample_that_vanished_is_skipped_with_a_reason(self) -> None:
+        self.stopped_partway()
+        (self.corpus / "b.exe").unlink()
+        self.resume()
+
+        row = self.rows_by_name(self.manifest())["b.exe"]
+        self.assertEqual(SKIPPED, row["state"])
+        self.assertIn("no longer at the path", row["reason"])
+
+    def test_the_drift_is_recorded_against_the_leg_that_found_it(self) -> None:
+        self.stopped_partway()
+        (self.corpus / "b.exe").unlink()
+        self.resume()
+
+        leg = self.manifest()["resumed"][-1]
+        self.assertEqual(["b"], [item["case"] for item in leg["drifted"]])
+        self.assertEqual(1, leg["carried"])
+
+    def test_an_unchanged_sample_is_unaffected_by_a_neighbour(self) -> None:
+        self.stopped_partway()
+        (self.corpus / "b.exe").unlink()
+        self.resume()
+        self.assertEqual(ATTEMPTED,
+                         self.rows_by_name(self.manifest())["c.exe"]["state"])
+
+
+class WhatAResumeDoesNotAdopt(ResumeFixture):
+    def test_a_sample_added_between_legs_is_recorded_not_attempted(self) -> None:
+        # The plan written before the first sample is what makes an absent
+        # result readable as `pending` rather than as a gap. A plan that grows
+        # each time the run is picked up is not one plan.
+        self.stopped_partway()
+        self.sample("late.exe")
+        self.resume()
+
+        document = self.manifest()
+        self.assertNotIn("late.exe", self.rows_by_name(document))
+        appeared = document["resumed"][-1]["appeared_since"]
+        self.assertEqual(1, len(appeared))
+        self.assertTrue(appeared[0].endswith("late.exe"))
+
+    def test_nothing_is_recorded_when_the_corpus_is_unchanged(self) -> None:
+        self.stopped_partway()
+        self.resume()
+        self.assertNotIn("appeared_since", self.manifest()["resumed"][-1])
 
 
 if __name__ == "__main__":

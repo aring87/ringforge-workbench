@@ -28,6 +28,14 @@ to cooperate on a second boot. Retries exist (`attempts`), they fire only on a
 *void* outcome, and every attempt lands in the manifest as its own row -- so a
 corpus entry that needed three goes is visible as one that needed three goes.
 
+**It does not re-attempt a sample that already ran.** `--resume` continues an
+interrupted sweep, and the rows it picks up are the ones that never ran --
+`pending`, `not_attempted`, and the one `running` row the controller died on.
+An `attempted` row is history and stays that way: a resume that re-ran
+finished samples would be the retry bias above wearing a different hat, and it
+would put two corpus entries in for whatever half of the run happened to
+complete.
+
 **It does not rename anything to avoid a collision.** `run_one` derives a case
 name from the sample's stem, so `thing.exe` and `thing.dll` in the same
 directory both want `cases/thing`, and the second would overwrite the first
@@ -90,6 +98,17 @@ class SweepExists(RuntimeError):
     out to be silently destroyable. A record that can be clobbered by the
     most natural recovery command is not a record.
     """
+
+class SweepResumeError(RuntimeError):
+    """A sweep was asked to resume something it should not resume.
+
+    Distinct from `SweepExists` because the two mean opposite things to
+    whoever is recovering a run: that one fires when a *fresh* sweep would
+    destroy a record, this one when a *continuation* cannot honestly be made.
+    Refusing here is cheap; the alternative is a corpus whose rows and case
+    folders disagree about which bytes were detonated.
+    """
+
 
 #: The manifest's name inside the sweep directory. Fixed, because the first
 #: thing anyone does with a sweep is look for it.
@@ -386,15 +405,198 @@ def _guard_existing(path: Path, *, force: bool) -> Path | None:
             f"Refusing to overwrite it: that manifest is the only record of "
             f"whatever was attempted under this run id, and the case folders "
             f"beside it cannot say which samples were tried and skipped.\n"
-            f"Either choose a different --run-id, or pass --force, which "
-            f"keeps the old manifest alongside the new one rather than "
-            f"replacing it."
+            f"To continue it where it stopped, pass --resume: it attempts "
+            f"only the samples that never ran and leaves the ones that did. "
+            f"To measure the corpus again from the start, choose a different "
+            f"--run-id. --force plans afresh under this run id and keeps the "
+            f"old manifest beside the new one rather than replacing it."
         )
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     aside = path.with_name(f"manifest.superseded-{stamp}.json")
     path.rename(aside)
     return aside
+
+
+def _sample_drift(row: SampleRow) -> str:
+    """Whether the file on disk is still the one this row planned, or why not.
+
+    A row's identity is its SHA-256 -- that is how it joins to a label -- and
+    a resume happens hours or days after the plan was written, on a corpus
+    directory nothing has been guarding. Re-hashing before re-attempting is
+    the difference between "this row records a detonation of these bytes" and
+    "this row records a detonation of whatever was at this path later".
+
+    Returns an empty string when the sample is unchanged.
+    """
+    path = Path(row.path)
+    try:
+        if not path.is_file():
+            return ("the sample is no longer at the path the plan recorded, "
+                    "so this row cannot be attempted without changing what it "
+                    "claims to be")
+        digest = sha256_of(path)
+    except OSError as error:
+        return f"cannot read: {error.strerror}"
+
+    if row.sha256 and digest != row.sha256:
+        return (f"the file at this path changed since the plan was written "
+                f"(planned {row.sha256[:12]}..., found {digest[:12]}...); "
+                f"detonating it now would attribute new bytes to a row that "
+                f"names the old ones")
+    return ""
+
+
+def _resume(path: Path, *, source: Path, leg: dict) -> tuple[Manifest, dict]:
+    """Continue the sweep this manifest records, without rewriting its record.
+
+    **The first leg's header is not overwritten, it is added to.** `started`,
+    the analyzer provenance and the policy in the header describe how the rows
+    that already ran were produced, and this leg is not entitled to restate
+    them -- a corpus row that took 2,900s under one commit must not end up
+    filed under the commit that happened to resume the sweep. So each
+    continuation appends an entry to `resumed` carrying its own provenance,
+    guest, limits, policy and preflight, and the rows it carried.
+
+    What comes back is the manifest with its carried rows re-armed to
+    `pending`, which is the state the sweep loop already knows how to drive,
+    plus the entry so the caller can finish filling it in. `attempted` and
+    `skipped` rows are left exactly as they were found.
+
+    Raises `SweepResumeError` rather than starting a fresh sweep for anything
+    it cannot honestly continue. Starting fresh is what `--run-id` is for, and
+    the failure that produced the overwrite guard was precisely a recovery
+    command that did something other than what the operator believed.
+    """
+    if not path.is_file():
+        raise SweepResumeError(
+            f"no manifest at {path}, so there is nothing to resume.\n"
+            f"--resume continues a run that already exists; it will not "
+            f"quietly start a new one under a run id you may have mistyped. "
+            f"Drop --resume to begin this run id fresh."
+        )
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as error:                        # noqa: BLE001
+        raise SweepResumeError(
+            f"{path} cannot be read ({type(error).__name__}), so what it "
+            f"recorded is unknown and resuming would write a record over a "
+            f"damaged one. Copy it aside and inspect it before doing anything "
+            f"else with this run id."
+        ) from error
+
+    found = document.get("schema")
+    if found != SCHEMA:
+        raise SweepResumeError(
+            f"{path} is schema {found!r} and this is schema {SCHEMA}. A field "
+            f"changed meaning between them, so continuing the run would put "
+            f"rows of two different shapes in one file. Finish it with the "
+            f"version that wrote it, or start a new --run-id."
+        )
+
+    state = document.get("state")
+    if state in ("completed", "dry_run"):
+        totals = document.get("totals") or {}
+        raise SweepResumeError(
+            f"{path} is state={state!r}, which is not an interrupted run "
+            f"({totals.get('attempted')} attempted of {totals.get('planned')} "
+            f"planned). "
+            + ("A dry run is not a run: it detonated nothing and its rows say "
+               "so, and turning that record into a real one in place would "
+               "leave a manifest whose policy says dry_run. "
+               if state == "dry_run" else
+               "It finished. ")
+            + "Use a new --run-id."
+        )
+
+    planned_source = os.path.normcase(os.path.abspath(str(document.get("source") or "")))
+    if planned_source != os.path.normcase(os.path.abspath(str(source))):
+        raise SweepResumeError(
+            f"{path} planned {document.get('source')!r} and this command says "
+            f"{str(source)!r}. Resuming one corpus into another run's record "
+            f"would produce a manifest that cannot be joined back to either "
+            f"set of labels. Point --resume at the corpus it was started on, "
+            f"or use a new --run-id."
+        )
+
+    try:
+        rows = [
+            SampleRow(**{**raw,
+                         "attempts": [Attempt(**a)
+                                      for a in (raw.get("attempts") or [])]})
+            for raw in (document.get("samples") or [])
+        ]
+    except TypeError as error:
+        raise SweepResumeError(
+            f"{path} has rows this version does not understand ({error}), "
+            f"despite claiming schema {SCHEMA}. Not resumed, and not written "
+            f"over."
+        ) from error
+
+    carried = 0
+    interrupted: list[str] = []
+    drifted: list[dict] = []
+    #: Deduplicated with counts rather than per row: fifty rows abandoned by
+    #: one abort share one sentence, and the sentence is the information.
+    carried_reasons: dict[str, int] = {}
+
+    for row in rows:
+        if row.state not in (PENDING, RUNNING, NOT_ATTEMPTED):
+            continue
+        if row.state == RUNNING:
+            # The sample the controller was on when it died. `run_one` never
+            # appended an attempt for it, so nothing is lost by re-arming it,
+            # but which sample it was is worth being able to see: its case
+            # folder holds a half-collected run.
+            interrupted.append(row.case)
+        elif row.reason:
+            carried_reasons[row.reason] = carried_reasons.get(row.reason, 0) + 1
+
+        drift = _sample_drift(row)
+        if drift:
+            row.state = SKIPPED
+            row.reason = drift
+            drifted.append({"case": row.case, "why": drift})
+            continue
+
+        row.state = PENDING
+        row.reason = ""
+        carried += 1
+
+    if not carried:
+        totals = document.get("totals") or {}
+        raise SweepResumeError(
+            f"{path} has no sample left to attempt "
+            f"({totals.get('attempted')} attempted, {totals.get('skipped')} "
+            f"skipped, {len(drifted)} of the remainder no longer match the "
+            f"bytes they were planned as). Nothing was written."
+        )
+
+    header = {key: value for key, value in document.items()
+              if key not in ("totals", "samples")}
+    entry = {
+        "at": _now(),
+        # The first run is leg 1 and has no entry, so the first resume is 2.
+        "leg": len(header.get("resumed") or []) + 2,
+        "from_state": state,
+        "carried": carried,
+        "interrupted": interrupted,
+        "carried_reasons": carried_reasons,
+        "drifted": drifted,
+        "controller": leg["controller"],
+        "guest": leg["guest"],
+        "limits": leg["limits"],
+        "policy": leg["policy"],
+        "preflight": [],
+    }
+    header.setdefault("resumed", []).append(entry)
+    header["state"] = "running"
+    header["finished"] = None
+
+    manifest = Manifest(path, header)
+    manifest.rows = rows
+    return manifest, entry
 
 
 def sweep(
@@ -413,6 +615,7 @@ def sweep(
     ignore_preflight: bool = False,
     dry_run: bool = False,
     force: bool = False,
+    resume: bool = False,
     limits: Limits | None = None,
     sleep: Callable[[float], None] = time.sleep,
     on_event: Callable[[str], None] | None = None,
@@ -430,11 +633,31 @@ def sweep(
     problem, and the remaining rows stay `pending` rather than becoming a
     hundred void entries in the corpus.
 
+    `resume` continues the run already recorded under `run_id` instead of
+    planning a new one: the rows that never ran are re-armed, the rows that
+    ran are left alone, and this leg's provenance is appended rather than
+    written over the first leg's. See `_resume`.
+
     Never raises for a sample that went wrong. Raises only for a sweep that
     cannot be set up at all.
     """
     say = on_event or (lambda _message: None)
     source = Path(source)
+
+    # Refused here rather than reconciled, because each pair asks for two
+    # different things and guessing which one was meant is how a record gets
+    # destroyed by a command the operator believed was safe.
+    if resume and force:
+        raise SweepResumeError(
+            "--resume and --force ask for opposite things: --force sets the "
+            "existing manifest aside and plans afresh, --resume keeps it and "
+            "continues it. Pick one.")
+    if resume and dry_run:
+        raise SweepResumeError(
+            "--resume and --dry-run cannot be combined: a dry run rewrites "
+            "the manifest as a plan that detonated nothing, which is exactly "
+            "the record a resume exists to preserve. To see what a resume "
+            "would attempt, read the rows that are not 'attempted'.")
     exchange = Path(exchange)
     run_id = run_id or f"sweep-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     directory = Path(out_root) / run_id
@@ -494,37 +717,71 @@ def sweep(
         "preflight": [],
     }
 
-    superseded = _guard_existing(directory / MANIFEST_NAME, force=force)
-    if superseded:
-        header["policy"]["superseded"] = superseded.name
+    resumption: dict | None = None
 
-    manifest = Manifest(directory / MANIFEST_NAME, header)
+    if resume:
+        manifest, resumption = _resume(
+            directory / MANIFEST_NAME, source=source, leg=header)
+        # From here on the header is the one that was already on disk, with
+        # this leg appended to it.
+        header = manifest.header
 
-    for path in planned:
-        try:
-            size = path.stat().st_size
-            digest = sha256_of(path)
-        except OSError as error:
+        # A sample that appeared in the corpus directory between legs is
+        # recorded and not adopted. The plan written before the first sample
+        # is what makes an absent result readable as `pending` rather than as
+        # a gap, and a plan that grows each time the run is picked up is not
+        # one plan. Whoever wants them measured starts a run that plans them.
+        known = {os.path.normcase(row.path) for row in manifest.rows}
+        appeared = [str(p) for p in planned
+                    if os.path.normcase(str(p)) not in known]
+        if appeared:
+            resumption["appeared_since"] = appeared
+
+        manifest.save()
+        say(f"{run_id}: resumed as leg {resumption['leg']} from "
+            f"{resumption['from_state']}, {resumption['carried']} to attempt "
+            f"-> {manifest.path}")
+        if resumption["interrupted"]:
+            say("   mid-run when it stopped, re-armed: "
+                + ", ".join(resumption["interrupted"]))
+        if resumption["drifted"]:
+            say(f"   {len(resumption['drifted'])} skipped: no longer the "
+                f"bytes they were planned as")
+        if appeared:
+            say(f"   {len(appeared)} new in the corpus directory, recorded "
+                f"but not added to this run's plan")
+    else:
+        superseded = _guard_existing(directory / MANIFEST_NAME, force=force)
+        if superseded:
+            header["policy"]["superseded"] = superseded.name
+
+        manifest = Manifest(directory / MANIFEST_NAME, header)
+
+        for path in planned:
+            try:
+                size = path.stat().st_size
+                digest = sha256_of(path)
+            except OSError as error:
+                manifest.rows.append(SampleRow(
+                    path=str(path), name=path.name, case=path.stem,
+                    state=SKIPPED, reason=f"cannot read: {error.strerror}"))
+                continue
             manifest.rows.append(SampleRow(
                 path=str(path), name=path.name, case=path.stem,
-                state=SKIPPED, reason=f"cannot read: {error.strerror}"))
-            continue
-        manifest.rows.append(SampleRow(
-            path=str(path), name=path.name, case=path.stem,
-            size=size, sha256=digest,
-            state=NOT_ATTEMPTED if dry_run else PENDING,
-            reason="dry run: nothing was detonated" if dry_run else ""))
+                size=size, sha256=digest,
+                state=NOT_ATTEMPTED if dry_run else PENDING,
+                reason="dry run: nothing was detonated" if dry_run else ""))
 
-    for path, reason in skipped:
-        manifest.rows.append(SampleRow(
-            path=str(path), name=path.name, case=path.stem,
-            state=SKIPPED, reason=reason))
+        for path, reason in skipped:
+            manifest.rows.append(SampleRow(
+                path=str(path), name=path.name, case=path.stem,
+                state=SKIPPED, reason=reason))
 
-    # Written here, before a single sample is delivered. Everything after this
-    # point only ever *updates* rows that already exist on disk.
-    manifest.save()
-    say(f"{run_id}: {len(planned)} planned, {len(skipped)} skipped -> "
-        f"{manifest.path}")
+        # Written here, before a single sample is delivered. Everything after
+        # this point only ever *updates* rows that already exist on disk.
+        manifest.save()
+        say(f"{run_id}: {len(planned)} planned, {len(skipped)} skipped -> "
+            f"{manifest.path}")
 
     if dry_run:
         header["state"] = "dry_run"
@@ -534,7 +791,13 @@ def sweep(
                            "dry_run")
 
     problems = check_ready(guest, hypervisor)
-    header["preflight"] = problems
+    if resumption is not None:
+        # This leg's preflight, not the first leg's. The header's `preflight`
+        # says what the bench looked like when the rows that already ran were
+        # produced, and that is not a thing a later leg gets to restate.
+        resumption["preflight"] = problems
+    else:
+        header["preflight"] = problems
     if problems and not ignore_preflight:
         # Refused, not attempted one-by-one. A sweep that dies on the second
         # sample after twenty minutes on the first is worse than one that will
@@ -567,7 +830,15 @@ def sweep(
         manifest.save()
         say(f"-> {row.name}")
 
-        for n in range(1, max(1, attempts) + 1):
+        # Numbered on from whatever this row already carries rather than
+        # restarting at 1. Only a row re-armed by `--resume` can arrive here
+        # with attempts on it -- the one the controller died mid-retry on --
+        # and a second `n=1` in that row would read as the same try recorded
+        # twice. The leg still gets its full `attempts` quota: a try that was
+        # interrupted measured nothing, so spending the quota on it would
+        # punish the sample for the bench's interruption.
+        already = len(row.attempts)
+        for n in range(already + 1, already + max(1, attempts) + 1):
             attempt = Attempt(n=n, started=_now())
             began = time.monotonic()
             try:
@@ -649,7 +920,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "time, and write a manifest of what was attempted.",
         epilog="--dry-run enumerates, hashes and writes the manifest without "
                "touching a hypervisor. Run it against a corpus directory "
-               "before committing a machine to it.",
+               "before committing a machine to it. If a run is interrupted, "
+               "re-run the same command with --resume added: the same "
+               "--run-id without it is refused rather than overwritten.",
     )
     parser.add_argument("source", type=Path,
                         help="a sample, or a directory of them")
@@ -699,6 +972,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "as manifest.superseded-<stamp>.json rather "
                              "than replaced -- forcing must not destroy the "
                              "only record of a run")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue the run already recorded under "
+                             "--run-id: attempt the samples that never ran, "
+                             "leave the ones that did, and append this leg's "
+                             "provenance to the manifest rather than "
+                             "restating the first leg's. Refuses a finished "
+                             "run, a dry run, a different corpus, or a "
+                             "sample whose bytes changed since the plan")
     parser.add_argument("--dry-run", action="store_true",
                         help="enumerate and write the manifest; detonate "
                              "nothing, and never touch the hypervisor")
@@ -746,12 +1027,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             extensions=args.ext, limit=args.limit, attempts=args.attempts,
             abort_after_consecutive_void=args.abort_after,
             ignore_preflight=args.ignore_preflight, dry_run=args.dry_run,
-            force=args.force,
+            force=args.force, resume=args.resume,
             on_event=lambda message: print(message, flush=True),
         )
     except SweepExists as error:
         print(f"error: {error}", file=sys.stderr)
         return 3
+    except SweepResumeError as error:
+        # Its own code, next to the collision's: "this run id is taken" and
+        # "this run cannot be continued" want different recoveries, and a
+        # script driving a long corpus should not have to parse prose.
+        print(f"error: {error}", file=sys.stderr)
+        return 4
     except (FileNotFoundError, NotADirectoryError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
