@@ -1831,7 +1831,21 @@ message is where an operator meets this.
 
 31 tests. Rehearsed against a copy of the live `benign-102-v2` manifest: 29
 attempted rows and their attempts preserved, 73 carried, the interrupted
-sample named, no drift. **Not yet used on a real interruption.**
+sample named, no drift.
+
+**Used in anger the same day, and it worked.** A restart at 11:53 killed
+`benign-102-v2` 38 minutes into sample 1 -- nothing attempted, the row still
+`running`. `--resume` carried all 102, named `AcPowerNotification_04a0fc28` as
+the sample it found mid-run, found no drift across the corpus, kept leg 1's
+`started`, and went straight back to detonating. The alternative under the old
+behaviour was a second run id and a ghost manifest stuck in `running`.
+
+**The thing that actually bit: a sweep does not survive a reboot or a logout.**
+`nohup`, and `Start-Process` detached, both die with the session. Sleep is not
+the risk on this host -- `STANDBYIDLE` and `HIBERNATEIDLE` are both 0 on AC --
+a restart is. Now that a resume is cheap and refuses a finished run with exit
+4, a logon-triggered scheduled task that re-runs the same command with
+`--resume` would make the corpus survive restarts unattended. Not built.
 
 #### Traps paid for, in one place
 
