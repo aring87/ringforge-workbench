@@ -68,12 +68,14 @@ param(
   # snapshot restore, so self-update is a persistence-across-revert path
   # until delivery is mounted read-only.
   [switch]$NoSelfUpdate,
-  # Keep the raw .dmp files in the collected case. Off by default:
-  # one benign sample brings home 2.45 GB, almost all dumps, and a
-  # 102-sample corpus would want ~250 GB. Use it whenever the run
-  # might be worth re-interrogating later -- anything malicious, or a
-  # sample being worked rather than measured.
-  [switch]$KeepMemoryDumps
+  # Keep the raw inputs -- memory dumps, and Procmon's raw.pml, export.csv
+  # and parsed_events.json -- in the collected case. Off by default: they
+  # are about 2,380 MB of a 2,450 MB case, and a 102-sample corpus would
+  # want roughly 250 GB. Use it whenever the run might be worth
+  # re-interrogating later: anything malicious, or a sample being worked
+  # rather than measured. Asking a NEW question of an old run is what
+  # pruning costs.
+  [switch]$KeepRawArtifacts
 )
 
 Set-StrictMode -Version Latest
@@ -448,7 +450,7 @@ try {
   # exists because runs had to be re-scanned once the authored rules were
   # found never to have reached the scan directory, and the 17 Sep proximity
   # fix was itself validated by rescanning a previous run's dumps. Pass
-  # `-KeepMemoryDumps` whenever the run might be worth re-interrogating --
+  # `-KeepRawArtifacts` whenever the run might be worth re-interrogating --
   # anything malicious, or a sample being worked rather than measured.
   #
   # Deliberately NOT conditional on the band. "Keep the evidence only when
@@ -464,26 +466,57 @@ try {
   # Saving disk is an optimisation. An optimisation that can destroy the
   # evidence it was meant to make room for has its priorities backwards, so a
   # failure here keeps the dumps and carries on to the copy.
+  # What gets dropped, and why each one is an input rather than a result.
+  #
+  # Measured on the run that first pruned successfully: dumps were 1,115 MB
+  # of a 2,450 MB case, and removing them left 1,273 MB -- because Procmon's
+  # own three files were the rest and nobody had looked. `raw.pml` is the
+  # native capture, `export.csv` is Procmon's CSV of it, and
+  # `parsed_events.json` is this project's JSON of that CSV: the same events
+  # in three encodings, 1,265 MB between them, against 0.2 MB for
+  # `interesting_events.json`, which is the filtered set the scorer reads.
+  #
+  # All of them are consumed *during* the run, in the guest, before this
+  # point. The only names that appear elsewhere in the codebase are in
+  # `findings.py`, and that is an exclusion list -- paths the analyzer writes,
+  # so the sample is not credited with them -- not a consumer.
+  #
+  # The Procmon three are scoped to a `procmon` parent so nothing similarly
+  # named elsewhere in a case is caught by a bare filename.
+  $pruneSpecs = @(
+    @{ filter = '*.dmp';              parent = $null    },
+    @{ filter = 'raw.pml';            parent = 'procmon' },
+    @{ filter = 'export.csv';         parent = 'procmon' },
+    @{ filter = 'parsed_events.json'; parent = 'procmon' }
+  )
+
   $pruned = @()
   $prunedBytes = 0
-  if (-not $KeepMemoryDumps) {
+  if (-not $KeepRawArtifacts) {
     try {
-      $dumps = @(Get-ChildItem -LiteralPath $caseHome -Recurse -File -Filter *.dmp -ErrorAction SilentlyContinue)
-      foreach ($d in $dumps) {
-        $hash = try { (Get-FileHash -LiteralPath $d.FullName -Algorithm SHA256).Hash } catch { "" }
-        $prunedBytes += $d.Length
-        $pruned += [pscustomobject][ordered]@{
-          path   = $d.FullName.Substring($caseHome.Length).TrimStart('\')
-          bytes  = $d.Length
-          sha256 = $hash
+      foreach ($spec in $pruneSpecs) {
+        $found = @(Get-ChildItem -LiteralPath $caseHome -Recurse -File `
+                     -Filter $spec.filter -ErrorAction SilentlyContinue)
+        foreach ($f in $found) {
+          if ($spec.parent -and $f.Directory.Name -ne $spec.parent) { continue }
+          $hash = try { (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash } catch { "" }
+          $prunedBytes += $f.Length
+          $pruned += [pscustomobject][ordered]@{
+            path   = $f.FullName.Substring($caseHome.Length).TrimStart('\')
+            bytes  = $f.Length
+            sha256 = $hash
+          }
+          Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
         }
-        Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
       }
       if ($pruned.Count -gt 0) {
-        Write-Log ("pruned {0} memory dump(s), {1:N0} MB, before the copy" -f $pruned.Count, ($prunedBytes / 1MB))
+        Write-Log ("pruned {0} raw artifact(s), {1:N0} MB, before the copy" -f $pruned.Count, ($prunedBytes / 1MB))
       }
     } catch {
-      Write-Log "PRUNING FAILED, keeping the dumps and carrying on: $($_.Exception.Message)"
+      # Saving disk is an optimisation, and an optimisation that can destroy
+      # the evidence it was making room for has its priorities backwards.
+      # This threw once and took a finished 34-minute detonation with it.
+      Write-Log "PRUNING FAILED, keeping everything and carrying on: $($_.Exception.Message)"
       $pruned = @()
       $prunedBytes = 0
     }
@@ -496,21 +529,24 @@ try {
   # reader who finds memory_yara.json referring to files that are not there
   # gets an answer here rather than a mystery.
   $record = [ordered]@{
-    kept        = [bool]$KeepMemoryDumps
+    kept        = [bool]$KeepRawArtifacts
     count       = $pruned.Count
     # Accumulated in the loop rather than measured afterwards. Measuring is
     # what threw, and a total is not worth a second chance to lose the run.
     total_bytes = $prunedBytes
-    why         = ("Raw dumps are the input to the in-guest analysis, not its output. " +
-                   "The YARA scan, PE carve, module integrity and crash evidence ran " +
-                   "against them here and their results are kept. Re-asking a NEW " +
-                   "question of this run is what is no longer possible. Run with " +
-                   "-KeepMemoryDumps to retain them.")
+    why         = ("These are inputs to the in-guest analysis, not its results. " +
+                   "Memory dumps were consumed by the YARA scan, the PE carve, " +
+                   "module integrity and the crash evidence. Procmon's raw.pml, " +
+                   "export.csv and parsed_events.json are the same events in three " +
+                   "encodings, all parsed here, and interesting_events.json -- the " +
+                   "filtered set the scorer reads -- is kept. Every result is kept. " +
+                   "What is no longer possible is asking a NEW question of this " +
+                   "run. Use -KeepRawArtifacts to retain them.")
     dumps       = $pruned
   }
   try {
     ($record | ConvertTo-Json -Depth 4) |
-      Set-Content -LiteralPath (Join-Path $work "$caseName\memory_dumps_pruned.json") -Encoding utf8
+      Set-Content -LiteralPath (Join-Path $work "$caseName\pruned_artifacts.json") -Encoding utf8
   } catch { Write-Log "could not write the pruning record: $($_.Exception.Message)" }
   foreach ($f in @("scan.json", "detonate.json", "detonate.stderr.txt", "combined.json")) {
     $src = Join-Path $localRoot $f
