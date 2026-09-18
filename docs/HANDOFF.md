@@ -1843,9 +1843,66 @@ behaviour was a second run id and a ghost manifest stuck in `running`.
 **The thing that actually bit: a sweep does not survive a reboot or a logout.**
 `nohup`, and `Start-Process` detached, both die with the session. Sleep is not
 the risk on this host -- `STANDBYIDLE` and `HIBERNATEIDLE` are both 0 on AC --
-a restart is. Now that a resume is cheap and refuses a finished run with exit
-4, a logon-triggered scheduled task that re-runs the same command with
-`--resume` would make the corpus survive restarts unattended. Not built.
+a restart is. That is now a scheduled task -- see below.
+
+#### The corpus restarts itself now -- 18 Sep
+
+`scripts/resume_sweep.ps1` and `scripts/register_resume_task.ps1`. A logon
+task fires the launcher two minutes in, and the launcher decides whether to
+resume. Registered against `benign-102-v2` and rehearsed end to end: it fired
+for real, found the live sweep, declined, exit 0.
+
+**Every run parameter is read back out of the manifest.** The source, exchange,
+guest, baseline, timeouts and policy are all already recorded there, so the
+resumed leg cannot drift from the leg it continues and the script needs no
+editing when a different corpus is running. It supplies only the repo and the
+interpreter. Verified: the command it rebuilds is character-for-character the
+one typed by hand at 11:59, plus `--attempts` and `--abort-after`.
+
+**It refuses to start a second sweep, against the process table rather than
+the manifest.** A `running` manifest looks identical whether the sweep is
+alive or was killed, so liveness is a question only the process list can
+answer. Any `runcontrol.sweep` process at all stops it, on any run id: two
+controllers on one guest would race snapshot restores mid-detonation.
+
+**An aborted sweep is left for a human.** `--abort-after` firing is a
+statement about the bench, and auto-resuming would add three void rows per
+logon and bury the signal. Only `running` and `refused` are picked up.
+
+Runs as the logged-on user, interactively, by necessity rather than
+convenience: VirtualBox registers VMs per user profile and VBoxSVC is per
+user, so a SYSTEM task in session 0 would not find the guest. It also means
+no password is stored anywhere.
+
+**Two things measured rather than assumed**, both of which would have made it
+useless:
+
+* **A child launched with `Start-Process` from a scheduled task survives the
+  task completing.** Probed directly -- task back to `Ready`, result 0, child
+  still running. The execution time limit is disabled anyway, because Task
+  Scheduler terminates a task's process tree when a limit expires and the one
+  thing worse than a stopped corpus is one killed by its own babysitter.
+* **`Start-Process -ArgumentList` quotes nothing.** The array form joins on
+  spaces, so an argument containing one arrives as two. Found by a probe that
+  passed `-c "import time; ..."` and had python die on a syntax error. **Same
+  class as VBoxManage re-splitting its own `--description`**, and it would
+  have sat unnoticed until a corpus directory had a space in it. The launcher
+  now quotes each argument itself and refuses one containing a double quote
+  rather than half-implementing the backslash-doubling rule.
+
+`-DryRun` makes every check and prints the decision and the exact command
+without launching; when a sweep is already running it says so and prints the
+command anyway, because otherwise the run you want to preview resuming is
+always the one blocking the preview. Nine decision branches exercised against
+synthetic manifests that way -- completed, dry run, aborted, unknown state,
+unparseable, absent, moved, no guest named, refused. Given that every bug in
+this bench's PowerShell has cost a 45-minute run, that switch is the closest
+thing these scripts have to a test suite.
+
+Every firing appends to `<run id>.autoresume.log`, including the decisions to
+do nothing: a task that silently declines is indistinguishable from one that
+is not registered. Unregister it when the corpus finishes -- the launcher says
+so in the log when it sees a `completed` run.
 
 #### Traps paid for, in one place
 
