@@ -1716,6 +1716,88 @@ dynamic half is all gaps measures nothing. Detonate one sample and read
 the same check that would have caught the static-only sweep on sample one.
 
 
+### Pick up here — 17/18 Sep, the controller detonates and a benign sample bands correctly
+
+**State.** Host `bfc51e6`, suite 1,923, tree clean. Guest clone at `ac13d85`,
+one self-update behind. Baseline **`corpus-agent-detonate-ac13d85`**, guest
+`poweroff`, NIC1 cable off. `G:` has 359 GB free.
+
+**Run sweeps with `--readiness-timeout 900 --run-timeout 3600`.** Readiness
+has measured 344-590s; analysis plus the copy about 2,400s, and a 2,400s cap
+timed out mid-copy and lost the case.
+
+#### What now works that did not
+
+`ringforge detonate` exists, and `guest_run_agent.ps1` calls it. Until 16 Sep
+the agent ran `ringforge.cli scan` and nothing else -- **the 102-sample sweep
+detonated nothing**, and `run_config.py` had to be lifted out of the GUI
+before a headless detonation was possible at all. See *The agent detonates*.
+
+A full dynamic case now comes home and scores: `modules_run` `['dynamic',
+'static']`, both coverage-complete.
+
+#### The benign false positive, and the three drivers behind it
+
+The first real detonation banded a Microsoft-signed binary **Strongly
+Corroborated / Likely Malicious, score 105**. The same sample now bands **No
+Evidence, score 15, `categories_present: 0`**. Every driver was the bench's
+own noise, and each was verified against that run's own artifacts rather than
+fixtures:
+
+* **Modified Windows tasks.** Seven built-ins reported modified with `state`
+  the only field that differed; two counted suspicious for a `rundll32`
+  action and a logon trigger under `%APPDATA%`, both true before the sample
+  ran. Replaying the real before/after: 7 and 2 become 0 and 0.
+* **The split-API YARA rule** required its fragments to be *present* where
+  the signature is that they are *adjacent*. True positive: every fragment
+  once, inside 196 bytes, 16-byte `kernel `→`32.dll` gap. A 51 MB benign
+  WerFault dump: the same fragments 64-235 times each across the whole dump.
+  Benign minimum gap 106,080 bytes. Now requires adjacency.
+* **Five unmapped PE images** were WinRT metadata (`Windows.*.winmd`) inside
+  WerFault dumps; the sample's own process produced none. The
+  framework-assembly exclusion missed them on a `.dll` suffix test.
+
+#### The guest updates itself now
+
+Twice, unaided: `4fb768b`→`836b0a4` and `836b0a4`→`ac13d85`, ~3m15s each.
+Put a `provision-<commit>` drop on the share and boot with **no sample** in
+the work directory. Gated on no sample, so a sweep never updates mid-corpus
+and a run's code is knowable. **Risk:** the exchange is guest-writable and
+survives a restore, so a sample could plant a drop -- pass `-NoSelfUpdate`
+for a malicious corpus until delivery is read-only.
+
+#### Pruning: dumps done, Procmon staged and unverified
+
+Raw inputs are dropped after `combine`, before the copy, with every file's
+size and SHA-256 in `pruned_artifacts.json`. Dumps measured: 1,115 MB of a
+2,450 MB case. Procmon's three encodings of the same events -- `raw.pml`
+588 MB, `parsed_events.json` 433 MB, `export.csv` 244 MB, against 0.2 MB for
+the `interesting_events.json` the scorer reads -- are pruned in `bfc51e6` and
+**have not yet been through a run**.
+
+Expected single-digit MB per sample. Both previous estimates were wrong
+(250 MB predicted, 1,273 MB measured), so verify before trusting it.
+
+#### Traps paid for, in one place
+
+* **VBoxManage re-splits its own arguments**, so a double quote in
+  `--description` truncates it and the snapshot is not taken. Hit twice, the
+  second time *after* writing it down. Now stripped automatically in
+  `vm_snapshot.ps1` and `VirtualBox.safe_description`; `take_snapshot` also
+  refuses a running guest, and refused its own first use, correctly.
+* **ACPI shutdown does not work on this guest.** Two power-button requests
+  over ten minutes ignored on an idle desktop. Use `controlvm poweroff`; the
+  controller already does.
+* **`tools\yara\rules\` is gitignored and is what the scanner reads.** A rule
+  fix arrives by bundle and sits unread. `provision_guest.ps1` syncs the
+  authored rules and reports the count -- check that line.
+* **The agent has no tests, and every bug today was in it**: a self-update
+  that could never fire, a prune that threw on `[ordered]@{}`, and that prune
+  being fatal to a finished 34-minute detonation. Each cost a 45-minute run.
+  Its tail -- prune, copy, record, signal -- runs after all the expensive
+  work and is worth making testable before the corpus.
+
+
 ## NEXT
 
 **The engineering track is clear again.** `release.yml` is proven green end to
@@ -1756,13 +1838,13 @@ What is left needs samples rather than code:
   end to end. Of N known-malicious, what band; of M known-benign, how many
   reached Corroborated. That is the number a buyer asks for, and
   `scripts/benign_rates.py` is most of the machinery.
-* **Dynamic benign rates -- the agent can detonate now, nothing has.**
-  `ringforge detonate` exists and the agent calls it; see *The agent
-  detonates now*. Before any sweep: push the clone past `e305d3f` with
-  `provision_guest.ps1`, then detonate ONE sample and read
-  `modules_run` and the coverage block. The tools may not be on this
-  snapshot branch, and a dynamic half that is all coverage gaps
-  measures nothing.
+* **Dynamic benign rates -- the machinery is ready, the corpus has not
+  run.** A benign sample detonates and bands `No Evidence` correctly.
+  Next, in order: boot the guest with no sample so it self-updates to
+  `bfc51e6`, snapshot, run ONE sample to verify the Procmon pruning
+  and measure the real per-sample size, then start the 102 with
+  `--readiness-timeout 900 --run-timeout 3600`. About 79 hours. See
+  *Pick up here -- 17/18 Sep*.
 
 Carried forward, neither urgent:
 
