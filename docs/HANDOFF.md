@@ -1766,17 +1766,72 @@ and a run's code is knowable. **Risk:** the exchange is guest-writable and
 survives a restore, so a sample could plant a drop -- pass `-NoSelfUpdate`
 for a malicious corpus until delivery is read-only.
 
-#### Pruning: dumps done, Procmon staged and unverified
+#### Pruning: verified on a run, 18 Sep
 
 Raw inputs are dropped after `combine`, before the copy, with every file's
 size and SHA-256 in `pruned_artifacts.json`. Dumps measured: 1,115 MB of a
 2,450 MB case. Procmon's three encodings of the same events -- `raw.pml`
 588 MB, `parsed_events.json` 433 MB, `export.csv` 244 MB, against 0.2 MB for
-the `interesting_events.json` the scorer reads -- are pruned in `bfc51e6` and
-**have not yet been through a run**.
+the `interesting_events.json` the scorer reads -- are pruned in `bfc51e6`.
 
-Expected single-digit MB per sample. Both previous estimates were wrong
-(250 MB predicted, 1,273 MB measured), so verify before trusting it.
+**`prune-verify`, one sample, 18 Sep: 14.4 MiB collected against 1,272.8 MiB.**
+A 99% reduction, the `pruned_artifacts.json` record lists `raw.pml`,
+`export.csv` and `parsed_events.json` with the dumps and their hashes, and the
+band did not move -- `No Evidence`, as before. The corpus needs about 1.5 GB
+rather than 250.
+
+**It also ran slower, and that is the estimate, not a regression.** The run
+step took 3,860s against 2,406s; readiness was normal at 356s, so it is the
+analysis. The Procmon capture was larger on this run than the last (3,528 MB
+pruned against 2,380 MB), so the same sample simply did more -- hashing an
+extra gigabyte is perhaps 30s, not 1,400s. Run-to-run variance in one sample.
+
+Two things follow. **Plan 4-5 days for the 102, not 3.5** (2,900s a sample is
+82 h; 3,870s is 110 h). And **`--run-timeout 3600` was too tight**: this run's
+analysis alone exceeded it and only finished because the timeout runs from
+readiness. Started the corpus at **5400**.
+
+#### `--resume`, and what it refuses -- 18 Sep
+
+**The overwrite guard was only half a recovery.** It stopped the second run
+destroying the first one's record (`SweepExists`, 16 Sep, which cost the
+record of 47 samples) and then left the operator with a partial corpus and no
+way to finish it under the run id it belongs to. The 16 Sep recovery was a
+second run id, `benign-102-resume-01` -- one measurement in two directories.
+At 4-5 days an interruption is better than even odds, so it is now a flag.
+
+`--resume` continues the run recorded under `--run-id`. It attempts the rows
+that never ran -- `pending`, `not_attempted`, and the single `running` row the
+controller died on -- and leaves `attempted` rows exactly as found. **It does
+not re-run a finished sample**: that would be the retry-until-it-works bias
+`sweep.py` already refuses, one level up, and would file two corpus entries
+for whatever half of the run completed.
+
+**The first leg's header is added to, not rewritten.** `started`, the analyzer
+provenance, the policy and the preflight describe how the rows that already
+ran were produced, and a row that took 2,900s under one commit must not end up
+filed under whichever commit happened to resume the sweep. Each continuation
+appends an entry to `resumed` carrying its own provenance, guest, limits,
+policy and preflight, the count it carried, the sample it found mid-run, and
+the reasons it cleared off re-armed rows.
+
+**Every carried sample is re-hashed before it is attempted.** A row's identity
+is its SHA-256 and nothing guards the corpus directory between legs; a file
+that changed is skipped with both hashes in the reason rather than detonated
+under a row that names the old bytes. A sample that *appeared* since is
+recorded in the leg and not adopted -- a plan that grows each time the run is
+picked up is not one plan.
+
+Refuses with its own exit code (**4**, beside the collision's 3) a finished
+run, a dry run, a missing or unreadable manifest, a schema it does not
+understand, a different corpus, `--force` or `--dry-run` alongside it, and a
+run with nothing left to attempt. A refusal leaves the manifest byte for byte
+as it found it. The collision message now names `--resume` first, because that
+message is where an operator meets this.
+
+31 tests. Rehearsed against a copy of the live `benign-102-v2` manifest: 29
+attempted rows and their attempts preserved, 73 carried, the interrupted
+sample named, no drift. **Not yet used on a real interruption.**
 
 #### Traps paid for, in one place
 
@@ -1838,13 +1893,15 @@ What is left needs samples rather than code:
   end to end. Of N known-malicious, what band; of M known-benign, how many
   reached Corroborated. That is the number a buyer asks for, and
   `scripts/benign_rates.py` is most of the machinery.
-* **Dynamic benign rates -- the machinery is ready, the corpus has not
-  run.** A benign sample detonates and bands `No Evidence` correctly.
-  Next, in order: boot the guest with no sample so it self-updates to
-  `bfc51e6`, snapshot, run ONE sample to verify the Procmon pruning
-  and measure the real per-sample size, then start the 102 with
-  `--readiness-timeout 900 --run-timeout 3600`. About 79 hours. See
-  *Pick up here -- 17/18 Sep*.
+* **Dynamic benign rates -- RUNNING since 18 Sep 11:18 EDT.** `benign-102-v2`,
+  102 samples, `--readiness-timeout 900 --run-timeout 5400`, launched
+  detached with its log at `G:\ringforge-runs\benign-102-v2.log`. Pruning
+  was verified first on one sample (14.4 MiB against 1,272.8). **Plan 4-5
+  days, not 3.5** -- see *Pruning: verified on a run*. Three consecutive
+  void runs abort it and leave the rest `not_attempted` with the reason;
+  an interruption is now continued with `--resume` under the same run id
+  rather than scattered across a second one. Sleep stalls it indefinitely,
+  and it does not survive a logout. See *Pick up here -- 17/18 Sep*.
 
 Carried forward, neither urgent:
 
