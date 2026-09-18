@@ -1948,11 +1948,67 @@ checks: no BOM, exact byte length, strict `json.load`, non-ASCII round trip,
 relative path refused, directories created, empty text writing zero bytes, and
 a control confirming the old form really did emit a BOM.
 
-**`benign-102-v2` will not get this fix.** The guest self-updates only when
-booted with no sample, which is what stops a sweep updating mid-corpus, so all
-102 cases will carry BOMs on those three files. That is harmless as long as
-whatever consumes them reads `utf-8-sig` -- worth remembering when the
-confusion matrix is built, because it will read exactly these files.
+**`benign-102-v2` cannot get this fix at the writer.** The guest self-updates
+only when booted with no sample, which is what stops a sweep updating
+mid-corpus, so all 102 cases are produced with BOMs. `runcontrol.debom` is
+the other half.
+
+#### `runcontrol.debom` -- fixing a corpus already on disk
+
+`python -m runcontrol.debom <run-directory>`, 38 tests. **The only tool in the
+bench that edits a corpus in place**, which is why it is a module beside the
+sweep rather than a script: `cases/` is not in git and there is no safety net
+under it.
+
+It refuses far more than it does. The manifest must be `completed` or
+`aborted`, and no `runcontrol.sweep` process may be alive -- a sweep writes
+into `cases/` as it collects, and rewriting a file underneath that is how a
+corpus entry ends up half one run and half another. An unreadable process
+table counts as running, because a needless refusal costs a re-run of the tool
+and the other direction costs the corpus.
+
+**Each file is proved three ways before its replacement is kept**: the
+original parses as JSON with `utf-8-sig`, the replacement parses with plain
+`utf-8`, and the two parse to *equal objects*; the tail bytes are compared
+directly as well. Anything that fails is left exactly as it was and reported
+rather than skipped in silence. Originals are copied to
+`<run>/bom-originals/` keeping their paths, before anything is written, so the
+run stays one directory that moves whole. What it did goes in `bom_strip.json`
+beside the manifest with a SHA-256 per file before and after -- "these bytes
+were edited after the run, and here is how" has to be answerable later rather
+than inferred from mtimes. Idempotent.
+
+**MAX_PATH, measured not anticipated.** Three samples in, this corpus already
+held a **258-character path** against a limit of 260: the case name appears
+twice (the doubled `cases/<case>/<case>/` segment) with
+`dynamic_runs/<long id>/` under it. Mirroring that tree under
+`bom-originals/` adds fourteen characters to every one, which is exactly the
+operation that overflows, and it fails as a `FileNotFoundError` naming a
+directory that looks like it should exist. Writes use the `\\?\` extended form.
+A longer sample name would have hit this with no warning.
+
+**Two PowerShell traps found wiring it into the logon task**, both the class
+this bench keeps paying for:
+
+* **`$ErrorActionPreference = "Stop"` makes a native command's stderr
+  terminating.** A `debom` refusal -- a normal, expected outcome -- killed the
+  launcher before it could log why, and the task would have reported failure
+  for a tool behaving correctly. The preference comes off around the call and
+  goes back in a `finally`.
+* **The BOM tool was defeated by a BOM.** It read its own manifest with strict
+  `utf-8`; a test harness that wrote a manifest from PowerShell exposed it.
+  Real manifests are Python-written and never have one, but a tool whose
+  entire subject is that BOMs make files unreadable should not be stopped by
+  one on its input. Reads `utf-8-sig` now.
+
+Wired into `resume_sweep.ps1` behind `-StripBomsWhenDone`, registered on the
+logon task, so the corpus is cleaned at the first logon after it finishes.
+Guarded on `bom_strip.json` not existing, so it does not repeat a no-op every
+logon, and `debom` refuses anyway if anything is off. Rehearsed against a copy
+of the live corpus: the live-sweep guard fired against the real process table,
+then with it stubbed off, 9 BOMs across 3 cases came out, all 144 files parsed
+strictly afterwards, and every edited file differed from its original by the
+three BOM bytes and nothing else.
 
 #### Traps paid for, in one place
 

@@ -85,6 +85,8 @@ param(
 
     [int]$WaitForVolumeSeconds = 300,
 
+    [switch]$StripBomsWhenDone,
+
     [switch]$DryRun
 )
 
@@ -196,7 +198,59 @@ Write-Line ("manifest: run_id={0} state={1} attempted={2} of {3}" -f $runId, $st
 # --- decide -----------------------------------------------------------------
 
 if ($state -eq "completed") {
-    Write-Line "nothing to do: the run finished. This task can be unregistered."
+    Write-Line "the run finished."
+    if ($StripBomsWhenDone) {
+        # The corpus was produced before the BOM fix reached the guest, which
+        # self-updates only when booted with no sample -- so these files can
+        # only be fixed after the fact. runcontrol.debom does its own
+        # refusing: it will not touch a run that is not finished or one with a
+        # controller alive, and it proves each file parses to the same object
+        # before and after. Idempotent, so the guard below is only to keep
+        # this log from repeating a no-op at every logon.
+        $record = Join-Path $RunDirectory "bom_strip.json"
+        if (Test-Path -LiteralPath $record) {
+            Write-Line "byte-order marks were already stripped (bom_strip.json exists)"
+        } elseif ($DryRun) {
+            Write-Line "dry run: would strip byte-order marks from the corpus"
+        } else {
+            Write-Line "stripping byte-order marks from the corpus"
+            # stderr to a file, not 2>&1: in PS 5.1 merging a native command's
+            # stderr wraps each line in an ErrorRecord and sets $? false even
+            # on success. A refusal's reason is the whole value of the
+            # refusal, and under a scheduled task it otherwise goes nowhere.
+            # And ErrorActionPreference has to come off for the call. This
+            # script runs with it on Stop, which turns a native command's
+            # stderr into a TERMINATING error -- so a debom refusal, which is
+            # a normal and expected outcome, would kill the launcher before it
+            # could log why. Measured: the refusal aborted the script and the
+            # task would have reported failure for a tool behaving correctly.
+            $errPath = Join-Path $outRoot ("{0}.debom.err.log" -f $runId)
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $lines = & $python -m runcontrol.debom $RunDirectory 2>$errPath
+                $code = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previous
+            }
+            foreach ($line in $lines) { Write-Line "   $line" }
+            if ($code -ne 0) {
+                Write-Line ("   runcontrol.debom exited {0}; the corpus was left as it was" -f $code)
+                if (Test-Path -LiteralPath $errPath) {
+                    # First few lines only. PS 5.1 writes the whole ErrorRecord
+                    # formatting into the file -- source line, carets, category
+                    # -- and the message is the part worth reading. The file
+                    # itself is kept for the rest.
+                    $reason = @(Get-Content -LiteralPath $errPath |
+                                Where-Object { $_ } |
+                                Select-Object -First 4)
+                    foreach ($line in $reason) { Write-Line "   $line" }
+                    Write-Line "   (full stderr: $errPath)"
+                }
+            }
+        }
+    }
+    Write-Line "nothing else to do. This task can be unregistered."
     exit 0
 }
 if ($state -eq "dry_run") {

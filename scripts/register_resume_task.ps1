@@ -67,7 +67,8 @@ param(
     [string]$TaskName = "RingForge resume sweep",
     [switch]$Unregister,
     [switch]$Status,
-    [switch]$RunNow
+    [switch]$RunNow,
+    [switch]$StripBomsWhenDone
 )
 
 $ErrorActionPreference = "Stop"
@@ -127,6 +128,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $RunDirectory "manifest.json"))) {
 
 $arguments = '-NoProfile -ExecutionPolicy Bypass -NonInteractive -File "{0}" -RunDirectory "{1}"' -f `
     $launcher, $RunDirectory.TrimEnd('\')
+if ($StripBomsWhenDone) {
+    # Only takes effect once the run reads `completed`, and runcontrol.debom
+    # refuses anything else regardless.
+    $arguments += " -StripBomsWhenDone"
+}
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments `
     -WorkingDirectory (Split-Path -Parent $PSScriptRoot)
