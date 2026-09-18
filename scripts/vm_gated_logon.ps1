@@ -387,7 +387,17 @@ $record = [ordered]@{
 if (-not $OutFile) {
   $OutFile = Join-Path (Get-Location) "gated_logon.json"
 }
-$record | ConvertTo-Json -Depth 4 | Out-File -FilePath $OutFile -Encoding utf8
+# UTF-8 with no BOM: `-Encoding utf8` on Windows PowerShell 5.1 emits one and
+# Python's json.load then refuses the file. See Write-Utf8NoBom in
+# guest_run_agent.ps1 for the measurement behind this.
+if (-not [System.IO.Path]::IsPathRooted($OutFile)) {
+  # .NET resolves a relative path against the process directory rather than
+  # PowerShell's location, and -OutFile is operator-supplied.
+  $OutFile = Join-Path (Get-Location) $OutFile
+}
+[System.IO.File]::WriteAllText(
+  $OutFile, ($record | ConvertTo-Json -Depth 4),
+  (New-Object System.Text.UTF8Encoding($false)))
 Write-Ok "Wrote $OutFile"
 
 Write-Step "What to check when the window closes"

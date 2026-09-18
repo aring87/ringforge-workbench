@@ -213,8 +213,14 @@ catch {
 try {
   if ($Drop -and (Test-Path -LiteralPath $Drop)) {
     $path = Join-Path $Drop "provision-receipt.json"
-    ($receipt | ConvertTo-Json -Depth 4) |
-      Set-Content -LiteralPath $path -Encoding utf8
+    # UTF-8 with no BOM. `-Encoding utf8` on Windows PowerShell 5.1 emits one,
+    # and Python's json.load refuses a file that starts with it -- which is a
+    # poor property for a receipt whose whole job is to be read back on the
+    # host. Same fix as Write-Utf8NoBom in guest_run_agent.ps1; inlined here
+    # because this script has one such write rather than three.
+    [System.IO.File]::WriteAllText(
+      $path, ($receipt | ConvertTo-Json -Depth 4),
+      (New-Object System.Text.UTF8Encoding($false)))
     Say "receipt: $path"
   }
 } catch { Warn "could not write the receipt: $($_.Exception.Message)" }

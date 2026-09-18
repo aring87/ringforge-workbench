@@ -1904,6 +1904,56 @@ do nothing: a task that silently declines is indistinguishable from one that
 is not registered. Unregister it when the corpus finishes -- the launcher says
 so in the log when it sees a `completed` run.
 
+#### The agent's own JSON could not be read by json.load -- 18 Sep
+
+`-Encoding utf8` on Windows PowerShell 5.1 **always** writes a byte-order
+mark, and Python's `json.load` refuses a file that starts with one:
+*"Unexpected UTF-8 BOM (decode using utf-8-sig)"*. Three of the guest agent's
+outputs carried it -- **`scan.json`, `combined.json` and
+`pruned_artifacts.json`** -- so the agent's own analysis results were
+unreadable by the obvious call in the language the rest of the analyzer is
+written in.
+
+Found by measuring the first two corpus cases rather than by reading code:
+6 of the 96 JSON files in them failed a strict load, and those 6 were exactly
+the three per case that PowerShell wrote. The other 90, all written by Python,
+were clean. Nothing was truncated or wrapped -- `scan.json`'s single
+9,075-character line survives intact -- so the BOM was the whole of it.
+
+The tell that this had been met before and papered over: the host already
+reads `utf-8-sig` in four places (`verify_run.py`, `snapshot_services.py`,
+`snapshot_tasks.py`, `procmon_parser.py`). It was being worked around at each
+reader instead of fixed at the writer.
+
+Now `Write-Utf8NoBom` in `guest_run_agent.ps1`, with the same fix inlined at
+the two other JSON writers that had it -- `provision-receipt.json`, whose
+entire job is to be read back on the host, and `gated_logon.json`. The two
+piped writes became capture-and-write (`(& $py ... --json) -join "\`n"`),
+verified to reproduce a 9,000-character line and multi-line output exactly.
+
+**The helper refuses a relative path.** .NET resolves one against the *process*
+working directory rather than PowerShell's location, and the agent runs inside
+`Push-Location $Repo`, so a relative path would land somewhere other than
+where the caller reads and do it silently. Refused rather than resolved,
+because guessing which of the two was meant is how that trap gets re-set.
+
+Signal files (`ringforge-ready`, `ringforge-done`) and the error `.txt` were
+deliberately left alone: the host only tests those for existence, and editing
+the readiness path in an untested script for no gain is exactly the trade that
+has cost three 45-minute runs.
+
+Tested by lifting the function out of the agent **by AST** and exercising the
+shipped definition -- the agent cannot be dot-sourced, it would run. Eight
+checks: no BOM, exact byte length, strict `json.load`, non-ASCII round trip,
+relative path refused, directories created, empty text writing zero bytes, and
+a control confirming the old form really did emit a BOM.
+
+**`benign-102-v2` will not get this fix.** The guest self-updates only when
+booted with no sample, which is what stops a sweep updating mid-corpus, so all
+102 cases will carry BOMs on those three files. That is harmless as long as
+whatever consumes them reads `utf-8-sig` -- worth remembering when the
+confusion matrix is built, because it will read exactly these files.
+
 #### Traps paid for, in one place
 
 * **VBoxManage re-splits its own arguments**, so a double quote in

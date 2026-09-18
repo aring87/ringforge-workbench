@@ -109,6 +109,48 @@ function Write-Log($msg) {
   try { Add-Content -LiteralPath $LogFile -Value $line -Encoding utf8 } catch { }
 }
 
+function Write-Utf8NoBom {
+  <#
+    .SYNOPSIS
+      Write text as UTF-8 with no byte-order mark.
+
+    .DESCRIPTION
+      Windows PowerShell 5.1's `-Encoding utf8` always emits a BOM, and three
+      of this agent's JSON outputs went home carrying one: scan.json,
+      combined.json and pruned_artifacts.json. Python's `json.load` refuses a
+      BOM outright -- "Unexpected UTF-8 BOM (decode using utf-8-sig)" -- so
+      the agent's own analysis outputs were unreadable by the obvious call in
+      the language the rest of the analyzer is written in. Measured, not
+      supposed: all three failed a strict load on the first two corpus cases,
+      and the other 90 JSON files in the same case folder, all written by
+      Python, were clean.
+
+      The host already works around this in four places (`verify_run.py`,
+      `snapshot_services.py`, `snapshot_tasks.py`, `procmon_parser.py` all
+      read `utf-8-sig`), which is evidence the BOM had been met before and
+      papered over at each reader rather than fixed at the writer.
+
+      .NET resolves a relative path against the PROCESS working directory,
+      not PowerShell's location, and this agent runs inside `Push-Location
+      $Repo`. A relative path would therefore land somewhere other than where
+      the caller reads, silently. It is refused rather than resolved, because
+      guessing which of the two directories was meant is how that trap gets
+      re-set.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [string]$Text = ""
+  )
+  if (-not [System.IO.Path]::IsPathRooted($Path)) {
+    throw "Write-Utf8NoBom needs an absolute path (.NET resolves relative paths against the process directory, not PowerShell's location): $Path"
+  }
+  $directory = Split-Path -Parent $Path
+  if ($directory -and -not (Test-Path -LiteralPath $directory)) {
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+  }
+  [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Write-Identity {
   <#
     Who am I and can I see the share. Both are recorded on every run because
@@ -375,8 +417,11 @@ try {
     if (-not (Test-Path -LiteralPath $py)) { $py = "python" }
 
     Write-Log "running static triage"
-    & $py -m ringforge.cli scan $sample.FullName --case $caseName --json |
-      Out-File -LiteralPath (Join-Path $localRoot "scan.json") -Encoding utf8
+    # Captured and written rather than piped to Out-File: -Encoding utf8 puts
+    # a BOM on it and json.load then refuses the file. A native command's
+    # stdout arrives as one string per line, so joining restores it exactly.
+    $scanJson = (& $py -m ringforge.cli scan $sample.FullName --case $caseName --json) -join "`n"
+    Write-Utf8NoBom -Path (Join-Path $localRoot "scan.json") -Text $scanJson
 
     # **The detonation, which this agent did not do for its first 102
     # samples.** It ran `scan` and `combine` and nothing else, so every swept
@@ -423,8 +468,8 @@ try {
     }
 
     Write-Log "combining"
-    & $py -m ringforge.cli combine $caseHome --json |
-      Out-File -LiteralPath (Join-Path $localRoot "combined.json") -Encoding utf8
+    $combinedJson = (& $py -m ringforge.cli combine $caseHome --json) -join "`n"
+    Write-Utf8NoBom -Path (Join-Path $localRoot "combined.json") -Text $combinedJson
   }
   finally {
     Pop-Location
@@ -545,8 +590,8 @@ try {
     dumps       = $pruned
   }
   try {
-    ($record | ConvertTo-Json -Depth 4) |
-      Set-Content -LiteralPath (Join-Path $work "$caseName\pruned_artifacts.json") -Encoding utf8
+    Write-Utf8NoBom -Path (Join-Path $work "$caseName\pruned_artifacts.json") `
+                    -Text ($record | ConvertTo-Json -Depth 4)
   } catch { Write-Log "could not write the pruning record: $($_.Exception.Message)" }
   foreach ($f in @("scan.json", "detonate.json", "detonate.stderr.txt", "combined.json")) {
     $src = Join-Path $localRoot $f
