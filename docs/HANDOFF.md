@@ -2055,6 +2055,55 @@ score** rather than recomputing it -- the dynamic score is computed in the
 guest at detonation time. The conclusion survived but by a different route;
 see `runcontrol.rescore`.
 
+#### `dangerous_capability` counts one behaviour more than once -- 18 Sep
+
+Two of the first eleven benign samples fired `dangerous_capability` **strong**
+against a threshold documented as firing on 0.6% of 656 benign. Both are ASUS
+Aura services; both reach exactly 7. Looking at why found two double-counts,
+neither of which is about the threshold value.
+
+**The redundant parent.** `capa_namespaces` includes parents -- by design, so
+a set can be written at whatever depth reads clearly -- and
+`HIGH_SIGNAL_CAPABILITIES` contains **both** `communication/c2` and
+`communication/c2/file-transfer`. So one capa rule in the child scores two.
+Demonstrated on `ArmourySwAgent`, whose four are c2, c2/file-transfer,
+clipboard and suspend: three behaviours counted as four, which is exactly the
+difference between `present` and nothing.
+
+**The socket family.** `communication/socket/receive`, `.../send` and
+`.../tcp` are three separate members saying one thing: this program does TCP
+I/O. Any network service matches all three at once and is halfway to `strong`
+for a single capability. Three of each Aura service's seven come from there.
+
+Measured over the original 656 benign and 202 malware, with the shipped table
+reproduced first as a control -- `scripts/capability_sweep.py` now prints all
+three variants and **still ships none of them**:
+
+    at >=6 (strong)          benign   malware     lift
+    shipped                    0.6%     16.8%    27.6x
+    no redundant c2 parent     0.6%     15.8%    26.0x
+    socket family counts once  0.2%     16.3%   107.2x
+    both                       0.2%     15.3%   100.7x
+
+    at >=4 (present)         benign   malware     lift
+    shipped                    2.9%     20.8%     7.2x
+    both                       2.0%     18.8%     9.5x
+
+Collapsing the socket family cuts the benign strong rate by two thirds for
+half a point of detection, and raises the lift from 27.6x to over 100x. On
+Sys32 and Program Files it goes to **0.0%**. The detection cost is about three
+samples out of 202, which is inside the noise of a corpus that size.
+
+Under both corrections the samples in hand move: the two Aura services 7 ->
+5 (strong to present), `ArmourySwAgent` 4 -> 3 (present to nothing).
+
+**Nothing has been changed.** The thresholds are a fitted decision with a
+written history, changing the set changes what every past verdict would have
+been, and doing it mid-corpus would make `benign-102-v2` mean two things.
+The evidence is reproducible and the decision is open. Worth taking **after**
+the corpus, when the real rate on this population is known -- these eleven are
+alphabetically clustered ASUS components and not a representative draw.
+
 #### `runcontrol.rescore` -- fixing a corpus's verdicts without re-detonating
 
 `python -m runcontrol.rescore <run-directory>`, 31 tests. The second tool that

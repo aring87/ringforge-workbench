@@ -21,6 +21,9 @@ So this runs the original test again, over everything:
 * the threshold sweep for the shipped set
 * the same sweep with candidates added, so a change is accepted only if
   detection rises while the benign rate does not
+* **the two double-counts the benign corpus found on 18 Sep**, each measured
+  the same way -- the redundant `communication/c2` parent, the socket family
+  counting three times for one behaviour, and both together
 
 **Nothing here edits the set.** It prints the evidence for doing so, or against.
 """
@@ -59,6 +62,43 @@ _CANDIDATES = (
     "host-interaction/hardware/storage",
     "host-interaction/hardware/cpu",
 )
+
+
+#: **Two ways the shipped set counts one behaviour more than once**, found by
+#: the benign corpus on 18 Sep rather than by reading the list. Both are tested
+#: here and neither is shipped; changing the set changes what every past
+#: verdict would have been, so it is a decision with evidence attached, not an
+#: edit.
+#:
+#: `communication/c2` and `communication/c2/file-transfer` are BOTH members,
+#: and `capa_namespaces` includes parents -- so a single capa rule in
+#: `communication/c2/file-transfer` scores two. Demonstrated on
+#: `ArmourySwAgent`, whose four high-signal capabilities are c2,
+#: c2/file-transfer, clipboard and suspend: three behaviours counted as four,
+#: which is the difference between `present` and nothing.
+_REDUNDANT_PARENT = "communication/c2"
+
+#: Three sibling namespaces that say one thing: this program does TCP I/O. A
+#: network service matches all three at once and is a third of the way to
+#: `strong` for one capability. Both ASUS Aura services in `benign-102-v2`
+#: reached 7 with three of the seven from here.
+#:
+#: Note this is not the rejected `communication/socket` candidate above. That
+#: asked whether to ADD a broader namespace; this asks whether three existing
+#: members should count once between them.
+_SOCKET_FAMILY = frozenset({
+    "communication/socket/receive",
+    "communication/socket/send",
+    "communication/socket/tcp",
+})
+_SOCKET_ONE = "communication/socket/ANY"
+
+
+def collapse_socket_family(sample: set[str]) -> set[str]:
+    """One member for the whole socket family, so TCP I/O counts once."""
+    if not (sample & _SOCKET_FAMILY):
+        return sample
+    return (sample - _SOCKET_FAMILY) | {_SOCKET_ONE}
 
 
 def namespaces_per_case(root: Path) -> list[set[str]]:
@@ -124,6 +164,36 @@ def main(argv: list[str] | None = None) -> int:
         for at in range(2, 7):
             cells = "".join(f"{rate(v, members, at):13.1f}%" for v in benign.values())
             b, m = rate(all_benign, members, at), rate(all_malware, members, at)
+            mark = "  <- present" if at == CAPABILITY_PRESENT_AT else ""
+            mark += "  <- strong" if at == CAPABILITY_STRONG_AT else ""
+            lift = f"{m / b:.1f}x" if b else "inf"
+            print(f"  {at:2}{cells}{b:11.1f}%{m:11.1f}%{lift:>8}{mark}")
+
+    # The two double-counts, measured the same way. The shipped table above is
+    # the control: if it moves, nothing below means anything.
+    shipped = HIGH_SIGNAL_CAPABILITIES
+    variants = [
+        ("no redundant c2 parent",
+         frozenset(shipped - {_REDUNDANT_PARENT}), lambda s: s),
+        ("socket family counts once",
+         frozenset((shipped - _SOCKET_FAMILY) | {_SOCKET_ONE}),
+         collapse_socket_family),
+        ("both",
+         frozenset(((shipped - _SOCKET_FAMILY) - {_REDUNDANT_PARENT})
+                   | {_SOCKET_ONE}),
+         collapse_socket_family),
+    ]
+    for label, members, transform in variants:
+        groups = {k: [transform(s) for s in v] for k, v in benign.items()}
+        b_all = [transform(s) for s in all_benign]
+        m_all = [transform(s) for s in all_malware]
+        print(f"\n=== NOT SHIPPED -- {label}: {len(members)} namespaces")
+        print("  at " + "".join(f"{k:>14}" for k in benign)
+              + f"{'benign':>12}{'malware':>12}{'lift':>8}")
+        for at in range(2, 7):
+            cells = "".join(f"{rate(v, members, at):13.1f}%"
+                            for v in groups.values())
+            b, m = rate(b_all, members, at), rate(m_all, members, at)
             mark = "  <- present" if at == CAPABILITY_PRESENT_AT else ""
             mark += "  <- strong" if at == CAPABILITY_STRONG_AT else ""
             lift = f"{m / b:.1f}x" if b else "inf"
