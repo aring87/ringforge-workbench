@@ -2010,6 +2010,77 @@ then with it stubbed off, 9 BOMs across 3 cases came out, all 144 files parsed
 strictly afterwards, and every edited file differed from its original by the
 three BOM bytes and nothing else.
 
+#### The first false positives, and what they were -- 18 Sep
+
+Ten samples in, three benign ASUS binaries did not band `No Evidence`. They
+turned out to be three different things, and only one was a defect:
+
+* **`aura-wallpaper-editor`, `Corroborated`/70 -- a real bug.** The only
+  strong signal was `external_contact`, whose own evidence line read "0
+  non-baseline domain(s) from the sample, **0 external destination(s)**, 1
+  connection(s) on a non-standard port". That connection was
+  `127.0.0.1:11001` -- its own wallpaper service, over local IPC.
+  `"strong": unusual_ports > 0` made one connection enough and nothing
+  excluded loopback, in a guest whose internet NIC has its cable pulled and
+  where external contact is therefore impossible by construction. Fixed; see
+  `_is_loopback` in `orchestrator.py`. **Only loopback is excluded**: private
+  ranges are still scored, because lateral movement is the point and this
+  bench's own host-only network is 192.168.56.0/24.
+* **`Aura-Wallpaper-Service`, `Corroborated`/50 -- working as measured.** Six
+  to seven high-signal capa namespaces (socket send/receive/tcp, process list,
+  thread suspend, WMI) against a strong threshold of 6, which
+  `static_triage_engine/categories.py` documents as firing on 0.6% of 656
+  benign samples. A wallpaper service that fetches wallpapers over TCP has
+  those capabilities. Not a defect; the documented benign tail.
+* **`ArmourySwAgent`, `Single Observation`/35 -- working as designed.** Four
+  capabilities: present, not strong. That is corroboration doing its job.
+
+**A wrong turn worth recording.** The first read was "three false positives
+sharing an Aura cause". They shared nothing -- three categories, three
+mechanisms. Reading a pattern into the first cluster of a corpus is exactly
+what a corpus is for correcting.
+
+**And a verification that proved the opposite of what it was taken for.**
+Re-running `combine` on a copy reproduced `Corroborated`/70 *after* the fix
+was applied, which was read as "the scorer re-runs host-side, so this is
+repairable". It reproduced the number because `combine` **reads the stored
+score** rather than recomputing it -- the dynamic score is computed in the
+guest at detonation time. The conclusion survived but by a different route;
+see `runcontrol.rescore`.
+
+#### `runcontrol.rescore` -- fixing a corpus's verdicts without re-detonating
+
+`python -m runcontrol.rescore <run-directory>`, 31 tests. The second tool that
+edits a corpus in place, and it refuses on exactly `debom`'s terms: terminal
+manifest state, no controller alive, an unreadable process table counts as
+running, originals kept first, hashed record after.
+
+Possible at all because **`dynamic_run_summary.json` embeds every input
+`calculate_dynamic_score` takes** -- findings, both network summaries, sysmon,
+autoruns, dropped files, memory, crash, PE carve, module integrity. All
+thirteen verified present in a pruned case, so nothing the scorer needs is
+among what pruning drops.
+
+It replaces **exactly the four fields the orchestrator derives from the
+scorer** -- `score`, `severity`, `verdict`, `score_detail` -- and then
+regenerates `combined_verdict.json` through `combine_case`. Leaving that
+stale would put two different answers in one case folder, so a `combine`
+failure after a successful re-score is reported as a failure naming the stale
+verdict, not counted as success. Nothing else in the run summary moves: the
+evidence is re-read, never re-made. A cancelled run is skipped, because its
+verdict was assigned wholesale rather than derived. Originals go to
+`rescore-originals/`, deliberately not `debom`'s `bom-originals/` -- two tools
+editing one corpus must not make a restore ambiguous about which change it
+undoes.
+
+Rehearsed against a copy of the real case with `combine_case` live: the
+live-sweep guard fired, then dynamic 50 -> 15, `High` -> `Low`, and the
+combined band **`Corroborated`/70 -> `Single Observation`/35**. Not down to
+`No Evidence`, and correctly so -- what remains is two non-strong static
+categories, `embedded_network_indicators` and a `.text` section at entropy
+8.00. A packed installer carrying domains is a fair observation; the wrong
+strong signal is what went.
+
 #### The provision drop for after the corpus -- staged 18 Sep
 
 **`G:\ringforge-artifacts\provision-2f313e9-staging\`**, carrying
