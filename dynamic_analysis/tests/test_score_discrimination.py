@@ -31,6 +31,7 @@ exactly the single unexplained observation that band is for.
 import unittest
 
 from dynamic_analysis.orchestrator import (
+    _is_loopback,
     _sample_process_names,
     calculate_dynamic_score,
 )
@@ -694,6 +695,141 @@ class CorroborationTests(unittest.TestCase):
         )
 
         self.assertEqual(result["evidence_counts"]["categories_present"], 0)
+
+
+class LoopbackIsNotExternalContact(unittest.TestCase):
+    """The false positive the benign corpus found, 18 Sep.
+
+    `aura-wallpaper-editor` connected to `127.0.0.1:11001` -- its own
+    wallpaper service, over local IPC -- and that one connection made
+    `external_contact` *strong*, banding a signed benign sample `Corroborated`
+    at 70 with subscores of static 0 and dynamic 15. Its own evidence line
+    read "0 non-baseline domain(s) from the sample, 0 external destination(s),
+    1 connection(s) on a non-standard port".
+
+    `strong` is `unusual_ports > 0`, one connection is enough, and nothing
+    excluded loopback. The guest's internet NIC has its cable pulled, so
+    external contact is impossible there by construction -- which is what made
+    the verdict obviously wrong rather than merely surprising, and it would
+    have been wrong in the other direction on a real bench with a network.
+
+    A client that talks to its own service is one of the most ordinary shapes
+    in vendor software, so this was not a one-sample accident waiting to
+    happen once.
+    """
+
+    def _with_destination(self, destination: str):
+        return _score(
+            findings_summary={"spawned_processes": [
+                {"process_name": "python.exe", "child_process_name": "sample.exe"}
+            ]},
+            sysmon_summary={"dns_queries": []},
+            fakenet_summary={
+                "dns_requests": [],
+                "process_requests": [
+                    {"process": "sample.exe", "protocol": "TCP",
+                     "destination": destination},
+                ],
+            },
+        )
+
+    def test_the_measured_case_no_longer_fires(self) -> None:
+        result = self._with_destination("127.0.0.1:11001")
+        names = {c["name"] for c in result["evidence_categories"]}
+
+        self.assertNotIn("external_contact", names)
+        self.assertEqual(result["evidence_counts"]["categories_strong"], 0)
+
+    def test_it_is_recorded_even_though_it_is_not_scored(self) -> None:
+        # A client talking to its own service is a fact a reader may want.
+        # Dropping it would make this run indistinguishable from one where the
+        # sample opened no socket at all.
+        result = self._with_destination("127.0.0.1:11001")
+        attribution = result["network_attribution"]
+
+        self.assertEqual(["127.0.0.1:11001"], attribution["sample_loopback"])
+        self.assertEqual([], attribution["sample_unusual_ports"])
+
+    def test_ipv6_loopback_counts_as_loopback(self) -> None:
+        result = self._with_destination("[::1]:11001")
+        self.assertNotIn("external_contact",
+                         {c["name"] for c in result["evidence_categories"]})
+
+    def test_localhost_by_name_counts_as_loopback(self) -> None:
+        result = self._with_destination("localhost:11001")
+        self.assertNotIn("external_contact",
+                         {c["name"] for c in result["evidence_categories"]})
+
+    def test_anything_in_127_slash_8_counts(self) -> None:
+        result = self._with_destination("127.5.6.7:9999")
+        self.assertNotIn("external_contact",
+                         {c["name"] for c in result["evidence_categories"]})
+
+
+class LoopbackDoesNotBlindTheCategory(unittest.TestCase):
+    """The half that matters more: what must still fire.
+
+    Narrowing a detection is the easy way to remove a false positive and the
+    easy way to lose a true one. `external_contact` exists because an
+    AgentTesla run authenticated to its C2 and uploaded stolen data while
+    `external_ips` read 0, and because a Remcos run dialled a hard-coded
+    `62.60.226.68:24042` with no DNS lookup at all.
+    """
+
+    def _with_requests(self, requests):
+        return _score(
+            findings_summary={"spawned_processes": [
+                {"process_name": "python.exe", "child_process_name": "sample.exe"}
+            ]},
+            sysmon_summary={"dns_queries": []},
+            fakenet_summary={"dns_requests": [], "process_requests": requests},
+        )
+
+    def test_a_real_unusual_port_still_fires_strong(self) -> None:
+        result = self._with_requests([
+            {"process": "sample.exe", "protocol": "TCP",
+             "destination": "192.0.2.123:60009"},
+        ])
+        strong = {c["name"] for c in result["evidence_categories"] if c["strong"]}
+
+        self.assertIn("external_contact", strong)
+
+    def test_loopback_beside_a_real_one_does_not_mask_it(self) -> None:
+        # The realistic shape: a sample that talks to a local helper AND
+        # calls home. Excluding loopback must not swallow the row next to it.
+        result = self._with_requests([
+            {"process": "sample.exe", "protocol": "TCP",
+             "destination": "127.0.0.1:11001"},
+            {"process": "sample.exe", "protocol": "TCP",
+             "destination": "192.0.2.123:24042"},
+        ])
+        strong = {c["name"] for c in result["evidence_categories"] if c["strong"]}
+        attribution = result["network_attribution"]
+
+        self.assertIn("external_contact", strong)
+        self.assertEqual(["192.0.2.123:24042"], attribution["sample_unusual_ports"])
+        self.assertEqual(["127.0.0.1:11001"], attribution["sample_loopback"])
+
+    def test_a_lan_address_is_not_loopback(self) -> None:
+        # **Private ranges are deliberately not excluded.** A sample reaching
+        # across a LAN is the lateral movement this is for, and this bench's
+        # own host-only network is 192.168.56.0/24 -- excluding private
+        # addresses would blind it to the one network it has.
+        result = self._with_requests([
+            {"process": "sample.exe", "protocol": "TCP",
+             "destination": "192.168.56.101:4444"},
+        ])
+        strong = {c["name"] for c in result["evidence_categories"] if c["strong"]}
+
+        self.assertIn("external_contact", strong)
+
+    def test_the_predicate_itself(self) -> None:
+        for host in ("127.0.0.1", "127.5.6.7", "::1", "[::1]", "localhost",
+                     "LOCALHOST"):
+            self.assertTrue(_is_loopback(host), host)
+        for host in ("192.168.56.101", "10.0.0.5", "192.0.2.123", "8.8.8.8",
+                     "239.255.255.250", "", "example.com"):
+            self.assertFalse(_is_loopback(host), host)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import ipaddress
 import re
 import subprocess
 import uuid
@@ -1243,6 +1244,35 @@ def _sample_process_names(findings_summary: dict[str, Any]) -> tuple[set[str], s
     return names - dropped, dropped
 
 
+def _is_loopback(host: str) -> bool:
+    """Whether this destination cannot leave the machine.
+
+    **Measured on the benign corpus, 18 Sep.** `aura-wallpaper-editor`
+    connected to `127.0.0.1:11001` -- its own wallpaper service, over local
+    IPC -- and that single connection made `external_contact` *strong*,
+    banding a signed benign sample `Corroborated` at 70. The category is named
+    external contact and its reason says "a destination that is not part of
+    the Windows baseline"; loopback is neither. The guest's internet NIC has
+    its cable pulled, so external contact is impossible there by construction,
+    which is what made the verdict obviously wrong rather than merely
+    surprising.
+
+    Only loopback is excluded, deliberately. Private ranges must NOT be: the
+    bench's own host-only network is 192.168.56.0/24, and a sample reaching
+    across a LAN is exactly the lateral movement this is meant to catch.
+    Link-local and multicast (a sample doing its own SSDP would look the same)
+    are arguable and unmeasured, so they are left alone rather than widened on
+    a hunch.
+    """
+    text = host.strip().strip("[]")
+    if not text:
+        return False
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return text.lower() == "localhost"
+
+
 def _attributed_connections(
     fakenet_summary: dict[str, Any] | None, sample_names: set[str]
 ) -> dict[str, Any]:
@@ -1261,6 +1291,7 @@ def _attributed_connections(
     fakenet = fakenet_summary if isinstance(fakenet_summary, dict) else {}
     destinations: list[str] = []
     unusual: list[str] = []
+    loopback: list[str] = []
     unattributed = 0
 
     for request in fakenet.get("process_requests", []) or []:
@@ -1271,17 +1302,29 @@ def _attributed_connections(
             continue
         if destination and destination not in destinations:
             destinations.append(destination)
-        _, _, port_text = destination.rpartition(":")
+        host_text, _, port_text = destination.rpartition(":")
         try:
             port = int(port_text)
         except ValueError:
             continue
-        if port not in COMMON_PORTS and destination not in unusual:
+        if port in COMMON_PORTS:
+            continue
+        # Recorded, never scored. A sample talking to its own service over
+        # loopback is a fact worth keeping -- it is how a client/service pair
+        # behaves, and a reader may want it -- but it is not contact with
+        # anything outside the machine, and `external_contact` is strong on a
+        # single unusual port. See `_is_loopback`.
+        if _is_loopback(host_text):
+            if destination not in loopback:
+                loopback.append(destination)
+            continue
+        if destination not in unusual:
             unusual.append(destination)
 
     return {
         "destinations": destinations,
         "unusual_ports": unusual,
+        "loopback": loopback,
         "unattributed_requests": unattributed,
     }
 
@@ -1947,6 +1990,8 @@ def calculate_dynamic_score(
             "sample_domains": sorted(set(sysmon_domains)),
             "sample_destinations": attributed["destinations"],
             "sample_unusual_ports": attributed["unusual_ports"],
+            # Kept out of the score, kept in the record. See `_is_loopback`.
+            "sample_loopback": attributed["loopback"],
             "other_process_requests": attributed["unattributed_requests"],
             "other_non_baseline_domains": max(host_domains, 0),
             # Removed from the sample's set after lineage put them there, and
