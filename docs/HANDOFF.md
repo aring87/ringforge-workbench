@@ -2137,13 +2137,22 @@ categories, `embedded_network_indicators` and a `.text` section at entropy
 8.00. A packed installer carrying domains is a fair observation; the wrong
 strong signal is what went.
 
-#### The provision drop for after the corpus -- staged 18 Sep
+#### The provision drop for after the corpus -- rebuilt 19 Sep
 
-**`G:\ringforge-artifacts\provision-2f313e9-staging\`**, carrying
-`provision_guest.ps1`, `workbench.bundle` (5276ca6..main, 6 commits, 46 KB),
+**`G:\ringforge-artifacts\provision-af6e774-staging\`**, carrying
+`provision_guest.ps1`, `workbench.bundle` (5276ca6..main, 12 commits, 77 KB),
 `wheels\` (setuptools 84.0.0, wheel 0.48.0, packaging 26.3) and a
 `READ-ME-FIRST.txt` holding the sequence below, so the instructions travel
 with the drop rather than living only here.
+
+**Rebuilt 19 Sep to carry the Defender exclusion** (`af6e774`), which is the
+commit that matters most for what comes next: without it the malicious
+corpus's carved images -- real malware code -- are quarantined as they are
+written, destroying the evidence for every `process_injection` finding. The
+receipt now reports `defender_exclusion`, `defender_via_cmdlet` and
+`defender_via_policy`, and **if both booleans are false the exclusion did not
+apply**. Policy-only can need a reboot before Defender honours it, so reboot
+before snapshotting in that case.
 
 The guest is at **5276ca6**, confirmed from the corpus's own provenance rather
 than from memory (`combined_verdict.json` -> `provenance.analyzer.commit`,
@@ -2168,7 +2177,7 @@ console after a four-day wait:
   objects -- a `--local` clone hardlinks the object store and would have made
   the test meaningless -- and taken through the exact three commands
   `provision_guest.ps1` runs: `git bundle verify`, `git fetch`,
-  `git merge --ff-only`. It landed at 2f313e9.
+  `git merge --ff-only`. It landed at af6e774, with the Defender exclusion present in the delivered script.
 * **The offline install works with no setuptools present.** A fresh Python
   3.12 venv is seeded with pip and not setuptools, which is what the guest
   has. `pip install --no-index --find-links wheels -e . --no-deps` succeeded;
@@ -2179,11 +2188,11 @@ console after a four-day wait:
   what the scanner reads -- see the trap below.
 
 Afterwards, in order: place the drop as
-`G:\ringforge-exchange\provision-2f313e9`; boot with **no sample** and watch
-for `self-update: applying provision-2f313e9 over 5276ca6`; read
+`G:\ringforge-exchange\provision-af6e774`; boot with **no sample** and watch
+for `self-update: applying provision-af6e774 over 5276ca6`; read
 `provision-receipt.json` for `ok`, `commit_after`, `installed`,
 `rules_synced`; **power off hard and take a new snapshot from poweroff**,
-`corpus-agent-detonate-2f313e9`; repoint `--baseline` and re-register the
+`corpus-agent-detonate-af6e774`; repoint `--baseline` and re-register the
 logon task. **Skipping the snapshot undoes all of it silently** -- every run
 begins with a restore, and an install into a running guest is discarded by the
 next one.
