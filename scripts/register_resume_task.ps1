@@ -68,7 +68,8 @@ param(
     [switch]$Unregister,
     [switch]$Status,
     [switch]$RunNow,
-    [switch]$StripBomsWhenDone
+    [switch]$StripBomsWhenDone,
+    [switch]$RescoreWhenDone
 )
 
 $ErrorActionPreference = "Stop"
@@ -132,6 +133,11 @@ if ($StripBomsWhenDone) {
     # Only takes effect once the run reads `completed`, and runcontrol.debom
     # refuses anything else regardless.
     $arguments += " -StripBomsWhenDone"
+}
+if ($RescoreWhenDone) {
+    # Likewise, and it runs after the strip. Both are idempotent and both
+    # leave a record that stops them repeating at every later logon.
+    $arguments += " -RescoreWhenDone"
 }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments `

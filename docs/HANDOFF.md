@@ -2001,8 +2001,15 @@ this bench keeps paying for:
   entire subject is that BOMs make files unreadable should not be stopped by
   one on its input. Reads `utf-8-sig` now.
 
-Wired into `resume_sweep.ps1` behind `-StripBomsWhenDone`, registered on the
-logon task, so the corpus is cleaned at the first logon after it finishes.
+Wired into `resume_sweep.ps1` behind `-StripBomsWhenDone`, and
+`runcontrol.rescore` beside it behind `-RescoreWhenDone`; both are registered
+on the logon task, so the corpus is cleaned and re-scored at the first logon
+after it finishes. **The strip runs first**: `debom` only rewrites files the
+guest wrote, while `rescore` rewrites the run summary and regenerates
+`combined_verdict.json` from it, so stripping first means the hashes `debom`
+records describe files nothing else has touched since. Both calls go through
+one `Invoke-CorpusTool` helper, because both need the same two PowerShell
+traps handled and doing it twice is how one copy drifts.
 Guarded on `bom_strip.json` not existing, so it does not repeat a no-op every
 logon, and `debom` refuses anyway if anything is off. Rehearsed against a copy
 of the live corpus: the live-sweep guard fired against the real process table,
