@@ -43,6 +43,16 @@
 .PARAMETER Repo
   The workbench clone in this guest.
 
+.PARAMETER WorkRoot
+  The directory the analysis writes cases into, and therefore the one Defender
+  is told to leave alone. Must match `$localRoot` in guest_run_agent.ps1.
+
+.PARAMETER SkipDefenderExclusion
+  Do not exclude WorkRoot from Defender. The exclusion exists because carved
+  PE images did not survive a run -- see the block that applies it -- and
+  leaving it off means `process_injection` findings cannot be adjudicated
+  afterwards. Recorded in the receipt either way.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\provision_guest.ps1
 #>
@@ -51,8 +61,10 @@
 param(
   [string]$Drop = "",
   [string]$Repo = "C:\projects\RingForge_Analyzer\ringforge-workbench",
+  [string]$WorkRoot = "C:\ProgramData\RingForge\work",
   [switch]$SkipPull,
-  [switch]$SkipInstall
+  [switch]$SkipInstall,
+  [switch]$SkipDefenderExclusion
 )
 
 Set-StrictMode -Version Latest
@@ -72,6 +84,11 @@ $receipt = [ordered]@{
   pulled        = $false
   installed     = $false
   rules_synced  = 0
+  #: Empty when it was skipped; the path when it was attempted. A baseline
+  #: built without the exclusion has to be identifiable rather than assumed.
+  defender_exclusion  = ""
+  defender_via_cmdlet = $false
+  defender_via_policy = $false
   ok            = $false
   error         = ""
 }
@@ -174,6 +191,74 @@ try {
     } else {
         Warn "no authored rules at $ruleSource"
         $receipt.rules_synced = 0
+    }
+
+    # -- keep Defender off the evidence -------------------------------------
+    #
+    # **Carved images do not survive a run, and pruning was not what took
+    # them.** Measured on `Docker-Desktop-Installer` in `benign-102-v2`:
+    # `pe_carve` reported `carved: 4, carve_failures: 0` with paths and
+    # SHA-256s, the prune specs (`*.dmp`, `raw.pml`, `export.csv`,
+    # `parsed_events.json`) match none of them, `pe_carve.py` deletes nothing
+    # it writes, and the case came home with `memory\carved\` present and
+    # empty -- while every JSON beside it survived. Only the PE-shaped files
+    # went. Defender was live through the run: `MsMpEng.exe`,
+    # `MpDefenderCoreService.exe` and `MpCmdRun.exe` all appear in that run's
+    # own network record.
+    #
+    # `bootstrap_tools.ps1` already excludes the *tools* directory for the
+    # same reason -- "Defender scans the file as it is written" -- and nothing
+    # excluded the directory the analysis writes into.
+    #
+    # **This matters far more on the malicious corpus than the benign one.**
+    # There the carved images are real malware code, which is exactly what
+    # Defender is best at removing, so the evidence for every
+    # `process_injection` finding would be destroyed in the corpus where those
+    # findings carry the most weight.
+    #
+    # Both mechanisms, as `Add-DefenderExclusions` does: the cmdlet applies
+    # immediately but talks to a WMI provider a debloated image may not have,
+    # and the policy key works where the cmdlet cannot. Never fatal -- a
+    # provisioning run that got the clone and the install right should not be
+    # failed by an exclusion -- and the outcome goes in the receipt either
+    # way, so a baseline built without it is identifiable rather than assumed.
+    if (-not $SkipDefenderExclusion) {
+      $viaCmdlet = $false
+      $viaPolicy = $false
+      if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {
+        try {
+          Add-MpPreference -ExclusionPath $WorkRoot -ErrorAction Stop
+          $viaCmdlet = $true
+        } catch {
+          Warn "Add-MpPreference failed: $($_.Exception.Message)"
+        }
+      }
+      try {
+        # The value name is the path; Defender ignores the data.
+        $key = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths"
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name $WorkRoot -Value 0 `
+                         -PropertyType DWord -Force | Out-Null
+        $viaPolicy = $true
+      } catch {
+        Warn "could not write the exclusion policy: $($_.Exception.Message)"
+      }
+
+      $receipt.defender_exclusion = $WorkRoot
+      $receipt.defender_via_cmdlet = $viaCmdlet
+      $receipt.defender_via_policy = $viaPolicy
+      if ($viaCmdlet -or $viaPolicy) {
+        Good "Defender exclusion for $WorkRoot (cmdlet=$viaCmdlet policy=$viaPolicy)"
+        if (-not $viaCmdlet) {
+          Warn "policy-only exclusions can need a reboot before Defender honours them"
+        }
+      } else {
+        Warn "no Defender exclusion could be applied; carved images may not survive"
+      }
+      Warn "an exclusion reduces protection, and is appropriate only inside this disposable guest"
+    } else {
+      $receipt.defender_exclusion = ""
+      Say "skipped the Defender exclusion, as asked"
     }
 
     # -- prove it took ------------------------------------------------------
