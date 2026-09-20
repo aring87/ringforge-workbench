@@ -42,6 +42,44 @@ from pathlib import Path
 
 from runcontrol.untrusted import check_component
 
+
+def _extended(path) -> str:
+    r"""A path Windows will accept past MAX_PATH.
+
+    **This cost two corpus samples on 20 Sep, and it cost them whole.**
+    `benign-102-v2` void-ran
+    `Microsoft.CodeAnalysis.Workspaces.MSBuild.BuildHost` and
+    `Microsoft.VisualStudio.Setup.ToastNotification` with
+    `[WinError 206] The filename or extension is too long`, raised here while
+    creating `...\dynamic_runs\<run id>\autoruns`. Nothing was collected from
+    either, after roughly fifty minutes of detonation each.
+
+    The destination is long by construction, not by accident: the case name
+    appears **twice** (`cases/<case>/<case>/`, the doubled segment the
+    transport produces), and `dynamic_analysis/dynamic_runs/<run id>/` sits
+    under that. A 60-character sample stem is enough. Stems of 45 collected
+    fine, so the cliff is somewhere between.
+
+    That the corpus loses exactly the samples with long names matters more
+    than losing two: `Microsoft.*` and other .NET component names are long,
+    so this selects against a population rather than at random, in a
+    measurement whose whole purpose is a rate.
+
+    Applied to both sides. The first instinct was writes only -- a source path
+    being walked is one this machine could already open -- and that is wrong:
+    the *exchange* path the guest wrote is shorter than the *runs* path this
+    copies into, which is merely why the destination overflowed first. A long
+    enough case name takes the listing too, as the test for this found.
+    """
+    if os.name != "nt":
+        return str(path)
+    text = os.path.abspath(str(path))
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
 #: Ceilings, chosen from what a real case holds rather than from round numbers.
 #: A Procmon PML for a 240-second run is the biggest single thing here, and
 #: memory dumps of a process tree are the bulk of the total.
@@ -132,7 +170,7 @@ def collect_case(source: Path, destination: Path,
     if not source.is_dir():
         raise NotADirectoryError(f"no case folder at {source}")
 
-    destination.mkdir(parents=True, exist_ok=True)
+    os.makedirs(_extended(destination), exist_ok=True)
     # Resolved once, so the containment check below compares real paths rather
     # than ones that still contain a link to somewhere else.
     root = destination.resolve(strict=True)
@@ -150,7 +188,11 @@ def collect_case(source: Path, destination: Path,
             continue
 
         try:
-            entries = sorted(os.scandir(here), key=lambda e: e.name)
+            # Extended on the source too. The exchange path a guest writes is
+            # shorter than the runs path this copies into, which is why the
+            # destination overflowed first -- but "shorter" is not "short",
+            # and a long enough case name takes both.
+            entries = sorted(os.scandir(_extended(here)), key=lambda e: e.name)
         except OSError as error:
             result.refusals.append(
                 Refusal(relative or ".", f"cannot list: {error.strerror}"))
@@ -185,7 +227,19 @@ def collect_case(source: Path, destination: Path,
                 continue
 
             if entry.is_dir(follow_symlinks=False):
-                target.mkdir(parents=True, exist_ok=True)
+                # **Refused, not raised.** Every file operation below appends
+                # a Refusal and carries on; this one did not, so a single
+                # directory the host could not create propagated out of
+                # `collect` and took the whole case with it -- fifty minutes
+                # of detonation reported as a void run because of one path.
+                # A collector whose failure mode is "lose everything" is
+                # worse than one that loses a subtree and says which.
+                try:
+                    os.makedirs(_extended(target), exist_ok=True)
+                except OSError as error:
+                    result.refusals.append(Refusal(
+                        shown, f"cannot create directory: {error.strerror}"))
+                    continue
                 result.directories += 1
                 queue.append((Path(entry.path), shown, depth + 1))
                 continue
@@ -225,7 +279,8 @@ def collect_case(source: Path, destination: Path,
                 # `copyfile`, not `copy2`: metadata from a guest that ran
                 # malware is not worth carrying, and timestamps from it are
                 # actively misleading in a case folder.
-                shutil.copyfile(entry.path, target, follow_symlinks=False)
+                shutil.copyfile(entry.path, _extended(target),
+                                follow_symlinks=False)
             except OSError as error:
                 result.refusals.append(
                     Refusal(shown, f"copy failed: {error.strerror}"))

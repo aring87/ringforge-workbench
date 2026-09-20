@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from runcontrol.collect import Limits, collect_case
@@ -217,6 +218,132 @@ class TheSummaryIsReadable(CaseFolderFixture):
 
     def test_a_clean_import_does_not_say_refused(self) -> None:
         self.assertNotIn("refused", self.collect().summary())
+
+
+class PathsLongerThanWindowsLikes(CaseFolderFixture):
+    """MAX_PATH, which cost two corpus samples whole on 20 Sep.
+
+    `benign-102-v2` void-ran two `Microsoft.*` samples with
+    `[WinError 206] The filename or extension is too long`, raised while
+    creating a directory under the destination. Nothing was collected from
+    either, after about fifty minutes of detonation each.
+
+    The destination is long by construction: the case name appears twice, and
+    `dynamic_analysis/dynamic_runs/<run id>/` sits under that. These build a
+    tree that genuinely exceeds 260 characters rather than mocking the error,
+    because the question is whether Windows accepts what this module hands it.
+    """
+
+    def deep(self, total: int = 320) -> str:
+        """A relative path under `source` longer than MAX_PATH once joined."""
+        parts = []
+        while len(str(self.source)) + len("/".join(parts)) < total:
+            parts.append("directory_segment_of_some_length")
+        return "/".join(parts)
+
+    def write_deep(self, relative: str, text: str) -> Path:
+        """Write past MAX_PATH.
+
+        The fixture's own `write` cannot do this: `Path.mkdir` raises
+        WinError 206 building the *source* tree, which is the same failure
+        under test one level up. Creating the tree needs the extended form
+        too, so the test has to use it to have anything to collect.
+        """
+        from runcontrol.collect import _extended
+        path = self.source / relative
+        os.makedirs(_extended(path.parent), exist_ok=True)
+        with open(_extended(path), "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def test_a_tree_past_max_path_is_collected_not_lost(self) -> None:
+        relative = self.deep()
+        self.write_deep(f"{relative}/buried.json", chr(123)+chr(34)+"kept"+chr(34)+":true"+chr(125))
+        result = self.collect()
+
+        landed = self.dest / relative / "buried.json"
+        self.assertTrue(
+            len(str(landed)) > 260,
+            f"the test tree is only {len(str(landed))} chars; it proves nothing")
+        self.assertEqual(0, len(result.refusals), result.refusals)
+        if WINDOWS:
+            from runcontrol.collect import _extended
+            self.assertTrue(os.path.exists(_extended(landed)))
+        else:
+            self.assertTrue(landed.exists())
+
+    def test_the_ordinary_files_beside_it_still_arrive(self) -> None:
+        # The failure being fixed lost the *whole* case, not just the deep
+        # part, so the shallow files are what prove it is contained.
+        self.write_deep(f"{self.deep()}/buried.json", "{}")
+        self.collect()
+
+        self.assertTrue((self.dest / "summary.json").is_file())
+        self.assertTrue((self.dest / "static_analysis" / "capa.json").is_file())
+
+
+class ADirectoryThatCannotBeCreated(CaseFolderFixture):
+    """A subtree may be lost. The case may not.
+
+    Every file operation in `collect_case` appends a Refusal and carries on.
+    Directory creation did not, so one unwritable directory propagated out and
+    a whole detonation was reported void.
+    """
+
+    def test_it_is_refused_rather_than_raised(self) -> None:
+        self.write("dynamic_analysis/dynamic_runs/r1/autoruns/list.json", "{}")
+
+        real = os.makedirs
+
+        def fail_on_autoruns(path, *args, **kwargs):
+            if "autoruns" in str(path):
+                raise OSError(206, "The filename or extension is too long")
+            return real(path, *args, **kwargs)
+
+        with unittest.mock.patch("runcontrol.collect.os.makedirs",
+                                 side_effect=fail_on_autoruns):
+            result = self.collect()
+
+        self.assertTrue(any("cannot create directory" in r.reason
+                            for r in result.refusals), result.refusals)
+
+    def test_the_rest_of_the_case_still_lands(self) -> None:
+        self.write("dynamic_analysis/dynamic_runs/r1/autoruns/list.json", "{}")
+        real = os.makedirs
+
+        def fail_on_autoruns(path, *args, **kwargs):
+            if "autoruns" in str(path):
+                raise OSError(206, "The filename or extension is too long")
+            return real(path, *args, **kwargs)
+
+        with unittest.mock.patch("runcontrol.collect.os.makedirs",
+                                 side_effect=fail_on_autoruns):
+            result = self.collect()
+
+        self.assertTrue((self.dest / "summary.json").is_file())
+        self.assertGreater(result.files, 0)
+
+
+class TheLongPathForm(unittest.TestCase):
+    def test_a_windows_path_gets_the_prefix(self) -> None:
+        from runcontrol.collect import _extended
+        if not WINDOWS:
+            self.skipTest("Windows path rules")
+        self.assertTrue(_extended(Path(r"G:\a\b.json")).startswith("\\\\?\\"))
+
+    def test_it_is_not_applied_twice(self) -> None:
+        from runcontrol.collect import _extended
+        if not WINDOWS:
+            self.skipTest("Windows path rules")
+        once = _extended(Path(r"G:\a\b.json"))
+        self.assertEqual(once, _extended(once))
+
+    def test_a_unc_path_gets_the_unc_form(self) -> None:
+        from runcontrol.collect import _extended
+        if not WINDOWS:
+            self.skipTest("Windows path rules")
+        self.assertTrue(
+            _extended(Path(r"\\VBOXSVR\share\a.json")).startswith("\\\\?\\UNC\\"))
 
 
 if __name__ == "__main__":
