@@ -40,6 +40,22 @@
 .PARAMETER TaskName
   Defaults to `RingForgeRunAgent`.
 
+.PARAMETER NoSelfUpdate
+  Register the task so the agent ignores provisioning drops on the exchange.
+  **Use this for a malicious corpus.** The exchange is writable by the guest
+  and survives a snapshot restore, so a sample running with administrator
+  rights could plant its own `provision-*` directory -- a
+  persistence-across-revert path that is reachable on any later boot carrying
+  no sample. Read-only-in delivery is the real fix and is not built.
+
+  The switch has existed on `guest_run_agent.ps1` since the self-update was
+  added, and docs/HANDOFF.md names it as the mitigation; until now nothing
+  could pass it, because the task's argument string was fixed.
+
+  Registering it changes nothing on its own: every run restores the baseline,
+  which carries whatever task the snapshot was taken with. Re-run this in the
+  guest and take a new snapshot from poweroff.
+
 .PARAMETER Remove
   Unregister the task and exit.
 
@@ -53,6 +69,7 @@ param(
   [Parameter(ParameterSetName = "Install")][switch]$OnLogon,
   [string]$TaskName = "RingForgeRunAgent",
   [string]$AgentPath = "",
+  [Parameter(ParameterSetName = "Install")][switch]$NoSelfUpdate,
   [Parameter(ParameterSetName = "Remove")][switch]$Remove
 )
 
@@ -93,8 +110,29 @@ if ($OnStart -and $OnLogon) {
   throw "pick one of -OnStart or -OnLogon; they place the sample in different contexts"
 }
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$AgentPath`"")
+# **`-NoSelfUpdate` had nowhere to be passed from, and that is why this
+# parameter exists.** `guest_run_agent.ps1` has taken the switch since the
+# self-update was added, and docs/HANDOFF.md names it as *the* mitigation for
+# a malicious corpus -- "the exchange is guest-writable and survives a
+# restore, so a sample could plant a drop". But this line is the only place in
+# the project that builds the agent's arguments, it was a fixed string, and
+# nothing else re-registers the task. The flag existed, the documentation
+# pointed at it, and no code path could reach it.
+#
+# **Registering it is not enough on its own.** The baseline snapshot carries
+# the task as it was when the snapshot was taken, and every run begins by
+# restoring that snapshot -- so changing this script changes nothing until
+# somebody re-runs it in the guest and takes a NEW snapshot from poweroff.
+# That is the same trap the install itself has: see *Provisioning the guest*.
+$arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$AgentPath`""
+if ($NoSelfUpdate) {
+  $arguments += " -NoSelfUpdate"
+  Write-Warn "self-update is OFF for this task: the guest will ignore provisioning drops"
+  Write-Warn "until it is re-registered without -NoSelfUpdate. Appropriate for a"
+  Write-Warn "malicious corpus, and it means provisioning becomes a console job again."
+}
+
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
 
 # **No boot delay, no random delay, no start-when-available.** Every one of
 # those makes Task Scheduler's throttling worse, and the whole reason the host
