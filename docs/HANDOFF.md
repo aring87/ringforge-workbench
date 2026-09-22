@@ -2187,15 +2187,42 @@ console after a four-day wait:
   `rules_synced` should read 5. `tools\yara\rules\local\` is gitignored and is
   what the scanner reads -- see the trap below.
 
-Afterwards, in order: place the drop as
-`G:\ringforge-exchange\provision-af6e774`; boot with **no sample** and watch
-for `self-update: applying provision-af6e774 over 5276ca6`; read
-`provision-receipt.json` for `ok`, `commit_after`, `installed`,
-`rules_synced`; **power off hard and take a new snapshot from poweroff**,
-`corpus-agent-detonate-af6e774`; repoint `--baseline` and re-register the
-logon task. **Skipping the snapshot undoes all of it silently** -- every run
-begins with a restore, and an install into a running guest is discarded by the
-next one.
+**DONE, 22 Sep.** The guest is at `f86d5cd`, baseline
+**`corpus-agent-detonate-f86d5cd`** taken from poweroff. Receipt: `ok` true,
+`5276ca6 -> f86d5cd`, `installed` true, `rules_synced` 5,
+`defender_exclusion` on `C:\ProgramData\RingForge\work` with **both**
+`via_cmdlet` and `via_policy` true -- so the exclusion is live immediately and
+needed no reboot. That was the half nothing could test on the host, because
+running the provisioner here would have added a real exclusion to the host.
+
+**The first attempt failed silently, and the runbook was what was wrong.**
+It sat for fifteen minutes and wrote *nothing*: no ready signal, no
+`agent.log`, no receipt, and the old exchange location untouched. The shared
+folder had reverted to `C:\Users\aring\Downloads\ringforge` -- **a snapshot
+restore reverts the share to whatever the snapshot captured**, which is
+exactly why `run_one` repoints it before every single run. Every provisioning
+boot in this project's history went through the controller, so the step was
+invisible, and the instructions said only "boot with no sample". A hand-driven
+boot skips it, the guest mounts the wrong directory, and the failure is
+indistinguishable from the agent never firing.
+
+So the order is: **repoint the share while the guest is powered off** --
+`VirtualBox(destructive=True).set_shared_folder('RingForge-Analysis',
+'ringforge', r'G:\ringforge-exchange')`, powered off because the share has to
+exist *at boot* for auto-mount to happen before the agent runs -- then clear
+`G:\ringforge-exchange\current` (the self-update is gated on no sample, and
+the last run's sample is still sitting there), then boot. **Budget ten
+minutes, not three**: readiness alone measured 356-400s on this guest through
+the corpus, and the receipt landed 604s after boot. Then read the receipt,
+**power off hard and snapshot from poweroff**, and repoint `--baseline`.
+**Skipping the snapshot undoes all of it silently** -- every run begins with a
+restore, and an install into a running guest is discarded by the next one.
+
+Still open on the guest: **`-NoSelfUpdate` is not applied.** This baseline has
+self-update on, which is correct for benign work. Before the malicious corpus,
+run `install_guest_agent.ps1 -OnLogon -NoSelfUpdate` in the guest and take
+another snapshot -- and remove `provision-f86d5cd` from the exchange, which is
+inert now but guest-writable.
 
 #### Traps paid for, in one place
 
