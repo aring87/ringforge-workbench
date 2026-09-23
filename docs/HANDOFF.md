@@ -2137,6 +2137,53 @@ categories, `embedded_network_indicators` and a `.text` section at entropy
 8.00. A packed installer carrying domains is a fair observation; the wrong
 strong signal is what went.
 
+#### The malicious corpus exists -- 96 samples, and what shaped them, 23 Sep
+
+**`G:\malware-corpus\samples`, 96 samples, 10 families, 94 exe + 2 dll,
+198 MB.** Every sha256 verified against `_sample.json`, every file a valid PE,
+nothing lost to antivirus -- the Bitdefender exclusion held. This is the other
+half of the measurement `benign-102-v2` produced: a benign rate exists now, a
+detection rate does not.
+
+    AsyncRAT 10   RemcosRAT 10   NanoCore 10      <- RATs
+    Amadey 10     GuLoader 10    Smoke Loader 10  <- loaders
+    RedLineStealer 10  Stealc 10  Vidar 10  Rhadamanthys 6  <- stealers
+
+**Three families are missing because abuse.ch cannot serve them.**
+`AgentTesla`, `Formbook` and `Quakbot` all answer *"Query execution time
+exceeded threshold. Try a different query."* -- on `get_siginfo` and
+`get_taginfo` alike, at `limit 3` as readily as `limit 100`. It is their
+lookup timing out over the largest families, not the request; `--pool` cannot
+fix it. The web UI serves those listings fine, which is why
+`--hashes-from` now exists: fetching *by hash* works, only searching does not.
+
+**Two were silently wrong.** `Smokeloader` and `QakBot` returned `no_results`
+-- the signatures are `Smoke Loader` (the space is load-bearing) and
+`Quakbot`. A `no_results` looks like a family with nothing recent rather than
+a typo, so it would have stayed missing.
+
+**What this costs, stated rather than buried.** The corpus is shaped partly by
+*what the API could answer*. Formbook is the family this bench's own chain
+ends in; AgentTesla is one of the three reference runs in
+`test_score_discrimination.py`. Their replacements -- Rhadamanthys, Vidar,
+NanoCore -- were picked because they responded, and because AgentTesla and
+Formbook are both stealers so stealers went back in their place. There is no
+banker at all: `Quakbot` was the only one. A detection rate computed here
+inherits that selection, and `_sample.json` records which families each batch
+asked for.
+
+**Also worth knowing before reading per-family rates:** these families have
+drifted toward script droppers. `RemcosRAT` yielded only 11 PE from a pool of
+100, and AgentTesla's recent samples are mostly `js` and `vbs`. A PE-only
+corpus is no longer a representative slice of what a family distributes.
+
+**Next**: the sweep. `--baseline corpus-agent-detonate-f86d5cd-noselfupdate`,
+a short `--run-id` because sha256 filenames are 64 characters and the case
+path doubles them, and `--run-timeout` above 5400 -- two benign installers
+already exceeded it and a timeout is not retried. Dry-run first: it
+enumerates, hashes and finds case-name collisions without touching the
+hypervisor.
+
 #### The missing artifacts were MAX_PATH, not antivirus -- 22 Sep
 
 **92 files across 10 of 102 cases never reached the corpus**, recorded all
