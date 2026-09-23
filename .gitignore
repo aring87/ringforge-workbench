@@ -51,6 +51,20 @@ tools/sysmonconfig.xml
 # Malware samples (keep out of git)
 samples/
 
+# **Corpora belong on the artifact drive, not here.** `samples/` above only
+# catches a directory named exactly that, so `malware-corpus/` -- which is the
+# default `--out` of scripts/malware_corpus.py -- was not covered, and a
+# `git add -A` would have published live malware to a remote. The corpus is
+# meant to live at G:\malware-corpus, outside this tree entirely; these
+# patterns exist so that doing it the wrong way still fails safe.
+malware-corpus/
+*-corpus/
+
+# XOR-wrapped payloads (see dotnet_meta.XOR_SUFFIX). Wrapped so an on-access
+# scanner cannot match them on content, which is not a reason to commit them:
+# the key is nine bytes and in the source.
+*.xor9
+
 # Case outputs / reports / extracted payloads (huge + can include samples)
 cases/
 build/
