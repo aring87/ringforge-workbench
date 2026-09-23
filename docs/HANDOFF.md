@@ -2137,6 +2137,48 @@ categories, `embedded_network_indicators` and a `.text` section at entropy
 8.00. A packed installer carrying domains is a fair observation; the wrong
 strong signal is what went.
 
+#### The missing artifacts were MAX_PATH, not antivirus -- 22 Sep
+
+**92 files across 10 of 102 cases never reached the corpus**, recorded all
+along in the manifest as `copy failed: No such file or directory`:
+41 `.crt`, 41 `.key` -- FakeNet's per-host temp certificates -- and 10
+`.bin_` carved PE images. Nothing else. Every JSON, log and report copied.
+
+That pattern invited an antivirus explanation and got one, twice: first
+Defender in the guest, then Bitdefender on the host after it surfaced by
+flagging this project's own `install_guest_agent.ps1` from a simulated clone.
+**Both were wrong.** Bitdefender's quarantine holds eight items ever and
+references nothing in the corpus. The real cause was measured by comparing
+the right two numbers:
+
+    refused files, DESTINATION path   260 - 280 chars, all 92 at or past the limit
+    collected files                   72 - 262 chars, 12,434 of 12,436 under it
+
+Perfect separation at MAX_PATH. **The earlier check measured the source path
+and cleared it** -- the exchange side runs 207-226 characters and is fine.
+The destination is longer for a structural reason: `cases/<case>/<case>/`
+repeats the case name, and it sits under a longer prefix than the exchange
+does. The two sides are not the same length and only one of them was looked
+at.
+
+The tell that should have been read sooner was in the data: `.crt` and
+`.key` were refused in **exact pairs** in every case (1+1, 2+2, 5+5, 9+9).
+Antivirus removing malicious-looking certificates would not pair them so
+neatly; a filename-length cliff crossed by a certificate and its key, which
+differ only in extension, does exactly that.
+
+**The fix was already committed for a different symptom** -- `_extended()` in
+`runcontrol/collect.py` (`3785c53`), written for the two MAX_PATH *void*
+samples, applies to both `os.makedirs` and `shutil.copyfile` on the
+destination. So this is repaired for every future run and cannot be repaired
+for `benign-102-v2`: those 92 files were never copied and the exchange is
+wiped per sample.
+
+The cost was small and specific -- FakeNet certificates for a handful of
+hosts, and the carved images from two of the four cases that produced any.
+One of those two was `Docker-Desktop-Installer`, whose carved image is the
+evidence for a `Strongly Corroborated` verdict nobody can now check.
+
 #### The provision drop for after the corpus -- rebuilt 19 Sep
 
 **`G:\ringforge-artifacts\provision-af6e774-staging\`**, carrying
@@ -2145,14 +2187,20 @@ strong signal is what went.
 `READ-ME-FIRST.txt` holding the sequence below, so the instructions travel
 with the drop rather than living only here.
 
-**Rebuilt 19 Sep to carry the Defender exclusion** (`af6e774`), which is the
-commit that matters most for what comes next: without it the malicious
-corpus's carved images -- real malware code -- are quarantined as they are
-written, destroying the evidence for every `process_injection` finding. The
-receipt now reports `defender_exclusion`, `defender_via_cmdlet` and
+**Rebuilt 19 Sep to carry the Defender exclusion** (`af6e774`). The receipt
+reports `defender_exclusion`, `defender_via_cmdlet` and
 `defender_via_policy`, and **if both booleans are false the exclusion did not
 apply**. Policy-only can need a reboot before Defender honours it, so reboot
 before snapshotting in that case.
+
+**The reason given for that exclusion was wrong, and this is the correction.**
+It was shipped because carved images went missing from two cases, which was
+attributed to Defender in the guest. That attribution was never proved and is
+now disproved -- see *The missing artifacts were MAX_PATH, not antivirus*.
+The exclusion itself is harmless and still defensible on its own terms for a
+malicious corpus, where carved images really are malware bytes and really are
+what an on-access scanner removes. But it fixed nothing that was broken, and
+nothing observed on this bench has ever been shown to be antivirus.
 
 The guest is at **5276ca6**, confirmed from the corpus's own provenance rather
 than from memory (`combined_verdict.json` -> `provenance.analyzer.commit`,

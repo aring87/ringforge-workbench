@@ -111,6 +111,15 @@ def identify(case_home: Path, image: dict) -> str:
     with an empty `carved\\` directory while every JSON beside it survived, so
     the evidence for the highest-severity finding this pipeline produces is
     sometimes absent by the time anyone looks.
+
+    **Why, established 22 Sep:** MAX_PATH on the *destination*, not antivirus.
+    A carved image's name is long -- process, pid, trigger and hex address --
+    and it sits at the deepest point of a tree whose case name is repeated by
+    the doubled `cases/<case>/<case>/` segment. Every one of the 92 files the
+    corpus lost had a destination path at or past 260 characters, and every
+    file it kept was under. Fixed by `_extended()` in `runcontrol/collect.py`,
+    so a later corpus does not lose them; `benign-102-v2` cannot be repaired,
+    because the files were never copied and the exchange is wiped per sample.
     """
     name = str(image.get("carved_file") or "")
     if not name:
