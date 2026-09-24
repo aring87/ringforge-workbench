@@ -349,6 +349,17 @@ function Invoke-Watched {
     Replaces `Start-Process -Wait`, which blocks with no way to report
     anything, for the one step that has been seen to run for two hours.
 
+    **And `-Wait` must not come back, because it is the likely reason for
+    those two hours.** It waits for the process AND EVERYTHING IT STARTED --
+    measured 24 Sep: a parent exiting at once and leaving a 15-second child
+    held `-Wait` for 16.2s, where waiting on the process returned in 0.1s.
+    The sample runs as a descendant of the orchestrator, so malware that
+    installs itself and stays resident kept the old agent blocked after the
+    analysis had finished, until the host's limit expired and the restore
+    erased the finished case. That is exactly what mal-112's Vidar and
+    Remcos runs looked like. This waits on the one process, and the heartbeat
+    lists whatever the sample left running instead of waiting for it.
+
     **`.Handle` is read immediately, and removing that line breaks the exit
     code.** On Windows PowerShell 5.1, a `Start-Process -PassThru` object
     whose handle was never opened while the process lived reports an EMPTY

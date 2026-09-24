@@ -100,6 +100,31 @@ $code = Invoke-Watched -FilePath powershell.exe `
 """)
         self.assertIn("code=[0] type=Int32", out)
 
+    def test_returns_when_its_process_exits_not_when_its_children_do(self) -> None:
+        """The likely cause of mal-112's two-hour timeouts. `Start-Process
+        -Wait` waits for descendants too, so resident malware -- a descendant
+        of the orchestrator -- held the old agent until the host gave up.
+
+        The parent here exits at once and leaves a child that lives ~15s.
+        The control proves the child really outlives it, so a pass cannot
+        come from a child that happened to die early."""
+        out = self.ps(r"""
+$childArgs = @('/c', 'start', '""', '/b', 'ping', '-n', '16', '127.0.0.1', '>nul')
+$t = [Diagnostics.Stopwatch]::StartNew()
+$code = Invoke-Watched -FilePath cmd.exe -ArgumentList $childArgs `
+  -StdOut "$T\o.txt" -StdErr "$T\e.txt" -HeartbeatSeconds 1
+"watched=$([int]$t.Elapsed.TotalSeconds) code=[$code]"
+$t = [Diagnostics.Stopwatch]::StartNew()
+$null = Start-Process -FilePath cmd.exe -ArgumentList $childArgs -NoNewWindow -Wait `
+  -RedirectStandardOutput "$T\o2.txt" -RedirectStandardError "$T\e2.txt"
+"control=$([int]$t.Elapsed.TotalSeconds)"
+""", timeout=120)
+        watched = int(out.split("watched=")[1].split()[0])
+        control = int(out.split("control=")[1].split()[0])
+        self.assertIn("code=[0]", out)
+        self.assertLessEqual(watched, 3, out)
+        self.assertGreaterEqual(control, 12, out)
+
     def test_ontick_sees_the_callers_variables(self) -> None:
         """The agent's tick reads `$work`, `$localRoot` and friends from the
         script scope. Proves that resolves through `Invoke-Watched`."""
