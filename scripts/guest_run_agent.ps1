@@ -75,7 +75,11 @@ param(
   # re-interrogating later: anything malicious, or a sample being worked
   # rather than measured. Asking a NEW question of an old run is what
   # pruning costs.
-  [switch]$KeepRawArtifacts
+  [switch]$KeepRawArtifacts,
+  # How often, during the detonation, the agent writes `ringforge-heartbeat`
+  # and copies its log and the orchestrator's stderr to the exchange. See
+  # `Invoke-Watched`.
+  [int]$HeartbeatSeconds = 60
 )
 
 Set-StrictMode -Version Latest
@@ -279,6 +283,103 @@ function Get-DeliveredSample {
     Select-Object -First 1
 }
 
+function Send-Progress {
+  <#
+    Copy the agent's log, and the orchestrator's stderr if there is one yet,
+    to the exchange. Called after every stage and on every heartbeat.
+
+    **Why this exists: two malware runs on 23 Sep ran to the host's limit and
+    brought home nothing but `ringforge-ready`.** The log only went home after
+    the case copy or inside the `catch`, so a run that hangs -- or whose agent
+    is killed -- sent neither, and the next restore erased the guest's copy.
+    Two hours each, and not one line saying where they stopped.
+
+    Never throws and never returns output. Progress reporting that can fail a
+    run would repeat the pruning mistake: a side job taking a finished
+    detonation down with it.
+  #>
+  param([string]$Work, [string]$LocalRoot, [string]$LogFile)
+  if (-not $Work) { return }
+  try { Copy-Item -LiteralPath $LogFile -Destination (Join-Path $Work "agent.log") -Force } catch { }
+  if ($LocalRoot) {
+    $stderr = Join-Path $LocalRoot "detonate.stderr.txt"
+    if (Test-Path -LiteralPath $stderr) {
+      try { Copy-Item -LiteralPath $stderr -Destination $Work -Force } catch { }
+    }
+  }
+}
+
+function Write-Heartbeat {
+  <#
+    Write `ringforge-heartbeat` to the exchange: the time, how long the
+    detonation has run, whether its process is alive, and every process that
+    was not running when the detonation began.
+
+    Read it after a timeout. A stale timestamp says the agent died and when;
+    `alive False` with a fresh timestamp says the orchestrator exited and the
+    agent did not move on; the process list shows what the sample started and
+    whether the bench's own tools are still there. The name starts with
+    `ringforge-`, so `Get-DeliveredSample` can never mistake it for a sample.
+    Never throws.
+  #>
+  param([string]$Work, [datetime]$Since, $Process, [int[]]$BaselinePids)
+  if (-not $Work) { return }
+  try {
+    $now = Get-Date
+    $alive = try { -not $Process.HasExited } catch { "unknown" }
+    $new = @(Get-Process -ErrorAction SilentlyContinue |
+             Where-Object { $BaselinePids -notcontains $_.Id } |
+             Sort-Object Id |
+             ForEach-Object { "  {0,6} {1}" -f $_.Id, $_.ProcessName })
+    $lines = @(
+      "utc       $($now.ToUniversalTime().ToString('o'))",
+      ("elapsed   {0:N0}s" -f ($now - $Since).TotalSeconds),
+      "detonate  pid $(try { $Process.Id } catch { '?' }) alive $alive",
+      "new processes since the detonation began: $($new.Count)"
+    ) + ($new | Select-Object -First 200)
+    Write-Utf8NoBom -Path (Join-Path $Work "ringforge-heartbeat") -Text (($lines -join "`n") + "`n")
+  } catch { }
+}
+
+function Invoke-Watched {
+  <#
+    Start a process, call `$OnTick` every `$HeartbeatSeconds` until it exits
+    and once more after, and return its exit code.
+
+    Replaces `Start-Process -Wait`, which blocks with no way to report
+    anything, for the one step that has been seen to run for two hours.
+
+    **`.Handle` is read immediately, and removing that line breaks the exit
+    code.** On Windows PowerShell 5.1, a `Start-Process -PassThru` object
+    whose handle was never opened while the process lived reports an EMPTY
+    `ExitCode` -- measured 23 Sep: `cmd /c exit 7` read back as nothing
+    without it and as 7 with it. `-Wait` had been hiding that. An empty exit
+    code would compare unequal to 4, so a containment refusal would be
+    carried on past rather than stopping the sweep.
+
+    `$OnTick` receives the process. Its failures and its output are both
+    swallowed, so nothing it does can change what this returns.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)][string]$StdOut,
+    [Parameter(Mandatory = $true)][string]$StdErr,
+    [int]$HeartbeatSeconds = 60,
+    [scriptblock]$OnTick = { }
+  )
+  $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -PassThru `
+    -RedirectStandardOutput $StdOut -RedirectStandardError $StdErr
+  $null = $proc.Handle
+  $interval = [Math]::Max(1, $HeartbeatSeconds) * 1000
+  while (-not $proc.WaitForExit($interval)) {
+    try { & $OnTick $proc | Out-Null } catch { }
+  }
+  $proc.WaitForExit()
+  try { & $OnTick $proc | Out-Null } catch { }
+  return $proc.ExitCode
+}
+
 # ---------------------------------------------------------------------------
 
 try {
@@ -370,6 +471,7 @@ try {
   "collection up at " + (Get-Date).ToUniversalTime().ToString("o") |
     Set-Content -LiteralPath $readyFile -Encoding utf8
   Write-Log "signalled ready"
+  Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
 
   if ($WhatIfOnly) {
     Write-Log "WhatIfOnly: not detonating"
@@ -422,6 +524,8 @@ try {
     # stdout arrives as one string per line, so joining restores it exactly.
     $scanJson = (& $py -m ringforge.cli scan $sample.FullName --case $caseName --json) -join "`n"
     Write-Utf8NoBom -Path (Join-Path $localRoot "scan.json") -Text $scanJson
+    Write-Log "static triage finished"
+    Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
 
     # **The detonation, which this agent did not do for its first 102
     # samples.** It ran `scan` and `combine` and nothing else, so every swept
@@ -442,11 +546,23 @@ try {
     # a clean exit, which would make every run look failed.
     $detonateOut = Join-Path $localRoot "detonate.json"
     $detonateErr = Join-Path $localRoot "detonate.stderr.txt"
-    $proc = Start-Process -FilePath $py -NoNewWindow -Wait -PassThru `
+    #
+    # **Watched rather than waited on, with a heartbeat to the exchange.** This
+    # is the step two malware runs sat in for two hours on 23 Sep, and a
+    # blocking wait could report nothing until it returned -- which it never
+    # did. See `Invoke-Watched` and `Write-Heartbeat`.
+    $baselinePids = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    $detonateStarted = Get-Date
+    Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
+    $detonateExit = Invoke-Watched -FilePath $py `
       -ArgumentList @('-m', 'ringforge.cli', 'detonate', $sample.FullName,
                       '--case-dir', $caseHome, '--json') `
-      -RedirectStandardOutput $detonateOut -RedirectStandardError $detonateErr
-    $detonateExit = $proc.ExitCode
+      -StdOut $detonateOut -StdErr $detonateErr -HeartbeatSeconds $HeartbeatSeconds `
+      -OnTick {
+        param($p)
+        Write-Heartbeat -Work $work -Since $detonateStarted -Process $p -BaselinePids $baselinePids
+        Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
+      }
 
     if ($detonateExit -eq 4) {
       # Containment refused the run. Fatal on purpose and it must stay fatal:
@@ -466,10 +582,13 @@ try {
     } else {
       Write-Log "detonation finished"
     }
+    Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
 
     Write-Log "combining"
     $combinedJson = (& $py -m ringforge.cli combine $caseHome --json) -join "`n"
     Write-Utf8NoBom -Path (Join-Path $localRoot "combined.json") -Text $combinedJson
+    Write-Log "combine finished"
+    Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
   }
   finally {
     Pop-Location
