@@ -2701,11 +2701,25 @@ plugins**, so this is evidence the corpus does not have. The refusal is
 deliberate and the manifest names every file; whether to widen the set is a
 decision about how much a hostile filename may do on the host, not a bug.
 
+#### Sample 1 recovered, 28 Sep -- and the path block outlives the quarantine
+
+`mal-112b-s1`: AsyncRAT `08efdc76f380`, completed in 3,146 s, usable,
+**Strongly Corroborated 180**. **With it the corpus is 110 usable of 112:
+108 (98%) above No Evidence, 96 (87%) Corroborated or stronger**, AsyncRAT
+9 of 10 Strongly Corroborated. The table above is the 109; add this row.
+
+**Deleting the quarantine entry did not free the path.** Bitdefender went on
+refusing any write to exactly `G:\ringforge-exchange\current\08efdc76f380.exe`
+-- any letter case, harmless text as readily as the sample -- while
+`08efdc76f380.bin`, `08efdc76f380.exe.tmp` and the same name in another
+folder were all writable. So it ran as a byte-identical, hash-verified copy
+at `G:\malware-corpus\sweep-s1\08efdc76f380-s1.exe`, with a `WHY.txt` beside
+it; the case name carries the `-s1`. **Re-test that path after a reboot**:
+if the block is in memory it clears, and if not, anything ever delivered to
+the exchange under that name will void in a second.
+
 #### Next
 
-* **Sample 1, AsyncRAT `08efdc76f380`.** Delete its Bitdefender quarantine
-  entry (`G:\ringforge-exchange\current\08efdc76f380.exe`, not Restore),
-  then detonate it alone under its own run id and add it to the 109.
 * **The deferred measurements this corpus exists for.**
   `scripts/injection_sweep.py` says it cannot justify changing the
   `process_injection` rule without a detonated malware corpus to measure
