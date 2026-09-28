@@ -2714,9 +2714,10 @@ refusing any write to exactly `G:\ringforge-exchange\current\08efdc76f380.exe`
 `08efdc76f380.bin`, `08efdc76f380.exe.tmp` and the same name in another
 folder were all writable. So it ran as a byte-identical, hash-verified copy
 at `G:\malware-corpus\sweep-s1\08efdc76f380-s1.exe`, with a `WHY.txt` beside
-it; the case name carries the `-s1`. **Re-test that path after a reboot**:
-if the block is in memory it clears, and if not, anything ever delivered to
-the exchange under that name will void in a second.
+it; the case name carries the `-s1`. **A reboot cleared it** (re-tested 28
+Sep 10:40): the block was held in memory, so the recipe for the next
+quarantine on the exchange is **Delete the entry, then restart the host** --
+not Restore, and not delete alone.
 
 #### Next
 
