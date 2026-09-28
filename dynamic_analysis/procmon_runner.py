@@ -96,10 +96,22 @@ def terminate_procmon_capture(procmon_path: str | Path) -> None:
     time.sleep(3)
 
 
+#: How long `/SaveAs` may take. **Measured, 28 Sep, over 195 exports in the
+#: benign and malware corpora:** it was 120 s, and 19 malware exports hit it
+#: while the slowest twelve that finished took 99-118 s -- six of them benign,
+#: so both corpora ran at the edge. Time does not follow capture size (504 MB
+#: timed out where 2,112 MB finished; 0.7 to 27 MB/s), so no size-scaled
+#: limit is defensible and this is a fixed ceiling well clear of anything
+#: seen. Its worst case costs 15 minutes of a 7,200 s run budget, and a run
+#: that reaches it still survives -- see the `TimeoutExpired` handling below.
+EXPORT_TIMEOUT_SECONDS = 900
+
+
 def export_procmon_csv(
     procmon_path: str | Path,
     backing_file: str | Path,
     csv_path: str | Path,
+    timeout: float = EXPORT_TIMEOUT_SECONDS,
 ) -> Path:
     procmon = ensure_procmon_exists(procmon_path)
     backing = Path(backing_file)
@@ -117,7 +129,28 @@ def export_procmon_csv(
         "/SaveAs", str(csv_out),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, creationflags=no_window())
+    # **A timeout is a ProcmonError, and that is the fix, not the limit.** The
+    # orchestrator catches ProcmonError from this call and carries on without
+    # Procmon, precisely so one collector cannot take the others' evidence
+    # down with it. `subprocess.TimeoutExpired` is not a ProcmonError, so it
+    # walked straight past that handler and killed the whole dynamic module:
+    # 17 of mal-112b's 109 usable runs came home static-only this way, their
+    # memory dumps, Sysmon, network and persistence diffs discarded for want
+    # of one CSV. `run` has already killed Procmon by the time this raises.
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=timeout, creationflags=no_window())
+    except subprocess.TimeoutExpired as error:
+        # A half-written CSV must not survive to be parsed as a whole one.
+        # The caller gates on success, but a file on disk outlives the gate.
+        try:
+            csv_out.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ProcmonError(
+            f"Procmon CSV export did not finish within {timeout:.0f}s "
+            f"(backing file {backing}); continuing without Procmon"
+        ) from error
 
     if result.returncode not in (0, None):
         raise ProcmonError(
