@@ -41,22 +41,35 @@ Two things this measures
 * **bundled assemblies** -- a .NET image in file layout whose carved bytes
   carry a recognisable assembly identity is a dependency, not a payload.
 
-**WHAT THIS CANNOT TELL YOU, AND IT MATTERS MOST**
---------------------------------------------------
+**The malware half, 28 Sep -- and the answer is keep the shipped rule**
+----------------------------------------------------------------------
 
-`capability_sweep.py` accepts a change only if detection rises while the
-benign rate does not. **That test cannot be run here.** `pe_carve` needs
-memory dumps, so it needs a *detonation*, and the only detonated corpus on
-this bench is the benign one. The malware corpora under
-`Downloads\ringforge\cases` are static cases with no dynamic runs in them.
+Until `mal-112b` this printed a benign rate and refused to print a lift,
+because a benign rate alone is what produced the rule being questioned. With
+89 benign and 82 malware detonations:
 
-So this prints a benign rate and no lift. A benign rate alone is exactly the
-evidence that produced the rule being questioned -- 16 processes, zero images
--- and half an argument twice does not make a whole one. **Nothing should be
-changed on the strength of this file.** What it establishes is that the
-current rule misfires on ordinary .NET software and roughly how often; what
-would justify a change is the same measurement over a detonated malware
-corpus, which does not exist yet.
+    shipped: unmapped_images > 0            4.5%   29.3%    6.5x
+    deduplicated by (sha256, address)       4.5%   29.3%    6.5x
+    ... and bundled assemblies set aside    2.2%   28.0%   12.5x
+
+**The lift says ship the bundled exclusion; the verdicts say do not.**
+Re-scoring copies of the three cases it touches, with a control that
+reproduced each stored band first: both Overwolf updaters stay **Strongly
+Corroborated** (110 -> 75; four other categories hold the band), and
+malware `5b95fac31cea` -- **RedLine** -- falls **Corroborated 70 -> Single
+Observation 35**, losing its only strong signal. RedLine bundles
+Newtonsoft.Json exactly as Overwolf does, so a bundled Json.NET image is
+not a benign tell. The benign false positives this file was written about
+are no longer carried by this rule alone, and the one verdict the change
+moves is a stealer's.
+
+Dedup changes no verdict; it only makes the evidence line count true images.
+
+The denominator is every run with a `dynamic_run_summary.json`. **28 of the
+109 usable `mal-112b` cases have none** -- 17 lost the dynamic module to
+Procmon's 120 s `/SaveAs` export limit, 8 would not execute, 2 are DLLs the
+orchestrator refuses, 1 an SSL error -- and 9 of 98 benign are ARM64 builds
+that never ran. They are not detonations and are not counted.
 
     .venv\\Scripts\\python.exe scripts\\injection_sweep.py
 
@@ -75,10 +88,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-#: Every detonated corpus on this bench. Add malware here the day one exists
-#: -- that is the missing half, and the reason this file refuses to conclude.
-_DETONATED = {
+#: Every detonated corpus on this bench, by side. The malware half arrived 28
+#: Sep: `mal-112b`, 109 usable of 112, plus sample 1 run on its own as
+#: `mal-112b-s1` after a Bitdefender path block voided it in the sweep. The
+#: diagnostic runs (`vidar-diag-*`, `remcos-diag-*`, `rehearsal-*`) repeat
+#: samples already counted here and are deliberately left out.
+_BENIGN_DETONATED = {
     "benign-102-v2": r"G:\ringforge-runs\benign-102-v2\cases",
+}
+_MALWARE_DETONATED = {
+    "mal-112b": r"G:\ringforge-runs\mal-112b\cases",
+    "mal-112b-s1": r"G:\ringforge-runs\mal-112b-s1\cases",
 }
 
 #: Assembly names that identify a carved image as a dependency rather than a
@@ -90,15 +110,22 @@ _BUNDLED_MARKERS = (
 
 
 def carve_summaries(root: Path):
-    """Every dynamic run under a corpus, with its carve counts and images."""
+    """Every dynamic run under a corpus, with its carve counts and images.
+
+    **Every run that detonated, including the ones the carver had nothing
+    from.** An empty `pe_carve_summary` means no dump was carved, so the rule
+    cannot fire -- that is a detonation that did not fire, and it belongs in
+    the denominator. This used to skip them, which dropped 8 of 89 benign and
+    7 of 82 malware detonations and inflated both rates. A case with no
+    `dynamic_run_summary.json` at all never detonated (static-only) and is
+    not a detonation of any kind, so it is correctly absent.
+    """
     for summary in sorted(Path(root).rglob("dynamic_run_summary.json")):
         try:
             document = json.loads(summary.read_text(encoding="utf-8-sig"))
         except Exception:                             # noqa: BLE001
             continue
         carve = document.get("pe_carve_summary") or {}
-        if not carve.get("counts"):
-            continue
         # `<case>/dynamic_analysis/dynamic_runs/<run>/metadata/<this>`
         yield summary.parents[4], carve
 
@@ -136,93 +163,114 @@ def identify(case_home: Path, image: dict) -> str:
     return "unidentified"
 
 
+def measure(root: Path) -> dict:
+    """The three rule variants over one corpus, with per-case detail."""
+    runs = 0
+    fires = 0                 # runs the shipped rule calls strong
+    after_dedup = 0           # ... counting one image once
+    after_bundled = 0         # ... and setting bundled dependencies aside
+    detail = []
+
+    for case_home, carve in carve_summaries(root):
+        runs += 1
+        counts = carve.get("counts") or {}
+        images = carve.get("images") or []
+        unmapped = [i for i in images
+                    if i.get("classification") == "unmapped"]
+        reported = int(counts.get("unmapped_images", 0) or 0)
+        if reported <= 0:
+            continue
+
+        fires += 1
+        distinct = {(i.get("carved_sha256"), i.get("virtual_address"))
+                    for i in unmapped}
+        if distinct:
+            after_dedup += 1
+
+        kinds = [identify(case_home, i) for i in unmapped]
+        remaining = {
+            key for key, kind in zip(
+                [(i.get("carved_sha256"), i.get("virtual_address"))
+                 for i in unmapped], kinds)
+            if kind != "bundled"
+        }
+        if remaining:
+            after_bundled += 1
+
+        detail.append((case_home.name, reported, len(distinct),
+                       kinds.count("bundled"), kinds.count("gone"),
+                       kinds.count("unidentified")))
+
+    # A case whose carved bytes are gone cannot be shown to be a dependency,
+    # so it counts against the change it might have supported.
+    unprovable = sum(1 for row in detail if row[4] and not row[3])
+    return {"runs": runs, "fires": fires, "after_dedup": after_dedup,
+            "after_bundled": after_bundled, "unprovable": unprovable,
+            "detail": detail}
+
+
+def _pool(results: list[dict]) -> dict:
+    keys = ("runs", "fires", "after_dedup", "after_bundled", "unprovable")
+    return {k: sum(r[k] for r in results) for k in keys}
+
+
+def _pct(n: int, d: int) -> float:
+    return 100.0 * n / d if d else 0.0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.parse_args(argv)
 
-    for label, root in _DETONATED.items():
-        if not Path(root).is_dir():
-            print(f"{label}: not on this host ({root})")
-            continue
-
-        runs = 0
-        fires = 0                 # runs the shipped rule calls strong
-        after_dedup = 0           # ... counting one image once
-        after_bundled = 0         # ... and setting bundled dependencies aside
-        detail = []
-
-        for case_home, carve in carve_summaries(Path(root)):
-            runs += 1
-            counts = carve.get("counts") or {}
-            images = carve.get("images") or []
-            unmapped = [i for i in images
-                        if i.get("classification") == "unmapped"]
-            reported = int(counts.get("unmapped_images", 0) or 0)
-            if reported <= 0:
+    sides: dict[str, list[dict]] = {"benign": [], "malware": []}
+    for side, corpora in (("benign", _BENIGN_DETONATED),
+                          ("malware", _MALWARE_DETONATED)):
+        for label, root in corpora.items():
+            if not Path(root).is_dir():
+                print(f"{label}: not on this host ({root})")
                 continue
+            result = measure(Path(root))
+            sides[side].append(result)
 
-            fires += 1
-            distinct = {(i.get("carved_sha256"), i.get("virtual_address"))
-                        for i in unmapped}
-            if distinct:
-                after_dedup += 1
-
-            kinds = [identify(case_home, i) for i in unmapped]
-            remaining = {
-                key for key, kind in zip(
-                    [(i.get("carved_sha256"), i.get("virtual_address"))
-                     for i in unmapped], kinds)
-                if kind != "bundled"
-            }
-            if remaining:
-                after_bundled += 1
-
-            detail.append((case_home.name, reported, len(distinct),
-                           kinds.count("bundled"), kinds.count("gone"),
-                           kinds.count("unidentified")))
-
-        print(f"=== {label}: {runs} detonated run(s)")
-        if not runs:
-            continue
-        print(f"{'case':40s} {'counted':>8} {'distinct':>9} "
-              f"{'bundled':>8} {'gone':>6} {'unknown':>8}")
-        for row in detail:
-            print(f"{row[0][:40]:40s} {row[1]:8d} {row[2]:9d} "
-                  f"{row[3]:8d} {row[4]:6d} {row[5]:8d}")
-
-        def rate(n):
-            return 100.0 * n / runs if runs else 0.0
-
-        print()
-        print(f"{'rule':44s} {'fires':>6} {'benign rate':>12}")
-        print(f"{'shipped: unmapped_images > 0':44s} {fires:6d} "
-              f"{rate(fires):11.1f}%")
-        print(f"{'deduplicated by (sha256, address)':44s} {after_dedup:6d} "
-              f"{rate(after_dedup):11.1f}%")
-        print(f"{'... and bundled assemblies set aside':44s} "
-              f"{after_bundled:6d} {rate(after_bundled):11.1f}%")
-
-        # The last figure is an upper bound, not a measurement. A case whose
-        # carved bytes are gone cannot be shown to be a dependency, so it
-        # counts against the change it might have supported.
-        unprovable = sum(1 for row in detail if row[4] and not row[3])
-        if unprovable:
+            print(f"=== {label} ({side}): {result['runs']} detonated run(s), "
+                  f"{result['fires']} firing")
+            if result["detail"]:
+                print(f"{'case':40s} {'counted':>8} {'distinct':>9} "
+                      f"{'bundled':>8} {'gone':>6} {'unknown':>8}")
+                for row in result["detail"]:
+                    print(f"{row[0][:40]:40s} {row[1]:8d} {row[2]:9d} "
+                          f"{row[3]:8d} {row[4]:6d} {row[5]:8d}")
             print()
-            print(f"  {unprovable} of the {fires} firing case(s) carved "
-                  f"nothing that survived, so they cannot be identified "
-                  f"either way.")
-            print(f"  The {rate(after_bundled):.1f}% is therefore a ceiling: "
-                  f"it counts every unidentifiable case as a real finding, "
-                  f"and the floor is "
-                  f"{rate(max(0, after_bundled - unprovable)):.1f}%.")
-        print()
 
-    print("NO LIFT IS PRINTED, AND THAT IS THE POINT.")
-    print("  pe_carve needs memory dumps, so it needs a detonation, and the")
-    print("  only detonated corpus here is benign. A benign rate on its own is")
-    print("  what produced the rule being questioned -- 16 processes, zero")
-    print("  images. Nothing should change until the same measurement exists")
-    print("  over a detonated malware corpus.")
+    benign, malware = _pool(sides["benign"]), _pool(sides["malware"])
+    if not benign["runs"] or not malware["runs"]:
+        print("NO LIFT: one side has no detonated runs on this host. A rate")
+        print("  on one side alone is what produced the rule being questioned.")
+        return 0
+
+    print(f"=== lift: {benign['runs']} benign against {malware['runs']} "
+          f"malware detonations")
+    print(f"{'rule':40s} {'benign':>13} {'malware':>14} {'lift':>7}")
+    for label, key in (("shipped: unmapped_images > 0", "fires"),
+                       ("deduplicated by (sha256, address)", "after_dedup"),
+                       ("... and bundled assemblies set aside",
+                        "after_bundled")):
+        b, m = benign[key], malware[key]
+        rb, rm = _pct(b, benign["runs"]), _pct(m, malware["runs"])
+        lift = f"{rm / rb:.1f}x" if rb else "inf"
+        print(f"{label:40s} {b:3d} {rb:7.1f}%  {m:4d} {rm:7.1f}% {lift:>7}")
+
+    # The bundled figures are bounds, not measurements, on both sides: a
+    # firing case whose carved bytes are gone can be shown to be neither a
+    # dependency nor a payload, so it is counted as still firing.
+    for side, pooled in (("benign", benign), ("malware", malware)):
+        if pooled["unprovable"]:
+            print(f"  {side}: {pooled['unprovable']} firing case(s) carved "
+                  f"nothing that survived and cannot be identified either "
+                  f"way; the bundled row counts them as still firing.")
+    print()
+    print("Nothing here edits the rule. A change is justified only if the")
+    print("benign rate falls while the malware rate holds -- read both columns.")
     return 0
 
 
