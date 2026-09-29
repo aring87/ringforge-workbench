@@ -110,9 +110,24 @@ def ensure_dir(path: str | Path) -> Path:
 
 
 def write_json(path: str | Path, data: Any) -> Path:
+    """Write `data` as indented JSON, streamed rather than built in memory.
+
+    **`json.dump` to the open file, not `json.dumps` then write.** `dumps`
+    joins every chunk into one string before a byte reaches disk, so peak
+    memory is the whole serialised document on top of the data it came from.
+    Measured 29 Sep: Amadey `5d2d7935d6fa` exported a 1,697 MB Procmon CSV
+    and the guest raised MemoryError here, writing `parsed_events.json` --
+    and the dynamic module died with it, for a file the agent prunes before
+    the case even goes home. `dump` writes each chunk as it is produced.
+
+    Same text as before, byte for byte: the same encoder with the same
+    arguments, and text mode with the default newline handling that
+    `write_text` used.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    with open(p, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
     return p
 
 

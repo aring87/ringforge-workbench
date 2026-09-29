@@ -46,9 +46,10 @@ hollow raises one category rather than three.
 from __future__ import annotations
 
 import mmap
+import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from .crash_evidence import HOLLOWING_TARGETS
 from .pe_carve import _Region, _streams, read_modules, read_regions
@@ -531,6 +532,83 @@ def analyze_dump(path: str | Path, roots: Iterable[str] = ()) -> dict[str, Any]:
     except OSError as exc:
         out["error"] = str(exc)
     return out
+
+
+#: Wall-clock seconds the pass may spend across all of a run's dumps.
+#: **Measured 29 Sep over 177 runs:** median 17 s, 95th percentile 104 s,
+#: slowest finished pass 483 s. One run did not finish: GuLoader
+#: `f306f95f4a9b`, 13 dumps at about 200 s each, still inside this pass when
+#: the host's 7,200 s run limit expired -- so the case came home with nothing,
+#: which cost far more than the dumps this skips. 900 s touches that run and
+#: none of the other 176.
+BUDGET_SECONDS = 900.0
+
+
+def prioritise_dumps(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order dumps so a budget spends itself on distinct processes first.
+
+    **The latest dump of each process, then the rest.** A process dumped at
+    several offsets repeats most of its module list, and the latest dump is
+    the one taken after any hollowing -- which is what this pass looks for.
+    Crash dumps arrive after the scheduled ones, so for a process that crashed
+    its crash image is its latest and goes first, as it should: it is often
+    the only image taken after the payload was written. A record without a
+    pid stands alone. Order within each group is the order given.
+    """
+    latest: dict[Any, int] = {}
+    for index, record in enumerate(records):
+        pid = record.get("pid")
+        key = ("pid", pid) if pid is not None else ("path", record.get("path"))
+        latest[key] = index
+    first = sorted(set(latest.values()))
+    chosen = set(first)
+    rest = [i for i in range(len(records)) if i not in chosen]
+    return [records[i] for i in first + rest]
+
+
+def assess_dumps(
+    records: Iterable[dict[str, Any]],
+    budget_seconds: float = BUDGET_SECONDS,
+    *,
+    analyze: Callable[[str], dict[str, Any]] = analyze_dump,
+    clock: Callable[[], float] = time.monotonic,
+    emit: Callable[[str], None] = lambda _message: None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run the pass over a run's dumps within a time budget.
+
+    Returns the per-dump results and a record of the budget. **A dump the
+    budget did not reach is named, never silently dropped** -- the same rule as
+    `no_reference`: "could not tell" must not read as "nothing modified". At
+    least one dump is always assessed, however small the budget.
+
+    Checked between dumps, not inside one: a dump in progress runs to the end,
+    so the pass can overrun by one dump's worth. At the ~200 s per dump that
+    prompted this, that is tolerable; cutting a dump off part-way would leave
+    a half-compared module list that looks like a whole one.
+    """
+    ordered = prioritise_dumps(
+        [r for r in records if isinstance(r, dict) and r.get("path")])
+    started = clock()
+    results: list[dict[str, Any]] = []
+    not_assessed: list[str] = []
+    for index, record in enumerate(ordered, 1):
+        if results and clock() - started >= budget_seconds:
+            not_assessed = [Path(r["path"]).name for r in ordered[index - 1:]]
+            break
+        # Emitted before the work, as the loop it replaces did: a slow dump
+        # must not look like a hung one.
+        emit(f"  module integrity: dump {index} of {len(ordered)}, "
+             f"{Path(record['path']).name}")
+        results.append(analyze(record["path"]))
+    budget = {
+        "budget_seconds": budget_seconds,
+        "elapsed_seconds": round(clock() - started, 1),
+        "dumps_total": len(ordered),
+        "dumps_assessed": len(results),
+        "dumps_not_assessed": not_assessed,
+        "budget_exhausted": bool(not_assessed),
+    }
+    return results, budget
 
 
 def summarize_module_integrity(results: Iterable[dict[str, Any]]) -> dict[str, Any]:

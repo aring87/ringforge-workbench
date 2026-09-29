@@ -58,7 +58,9 @@ from dynamic_analysis.memory_dump import (
     summarize_memory_dumps,
 )
 from dynamic_analysis.module_integrity import (
+    BUDGET_SECONDS as MODULE_INTEGRITY_BUDGET_SECONDS,
     analyze_dump as analyze_module_integrity,
+    assess_dumps as assess_module_dumps,
     summarize_module_integrity,
 )
 from dynamic_analysis.pe_carve import (
@@ -2228,6 +2230,8 @@ def run_dynamic_analysis(
     pe_carve_json = paths["memory"] / "carved_pe.json"
     pe_carve_dir = paths["memory"] / "carved"
     module_integrity_enabled = bool(config.get("module_integrity_enabled", True))
+    module_integrity_budget = float(config.get("module_integrity_budget_seconds",
+                                               MODULE_INTEGRITY_BUDGET_SECONDS))
     module_integrity_json = paths["memory"] / "module_integrity.json"
 
     # Preflight so the report records exactly which telemetry was possible.
@@ -2990,145 +2994,177 @@ def run_dynamic_analysis(
                     procmon_started = False
 
             if procmon_exported:
-                _emit(status_cb, "Parsing Procmon events...")
-                events = parse_procmon_csv(procmon_csv)
-                write_json(procmon_json, events)
-                procmon_summary = summarize_procmon_events(events)
+                # **A MemoryError here drops Procmon, not the detonation.** The
+                # same rule as the export's ProcmonError handler above: one
+                # collector must not take the others' evidence with it. Measured
+                # 29 Sep on Amadey `5d2d7935d6fa`, a 1,697 MB CSV: the export
+                # finished, then writing every parsed event raised MemoryError and
+                # the dumps, Sysmon, network and persistence diffs went with it.
+                # `write_json` now streams, which removed that instance; this is
+                # the guard for the next one. Everything this block derives is
+                # reset to its not-collected default, so a half-built chain cannot
+                # be scored as a whole one.
+                try:
+                    _emit(status_cb, "Parsing Procmon events...")
+                    events = parse_procmon_csv(procmon_csv)
+                    write_json(procmon_json, events)
+                    procmon_summary = summarize_procmon_events(events)
 
-                _emit(status_cb, "Filtering interesting Procmon events...")
-                interesting_events = find_interesting_events(events)
-                write_json(procmon_interesting_json, interesting_events)
-                procmon_interesting_summary = summarize_interesting_events(interesting_events)
+                    _emit(status_cb, "Filtering interesting Procmon events...")
+                    interesting_events = find_interesting_events(events)
+                    write_json(procmon_interesting_json, interesting_events)
+                    procmon_interesting_summary = summarize_interesting_events(interesting_events)
 
-                # Findings first, because the dropped-file triage needs the
-                # lineage this resolves. Attributing drops without it counted
-                # two libraries written by msedgewebview2 as the sample's, and
-                # took payload_dropped to strong on a loader that drops nothing.
-                _emit(status_cb, "Building dynamic findings summary...")
-                findings_summary = summarize_dynamic_findings(
-                    events,
-                    interesting_events,
-                    sample_pid=sample_pid_seen.get("pid"),
-                    sample_name=sample_path.name,
-                )
-                write_json(findings_json, findings_summary)
-
-                # Did the sample's chain end by crash? A deliberate
-                # anti-analysis bail and a broken payload leave the same trace
-                # from outside, so this is not scored -- it is a guard against a
-                # crashed chain reading as a clean run. Built here because it
-                # needs the sample's lineage and its spawned WerFault.
-                resolved = findings_summary.get("descendant_pids")
-                abnormal_termination = summarize_abnormal_termination(
-                    crash_summary,
-                    process_records=findings_summary.get("spawned_processes", []),
-                    descendant_pids=set(resolved) if resolved is not None else None,
-                )
-                if abnormal_termination.get("chain_crashed"):
-                    tail = (
-                        " (seen only via WerFault, no Application Error event)"
-                        if abnormal_termination.get("witnessed_only_by_werfault")
-                        else ""
+                    # Findings first, because the dropped-file triage needs the
+                    # lineage this resolves. Attributing drops without it counted
+                    # two libraries written by msedgewebview2 as the sample's, and
+                    # took payload_dropped to strong on a loader that drops nothing.
+                    _emit(status_cb, "Building dynamic findings summary...")
+                    findings_summary = summarize_dynamic_findings(
+                        events,
+                        interesting_events,
+                        sample_pid=sample_pid_seen.get("pid"),
+                        sample_name=sample_path.name,
                     )
-                    _emit(
-                        status_cb,
-                        "Abnormal termination: a process in the sample's tree "
-                        f"crashed{tail}. A deliberate bail is indistinguishable "
-                        "from a broken payload -- treat a quiet result as "
-                        "inconclusive.",
+                    write_json(findings_json, findings_summary)
+
+                    # Did the sample's chain end by crash? A deliberate
+                    # anti-analysis bail and a broken payload leave the same trace
+                    # from outside, so this is not scored -- it is a guard against a
+                    # crashed chain reading as a clean run. Built here because it
+                    # needs the sample's lineage and its spawned WerFault.
+                    resolved = findings_summary.get("descendant_pids")
+                    abnormal_termination = summarize_abnormal_termination(
+                        crash_summary,
+                        process_records=findings_summary.get("spawned_processes", []),
+                        descendant_pids=set(resolved) if resolved is not None else None,
                     )
+                    if abnormal_termination.get("chain_crashed"):
+                        tail = (
+                            " (seen only via WerFault, no Application Error event)"
+                            if abnormal_termination.get("witnessed_only_by_werfault")
+                            else ""
+                        )
+                        _emit(
+                            status_cb,
+                            "Abnormal termination: a process in the sample's tree "
+                            f"crashed{tail}. A deliberate bail is indistinguishable "
+                            "from a broken payload -- treat a quiet result as "
+                            "inconclusive.",
+                        )
 
-                # What the sample read, as opposed to what it did. Gap 4's other
-                # half: an anti-analysis bail and a broken payload look the same
-                # from outside, and the one thing that separates them is whether
-                # the sample enumerated the hypervisor first. Not scored --
-                # reading SystemBiosVersion is not malicious -- and taken over
-                # the full event stream rather than the interesting events,
-                # because a read is deliberately never high signal.
-                _emit(status_cb, "Collecting registry reads of VM artifacts...")
-                vm_artifact_reads = collect_vm_artifact_reads(
-                    events,
-                    descendant_pids=set(resolved) if resolved is not None else None,
-                )
-                write_json(vm_artifact_reads_json, vm_artifact_reads)
-
-                if not vm_artifact_reads.get("collection_available"):
-                    _emit(
-                        status_cb,
-                        "This Procmon config captured no registry reads, so a VM "
-                        "check could not have been seen. Use "
-                        "ringforge/_data/procmon-configs/dynamic_registry_reads.pmc to "
-                        "collect them.",
+                    # What the sample read, as opposed to what it did. Gap 4's other
+                    # half: an anti-analysis bail and a broken payload look the same
+                    # from outside, and the one thing that separates them is whether
+                    # the sample enumerated the hypervisor first. Not scored --
+                    # reading SystemBiosVersion is not malicious -- and taken over
+                    # the full event stream rather than the interesting events,
+                    # because a read is deliberately never high signal.
+                    _emit(status_cb, "Collecting registry reads of VM artifacts...")
+                    vm_artifact_reads = collect_vm_artifact_reads(
+                        events,
+                        descendant_pids=set(resolved) if resolved is not None else None,
                     )
-                else:
-                    vm_counts = vm_artifact_reads.get("counts", {})
-                    _emit(
-                        status_cb,
-                        f"Registry reads: {vm_artifact_reads.get('sample_reads', 0)} by the "
-                        f"sample's tree, {vm_counts.get('artifacts_read', 0)} of them naming a "
-                        f"VM artifact ({vm_counts.get('vm_specific', 0)} VM-specific), "
-                        f"{vm_artifact_reads.get('background_reads', 0)} by other processes.",
+                    write_json(vm_artifact_reads_json, vm_artifact_reads)
+
+                    if not vm_artifact_reads.get("collection_available"):
+                        _emit(
+                            status_cb,
+                            "This Procmon config captured no registry reads, so a VM "
+                            "check could not have been seen. Use "
+                            "ringforge/_data/procmon-configs/dynamic_registry_reads.pmc to "
+                            "collect them.",
+                        )
+                    else:
+                        vm_counts = vm_artifact_reads.get("counts", {})
+                        _emit(
+                            status_cb,
+                            f"Registry reads: {vm_artifact_reads.get('sample_reads', 0)} by the "
+                            f"sample's tree, {vm_counts.get('artifacts_read', 0)} of them naming a "
+                            f"VM artifact ({vm_counts.get('vm_specific', 0)} VM-specific), "
+                            f"{vm_artifact_reads.get('background_reads', 0)} by other processes.",
+                        )
+
+                    # A process that opens ntdll.dll as a *file* is asking for a
+                    # clean copy off disk, which is how user-mode unhooking starts.
+                    # Load Image is excluded deliberately: every process maps ntdll,
+                    # so counting that would fire on the whole machine. Not scored
+                    # until a live run shows the background rate.
+                    # Gap 4's active half, built on the reads just collected: a
+                    # sample that checks for a hypervisor and then stops. Not
+                    # scored, and its threshold is declared uncalibrated -- no run
+                    # has yet produced a VM read for it to be aimed with.
+                    vm_check_bail = correlate_vm_check_with_silence(
+                        vm_artifact_reads,
+                        events,
+                        descendant_pids=set(resolved) if resolved is not None else None,
                     )
+                    write_json(vm_check_bail_json, vm_check_bail)
+                    if vm_check_bail.get("verdict") == "checked_then_quiet":
+                        _emit(
+                            status_cb,
+                            "The sample read a VM-specific artifact and then went "
+                            "quiet. Read an otherwise-empty run as inconclusive "
+                            "rather than clean.",
+                        )
 
-                # A process that opens ntdll.dll as a *file* is asking for a
-                # clean copy off disk, which is how user-mode unhooking starts.
-                # Load Image is excluded deliberately: every process maps ntdll,
-                # so counting that would fire on the whole machine. Not scored
-                # until a live run shows the background rate.
-                # Gap 4's active half, built on the reads just collected: a
-                # sample that checks for a hypervisor and then stops. Not
-                # scored, and its threshold is declared uncalibrated -- no run
-                # has yet produced a VM read for it to be aimed with.
-                vm_check_bail = correlate_vm_check_with_silence(
-                    vm_artifact_reads,
-                    events,
-                    descendant_pids=set(resolved) if resolved is not None else None,
-                )
-                write_json(vm_check_bail_json, vm_check_bail)
-                if vm_check_bail.get("verdict") == "checked_then_quiet":
-                    _emit(
-                        status_cb,
-                        "The sample read a VM-specific artifact and then went "
-                        "quiet. Read an otherwise-empty run as inconclusive "
-                        "rather than clean.",
+                    _emit(status_cb, "Checking for self-unhooking reads of ntdll...")
+                    ntdll_unhooking = collect_ntdll_unhooking(
+                        events,
+                        descendant_pids=set(resolved) if resolved is not None else None,
                     )
+                    write_json(ntdll_unhooking_json, ntdll_unhooking)
 
-                _emit(status_cb, "Checking for self-unhooking reads of ntdll...")
-                ntdll_unhooking = collect_ntdll_unhooking(
-                    events,
-                    descendant_pids=set(resolved) if resolved is not None else None,
-                )
-                write_json(ntdll_unhooking_json, ntdll_unhooking)
+                    if not ntdll_unhooking.get("collection_available"):
+                        _emit(
+                            status_cb,
+                            "This capture recorded no file opens, so a read of ntdll "
+                            "could not have been seen.",
+                        )
+                    else:
+                        nt_counts = ntdll_unhooking.get("counts", {})
+                        _emit(
+                            status_cb,
+                            f"System DLL opens: {nt_counts.get('ntdll_opens_by_sample', 0)} of "
+                            f"ntdll by the sample's tree "
+                            f"({nt_counts.get('ntdll_opens_in_hollowing_target', 0)} in a "
+                            f"hollowing target), "
+                            f"{nt_counts.get('system_dll_opens_by_others', 0)} by other "
+                            f"processes.",
+                        )
 
-                if not ntdll_unhooking.get("collection_available"):
-                    _emit(
-                        status_cb,
-                        "This capture recorded no file opens, so a read of ntdll "
-                        "could not have been seen.",
+                    _emit(status_cb, "Triaging dropped-file candidates...")
+                    resolved_pids = findings_summary.get("descendant_pids")
+                    dropped_candidates = collect_dropped_file_candidates(
+                        events,
+                        descendant_pids=set(resolved_pids) if resolved_pids is not None else None,
                     )
-                else:
-                    nt_counts = ntdll_unhooking.get("counts", {})
-                    _emit(
-                        status_cb,
-                        f"System DLL opens: {nt_counts.get('ntdll_opens_by_sample', 0)} of "
-                        f"ntdll by the sample's tree "
-                        f"({nt_counts.get('ntdll_opens_in_hollowing_target', 0)} in a "
-                        f"hollowing target), "
-                        f"{nt_counts.get('system_dll_opens_by_others', 0)} by other "
-                        f"processes.",
-                    )
+                    dropped_files = enrich_dropped_files(dropped_candidates)
+                    write_json(dropped_files_json, dropped_files)
 
-                _emit(status_cb, "Triaging dropped-file candidates...")
-                resolved_pids = findings_summary.get("descendant_pids")
-                dropped_candidates = collect_dropped_file_candidates(
-                    events,
-                    descendant_pids=set(resolved_pids) if resolved_pids is not None else None,
-                )
-                dropped_files = enrich_dropped_files(dropped_candidates)
-                write_json(dropped_files_json, dropped_files)
-
-                dropped_files_summary = summarize_dropped_files(dropped_files)
-                write_json(dropped_files_summary_json, dropped_files_summary)
+                    dropped_files_summary = summarize_dropped_files(dropped_files)
+                    write_json(dropped_files_summary_json, dropped_files_summary)
+                except MemoryError:
+                    events = []
+                    interesting_events = []
+                    procmon_summary = {}
+                    procmon_interesting_summary = {}
+                    findings_summary = {}
+                    abnormal_termination = {"chain_crashed": False}
+                    vm_artifact_reads = empty_vm_artifact_reads("procmon ran out of memory")
+                    vm_check_bail = empty_vm_check_correlation("procmon ran out of memory")
+                    ntdll_unhooking = empty_ntdll_unhooking("procmon ran out of memory")
+                    dropped_files = []
+                    dropped_files_summary = {}
+                    procmon_started = False
+                    # A stream cut off part-way is invalid JSON that looks like
+                    # a file; better absent, as the export does with its CSV.
+                    try:
+                        Path(procmon_json).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    _emit(status_cb,
+                          "Procmon analysis ran out of memory, continuing without it.")
 
             # Network artifacts are parsed even when Procmon is off, since the
             # capture stands on its own.
@@ -3247,25 +3283,34 @@ def run_dynamic_analysis(
                 # disabled collector looking like a sample that did nothing.
                 _emit(status_cb,
                       f"Comparing loaded modules against their files "
-                      f"({len(scannable)} dump(s))...")
+                      f"({len(scannable)} dump(s), budget "
+                      f"{module_integrity_budget:.0f}s)...")
                 try:
-                    for index, record in enumerate(scannable, 1):
-                        path = record.get("path") if isinstance(record, dict) else None
-                        if path:
-                            # **Emitted before the work, not after.** The first
-                            # version printed on completion, which left the one
-                            # case it existed for -- grinding through dump 1 --
-                            # producing no output at all. Five minutes of
-                            # silence on run `eb3e1273` looked exactly like a
-                            # hang, which is the failure this was meant to end.
-                            _emit(status_cb,
-                                  f"  module integrity: dump {index} of "
-                                  f"{len(scannable)}, {Path(path).name}")
-                            result = analyze_module_integrity(path)
-                            module_integrity_result.append(result)
+                    # **Budgeted, latest dump of each process first.** 13
+                    # GuLoader dumps at ~200 s each held this pass past the
+                    # host's run limit, and the whole case was lost for the
+                    # sake of the last few dumps. Per-dump progress is still
+                    # emitted before the work -- five minutes of silence on
+                    # run `eb3e1273` looked exactly like a hang. See
+                    # `module_integrity.assess_dumps`.
+                    module_integrity_result, integrity_budget = assess_module_dumps(
+                        scannable,
+                        module_integrity_budget,
+                        analyze=analyze_module_integrity,
+                        emit=lambda message: _emit(status_cb, message),
+                    )
                     module_integrity_summary = summarize_module_integrity(
                         module_integrity_result)
+                    module_integrity_summary["budget"] = integrity_budget
                     write_json(module_integrity_json, module_integrity_result)
+                    if integrity_budget.get("budget_exhausted"):
+                        _emit(status_cb,
+                              f"Module integrity budget of "
+                              f"{module_integrity_budget:.0f}s spent after "
+                              f"{integrity_budget['dumps_assessed']} of "
+                              f"{integrity_budget['dumps_total']} dump(s); not "
+                              f"assessed: "
+                              f"{', '.join(integrity_budget['dumps_not_assessed'])}")
                     counts = module_integrity_summary.get("counts", {})
                     if not module_integrity_summary.get("available"):
                         # Every module unmatched is a statement about the
@@ -3509,6 +3554,7 @@ def run_dynamic_analysis(
         "pe_carve_enabled": pe_carve_enabled,
         "pe_carve_summary": pe_carve_summary,
         "module_integrity_enabled": module_integrity_enabled,
+        "module_integrity_budget_seconds": module_integrity_budget,
         "module_integrity_summary": module_integrity_summary,
         "crash_evidence_enabled": crash_evidence_enabled,
         "crash_dump_preflight": crash_dump_preflight,
