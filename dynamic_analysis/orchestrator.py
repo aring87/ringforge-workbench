@@ -2232,6 +2232,7 @@ def run_dynamic_analysis(
     module_integrity_enabled = bool(config.get("module_integrity_enabled", True))
     module_integrity_budget = float(config.get("module_integrity_budget_seconds",
                                                MODULE_INTEGRITY_BUDGET_SECONDS))
+    terminate_survivors_enabled = bool(config.get("terminate_survivors", True))
     module_integrity_json = paths["memory"] / "module_integrity.json"
 
     # Preflight so the report records exactly which telemetry was possible.
@@ -2332,6 +2333,7 @@ def run_dynamic_analysis(
 
     memory_dump_result: dict[str, Any] = {}
     memory_summary: dict[str, Any] = {}
+    survivors_terminated: list[dict[str, Any]] = []
     memory_start_result: dict[str, Any] = {"started": False}
     memory_yara_result: dict[str, Any] = {}
     memory_yara_summary: dict[str, Any] = {}
@@ -2760,6 +2762,40 @@ def run_dynamic_analysis(
             except Exception as error:
                 fakenet_stop_result = {"stopped": False, "error": str(error)}
                 _emit(status_cb, f"FakeNet-NG stop warning: {error}")
+
+        # **What the sample left running is terminated here**, once every
+        # capture has stopped and before the analysis that is most of the run.
+        # Teardown ends the launched root only, so a resident sample used to
+        # keep running through all of it. Measured 29 Sep on GuLoader
+        # `f306f95f4a9b`: memory YARA ran 5-8x slower than on the same
+        # family's dumps before, two scans hit YARA's own timeout, and the run
+        # missed the host's limit with its analysis finished. The dumps, crash
+        # images and captures are all taken by now, so nothing is lost. Only the
+        # watcher's own sample-tree handles are touched, identity-checked, and
+        # Error Reporting is left to finish -- see
+        # `memory_dump.terminate_survivors`.
+        if memory_session is not None and terminate_survivors_enabled:
+            try:
+                survivors_terminated = memory_session.terminate_survivors()
+                ended = [s for s in survivors_terminated if s.get("result") == "terminated"]
+                left = [s for s in survivors_terminated
+                        if s.get("result") in ("still_running", "access_denied", "failed")]
+                if ended:
+                    _emit(
+                        status_cb,
+                        f"Terminated {len(ended)} process(es) the sample left running: "
+                        + ", ".join(f"{s.get('name') or 'pid'} ({s.get('pid')})"
+                                    for s in ended[:6]),
+                    )
+                if left:
+                    _emit(
+                        status_cb,
+                        f"WARNING: {len(left)} sample process(es) could not be terminated: "
+                        + ", ".join(f"{s.get('name') or 'pid'} ({s.get('pid')}, {s.get('result')})"
+                                    for s in left[:6]),
+                    )
+            except Exception as error:
+                _emit(status_cb, f"Terminating leftover sample processes failed: {error}")
 
         if sysmon_enabled and sysmon_since:
             _emit(status_cb, "Collecting Sysmon telemetry...")
@@ -3555,6 +3591,8 @@ def run_dynamic_analysis(
         "pe_carve_summary": pe_carve_summary,
         "module_integrity_enabled": module_integrity_enabled,
         "module_integrity_budget_seconds": module_integrity_budget,
+        "terminate_survivors_enabled": terminate_survivors_enabled,
+        "survivors_terminated": survivors_terminated,
         "module_integrity_summary": module_integrity_summary,
         "crash_evidence_enabled": crash_evidence_enabled,
         "crash_dump_preflight": crash_dump_preflight,

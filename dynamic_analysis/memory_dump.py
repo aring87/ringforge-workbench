@@ -463,6 +463,27 @@ class MemoryDumpSession:
             root = self._root_pid
             return any(pid != root for pid in self._known)
 
+    def terminate_survivors(self) -> list[dict[str, Any]]:
+        """Terminate the sample's tree now that observation is over.
+
+        Call after `stop()`. Uses the handles this watcher tracked -- see the
+        module-level `terminate_survivors` for why that is the safe set, and
+        for what each outcome means. Without psutil there are no handles and
+        no identity check, so nothing is terminated.
+        """
+        if psutil is None:
+            return []
+        with self._lock:
+            handles = dict(self._procs)
+
+        def refresh() -> None:
+            # Picks up anything spawned since the watcher stopped.
+            self._refresh_tree()
+            with self._lock:
+                handles.update(self._procs)
+
+        return terminate_survivors(handles, refresh=refresh)
+
     def stop(self, timeout: float = _DUMP_TIMEOUT_SECONDS + 30) -> dict[str, Any]:
         """Stop watching and return everything collected."""
         self._stop_event.set()
@@ -1629,6 +1650,110 @@ def dump_paths(dump_result: dict[str, Any]) -> list[Path]:
     """Paths of the dumps that were actually written."""
     dumps = dump_result.get("dumps", []) if isinstance(dump_result, dict) else []
     return [Path(d["path"]) for d in dumps if d.get("success") and d.get("path")]
+
+
+#: Never terminated, even when they sit in the sample's tree. Windows Error
+#: Reporting writes the crash dumps the crash-evidence collector reads after
+#: this runs; killing it mid-write destroys the one image a short-lived
+#: hollowed process ever leaves.
+SURVIVOR_EXEMPT_NAMES = frozenset({"werfault.exe", "wermgr.exe", "werfaultsecure.exe"})
+
+
+def terminate_survivors(
+    handles: dict[int, Any],
+    *,
+    refresh: Callable[[], None] = lambda: None,
+    rounds: int = 2,
+    wait_seconds: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Terminate what is left of the sample's tree once observation is over.
+
+    **Why.** Teardown terminates the launched root only, so a resident sample
+    keeps running through the whole post-detonation analysis -- and the
+    analysis is most of the run. Measured 29 Sep on GuLoader `f306f95f4a9b`,
+    three of its processes alive throughout: memory YARA ran 5-8x slower than
+    on the same family's dumps before (248-286 s per ~870 MB crash dump, two
+    hitting YARA's own timeout, 1,670 s in all), and the agent's pruning step
+    never finished before the host's limit. Every piece of evidence is
+    collected by the time this runs; after it, the sample only competes.
+
+    **Only processes the watcher tracked as the sample's tree, and only while
+    each handle is still the same process.** `handles` are the watcher's
+    `psutil.Process` objects, which remember their creation time: a PID that
+    exited and was reused by something else reads as not running, and psutil
+    6 refuses to signal a reused PID besides. `is_running()` is checked again
+    immediately before each kill all the same. Error Reporting is exempt --
+    see `SURVIVOR_EXEMPT_NAMES`.
+
+    `refresh` re-walks the tree between rounds, because a resident loader
+    that loses a child tends to spawn another.
+
+    Returns one record per process examined: `terminated`, `exited`
+    (gone before it was reached), `exempt`, `not_ours` (the PID now belongs
+    to something else), `access_denied`, `failed`, or `still_running`.
+    """
+    outcomes: dict[int, dict[str, Any]] = {}
+
+    def name_of(handle: Any) -> str:
+        try:
+            return str(handle.name())
+        except Exception:                               # noqa: BLE001
+            return ""
+
+    for _round in range(max(1, rounds)):
+        try:
+            refresh()
+        except Exception:                               # noqa: BLE001
+            pass
+        signalled = []
+        for pid, handle in list(handles.items()):
+            if outcomes.get(pid, {}).get("result") in ("terminated", "exempt", "not_ours"):
+                continue
+            name = name_of(handle)
+            record = {"pid": int(pid), "name": name}
+            try:
+                if not handle.is_running():
+                    prior = outcomes.get(pid, {}).get("result")
+                    # Signalled last round and gone now is our kill landing
+                    # late; never signalled and gone is its own exit.
+                    record["result"] = "terminated" if prior == "still_running" else (prior or "exited")
+                    outcomes[pid] = record
+                    continue
+            except Exception:                           # noqa: BLE001
+                record["result"] = "not_ours"
+                outcomes[pid] = record
+                continue
+            if name.lower() in SURVIVOR_EXEMPT_NAMES:
+                record["result"] = "exempt"
+                outcomes[pid] = record
+                continue
+            try:
+                handle.kill()
+                signalled.append(handle)
+                record["result"] = "terminated"
+            except Exception as error:                  # noqa: BLE001
+                kind = type(error).__name__
+                if kind == "NoSuchProcess":
+                    # Either it exited just now, or psutil saw the PID reused.
+                    record["result"] = "not_ours" if "reused" in str(error).lower() else "exited"
+                elif kind == "AccessDenied":
+                    record["result"] = "access_denied"
+                else:
+                    record["result"] = "failed"
+                    record["error"] = f"{kind}: {error}"
+            outcomes[pid] = record
+
+        if signalled and psutil is not None:
+            try:
+                _gone, alive = psutil.wait_procs(signalled, timeout=wait_seconds)
+            except Exception:                           # noqa: BLE001
+                alive = []
+            for handle in alive:
+                outcomes[handle.pid]["result"] = "still_running"
+        if not signalled:
+            break
+
+    return sorted(outcomes.values(), key=lambda r: r["pid"])
 
 
 def successful_dumps(dump_result: dict[str, Any]) -> list[dict[str, Any]]:
