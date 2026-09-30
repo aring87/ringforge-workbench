@@ -17,12 +17,13 @@ corpora it was measured on.
 
 **What it rewrites: `combined_verdict.json`, and its copy under `metadata/`,
 and only where the decision changed.** Each case is re-combined in memory
-first. Left byte for byte: a case identical but for timestamp and provenance;
-one whose only difference is context volume (`subscores`, `context_score`),
-which no band reads; and one whose fresh verdict ran *fewer modules* than the
-stored -- that means the host could not read what the guest did (MAX_PATH, on
-two long-named benign cases), and writing it would delete evidence. The rest
-are backed up and written. Nothing else in a case is touched -- the evidence is
+first. Left byte for byte: a case the manifest records as **not usable** (a
+void run's folder is a partial copy); a case identical but for timestamp and
+provenance; one whose only difference is context volume (`subscores`,
+`context_score`), which no band reads; and one whose fresh verdict ran *fewer
+modules* than the stored -- the case is missing files its stored verdict was
+made from, and writing would delete evidence. The rest are backed up and
+written. Nothing else in a case is touched -- the evidence is
 re-read, never re-made -- and no sample is detonated.
 
 **A host re-combine reproduces a guest verdict.** It did not until 29 Sep: the
@@ -88,8 +89,9 @@ class CaseResult:
     case: str
     home: str
     changed: bool = False
-    #: Why a case that differs was not written: `context_only`, or
-    #: `host_cannot_read` -- see `recombine_one`.
+    #: Why a case was not written: `not_usable` (the manifest says so),
+    #: `context_only`, or `modules_missing` -- see `recombine` and
+    #: `recombine_one`.
     skipped: str = ""
     band_before: str = ""
     band_after: str = ""
@@ -135,6 +137,16 @@ def find_case_homes(cases: Path) -> list[Path]:
     return sorted(p.parent for p in Path(cases).glob(f"*/*/{VERDICT_NAME}"))
 
 
+def unusable_cases(manifest: dict) -> set[str]:
+    """Cases the sweep manifest records as not usable -- void, failed, or
+    timed out. A manifest without per-case rows names none."""
+    rows = next((v for v in manifest.values()
+                 if isinstance(v, list) and v and isinstance(v[0], dict)
+                 and "case" in v[0]), [])
+    return {row["case"] for row in rows
+            if not (row.get("attempts") or [{}])[-1].get("usable")}
+
+
 def _decision(verdict: dict) -> dict:
     return {k: v for k, v in verdict.items() if k not in _VOLATILE}
 
@@ -167,17 +179,16 @@ def recombine_one(home: Path, run_directory: Path, *, dry_run: bool,
     result.fields_changed = sorted(k for k in set(before) | set(after)
                                    if before.get(k) != after.get(k))
 
-    # **Fewer modules than the stored verdict means the host could not read
-    # what the guest read -- never that the case has less evidence.** Found by
-    # the 29 Sep dry run: two benign cases with long names lost their dynamic
-    # module, `Microsoft.VisualStudio.Setup.ToastNotification` falling from
-    # Strongly Corroborated 105 to No Evidence 1, because their run summaries
-    # sit past MAX_PATH and the host's non-extended glob cannot see them. The
-    # guest combined them with short local paths. Writing that would delete
-    # evidence, so it is refused and named.
+    # **Fewer modules than the stored verdict means the case is missing files
+    # the stored verdict was made from -- never that it has less evidence.**
+    # Found by the 30 Sep dry run: `Microsoft.VisualStudio.Setup.ToastNotification`
+    # would have fallen from Strongly Corroborated 105 to No Evidence 1. That
+    # case turned out to be a void run whose dynamic summary never reached the
+    # host (`not_usable` now catches it first); this guard stays for any case
+    # that loses a module some other way. Writing would delete evidence.
     lost = set(stored.get("modules_run") or ()) - set(fresh.get("modules_run") or ())
     if lost:
-        result.skipped = "host_cannot_read"
+        result.skipped = "modules_missing"
         result.fields_changed.append(f"modules lost: {', '.join(sorted(lost))}")
         return result
 
@@ -252,26 +263,38 @@ def recombine(run_directory: Path, *, dry_run: bool = False,
     run_id = document.get("run_id") or run_directory.name
     result = RecombineResult(run_id=run_id, directory=run_directory, dry_run=dry_run)
     homes = find_case_homes(cases)
+    unusable = unusable_cases(document)
     say(f"{run_id}: {len(homes)} case(s) to re-combine" + (" (dry run)" if dry_run else ""))
 
     for home in homes:
+        if home.name in unusable:
+            # **A void run's folder is a partial copy, not a case.** Found 30
+            # Sep: `benign-102-v2`'s two void runs failed collection part-way
+            # (`WinError 206`, before the collector's MAX_PATH fix) and left a
+            # guest-written verdict beside a case missing its dynamic summary.
+            # Re-combining one would score what happened to arrive.
+            result.cases.append(CaseResult(case=home.name, home=str(home),
+                                           skipped="not_usable"))
+            continue
         outcome = recombine_one(home, run_directory, dry_run=dry_run, combine=combine)
         result.cases.append(outcome)
         if outcome.error:
             say(f"  FAILED  {outcome.case}: {outcome.error}")
-        elif outcome.skipped == "host_cannot_read":
-            say(f"  SKIPPED {outcome.case}: the host cannot read what the guest "
-                f"read ({outcome.fields_changed[-1]}); left as it was")
+        elif outcome.skipped == "modules_missing":
+            say(f"  SKIPPED {outcome.case}: re-combining would drop a module the "
+                f"stored verdict had ({outcome.fields_changed[-1]}); left as it was")
         elif outcome.changed:
             say(f"  {outcome.case}: {outcome.band_before} {outcome.score_before} -> "
                 f"{outcome.band_after} {outcome.score_after}  "
                 f"[{', '.join(outcome.fields_changed)}]")
 
     context_only = sum(1 for c in result.cases if c.skipped == "context_only")
-    unreadable = sum(1 for c in result.cases if c.skipped == "host_cannot_read")
+    unreadable = sum(1 for c in result.cases if c.skipped == "modules_missing")
+    void = sum(1 for c in result.cases if c.skipped == "not_usable")
     say(f"{'would change' if dry_run else 'changed'}: {result.changed}, "
         f"unchanged: {result.unchanged}, context-only (left): {context_only}"
-        + (f", host cannot read (left): {unreadable}" if unreadable else "")
+        + (f", not usable in the manifest (left): {void}" if void else "")
+        + (f", modules missing (left): {unreadable}" if unreadable else "")
         + (f", FAILED: {result.failed}" if result.failed else ""))
 
     if not dry_run and (result.changed or result.failed or unreadable):
@@ -294,10 +317,11 @@ def recombine(run_directory: Path, *, dry_run: bool = False,
             "changed": result.changed,
             "unchanged": result.unchanged,
             "context_only_left": context_only,
-            "host_cannot_read_left": unreadable,
+            "not_usable_left": void,
+            "modules_missing_left": unreadable,
             "failed": result.failed,
             "cases": [asdict(c) for c in result.cases
-                      if c.changed or c.error or c.skipped == "host_cannot_read"],
+                      if c.changed or c.error or c.skipped in ("modules_missing", "not_usable")],
         }
         path = run_directory / RECORD_NAME
         if path.exists():

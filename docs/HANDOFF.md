@@ -3180,17 +3180,25 @@ It leaves three kinds of case byte for byte:
 * **any case whose fresh verdict ran fewer modules than the stored one.**
   Found by its own dry run: `Microsoft.CodeAnalysis.Workspaces.MSBuild.BuildHost`
   and `Microsoft.VisualStudio.Setup.ToastNotification` in `benign-102-v2`
-  keep their run summaries past MAX_PATH, where the host's non-extended
-  glob cannot see them. Written, ToastNotification would have fallen from
-  Strongly Corroborated 105 to No Evidence 1 by losing evidence the guest had
-  read. **Refused and named**; `load_case` reading with extended paths is
-  the real fix, not made.
+  would have lost their dynamic module -- ToastNotification from Strongly
+  Corroborated 105 to No Evidence 1. **Refused and named.**
+
+  **Corrected the same day: it is not a host read problem.** These are the
+  corpus's **two void runs** (`usable: false`): collection failed with
+  `WinError 206` on 20 Sep, before the collector's MAX_PATH fix, and left a
+  partial folder -- a guest-written verdict beside a case whose dynamic
+  summary never arrived. An extended-path walk finds no summary anywhere, and
+  every file that did arrive is within 260 characters. They were never in the
+  measurements (98 usable). `recombine` now skips any case its manifest calls
+  not usable (`not_usable`); the fewer-modules guard stays behind it, renamed
+  `modules_missing`. `benign-102-v2\recombine.json` still says
+  `host_cannot_read` -- it records what the tool believed at the time.
 
 **Applied 30 Sep:**
 
 | corpus | written | band moves | left |
 |---|---|---|---|
-| `benign-102-v2` | 4 | 1 -- Aura-Wallpaper-Service Corroborated 50 -> Single Observation 35 | 50 context-only, 2 host-cannot-read |
+| `benign-102-v2` | 4 | 1 -- Aura-Wallpaper-Service Corroborated 50 -> Single Observation 35 | 50 context-only, 2 void runs (see the correction above) |
 | `mal-112b` | 17 | 0 -- nine 125 -> 110 inside Strongly Corroborated, eight evidence text only | 0 |
 | `mal-112b-procmon` | 1 | 0 -- evidence text only | 0 |
 | `mal-112b-s1`, `-fixes` | 0 | 0 | 0 |
@@ -3215,8 +3223,9 @@ would have silently reproduced the control for every variant.
 2. **The detonated miss**, NanoCore `11c9e5c742a1`.
 3. **The 7 that would not execute.**
 4. **Bitdefender exclusions** for `G:\malware-corpus` and `G:\VMs`.
-5. **`load_case` and MAX_PATH** -- the two refused benign cases stay on their
-   guest verdicts until the host can read them.
+5. ~~**`load_case` and MAX_PATH**~~ -- **closed 30 Sep, no such bug.** The
+   two refused benign cases are void runs whose summaries never reached the
+   host; see the correction above.
 
 **Items 2 and 3 are answered** -- see the entry below. Bitdefender
 exclusions for `G:\malware-corpus` and `G:\VMs` were added 30 Sep.

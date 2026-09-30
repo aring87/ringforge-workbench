@@ -126,8 +126,8 @@ class WhatItWrites(Fixture):
         self.assertEqual(len(list(self.run.glob("recombine-*.json"))), 1)
 
     def test_a_lost_module_is_never_written(self) -> None:
-        """The host could not read what the guest did -- MAX_PATH on two
-        long-named benign cases, 29 Sep. Writing would delete evidence."""
+        """A case missing files its stored verdict was made from. Writing
+        would delete evidence."""
         stored = {**STORED, "modules_run": ["dynamic", "static"]}
         home = self.add_case("Microsoft.VisualStudio.Setup.ToastNotification_9253af16",
                              {**STORED, "band": "No Evidence", "score": 1,
@@ -136,11 +136,37 @@ class WhatItWrites(Fixture):
         before = (home / "combined_verdict.json").read_bytes()
         result = self.go()
         self.assertEqual(result.changed, 0)
-        self.assertEqual(result.cases[0].skipped, "host_cannot_read")
+        self.assertEqual(result.cases[0].skipped, "modules_missing")
         self.assertEqual(self.writes, [])
         self.assertEqual((home / "combined_verdict.json").read_bytes(), before)
         record = json.loads((self.run / RECORD_NAME).read_text(encoding="utf-8"))
-        self.assertEqual(record["host_cannot_read_left"], 1)
+        self.assertEqual(record["modules_missing_left"], 1)
+
+    def test_a_case_the_manifest_calls_unusable_is_never_combined(self) -> None:
+        """A void run's folder is a partial copy: `benign-102-v2`'s two void
+        runs kept a guest verdict beside a case missing its dynamic summary."""
+        home = self.add_case("void", {**STORED, "band": "No Evidence", "score": 1})
+        self.add_case("ok", {**STORED, "band": "Single Observation"})
+        (self.run / "manifest.json").write_text(json.dumps({
+            "run_id": "mal-112b", "state": "completed",
+            "rows": [{"case": "void", "attempts": [{"usable": False}]},
+                     {"case": "ok", "attempts": [{"usable": True}]}]}), encoding="utf-8")
+        before = (home / "combined_verdict.json").read_bytes()
+        seen: list[str] = []
+        original = self.combine
+
+        def combine(h, write_output=True):
+            seen.append(Path(h).name)
+            return original(h, write_output)
+
+        result = recombine(self.run, combine=combine)
+        by_case = {c.case: c for c in result.cases}
+        self.assertEqual(by_case["void"].skipped, "not_usable")
+        self.assertNotIn("void", seen)
+        self.assertEqual((home / "combined_verdict.json").read_bytes(), before)
+        self.assertTrue(by_case["ok"].changed)
+        record = json.loads((self.run / RECORD_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(record["not_usable_left"], 1)
 
     def test_a_context_only_difference_is_left(self) -> None:
         """Volume never decides a band; fifty rewrites for it is churn."""
