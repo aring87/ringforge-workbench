@@ -4,7 +4,7 @@ State of the work, for picking up in a fresh session. `docs/WORKFLOW.md` is the
 run procedure; this is what is done, what is known-broken, and what is worth
 doing next.
 
-**Last updated:** 2026-09-30 -- **start at *Pick up here — 30 Sep, the headline numbers***: on samples that actually executed, Corroborated or stronger catches 92.2% of malware (n=90) at a 9.2% benign rate (n=87) -- quote these, and note the benign corpus is narrow. DLL detonation and name-match termination were planned but not made. *Pick up here — 30 Sep, both misses never ran* above it: all 90 malware samples that executed banded above No Evidence; the 20 that did not are 10 NanoCore needing .NET 3.5 and 10 DLLs the detonator cannot launch, both fixable in the next guest drop. *Pick up here — 30 Sep, the socket-family fix shipped* above it: `dangerous_capability` counts the socket family once, the corpora are re-combined with the new `runcontrol.recombine` (one benign band down, no malware band moved), and the guest still scores the old way until the next drop. *Pick up here — 29 Sep evening* above it: guest on `081c383`, malware baseline `corpus-agent-detonate-081c383-noselfupdate` (the first with `-NoSelfUpdate` checked at the console); 100 of 110 detonated; GuLoader `f306` the one timeout and a known hard case; and the recipe for the VM going `<inaccessible>` after a snapshot taken straight after a console session. *Pick up here — 29 Sep, the 18 re-run* above it has the per-family table (Amadey since moved one sample up). *Pick up here — 28 Sep, the deferred rule changes, measured* above that: the socket-family fix is supported, the c2 fix and the bundled-assembly exclusion are not, nothing is shipped yet. *Pick up here — 28 Sep, the malicious corpus is done* above that has the corpus itself: 110 of 112 usable, 98% above No Evidence against 16% benign. *Pick up here — 24 Sep* above that is the agent that made the corpus possible, and *23 Sep* the attempt that brought home nothing. *Pick up here — 17/18 Sep* holds the benign corpus, done and measured. Everything from here to the end of this paragraph is the 04 Sep summary and older. **Earlier start point:** *Pick up here - 04 Sep, the workbench became something you can ship*, which was the live subject then: packaging, CI, a `ringforge` command line, a versioned verdict envelope with provenance, an OCSF exporter for a SIEM, recorded third-party licences, and a guest bench that is finally tooled and baselined. The *03 Sep module-polish thread* above it is the pass that preceded it -- eight windows, twenty-three defects, all in widget-free code no test could import. Both are about the workbench rather than any sample; the malware sections begin below it with *nothing stage 4 executes reaches the dead pages*. The *02 Sep, end of session* section sits above it and summarises the `ce0d08be` work, whose four open items are now all closed. Every pick-up section supersedes the dated summary in this paragraph and the 20 Aug one below them. **Two subjects moved on 03 Sep.** `ce0d08be...` is finished: the command channel was driven end to end, `Report` with a `Name` proved safe and left the withheld set, and attribution landed -- Raton is public source at `codeberg.org/Raton/Raton`, this build post-dates it, and three strings that looked like an operator's fingerprint turned out to be the vendor's. **And `422e30ed` has run out of bench route, which is a result rather than fatigue:** four candidate explanations for stage 4's silence are eliminated by measurement -- export tables, `ApiSetMap`, a granted host, an unreached rendezvous -- and both routes into its unexecuted two-thirds are closed, with 0 declined branches and all 93 indirect calls resolving into ntdll. What is left there needs a guest measurement taken *while the gate runs*, and that instrumentation route is still undecided. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. **1,383 tests** (the 602 this paragraph used to claim was stale by three weeks). **The detonation queue is empty too, as of run `bb51babb`** — the registry-read run that three consecutive sessions were set up for has now happened, passed all twelve `verify_run.py` rows, and hit every pre-registered prediction. **Its headline result is a negative and a real one: 73,825 registry reads by the sample, none naming a VM artifact**, with a positive control in the same stream (the collector caught `VBoxSF` reads by the sample's own PowerShell child and correctly binned them as routine network-provider enumeration). So this variant checks for analysis environments by module hash and CRC-32 process name, never by registry. **A second run the same day settled that a different sample does not fix it either:** `a6a86646…` was chosen for this behaviour, announced *"cannot run inside a virtual machine"* in a dialog box, and still reported `artifacts_read: 0` — registry, file, device-namespace and WMI routes each ruled out from its own events. **Two for two on samples that provably detect virtualisation, so gap 4 should be recorded context-only by decision rather than left awaiting calibration.** The config field that was missed three runs running is now the default rather than something to remember, with a pre-flight warning and a test pinning it. **STAGE 4 IS RECOVERED, AND IT IS A CREDENTIAL STEALER — 16 Aug.** `stage4_mapped_b454edc7.xor9`, 273,408 bytes, decrypted, on the artifact drive with its encrypted twin. It carries **no PE header** — a manually mapped image — and looking for one is what delayed finding it: 32 pages of it had been executing for hours while every scan reported "no MZ/PE" and this file read that as still-encrypted. **FLOSS `-f sc32` then produced the first IOCs this chain has ever yielded** — `Internet Explorer\IntelliForms\Storage2`, Chrome's `Local State`, Firefox, `Cookies`, `Autofill`, a SQLite DLL download, and a Nokia-feature-phone user agent that is a documented FormBook trait. The strings are built on the stack at runtime, which is exactly why nine detonations found none of them and why the ruleset was never at fault. See *Stage 4 is recovered*. What remained was its *runtime behaviour* -- and 03 Sep established that the bench cannot reach it: nothing stage 4 executes reaches the packed pages by any mechanism. See the 03 Sep sections. **The rest of this paragraph is the route there, kept because none of it is reproducible by detonation.** **The emulator now runs the injected code itself** — the far side's entry is a thread-hijack trampoline in front of a deliberate 512,371,392-iteration stall, and `after_inject.state` starts any experiment at the injection in seconds rather than 380M blocks. See *The far side runs — 14 Aug*. **And the emulator reached the injection in the first place** because measuring the poll loop showed stage 3 waiting for a process whose parent is `explorer.exe`; serving one took it through `NtOpenProcess` → `NtCreateSection` → two `NtMapViewOfSection` → thread redirect, none of which any previous run reached. It is **section-mapping injection**, so `NtWriteVirtualMemory` — which this harness was built to catch — is not on its path at all. Stage 4 is still not out in plaintext, but it is **located, sized and sourced**: the section is deliberately sized at random between 2 MB and 131 MB and filled with keystream — anti-analysis rather than the divergence this file briefly suspected — and the content is 273,408 bytes copied from `0x27e7000` in a single pass ending 645 blocks before the section is closed. **`alloc_27e7000.bin` is a new stage and lives only in a scratchpad; it belongs on the artifact drive.** See *Serving one child of explorer reached the injection* and *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
+**Last updated:** 2026-09-30 -- **start at *Pick up here — 30 Sep, .NET 3.5 in the baseline***: the guest is on `37def6c` plus .NET 3.5, the malware baseline is `corpus-agent-detonate-37def6c-noselfupdate` (console step typed from the host, no credentials), and all ten NanoCore executed and band Strongly Corroborated -- executed malware n=100, 93.0% Corroborated or stronger; slow runs are USB-drive stalls on `G:`. *Pick up here — 30 Sep, the headline numbers* above it: on samples that actually executed, Corroborated or stronger catches 92.2% of malware (n=90) at a 9.2% benign rate (n=87) -- quote these, and note the benign corpus is narrow. DLL detonation and name-match termination were planned but not made. *Pick up here — 30 Sep, both misses never ran* above it: all 90 malware samples that executed banded above No Evidence; the 20 that did not are 10 NanoCore needing .NET 3.5 and 10 DLLs the detonator cannot launch, both fixable in the next guest drop. *Pick up here — 30 Sep, the socket-family fix shipped* above it: `dangerous_capability` counts the socket family once, the corpora are re-combined with the new `runcontrol.recombine` (one benign band down, no malware band moved), and the guest still scores the old way until the next drop. *Pick up here — 29 Sep evening* above it: guest on `081c383`, malware baseline `corpus-agent-detonate-081c383-noselfupdate` (the first with `-NoSelfUpdate` checked at the console); 100 of 110 detonated; GuLoader `f306` the one timeout and a known hard case; and the recipe for the VM going `<inaccessible>` after a snapshot taken straight after a console session. *Pick up here — 29 Sep, the 18 re-run* above it has the per-family table (Amadey since moved one sample up). *Pick up here — 28 Sep, the deferred rule changes, measured* above that: the socket-family fix is supported, the c2 fix and the bundled-assembly exclusion are not, nothing is shipped yet. *Pick up here — 28 Sep, the malicious corpus is done* above that has the corpus itself: 110 of 112 usable, 98% above No Evidence against 16% benign. *Pick up here — 24 Sep* above that is the agent that made the corpus possible, and *23 Sep* the attempt that brought home nothing. *Pick up here — 17/18 Sep* holds the benign corpus, done and measured. Everything from here to the end of this paragraph is the 04 Sep summary and older. **Earlier start point:** *Pick up here - 04 Sep, the workbench became something you can ship*, which was the live subject then: packaging, CI, a `ringforge` command line, a versioned verdict envelope with provenance, an OCSF exporter for a SIEM, recorded third-party licences, and a guest bench that is finally tooled and baselined. The *03 Sep module-polish thread* above it is the pass that preceded it -- eight windows, twenty-three defects, all in widget-free code no test could import. Both are about the workbench rather than any sample; the malware sections begin below it with *nothing stage 4 executes reaches the dead pages*. The *02 Sep, end of session* section sits above it and summarises the `ce0d08be` work, whose four open items are now all closed. Every pick-up section supersedes the dated summary in this paragraph and the 20 Aug one below them. **Two subjects moved on 03 Sep.** `ce0d08be...` is finished: the command channel was driven end to end, `Report` with a `Name` proved safe and left the withheld set, and attribution landed -- Raton is public source at `codeberg.org/Raton/Raton`, this build post-dates it, and three strings that looked like an operator's fingerprint turned out to be the vendor's. **And `422e30ed` has run out of bench route, which is a result rather than fatigue:** four candidate explanations for stage 4's silence are eliminated by measurement -- export tables, `ApiSetMap`, a granted host, an unreached rendezvous -- and both routes into its unexecuted two-thirds are closed, with 0 declined branches and all 93 indirect calls resolving into ntdll. What is left there needs a guest measurement taken *while the gate runs*, and that instrumentation route is still undecided. **The dynamic pipeline's build queue is empty.** Every detector is built, each is scored or context-only *by decision*, and both scored ones have measured benign rates — module integrity 0 mismatches across 300 modules in 12 programs, the WER check 0 in a hollowing target across 35 real crashes. Gap 4's active detector exists with its threshold honestly labelled uncalibrated. **1,383 tests** (the 602 this paragraph used to claim was stale by three weeks). **The detonation queue is empty too, as of run `bb51babb`** — the registry-read run that three consecutive sessions were set up for has now happened, passed all twelve `verify_run.py` rows, and hit every pre-registered prediction. **Its headline result is a negative and a real one: 73,825 registry reads by the sample, none naming a VM artifact**, with a positive control in the same stream (the collector caught `VBoxSF` reads by the sample's own PowerShell child and correctly binned them as routine network-provider enumeration). So this variant checks for analysis environments by module hash and CRC-32 process name, never by registry. **A second run the same day settled that a different sample does not fix it either:** `a6a86646…` was chosen for this behaviour, announced *"cannot run inside a virtual machine"* in a dialog box, and still reported `artifacts_read: 0` — registry, file, device-namespace and WMI routes each ruled out from its own events. **Two for two on samples that provably detect virtualisation, so gap 4 should be recorded context-only by decision rather than left awaiting calibration.** The config field that was missed three runs running is now the default rather than something to remember, with a pre-flight warning and a test pinning it. **STAGE 4 IS RECOVERED, AND IT IS A CREDENTIAL STEALER — 16 Aug.** `stage4_mapped_b454edc7.xor9`, 273,408 bytes, decrypted, on the artifact drive with its encrypted twin. It carries **no PE header** — a manually mapped image — and looking for one is what delayed finding it: 32 pages of it had been executing for hours while every scan reported "no MZ/PE" and this file read that as still-encrypted. **FLOSS `-f sc32` then produced the first IOCs this chain has ever yielded** — `Internet Explorer\IntelliForms\Storage2`, Chrome's `Local State`, Firefox, `Cookies`, `Autofill`, a SQLite DLL download, and a Nokia-feature-phone user agent that is a documented FormBook trait. The strings are built on the stack at runtime, which is exactly why nine detonations found none of them and why the ruleset was never at fault. See *Stage 4 is recovered*. What remained was its *runtime behaviour* -- and 03 Sep established that the bench cannot reach it: nothing stage 4 executes reaches the packed pages by any mechanism. See the 03 Sep sections. **The rest of this paragraph is the route there, kept because none of it is reproducible by detonation.** **The emulator now runs the injected code itself** — the far side's entry is a thread-hijack trampoline in front of a deliberate 512,371,392-iteration stall, and `after_inject.state` starts any experiment at the injection in seconds rather than 380M blocks. See *The far side runs — 14 Aug*. **And the emulator reached the injection in the first place** because measuring the poll loop showed stage 3 waiting for a process whose parent is `explorer.exe`; serving one took it through `NtOpenProcess` → `NtCreateSection` → two `NtMapViewOfSection` → thread redirect, none of which any previous run reached. It is **section-mapping injection**, so `NtWriteVirtualMemory` — which this harness was built to catch — is not on its path at all. Stage 4 is still not out in plaintext, but it is **located, sized and sourced**: the section is deliberately sized at random between 2 MB and 131 MB and filled with keystream — anti-analysis rather than the divergence this file briefly suspected — and the content is 273,408 bytes copied from `0x27e7000` in a single pass ending 645 blocks before the section is closed. **`alloc_27e7000.bin` is a new stage and lives only in a scratchpad; it belongs on the artifact drive.** See *Serving one child of explorer reached the injection* and *Pick up here — 13 Aug*. **Queue A ran, and the event-log detector carried a run the dumps lost.** On run `d7cc5044` the dump side collapsed -- one dump succeeded, the `+1s` failed outright, `+25s` was pending at exit, and **`RegSvcs.exe` was never dumped at all**, living 3.03 seconds and landing in `missed_descendants`. The WER image-timestamp check proved the hollowing anyway, hitting its pre-registered prediction exactly (`recorded 0x5ff2b99b` against `on disk 0x68531ee1`), which is the argument it was built on: it needs no dump. The ntdll pass fired too -- `RegSvcs.exe` opened `SysWOW64
 tdll.dll` twice -- and first contact with live data exposed two contamination bugs in it, both known classes with helpers already in `utils` that the pass was not calling: `WerFault.exe` supplied 30 of 41 opens credited to the sample, and **`procdump64.exe`, the pipeline's own tool**, supplied 18 of 60 background opens. Fixing both took the false-positive baseline from **60 to 2** while leaving the finding untouched -- and that baseline is the number deciding whether the detector may ever score. Module integrity's prediction failed for a locatable reason: there was no `RegSvcs` image to examine. Registry reads were **still** not collected, wrong Procmon config for the third time, and the guard said so rather than reporting a silent zero. See *Run `d7cc5044`*. Before that, **gaps 4 and 5's remaining build items were closed: all three detectors and a real minidump reader.** `dynamic_analysis/minidump.py` is now the one tested dump reader and `pe_carve` delegates to it; the unloaded-module list that defeated two hand-rolled attempts is its headline case, and the reason is structural — `MINIDUMP_UNLOADED_MODULE_LIST` opens with `SizeOfHeader/SizeOfEntry/NumberOfEntries`, not the bare count the loaded list uses, so reading it the same way shifts every field. `dynamic_analysis/ntdll_unhooking.py` catches a process opening `ntdll` *as a file*, which is how self-unhooking starts and which this sample does. Suite 483 → 543. **Chasing four failing `slow` tests then found a live false negative in the hollowing detector.** The 15 header mismatches were *correct* — the cached reference dump predated a Windows Update that replaced fourteen System32 DLLs — but the investigation exposed that `header_mismatch` was handed between the reference lookup and its caller through a module-global dict that the cache eviction cleared in between, so **whichever module crossed the 96-entry cache limit lost its mismatch and was graded by degree**, which is how a payload sharing most of its bytes with the file it impersonates files as `identical`. Reproduced against the pre-fix code, fixed, and pinned by four fast tests. Suite 561 with `slow`. Before that, **two hollowing detectors landed, both off the pick-up list and neither needing a detonation.** The WER `app_timestamp` check compares the `TimeDateStamp` of the image that was *executing* against the file on disk — equal for an ordinary process, different for a hollowed one, and on run `3f70058b` Windows recorded stage 3's `5ff2b99b` for a `RegSvcs.exe` whose file is `68531ee1`. It fires without needing the fault to land in the injected region and without needing a dump at all, so it survives every way the dump watcher misses a short-lived process. And **module integrity is finally in the HTML report** rather than JSON-only, which is how its first live finding had to be read aloud by hand. Suite 483 → 511. See *Two hollowing detectors*. Before that, **the blocklist was identified as the canonical FormBook 20-entry list with six entries swapped, and the public table cracked one of them and named the slot of the rest.** 14 of 20 positions hash-match Stormshield's published table exactly, so `0x9cb95240` is `sharedintapp.exe` (Parallels) and the remaining six sit in the slots the published list fills with `vboxservice`, `vboxtray`, `prl_tools_service`, `prl_tools`, `prl_cc` and `vmtoolsd`. **That same table independently confirms `sbiedll.dll` = `0xe11da208`**, which this project had cracked circumstantially and can now treat as corroborated by an analysis that never saw this sample. Six names remain and they are this variant's own substitutions, absent from every public write-up found. **The blocklist mechanism is also fully mapped, and mapping it retracted a conclusion published in this file hours earlier.** All 20 process-name constants *are* XOR-decoder output, from 20 contiguous call sites at `0x02016619`–`0x0201691a` feeding the compare at `0x2026181` — the earlier "they are not decoder output, four routes closed" was two compounding tool bugs: a linear capstone sweep that silently drops sites where it desynchronises, run against the *warmup* image when the allocation keeps decrypting (45 sites at 47M blocks, **65 by 380M**, with all 20 constants among the late ones). Both fixed; `hash_call_sites.py --late` reports 20 of 20. The seven names are **still uncracked**, but the site order preserves the author's list and groups them: two sit between the VMware pair and Sandboxie, five among `procmon`/`filemon`/`wireshark`/`netmon`. There is no substring structure to exploit here — the compare is against the whole-name hash — and none of the seven is a purely alphabetic 8-character stem. **Both open name hashes elsewhere are cracked, and the second one broke the model the first was read under.** `0x79dbe71d` is `"sychpe32"` — and these hashes are not over *names* at all, they are over **fixed-length substrings** whose first character and length are pushed as immediates at the call site (`push 8 ; push 0x73` for this one, `push 5 ; push 0x77` for `"wow64"`). That kills the "bare stem" reading this document told the next session to sweep on: `"wow64"` is a 5-char substring matching inside `syswow64`, and `"sychpe32"` is the CHPE system directory on ARM64 Windows — so **the pair is an architecture probe, not anti-analysis**, asking *x86-on-x64 or x86-on-ARM64?* before a loader that does direct syscalls picks its gate. A 230,756-name corpus, including every export of every system DLL, cracked neither; reading the call site cracked it in minutes. **The module that gates the crash is also named: `crc32("sbiedll.dll") == 0xe11da208`, Sandboxie's injected DLL.** So the branch that stores `0x32dfd514` and kills `RegSvcs` is a *Sandboxie check*, and this sample already blocklists `sandboxiedcomlaunch.exe` and `sandboxierpcss.exe` by CRC-32 elsewhere — the same product, checked twice, by two independently written layers. Verified by putting the real name in the emulator's loader list: same fault, same `0x32dfd514`, same rva `0x2c53`, at 17,347,692 blocks. It **does not** resolve the standing contradiction, it sharpens it: neither guest inventory contains anything matching `sbie`, so the lookup should have returned 0 on the guest as it does under emulation, and the guest stored the constant regardless. That is now a one-bit question for the next detonation. Note how it was found, because the obvious lesson was the wrong one: the bare-stem re-sweep this document called for found **nothing**, and what cracked it was a missing corpus *class* — `sbiedll.dll` is a DLL that other software *injects*, so no amount of System32 filenames or tool process names could ever have contained it. The other eight hashes now carry a bound instead of a shrug: **no preimage of ≤ 7 characters** over `[a-z0-9._-]`, bare or suffixed, and nothing from 7.8 billion token compositions. See *`0xe11da208` is `sbiedll.dll`*. Before that, **the crash that has ended nine detonations was located exactly, and its *cause* left open.** `RegSvcs` faults reading `0x32dfd514`, and that value is an *immediate* at RVA `0x1605f` of stage 3 -- `mov dword [esi+0x6d8], 0x32dfd514` -- stored into its context and later used as a buffer base by the marker search. That store is **conditional**: it runs only when a lookup for module hash `0xe11da208` succeeds. Forging a name that hashes to it -- `aqtd9dq.dll`, solved over GF(2) -- makes the emulator take that branch and die reading the guest's exact address, where it had always reached a clean `ExitProcess` before. **Module present -> poisoned pointer -> crash**, end to end. What that does *not* settle is why the guest took the branch: `0xe11da208` matches nothing among the 931 modules the guest actually had loaded, so the gate should have refused there too, and it stored the constant anyway. Broken build and deliberate bail are both still live; four conclusions in this section have already been withdrawn, so the next one wants a measurement on the guest rather than another inference from the bench. The same run proved the injected image **is stage 3**, byte for byte: 284,671 of 284,672 bytes match the carved copy, mapped at `RegSvcs.exe`'s preferred base `0x400000` while the real image sits relocated at `0x00ed0000` and untouched -- so it is neither "mapped alongside" nor "written over", and both earlier readings were unfalsifiable because both detectors skipped the object. See *Why it crashes*. **The emulator now intercepts at the WOW64 syscall
 boundary, and what was behind it is an anti-analysis block.** Stage 3 maps a clean
 `ntdll` off disk and calls `Nt*` stubs out of *its own copy*, so hooking export
@@ -3324,6 +3324,10 @@ false-positive rate, not inflating it.
 executed malware at a 9.2% benign rate. Strongly Corroborated is the
 high-confidence tier: 78.9% against 3.4%.
 
+**Superseded on the malware side by the NanoCore re-run** -- 100 executed,
+93.0% Corroborated or stronger. See *Pick up here — 30 Sep, .NET 3.5 in the
+baseline*.
+
 **The benign side is the weak half of this measurement.** 87 executed
 samples, drawn heavily from a few vendors -- ASUS / Armoury Crate, Overwolf,
 Visual Studio test hosts -- so it is not a random draw, and 9.2% carries wide
@@ -3340,6 +3344,167 @@ Reproduce: the classification is by run evidence, not by guess -- no
 `dynamic_run_summary.json` plus the PE header (ARM64 machine, or the DLL
 flag) for the static-only cases, and observation exit code `0x80131700` for
 the .NET runtime failures.
+
+
+### Pick up here — 30 Sep, .NET 3.5 in the baseline: all ten NanoCore execute and band
+
+**State.** Guest on **`37def6c`** (socket-family scoring) **plus .NET
+Framework 3.5**. The malware baseline is now
+**`corpus-agent-detonate-37def6c-noselfupdate`** -- current, `poweroff`,
+`-NoSelfUpdate` checked at the console and confirmed by its first run
+logging no `self-update:` line. Nothing running; no resume task.
+
+    corpus-agent-detonate-081c383                        self-update ON
+      corpus-agent-detonate-081c383-noselfupdate         MALICIOUS -- superseded
+      corpus-agent-detonate-37def6c                      self-update ON, .NET 3.5
+        corpus-agent-detonate-37def6c-noselfupdate       MALICIOUS -- use this
+
+**Headline, malware side, executed samples:** n=100 (the 90 plus the ten
+NanoCore) -- above No Evidence **100%**, Corroborated or stronger **93.0%**
+(93), Strongly Corroborated **81.0%** (81). All usable (110): 99.1 / 90.9 /
+73.6%. The benign side is below.
+
+#### The provisioning cycle (evening of 29 Sep EDT)
+
+* Drop `provision-37def6c` built and verified, staged with its receipt at
+  `G:\ringforge-artifacts\provision-37def6c-staging`. Provisioned from
+  `corpus-agent-detonate-081c383`; the receipt checks out on every field
+  (`081c383` -> `37def6c`). The drop was then removed from the exchange.
+* **.NET 3.5**, at the guest console, from
+  `C:\Users\aring\Downloads\Win11_25H2_English_x64.iso` attached as a DVD on
+  SATA port 2 (mounted as `E:`):
+  `DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /LimitAccess
+  /Source:E:\sources\sxs` -- completed successfully. ISO detached before the
+  snapshot, but **the empty optical drive stays**: the agent's `drives :`
+  line reads `C,D,E,Z` where it read `C,D,Z`. Harmless so far; a difference
+  in the guest a sample can see.
+* Snapshot `corpus-agent-detonate-37def6c` (self-update on).
+* **Two lessons.** Clicking into a PowerShell window in the guest freezes it
+  (QuickEdit) until Enter -- that is why DISM and the self-update both looked
+  stuck. And take snapshots only with **no VirtualBox window open, the
+  Manager included** -- the rule that came out of the two 29 Sep snapshot
+  crashes (*29 Sep evening* has the repair recipe).
+
+#### The console step was typed from the host
+
+The `-NoSelfUpdate` re-registration needs the console, and nobody was at
+it. It was done with `VBoxManage controlvm RingForge-Analysis
+keyboardputstring` / `keyboardputscancode` to type and `screenshotpng` to
+read the screen -- **no credentials anywhere**: the guest auto-logs on as
+`adam` and UAC was accepted with Alt+Y. This is not a remote-execution route
+(`guestcontrol` stays rejected, see *Provisioning the guest*); it is a
+keyboard. Screenshots of the install output and the check are in
+`G:\ringforge-artifacts\noselfupdate-37def6c-console`.
+
+The sequence that worked: Win+R (the Run box opened several seconds late,
+so text typed straight after it went elsewhere -- screenshot first), then
+`powershell -NoExit -ExecutionPolicy Bypass -File
+C:\projects\RingForge_Analyzer\ringforge-workbench\scripts\install_guest_agent.ps1
+-OnLogon -NoSelfUpdate` with Ctrl+Shift+Enter for elevation; then `schtasks
+/query /tn RingForgeRunAgent /v /fo list` -- **Task To Run ends
+`-NoSelfUpdate`, Run As User `adam`**; a minute's wait; `Stop-Computer
+-Force` from inside the guest (poweroff in 21 s). **Trap:** the logon agent's
+own console window takes focus when it starts logging, and the first
+`schtasks` line went into it. Alt+Tab back and check the title bar before
+typing. Keystrokes into the agent window are harmless (it runs
+`-NonInteractive` and reads nothing), and that boot is not snapshotted
+running.
+
+Snapshot taken from poweroff, no VirtualBox window open, 20 s after the VM
+process exited: **succeeded**.
+
+#### A restarted VBoxSVC marked the VM `aborted` after a good snapshot
+
+19 s after the snapshot finished, VBoxSVC restarted (new pid) and rewrote
+the `.vbox` with **`aborted="true"`** -- the **only** difference from
+`.vbox-prev`; `currentStateModified="false"` and `VBox.log` ends in a clean
+`PoweredOff`. `runcontrol.sweep` then refused to start ("`aborted`, not
+`poweroff`"), correctly. Not the `<inaccessible>` failure: the VM loaded
+and the snapshot was intact. **Fix: `snapshot restore` of the new
+snapshot** (nothing to discard), then the sweep with `--resume` from the
+`refused` manifest. `.vbox` backups and a `WHY.txt` in
+`G:\ringforge-artifacts\vbox-aborted-flag-20260929`.
+
+#### `mal-112b-nanocore`: 10 of 10 usable, every one executed
+
+    python -m runcontrol.sweep G:\malware-corpus\sweep-nanocore --vm RingForge-Analysis
+      --baseline corpus-agent-detonate-37def6c-noselfupdate --exchange G:\ringforge-exchange
+      --out G:\ringforge-runs --run-id mal-112b-nanocore --internet-nic 1 --hostonly-nic 2
+      --readiness-timeout 900 --run-timeout 7200 [--resume]
+
+`sweep-nanocore` holds hash-checked copies of the ten, chosen by evidence:
+the only `mal-112b` cases whose `dotnet_metadata.json` says `v2.0.50727`.
+Leg 1 refused (above); leg 2 ran from 03:56 to 16:22 UTC on 30 Sep (23:56
+EDT on the 29th to 12:22 EDT).
+
+| case | before (`mal-112b`, after recombine) | now | exit | run |
+|---|---|---|---|---|
+| **`11c9e5c742a1`** | **No Evidence 15** | **Strongly Corroborated 145** | 0 | 5,732 s |
+| `17f80f2f3a8b` | Strongly Corroborated 110 | Strongly Corroborated 150 | 0 | 5,652 s |
+| `1c6a49c2c071` | Strongly Corroborated 110 | Strongly Corroborated 170 | 0 | 5,692 s |
+| `56c44ee6a052` | Strongly Corroborated 110 | Strongly Corroborated 185 | 0 | 2,549 s |
+| `5bae05459ea6` | Strongly Corroborated 110 | Strongly Corroborated 190 | 0 | 2,621 s |
+| `604a502f34aa` | Strongly Corroborated 110 | Strongly Corroborated 165 | 0 | 2,502 s |
+| `722635285b6e` | Strongly Corroborated 110 | Strongly Corroborated 170 | 0 | 5,829 s |
+| `a5228e0087e7` | Strongly Corroborated 110 | Strongly Corroborated 185 | -1 | 5,749 s |
+| `aedace626d71` | Strongly Corroborated 110 | Strongly Corroborated 185 | 0 | 2,665 s |
+| `dacc3d21d8d1` | Strongly Corroborated 110 | Strongly Corroborated 170 | 0 | 5,750 s |
+
+**No `0x80131700` and no `Fondue.exe` anywhere** in the ten cases. `-1` is
+`a5228e0087e7`'s root still alive at the end of the 900 s window and
+terminated -- it ran, spawned `schtasks.exe` and a child. The nine that
+were Strongly Corroborated on static YARA alone now have dynamic evidence
+behind the band (`subscores.dynamic` 15 on the first). **The last detonated
+miss is gone**: `11c9e5c742a1` goes from No Evidence to Strongly
+Corroborated -- the build the NanoCore YARA rules do not match is caught on
+behaviour. Resident NanoCore processes were gone by the time
+`terminate_survivors` looked (`result: exited`). Verdicts are from guest
+code `37def6c`, so already socket-family scored and comparable with the
+recombined corpus.
+
+#### NanoCore wrote its debug log into the exchange
+
+Seven of the ten builds have `EnableDebugMode = True` and write
+**`client.log`** into their working directory -- which is
+`\\VBOXSVR\ringforge\current`, the exchange. It holds the whole builder
+config, e.g. `17f80f2f3a8b`: version 1.2.2.0, group `F8BET`, C2
+`f8betusd.com` / `f8bet288.net` on 443, keylogging, run-on-startup,
+prevent-sleep. Collected into each case (the controller clears `current\`
+between deliveries -- checked, nothing leaked across). Two readings: it is
+free config extraction, and it is a live example of the **guest-writable
+exchange** the *read-only-in* item is about. Inert text on the host, but not
+something the agent put there.
+
+#### The slow runs are host disk stalls, not the guest
+
+Run time is bimodal: **~42 min** or **~95 min**, and the whole difference is
+the agent's prune step (hash then delete ~1.5-2 GB of dumps before the
+copy): **42-45 minutes** on six runs, **under 10 seconds** on four. Not
+starvation -- the VM process sat at ~0.2 of a core. `VBox.log` shows
+why: **guest disk requests completing after 10 seconds** (`AsyncCompletion:
+Task ... completed after 10 seconds`), 569 and 2,060 of them in the two
+slow sessions whose logs survive, **0** in the fast one. `G:` is a **WD My
+Passport 1 TB, USB** -- a portable HDD, plausibly SMR, whose write-cache
+stalls would look exactly like this. Plausible, not shown. An earlier
+reading here -- Windows servicing (`TiWorker`) in the guest -- **is
+withdrawn**: it was running in three of the fast runs too.
+
+The margin it leaves: a slow run's run step used ~5,400 of the 7,200 s
+`--run-timeout`. A sample with more dump data on a stalling drive would
+time out and lose its case. Options, none taken: `--run-timeout 10800` for
+malware sweeps; skip `Get-FileHash` on dumps in the prune (the hashes are
+the pruning record, but a size would do); or move `G:\VMs` to an internal
+disk.
+
+#### Open
+
+1. **The benign pair** -- see below.
+2. **DLL detonation** (10 corpus samples) and **name-match termination** for
+   `f306` -- planned, not made; both requests were stopped by a safety check
+   in the session that planned them. See *both misses never ran*.
+3. **A wider benign corpus** -- still the measurement that would move the
+   headline most.
+4. **The host disk stalls** -- decide whether to act (above).
 
 
 ## NEXT
@@ -3407,6 +3572,11 @@ What is left needs samples rather than code:
   stronger: malware 92.2% (n=90) against benign 9.2% (n=87). The benign
   corpus is narrow; widening it is the next measurement worth making. See
   *Pick up here — 30 Sep, the headline numbers*.
+* **.NET 3.5 in the baseline, NanoCore re-run -- DONE 30 Sep.** New malware
+  baseline `corpus-agent-detonate-37def6c-noselfupdate`; all ten NanoCore
+  executed and band Strongly Corroborated, the last detonated miss among
+  them. Executed malware n=100, 93.0% Corroborated or stronger. See *Pick up
+  here — 30 Sep, .NET 3.5 in the baseline*.
 * **Dynamic benign rates -- DONE 22 Sep** (102 samples, 98 usable; 16% band
   above No Evidence, 3% reach Likely Malicious). The paragraph below is how it
   was launched. `benign-102-v2`,
