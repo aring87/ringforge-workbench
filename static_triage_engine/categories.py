@@ -36,12 +36,12 @@ from verdict import MAX_CONTEXT_SCORE, Category
 from static_triage_engine.scoring import (
     CAPABILITY_PRESENT_AT,
     CAPABILITY_STRONG_AT,
-    HIGH_SIGNAL_CAPABILITIES,
     HIGH_SIGNAL_TECH_PREFIXES,
     _extract_observables,
     _has_only_known_benign_infra,
     _pe_string_table,
     _prefix_in,
+    high_signal_matches,
 )
 
 #: Rule text that names a malware family or role, rather than a technique. Three
@@ -555,8 +555,9 @@ def static_categories(
     # `HIGH_SIGNAL_CAPABILITIES` was chosen by measuring 532 benign against 203
     # malicious samples, and its members are behaviours a reader can act on:
     # screenshots, keylogging, clipboard access, C2 file transfer, shellcode
-    # loading, self-deletion.
-    matched = sorted(set(capa_namespaces or []) & HIGH_SIGNAL_CAPABILITIES)
+    # loading, self-deletion. The socket family counts once -- see
+    # `scoring.SOCKET_FAMILY` for the measurement behind that.
+    matched = high_signal_matches(capa_namespaces)
     capable = capability_ran and len(matched) >= CAPABILITY_PRESENT_AT
 
     cats.append(Category(

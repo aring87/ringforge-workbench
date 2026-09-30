@@ -8,9 +8,12 @@ the part a reader sees -- the band -- over every usable detonated case:
     .venv\\Scripts\\python.exe scripts\\capability_verdicts.py
 
 **Read-only.** Each case is re-combined with `combine_case(write_output=False)`
-while `categories.HIGH_SIGNAL_CAPABILITIES` (and, for the socket fix, the
-namespace list `combine_case` feeds it) is patched for the duration. Nothing
-under `cases/` is written.
+while `categories.high_signal_matches` -- what the category counts -- is
+patched for the duration. Nothing under `cases/` is written.
+
+**The socket-family fix shipped 29 Sep** on the result below, so the control
+is now the shipped behaviour and "before 29 Sep" is the old one. The corpora
+were re-combined (`runcontrol.recombine`) so the control reproduces them.
 
 **The unpatched pass is the control** and must reproduce every stored band.
 Measured 28 Sep: all 208 bands reproduced; 20 cases differed in score by 1-4
@@ -66,18 +69,22 @@ def main(argv: list[str] | None = None) -> int:
 
     import static_triage_engine.categories as categories
     import static_triage_engine.combine_case as combine
-    from capability_sweep import (_REDUNDANT_PARENT, _SOCKET_FAMILY, _SOCKET_ONE,
-                                  collapse_socket_family)
-    from static_triage_engine.scoring import HIGH_SIGNAL_CAPABILITIES as shipped
+    from capability_sweep import _REDUNDANT_PARENT
+    from static_triage_engine.scoring import HIGH_SIGNAL_CAPABILITIES, high_signal_matches
 
+    # **What `dangerous_capability` counts is `categories.high_signal_matches`**,
+    # so that is what each variant replaces. Until 29 Sep this patched
+    # `categories.HIGH_SIGNAL_CAPABILITIES`; the category stopped reading that
+    # name when the socket fix shipped, and patching it would now change
+    # nothing -- every variant silently reproducing the control.
     variants = {
-        "control (shipped)": (shipped, None),
-        "no redundant c2 parent": (frozenset(shipped - {_REDUNDANT_PARENT}), None),
-        "socket family once": (frozenset((shipped - _SOCKET_FAMILY) | {_SOCKET_ONE}),
-                               collapse_socket_family),
-        "both": (frozenset(((shipped - _SOCKET_FAMILY) - {_REDUNDANT_PARENT})
-                           | {_SOCKET_ONE}), collapse_socket_family),
+        "control (shipped: socket once)": high_signal_matches,
+        "before 29 Sep (each socket member)": (
+            lambda ns: sorted(set(ns or ()) & HIGH_SIGNAL_CAPABILITIES)),
+        "shipped + no redundant c2 parent": (
+            lambda ns: [m for m in high_signal_matches(ns) if m != _REDUNDANT_PARENT]),
     }
+    control = "control (shipped: socket once)"
 
     cases = {side: [c for run in runs if Path(run).is_dir()
                     for c in usable_homes(Path(run))]
@@ -92,14 +99,11 @@ def main(argv: list[str] | None = None) -> int:
             verdict = json.loads((home / "combined_verdict.json").read_text(encoding="utf-8-sig"))
             stored[(side, name)] = verdict["band"]
 
-    original = combine.capa_namespaces
+    original = categories.high_signal_matches
     results = {}
     try:
-        for label, (members, transform) in variants.items():
-            categories.HIGH_SIGNAL_CAPABILITIES = members
-            combine.capa_namespaces = (
-                (lambda data, _t=transform: sorted(_t(set(original(data) or []))))
-                if transform else original)
+        for label, count in variants.items():
+            categories.high_signal_matches = count
             for side, pairs in cases.items():
                 for name, home in pairs:
                     verdict = combine.combine_case(home, write_output=False)
@@ -109,11 +113,10 @@ def main(argv: list[str] | None = None) -> int:
                         verdict["band"], verdict["score"],
                         None if dc is None else ("strong" if dc.get("strong") else "present"))
     finally:
-        categories.HIGH_SIGNAL_CAPABILITIES = shipped
-        combine.capa_namespaces = original
+        categories.high_signal_matches = original
 
     reproduced = sum(1 for (side, name), band in stored.items()
-                     if results[("control (shipped)", side, name)][0] == band)
+                     if results[(control, side, name)][0] == band)
     print(f"CONTROL: {reproduced} of {len(stored)} stored bands reproduced")
     if reproduced != len(stored):
         print("  the control does not reproduce the corpus; stopping here")
@@ -137,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{100 * corroborated / n:6.1f}% {100 * top / n:6.1f}%")
             moves = collections.Counter()
             for name, _ in pairs:
-                before = results[("control (shipped)", side, name)]
+                before = results[(control, side, name)]
                 after = results[(label, side, name)]
                 if before[0] != after[0]:
                     moves[f"{before[0]} -> {after[0]}"] += 1

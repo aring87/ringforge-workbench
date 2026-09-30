@@ -155,7 +155,9 @@ def main(argv: list[str] | None = None) -> int:
         text = "inf" if lift == float("inf") else f"{lift:.1f}x"
         print(f"{text:>7} {m:7.1f}% {b:7.1f}%  {ns}")
 
-    for label, members in (("shipped set", HIGH_SIGNAL_CAPABILITIES),
+    # "raw set": every member counted, which is how the category counted until
+    # 29 Sep. What ships now is the "socket family counts once" variant below.
+    for label, members in (("raw set (each socket member counted)", HIGH_SIGNAL_CAPABILITIES),
                            ("set + candidates",
                             HIGH_SIGNAL_CAPABILITIES | frozenset(_CANDIDATES))):
         print(f"\n=== {label}: {len(members)} namespaces")
@@ -169,8 +171,9 @@ def main(argv: list[str] | None = None) -> int:
             lift = f"{m / b:.1f}x" if b else "inf"
             print(f"  {at:2}{cells}{b:11.1f}%{m:11.1f}%{lift:>8}{mark}")
 
-    # The two double-counts, measured the same way. The shipped table above is
-    # the control: if it moves, nothing below means anything.
+    # The two double-counts, measured the same way. The raw-set table above is
+    # the control -- it must reproduce the published 0.6% / 16.8% -- and if it
+    # moves, nothing below means anything.
     shipped = HIGH_SIGNAL_CAPABILITIES
     variants = [
         ("no redundant c2 parent",
@@ -187,7 +190,9 @@ def main(argv: list[str] | None = None) -> int:
         groups = {k: [transform(s) for s in v] for k, v in benign.items()}
         b_all = [transform(s) for s in all_benign]
         m_all = [transform(s) for s in all_malware]
-        print(f"\n=== NOT SHIPPED -- {label}: {len(members)} namespaces")
+        status = ("SHIPPED 29 Sep" if label == "socket family counts once"
+                  else "NOT SHIPPED")
+        print(f"\n=== {status} -- {label}: {len(members)} namespaces")
         print("  at " + "".join(f"{k:>14}" for k in benign)
               + f"{'benign':>12}{'malware':>12}{'lift':>8}")
         for at in range(2, 7):

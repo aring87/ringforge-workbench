@@ -33,7 +33,7 @@ from verdict.provenance import (
     yara_collector,
 )
 from static_triage_engine.scoring import (
-    _extract_techniques,
+    TECHNIQUE_PATTERN,
     capa_namespaces,
     _is_weak_vt_noise,
     _safe_count,
@@ -217,6 +217,18 @@ def static_categories_for_case(
                                     home / "static_analysis" / "dotnet_metadata.json",
                                     home / "metadata" / "dotnet_metadata.json")
                         if p.exists()), None)
+    capa_text = capa_path.read_text(encoding="utf-8", errors="replace") if capa_path else ""
+    # **Techniques from the capa.json found here, not from the case path the
+    # summary recorded.** `_extract_techniques(summary)` opened
+    # `<parent of sample.path_case>/capa.json`: a directory on the machine the
+    # scan ran on -- `C:\ProgramData\RingForge\work\<case>` in the guest, which
+    # does not exist on the host -- and on some guest layouts not even where
+    # capa.json lived (it sits in the doubled `<case>\<case>\`). So re-combining
+    # on the host lost every technique for 20 of 208 corpus cases, and
+    # `benign-102-v2`'s own guest verdicts had missed them. Context is volume
+    # and never decides a band; it should still count what capa found.
+    techniques = (sorted(set(TECHNIQUE_PATTERN.findall(capa_text)))
+                  if summary is not None else None)
     return static_categories(
         dotnet_meta=_safe_load_json(dotnet_path) if dotnet_path else None,
         capa_ok=capa_succeeded(home),
@@ -224,10 +236,8 @@ def static_categories_for_case(
             _safe_load_json(capa_path) if capa_path else None),
         summary=summary, iocs=iocs, pe_meta=pe_meta,
         api_analysis=api_analysis, yara_results=yara_results, signing=signing,
-        techniques=_extract_techniques(summary) if summary is not None else None,
-        capa_match_count=(
-            capa_path.read_text(encoding="utf-8", errors="replace").count('"matches"')
-            if capa_path else None),
+        techniques=techniques,
+        capa_match_count=capa_text.count('"matches"') if capa_path else None,
     )
 
 

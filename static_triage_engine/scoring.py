@@ -21,7 +21,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse
 
 
@@ -195,6 +195,45 @@ HIGH_SIGNAL_CAPABILITIES = frozenset({
 CAPABILITY_PRESENT_AT = 4
 CAPABILITY_STRONG_AT = 6
 
+#: **Three members that say one thing: this program does TCP I/O.** Any network
+#: service matches all three at once, which made it a third of the way to
+#: `strong` for a single capability -- both ASUS Aura services in
+#: `benign-102-v2` reached 7 with three of the seven from here. They count as
+#: one behaviour between them, reported as `communication/socket`.
+#:
+#: **Shipped 29 Sep on two independent populations.** Static corpora (656
+#: benign, 202 malware, `scripts/capability_sweep.py`): benign strong rate 0.6%
+#: -> 0.2%, malware 16.8% -> 16.3%, lift 27.6x -> 107x. Detonated corpora (98
+#: benign, 110 malware, `scripts/capability_verdicts.py`, bands re-combined):
+#: one benign false positive down a band (Aura-Wallpaper-Service, Corroborated
+#: -> Single Observation), **no malware band moved**. The cost, stated: strong
+#: `dangerous_capability` in that malware fell 21 -> 12 with every band held by
+#: other evidence -- margin spent, which another population could show.
+#:
+#: The sibling double-count, `communication/c2` beside
+#: `communication/c2/file-transfer`, was measured at the same time and is **not**
+#: collapsed: it moved one benign band and cost three malware bands.
+SOCKET_FAMILY = frozenset({
+    "communication/socket/receive",
+    "communication/socket/send",
+    "communication/socket/tcp",
+})
+SOCKET_FAMILY_AS = "communication/socket"
+
+
+def high_signal_matches(namespaces: Iterable[str] | None) -> list[str]:
+    """The distinct high-signal behaviours among capa's namespaces.
+
+    `HIGH_SIGNAL_CAPABILITIES` intersected with what capa matched, except that
+    the socket family counts once, as `communication/socket`. This is what
+    `dangerous_capability` counts against its thresholds; measure against it,
+    not against the raw set.
+    """
+    matched = set(namespaces or ()) & HIGH_SIGNAL_CAPABILITIES
+    if matched & SOCKET_FAMILY:
+        matched = (matched - SOCKET_FAMILY) | {SOCKET_FAMILY_AS}
+    return sorted(matched)
+
 
 def capa_namespaces(capa_json: dict | None) -> list[str]:
     """Behaviour namespaces capa matched, with their parents included.
@@ -224,11 +263,21 @@ def capa_namespaces(capa_json: dict | None) -> list[str]:
     return sorted(out)
 
 
+#: An ATT&CK technique id, as capa writes it: `T1055`, `T1055.012`.
+TECHNIQUE_PATTERN = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+
+
 def _extract_techniques(summary: dict[str, Any]) -> list[str]:
+    """Techniques from the capa.json in the case directory the summary names.
+
+    Only correct where the analysis ran: the summary records that machine's
+    path. `combine_case.static_categories_for_case` reads the case's own
+    capa.json instead, so a case moved to another host scores the same.
+    """
     case_dir = _get_case_dir(summary)
     capa_json_path = case_dir / "capa.json"
     capa_blob = capa_json_path.read_text(encoding="utf-8", errors="replace") if capa_json_path.exists() else ""
-    return sorted(set(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", capa_blob)))
+    return sorted(set(TECHNIQUE_PATTERN.findall(capa_blob)))
 
 
 def _load_api_analysis(case_dir: Path) -> dict[str, Any]:
