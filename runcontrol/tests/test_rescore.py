@@ -19,8 +19,8 @@ from unittest import mock
 
 from dynamic_analysis.orchestrator import calculate_dynamic_score
 from runcontrol.rescore import (
-    BACKUP_DIR, RECORD_NAME, RUN_SUMMARY, RescoreRefused, find_run_summaries,
-    main, rescore,
+    BACKUP_DIR, RECORD_NAME, RUN_SUMMARY, RescoreRefused, diff_part,
+    find_run_summaries, main, rescore,
 )
 
 #: A sample that talked only to its own service over loopback -- the shape
@@ -59,10 +59,10 @@ def expected_for(document: dict) -> dict:
         return value if isinstance(value, dict) else {}
     return calculate_dynamic_score(
         findings_summary=part("findings"),
-        task_diff_summary=part("task_diff_summary"),
-        service_diff_summary=part("service_diff_summary"),
+        task_diff_summary=diff_part(document, "task_diff_summary"),
+        service_diff_summary=diff_part(document, "service_diff_summary"),
         dropped_files_summary=part("dropped_files_summary"),
-        autoruns_diff_summary=part("autoruns_diff_summary"),
+        autoruns_diff_summary=diff_part(document, "autoruns_diff_summary"),
         sysmon_summary=part("sysmon_summary"),
         network_summary=part("network_summary"),
         fakenet_summary=part("fakenet_summary"),
@@ -123,6 +123,60 @@ class RescoreFixture(unittest.TestCase):
 
     def record(self) -> dict:
         return json.loads((self.run / RECORD_NAME).read_text(encoding="utf-8"))
+
+
+class PersistenceSurvivesARescore(RescoreFixture):
+    """The run summary stores the three diffs flat; the scorer reads `counts`.
+
+    Passed through as stored, every count read as zero: unchanged code moved
+    `mal-112b-nanocore` 145 -> 125, 90 -> 55, 75 -> 55 on 2 Oct.
+    """
+
+    TASKS = {"suspicious_new_or_modified": 1, "new_entries": 1}
+    AUTORUNS = {"before_total": 1593, "after_total": 1595,
+                "suspicious_new_or_modified": 2, "new_entries": 2}
+
+    def guest_scored(self) -> dict:
+        """A run as the guest wrote it: scored from full diffs, stored flat."""
+        document = copy.deepcopy(LOOPBACK_RUN)
+        scored = calculate_dynamic_score(
+            findings_summary=document["findings"],
+            task_diff_summary={"counts": self.TASKS},
+            service_diff_summary={"counts": {}},
+            dropped_files_summary={},
+            autoruns_diff_summary={"counts": self.AUTORUNS},
+            sysmon_summary=document["sysmon_summary"],
+            network_summary=document["network_summary"],
+            fakenet_summary=document["fakenet_summary"],
+        )
+        document.update({
+            "task_diff_summary": dict(self.TASKS),
+            "service_diff_summary": {},
+            "autoruns_diff_summary": dict(self.AUTORUNS),
+            "score": scored["score"], "severity": scored["severity"],
+            "verdict": scored["verdict"], "score_detail": scored,
+        })
+        return document
+
+    def test_a_run_with_persistence_rescores_to_its_own_score(self) -> None:
+        self.add_case(document=self.guest_scored())
+        result = rescore(self.run)
+        self.assertEqual(0, result.changed)
+        self.assertEqual(1, result.unchanged)
+
+    def test_the_persistence_is_what_the_score_rests_on(self) -> None:
+        # Guards the test above from passing vacuously: without the diffs the
+        # same run scores lower, so "unchanged" means they were read.
+        document = self.guest_scored()
+        bare = copy.deepcopy(document)
+        bare.update({"task_diff_summary": {}, "autoruns_diff_summary": {}})
+        self.assertLess(expected_for(bare)["score"], document["score"])
+
+    def test_an_unmeasured_diff_stays_unmeasured_through_the_flat_form(self) -> None:
+        stored = {"available": False, "reason": "the before snapshot failed"}
+        self.assertEqual(
+            {"counts": {}, "available": False, "reason": "the before snapshot failed"},
+            diff_part({"autoruns_diff_summary": stored}, "autoruns_diff_summary"))
 
 
 class AStaleScoreIsRecomputed(RescoreFixture):

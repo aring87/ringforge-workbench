@@ -1671,6 +1671,39 @@ def _evidence_categories(
     ]
 
 
+def trusted_autoruns_diff(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The Autoruns diff, or an unavailable marker when it measured nothing.
+
+    **An empty "before" snapshot is not a baseline.** When `autorunsc` times
+    out before the run it leaves a 0-byte CSV, the diff then reads every
+    autostart entry on the guest as new, and `persistence_installed` went
+    strong on it: 106 "new" entries, identical across unrelated benign
+    programs. Found 2 Oct in `benign-wide` (10 of 26 runs, all banding
+    Corroborated 50 on it) and present on 4 samples of `mal-112b` too -- every
+    time with `autoruns_before_status` reading "timed out after 180 seconds".
+
+    A diff whose "before" side is empty while its "after" side is not is
+    treated as not collected, the same as a collector that never ran. Judged
+    from the counts alone, so a stored run summary -- which keeps only the
+    counts -- gets the same answer at rescore as it would at detonation.
+    """
+    if not isinstance(summary, dict):
+        return summary
+    if summary.get("available") is False:
+        return summary
+    counts = summary.get("counts", {}) or {}
+    before = int(counts.get("before_total", 0) or 0)
+    after = int(counts.get("after_total", 0) or 0)
+    if before == 0 and after > 0:
+        return {
+            "available": False,
+            "reason": (f"the before snapshot is empty against {after} entries after, "
+                       "so the diff cannot tell new entries from existing ones"),
+            "counts": {},
+        }
+    return summary
+
+
 def calculate_dynamic_score(
     findings_summary: dict[str, Any],
     task_diff_summary: dict[str, Any],
@@ -1690,6 +1723,9 @@ def calculate_dynamic_score(
     task_counts = task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {}
     service_counts = service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {}
     dropped = dropped_files_summary if isinstance(dropped_files_summary, dict) else {}
+    # Reassigned, not shadowed: the coverage check below reads this same name,
+    # so an unmeasured diff must reach it as unavailable too.
+    autoruns_diff_summary = trusted_autoruns_diff(autoruns_diff_summary)
     autoruns_counts = (
         autoruns_diff_summary.get("counts", {})
         if isinstance(autoruns_diff_summary, dict)
@@ -3417,7 +3453,21 @@ def run_dynamic_analysis(
                 f"Autoruns after snapshot warning: {autoruns_after_status.get('error', 'unknown error')}",
             )
 
-        if autoruns_before_csv.exists() and autoruns_after_csv.exists():
+        if not (autoruns_before_status.get("success") and autoruns_after_status.get("success")):
+            # A failed snapshot still leaves its CSV behind, often empty, and
+            # diffing against that reads every autostart entry as new. See
+            # `trusted_autoruns_diff`, which guards the scorer the same way.
+            failed = "before" if not autoruns_before_status.get("success") else "after"
+            autoruns_diff_summary = {
+                "available": False,
+                "reason": f"the {failed} snapshot failed: "
+                          + str((autoruns_before_status if failed == "before"
+                                 else autoruns_after_status).get("error") or "unknown error"),
+                "counts": {},
+            }
+            write_json(autoruns_diff_json, autoruns_diff_summary)
+            _emit(status_cb, f"Autoruns not diffed: {autoruns_diff_summary['reason']}")
+        elif autoruns_before_csv.exists() and autoruns_after_csv.exists():
             _emit(status_cb, "Diffing Autoruns snapshots...")
             autoruns_diff_summary = diff_autoruns_snapshots(autoruns_before_csv, autoruns_after_csv)
             write_json(autoruns_diff_json, autoruns_diff_summary)
@@ -3540,7 +3590,15 @@ def run_dynamic_analysis(
         "procmon_interesting_summary": procmon_interesting_summary,
         "task_diff_summary": task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {},
         "service_diff_summary": service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {},
-        "autoruns_diff_summary": autoruns_diff_summary.get("counts", {}) if isinstance(autoruns_diff_summary, dict) else {},
+        # The counts, plus the unavailable marker when there is one: stored
+        # flat, the marker would otherwise be lost and a rescore would read an
+        # unmeasured diff as a measured one that found nothing.
+        "autoruns_diff_summary": (
+            {**(autoruns_diff_summary.get("counts", {}) or {}),
+             **({"available": False, "reason": autoruns_diff_summary.get("reason", "")}
+                if autoruns_diff_summary.get("available") is False else {})}
+            if isinstance(autoruns_diff_summary, dict) else {}
+        ),
         "autoruns_diff": autoruns_diff_summary,
         # Named because a report that omits it reads as "nothing else
         # happened" when the truth is "nobody watched the rest".

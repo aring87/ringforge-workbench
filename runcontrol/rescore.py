@@ -165,6 +165,33 @@ def _case_home(summary_path: Path) -> Path:
     return summary_path.parents[4]
 
 
+def diff_part(document: dict, name: str) -> dict:
+    """A task, service or Autoruns diff in the shape the scorer reads.
+
+    **The run summary stores these three flat** -- the orchestrator writes
+    `diff.get("counts")` under each name -- while `calculate_dynamic_score`
+    reads `diff["counts"]`. Passed straight through, every count read as zero
+    and a rescore dropped all persistence evidence: measured 2 Oct on
+    `mal-112b-nanocore`, unchanged code moving 145 -> 125, 90 -> 55, 75 -> 55.
+    `benign-102-v2`, the one corpus ever rescored, had no persistence evidence
+    to lose -- every score but the intended loopback fix came back identical.
+
+    Wrapped back here rather than stored differently, so every run summary
+    already written stays readable. A stored `available: False` is carried
+    out of the flat form, so an unmeasured diff stays unmeasured.
+    """
+    value = document.get(name)
+    if not isinstance(value, dict):
+        return {}
+    if "counts" in value:
+        return value
+    counts = {k: v for k, v in value.items() if k not in ("available", "reason")}
+    wrapped: dict = {"counts": counts}
+    if value.get("available") is False:
+        wrapped.update(available=False, reason=value.get("reason", ""))
+    return wrapped
+
+
 def rescore_one(summary_path: Path, run_directory: Path, *,
                 dry_run: bool) -> CaseResult:
     """Recompute one run's score from what it already recorded."""
@@ -195,10 +222,10 @@ def rescore_one(summary_path: Path, run_directory: Path, *,
     try:
         scored = calculate_dynamic_score(
             findings_summary=part("findings"),
-            task_diff_summary=part("task_diff_summary"),
-            service_diff_summary=part("service_diff_summary"),
+            task_diff_summary=diff_part(document, "task_diff_summary"),
+            service_diff_summary=diff_part(document, "service_diff_summary"),
             dropped_files_summary=part("dropped_files_summary"),
-            autoruns_diff_summary=part("autoruns_diff_summary"),
+            autoruns_diff_summary=diff_part(document, "autoruns_diff_summary"),
             sysmon_summary=part("sysmon_summary"),
             network_summary=part("network_summary"),
             fakenet_summary=part("fakenet_summary"),
