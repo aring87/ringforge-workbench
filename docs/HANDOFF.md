@@ -3584,6 +3584,22 @@ whoever makes the change:
   (`dynamic_analysis/memory_dump.py`), which acts only on the watcher's
   tracked tree.
 
+#### The sweep died with the Claude session (3 Oct), resumed as leg 3 (5 Oct)
+
+Leg 1 had been started with `Start-Process` from Claude Code's own shell,
+which makes it a descendant of that process: when the session ended, between
+21:06 and 22:41 UTC on 3 Oct, the sweep went with it -- **58 of 78 done, all
+usable**. The guest finished `pscp_4c6357ec` and signalled done to nobody; the
+VM was left `running`; no reboot in the event log; the logon task never fired
+because nobody logged on. ~30 hours lost, no results.
+
+Recovered 5 Oct: `register_resume_task.ps1 -RunNow` -> leg 2 **refused**
+(*"'RingForge-Analysis' is 'running', not 'poweroff'"*) -> `VBoxManage
+controlvm RingForge-Analysis poweroff` -> `-RunNow` -> **leg 3 running**,
+`pscp` re-armed, log `G:\ringforge-runs\benign-wide.leg3-20261005-010714.log`.
+**Start long sweeps through the task (`-RunNow`), not from an agent's shell** --
+Task Scheduler's child survives, as measured 18 Sep.
+
 #### Two scoring defects, found by the first 26 runs (2 Oct, `17af4dd`)
 
 **10 of the first 26 `benign-wide` runs banded Corroborated or stronger**
