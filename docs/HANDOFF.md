@@ -3600,6 +3600,19 @@ controlvm RingForge-Analysis poweroff` -> `-RunNow` -> **leg 3 running**,
 **Start long sweeps through the task (`-RunNow`), not from an agent's shell** --
 Task Scheduler's child survives, as measured 18 Sep.
 
+#### Pruning recorded files it could not delete (5 Oct, guest code -- next drop)
+
+Five `benign-wide` cases came home at ~2.8 GB (`crashhelper`, `GUP`,
+`logi_crashpad_handler`, `pageant`, `QtWebEngineProcess`): each kept
+`procmon\raw.pml`, which `pruned_artifacts.json` listed as **pruned**, with
+an empty `sha256`. Both the hash and the `Remove-Item -ErrorAction
+SilentlyContinue` had failed on a file still held open -- most likely Procmon,
+whose `/Terminate` times out on some runs. No effect on scoring; ~14 GB of
+disk. The agent now records a file as removed only if `Test-Path` says it is
+gone, logs the ones it could not remove, and adds `not_removed_bytes` to the
+record. Verified: a file held open survives a silent `Remove-Item`. Reaches
+the guest with the next drop.
+
 #### Two scoring defects, found by the first 26 runs (2 Oct, `17af4dd`)
 
 **10 of the first 26 `benign-wide` runs banded Corroborated or stronger**

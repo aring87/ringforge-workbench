@@ -667,6 +667,7 @@ try {
 
   $pruned = @()
   $prunedBytes = 0
+  $keptBytes = 0
   if (-not $KeepRawArtifacts) {
     try {
       foreach ($spec in $pruneSpecs) {
@@ -675,17 +676,29 @@ try {
         foreach ($f in $found) {
           if ($spec.parent -and $f.Directory.Name -ne $spec.parent) { continue }
           $hash = try { (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash } catch { "" }
-          $prunedBytes += $f.Length
-          $pruned += [pscustomobject][ordered]@{
-            path   = $f.FullName.Substring($caseHome.Length).TrimStart('\')
-            bytes  = $f.Length
-            sha256 = $hash
-          }
           Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+          # **Recorded as removed only if it is gone.** A file still held open
+          # -- Procmon's raw.pml when its /Terminate timed out -- fails both
+          # the hash and the delete, silently, and was recorded as pruned
+          # anyway: five benign-wide cases (Oct 2026) brought home a 2.8 GB
+          # raw.pml that pruned_artifacts.json said had been dropped.
+          $removed = -not (Test-Path -LiteralPath $f.FullName)
+          if ($removed) { $prunedBytes += $f.Length } else { $keptBytes += $f.Length }
+          $pruned += [pscustomobject][ordered]@{
+            path    = $f.FullName.Substring($caseHome.Length).TrimStart('\')
+            bytes   = $f.Length
+            sha256  = $hash
+            removed = $removed
+          }
         }
       }
       if ($pruned.Count -gt 0) {
-        Write-Log ("pruned {0} raw artifact(s), {1:N0} MB, before the copy" -f $pruned.Count, ($prunedBytes / 1MB))
+        Write-Log ("pruned {0} raw artifact(s), {1:N0} MB, before the copy" -f `
+          @($pruned | Where-Object removed).Count, ($prunedBytes / 1MB))
+      }
+      if ($keptBytes -gt 0) {
+        Write-Log ("could not remove {0} raw artifact(s), {1:N0} MB, still in use -- they travel with the case" -f `
+          @($pruned | Where-Object { -not $_.removed }).Count, ($keptBytes / 1MB))
       }
     } catch {
       # Saving disk is an optimisation, and an optimisation that can destroy
@@ -705,10 +718,12 @@ try {
   # gets an answer here rather than a mystery.
   $record = [ordered]@{
     kept        = [bool]$KeepRawArtifacts
-    count       = $pruned.Count
+    count       = @($pruned | Where-Object removed).Count
     # Accumulated in the loop rather than measured afterwards. Measuring is
     # what threw, and a total is not worth a second chance to lose the run.
     total_bytes = $prunedBytes
+    # Meant to be pruned but still in use, so copied home with the case.
+    not_removed_bytes = $keptBytes
     why         = ("These are inputs to the in-guest analysis, not its results. " +
                    "Memory dumps were consumed by the YARA scan, the PE carve, " +
                    "module integrity and the crash evidence. Procmon's raw.pml, " +
