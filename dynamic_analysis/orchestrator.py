@@ -791,12 +791,22 @@ def _default_autorunsc_path() -> Path:
     return app_root() / "tools" / "autorunsc64.exe"
 
 
+#: Was 180, and on this bench that was not enough: the "before" snapshot timed
+#: out on ~40% of `benign-wide` runs (Oct 2026), most likely the USB drive's
+#: write stalls, and a timed-out snapshot leaves the empty CSV that
+#: `trusted_autoruns_diff` now refuses to score. Refusing it stops the false
+#: evidence; only more time recovers the measurement. 600 s costs nothing on a
+#: run where autorunsc finishes, and two of them fit well inside the run
+#: timeouts sweeps use (7,200-10,800 s).
+DEFAULT_AUTORUNS_TIMEOUT_SECONDS = 600
+
+
 def _run_autorunsc_snapshot(
     *,
     autorunsc_path: str | Path,
     output_csv: Path,
     deep_scan: bool = False,
-    timeout_seconds: int = 180,
+    timeout_seconds: int = DEFAULT_AUTORUNS_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """
     Run autorunsc and save a CSV snapshot.
@@ -2208,7 +2218,8 @@ def run_dynamic_analysis(
 
     autoruns_enabled = bool(config.get("autoruns_enabled", True))
     autoruns_deep_scan = bool(config.get("autoruns_deep_scan", run_profile == "deep"))
-    autoruns_timeout_seconds = int(config.get("autoruns_timeout_seconds", 180))
+    autoruns_timeout_seconds = int(config.get("autoruns_timeout_seconds",
+                                              DEFAULT_AUTORUNS_TIMEOUT_SECONDS))
     autorunsc_path = Path(config.get("autorunsc_path") or _default_autorunsc_path())
 
     autoruns_before_csv = paths["autoruns"] / "autoruns_before.csv"
