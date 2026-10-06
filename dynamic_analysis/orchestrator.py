@@ -1704,6 +1704,57 @@ def trusted_autoruns_diff(summary: dict[str, Any] | None) -> dict[str, Any] | No
     return summary
 
 
+def comparable_snapshot_diff(
+    diff: dict[str, Any],
+    before_status: dict[str, Any] | None,
+    after_status: dict[str, Any] | None,
+    what: str,
+) -> dict[str, Any]:
+    """A task or service diff, or an unavailable marker when the two sides differ.
+
+    **Both snapshots must have succeeded, by the same method.** Each collector
+    falls back from its PowerShell cmdlet to a command-line tool when the
+    cmdlet times out, and the two produce differently shaped records -- so a
+    "before" taken one way against an "after" taken the other compares every
+    entry as modified. Found 6 Oct on `benign-wide` `crashhelper_e66cae5f`:
+    `Get-ScheduledTask` timed out before the run, the fallback `schtasks.exe`
+    took the baseline, the cmdlet took the after, and all 260 tasks read as
+    modified -- 99 of them suspicious, which alone put a Mozilla crash helper
+    at Corroborated. A failed "before" is worse still: an empty baseline makes
+    every entry new, the same fault as an empty Autoruns snapshot.
+
+    Not collected, rather than zero: the run could not see whether anything
+    changed, which is a different statement from "nothing changed".
+    """
+    before = before_status if isinstance(before_status, dict) else {}
+    after = after_status if isinstance(after_status, dict) else {}
+    if not (before.get("success") and after.get("success")):
+        failed = "before" if not before.get("success") else "after"
+        reason = f"the {failed} {what} snapshot failed"
+    elif before.get("method") != after.get("method"):
+        reason = (f"the {what} snapshots were taken by different methods "
+                  f"({before.get('method')} before, {after.get('method')} after), "
+                  "so every entry compares as changed")
+    else:
+        return diff
+    return {"available": False, "reason": reason, "counts": {}}
+
+
+def _stored_diff_counts(diff: Any) -> dict[str, Any]:
+    """A diff as the run summary stores it: its counts, flat, plus any marker.
+
+    Flat because every run summary already written stores it that way and
+    `runcontrol.rescore` reads that form back. The unavailable marker rides
+    along so a rescore reads an unmeasured diff as unmeasured.
+    """
+    if not isinstance(diff, dict):
+        return {}
+    stored = dict(diff.get("counts", {}) or {})
+    if diff.get("available") is False:
+        stored.update(available=False, reason=diff.get("reason", ""))
+    return stored
+
+
 def calculate_dynamic_score(
     findings_summary: dict[str, Any],
     task_diff_summary: dict[str, Any],
@@ -2428,6 +2479,8 @@ def run_dynamic_analysis(
     services_before: Any = []
     tasks_status: dict[str, Any] = {"success": False, "method": "", "error": "not run"}
     services_status: dict[str, Any] = {"success": False, "method": "", "error": "not run"}
+    tasks_after_status: dict[str, Any] = {"success": False, "method": "", "error": "not run"}
+    services_after_status: dict[str, Any] = {"success": False, "method": "", "error": "not run"}
 
     procmon_started = False
     sample_launch_attempted = False
@@ -3024,19 +3077,27 @@ def run_dynamic_analysis(
             _emit(status_cb, "Skipping after snapshots and Procmon export because run was cancelled.")
         else:
             _emit(status_cb, "Snapshotting scheduled tasks (after)...")
-            tasks_after = snapshot_scheduled_tasks()
+            tasks_after, tasks_after_status = snapshot_scheduled_tasks_with_status()
             write_json(tasks_after_json, tasks_after)
 
             _emit(status_cb, "Diffing scheduled tasks...")
-            task_diff_summary = diff_scheduled_tasks(tasks_before, tasks_after)
+            task_diff_summary = comparable_snapshot_diff(
+                diff_scheduled_tasks(tasks_before, tasks_after),
+                tasks_status, tasks_after_status, "scheduled task")
+            if task_diff_summary.get("available") is False:
+                _emit(status_cb, f"Scheduled tasks not diffed: {task_diff_summary['reason']}")
             write_json(task_diffs_json, task_diff_summary)
 
             _emit(status_cb, "Snapshotting services (after)...")
-            services_after = snapshot_services()
+            services_after, services_after_status = snapshot_services_with_status()
             write_json(services_after_json, services_after)
 
             _emit(status_cb, "Diffing services...")
-            service_diff_summary = diff_services(services_before, services_after)
+            service_diff_summary = comparable_snapshot_diff(
+                diff_services(services_before, services_after),
+                services_status, services_after_status, "service")
+            if service_diff_summary.get("available") is False:
+                _emit(status_cb, f"Services not diffed: {service_diff_summary['reason']}")
             write_json(service_diffs_json, service_diff_summary)
 
             # Gated on the export having produced a CSV, not merely on Procmon
@@ -3588,17 +3649,11 @@ def run_dynamic_analysis(
         "score_detail": score_data,
         "procmon_summary": procmon_summary,
         "procmon_interesting_summary": procmon_interesting_summary,
-        "task_diff_summary": task_diff_summary.get("counts", {}) if isinstance(task_diff_summary, dict) else {},
-        "service_diff_summary": service_diff_summary.get("counts", {}) if isinstance(service_diff_summary, dict) else {},
-        # The counts, plus the unavailable marker when there is one: stored
-        # flat, the marker would otherwise be lost and a rescore would read an
-        # unmeasured diff as a measured one that found nothing.
-        "autoruns_diff_summary": (
-            {**(autoruns_diff_summary.get("counts", {}) or {}),
-             **({"available": False, "reason": autoruns_diff_summary.get("reason", "")}
-                if autoruns_diff_summary.get("available") is False else {})}
-            if isinstance(autoruns_diff_summary, dict) else {}
-        ),
+        # Stored flat, with the unavailable marker when there is one -- see
+        # `_stored_diff_counts`.
+        "task_diff_summary": _stored_diff_counts(task_diff_summary),
+        "service_diff_summary": _stored_diff_counts(service_diff_summary),
+        "autoruns_diff_summary": _stored_diff_counts(autoruns_diff_summary),
         "autoruns_diff": autoruns_diff_summary,
         # Named because a report that omits it reads as "nothing else
         # happened" when the truth is "nobody watched the rest".
@@ -3610,7 +3665,11 @@ def run_dynamic_analysis(
         "dropped_files": dropped_files[:50],
         "findings": findings_summary,
         # --- Tier 1 telemetry ------------------------------------------------
+        # `tasks_snapshot_status` and `services_snapshot_status` are the
+        # *before* snapshots, named before the after ones were recorded.
         "tasks_snapshot_status": tasks_status,
+        "tasks_after_snapshot_status": tasks_after_status,
+        "services_after_snapshot_status": services_after_status,
         "services_snapshot_status": services_status,
         "sysmon_enabled": sysmon_enabled,
         "sysmon_preflight": sysmon_preflight,
