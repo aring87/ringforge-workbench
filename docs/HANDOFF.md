@@ -3742,7 +3742,27 @@ step (move `G:\VMs` off the USB drive) is now also a correctness step.
 #### Open
 
 1. ~~**The next guest drop**~~ -- **done 6 Oct**, see the entry below.
-2. **DLL detonation and name-match termination** -- unchanged, see above.
+2. **DLL detonation -- made 7 Nov, not yet on the guest.** Name-match
+   termination for `f306` is still not made. `dynamic_analysis/dll_launch.py`
+   decides by the PE header's DLL flag, not the extension: eight of the ten
+   are named `.exe` and had been failing CreateProcess with WinError 193. Host
+   is `rundll32.exe` matched to the machine (`SysWOW64` for x86, `Sysnative`
+   from a 32-bit interpreter). Export: a loader entry name if there is one,
+   else the lowest ordinal, else `#1` (DllMain still runs). Planned against
+   the ten: `Main` for the three `STEALERDLL.dll`, `DllRegisterServer` for
+   the OLEACC proxy, `#1` for the four MpClient proxies, the readline proxy
+   and the `.pyd`. The observation records `launch` (host, export, reason,
+   root PID). **The bench's host is not a hollowing target**: an
+   unmapped-memory crash in the root `rundll32` counts as unmapped
+   (`unmapped_crashes_in_bench_host`) but not toward
+   `crashes_in_hollowing_target`, which is strong. The same fault in a
+   sample `.exe` is weak, and hosting a DLL must not promote it. The host's
+   name is also kept out of name-based crash attribution. Checked the other
+   hollowing-target routes too: module integrity and image timestamp need the
+   host's own image to disagree with its file (real hollowing, whoever
+   started it); ntdll opens are context-only; unmapped PE images are strong
+   wherever they are. 20 tests, the host exclusion mutation-checked; suite
+   2,135. Next: a guest drop, then re-run the ten.
 3. **The weak-category corroboration question** that CPU-Z raises --
    **measured 7 Nov, rule left as it is.** Every stored verdict re-banded
    from its `evidence` (context-only names dropped) under three variants of

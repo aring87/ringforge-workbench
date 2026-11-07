@@ -372,6 +372,7 @@ def summarize_crashes(
     sample_pids: set[int] | None = None,
     sample_names: set[str] | None = None,
     read_timestamp=read_pe_timestamp,
+    host_pids: set[int] | None = None,
 ) -> dict[str, Any]:
     """Reduce crash events to the shape the run summary carries.
 
@@ -382,6 +383,13 @@ def summarize_crashes(
     Crashes belonging to other processes are counted rather than dropped: a
     run where Windows crashed something of its own has to be tellable from one
     where nothing crashed.
+
+    `host_pids` are processes the *bench* started to host the sample -- the
+    `rundll32.exe` a DLL runs in. A fault in unmapped memory there is the
+    sample's code, so it still counts as one; it is not a crash in a process
+    a loader chose to hollow, which is the claim `crashes_in_hollowing_target`
+    makes and the reason it is strong. The same fault in a sample `.exe` is
+    weak, and running the sample as a DLL must not promote it.
     """
     names = {n.lower() for n in (sample_names or set())}
 
@@ -400,8 +408,15 @@ def summarize_crashes(
 
         crashes.append(record)
 
+    hosts = set(host_pids or ())
+
+    def _in_target(c: dict[str, Any]) -> bool:
+        return (is_hollowing_target(c.get("app_name"))
+                and c.get("pid") not in hosts)
+
     unmapped = [c for c in crashes if c["executed_from_unmapped_memory"]]
-    in_target = [c for c in unmapped if is_hollowing_target(c.get("app_name"))]
+    in_target = [c for c in unmapped if _in_target(c)]
+    in_host = [c for c in unmapped if c.get("pid") in hosts]
     timestamps = summarize_image_timestamps(crashes, read_timestamp)
 
     return {
@@ -421,6 +436,8 @@ def summarize_crashes(
             # looks identical to one faulting in injected code, so the identity
             # of the process is what separates them.
             "crashes_in_hollowing_target": len(in_target),
+            # Counted in `crashes_in_unmapped_memory`, never in the line above.
+            "unmapped_crashes_in_bench_host": len(in_host),
             "other_process_crashes_excluded": other,
         },
         "crashes": crashes[:50],
@@ -434,7 +451,8 @@ def summarize_crashes(
                 "fault_offset": c["fault_offset"],
                 "path": c["app_path"],
                 "timestamp": c["timestamp"],
-                "hollowing_target": is_hollowing_target(c.get("app_name")),
+                "hollowing_target": _in_target(c),
+                "bench_host": c.get("pid") in hosts,
             }
             for c in unmapped[:20]
         ],
@@ -451,6 +469,7 @@ def empty_crash_summary(note: str = "") -> dict[str, Any]:
             "crashes_in_unmapped_memory": 0,
             "timestamp_mismatch_in_hollowing_target": 0,
             "crashes_in_hollowing_target": 0,
+            "unmapped_crashes_in_bench_host": 0,
             "other_process_crashes_excluded": 0,
         },
         "crashes": [],
@@ -473,11 +492,13 @@ def collect_crashes(
     sample_pids: set[int] | None = None,
     sample_names: set[str] | None = None,
     max_events: int = 200,
+    host_pids: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Collect and summarise crash events for a completed run."""
     events = query_crash_events(since_utc, max_events=max_events)
     records = [parse_crash_event(e) for e in events]
-    summary = summarize_crashes(events, sample_pids=sample_pids, sample_names=sample_names)
+    summary = summarize_crashes(events, sample_pids=sample_pids,
+                                sample_names=sample_names, host_pids=host_pids)
     return records, summary
 
 

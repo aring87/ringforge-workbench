@@ -19,6 +19,7 @@ from verdict import (
     band,
 )
 
+from dynamic_analysis.dll_launch import plan_dll_launch
 from dynamic_analysis.diff_services import diff_services
 from dynamic_analysis.diff_tasks import diff_scheduled_tasks
 from dynamic_analysis.dropped_file_triage import (
@@ -246,6 +247,12 @@ def build_dynamic_launch_command(sample_path: str | Path, run_dir: str | Path | 
 
     run_dir = Path(run_dir)
 
+    # Before the extension: a DLL named `.exe` is the sideloading shape, and
+    # CreateProcess on it fails with WinError 193. See `dll_launch`.
+    dll = plan_dll_launch(sample)
+    if dll is not None:
+        return list(dll["command"])
+
     if suffix == ".exe":
         return [str(sample)]
 
@@ -333,11 +340,20 @@ def run_sample(
     _raise_if_cancelled(cancel_event)
 
     start_time = time.monotonic()
+    dll_launch = plan_dll_launch(sample)
     launch_cmd = build_dynamic_launch_command(sample)
+    # A hosted DLL goes as a string: rundll32 wants the comma outside the
+    # quotes, which no list form produces for a path with a space.
+    popen_arg: list[str] | str = (dll_launch["command_line"] if dll_launch
+                                  else launch_cmd)
 
+    if dll_launch:
+        _emit(status_cb,
+              f"DLL sample: hosted by {dll_launch['host']}, export "
+              f"{dll_launch['export']} ({dll_launch['export_reason']}).")
     _emit(status_cb, f"Launch command: {' '.join(launch_cmd)}")
 
-    proc = subprocess.Popen(launch_cmd, creationflags=no_window())
+    proc = subprocess.Popen(popen_arg, creationflags=no_window())
 
     if on_launch is not None:
         # A failure in a telemetry hook must never take down the detonation.
@@ -399,6 +415,17 @@ def run_sample(
             "extended": extensions > 0,
             "activity_observed": activity_seen,
             "ended_because": ended_because,
+            # Who the root process is. For a DLL it is the bench's rundll32,
+            # and the crash attribution reads this to keep that host from
+            # counting as a process a loader chose to hollow.
+            "launch": {
+                "hosted": bool(dll_launch),
+                "command": launch_cmd,
+                "root_pid": proc.pid,
+                **({k: dll_launch[k] for k in
+                    ("host_image", "export", "export_reason", "machine")}
+                   if dll_launch else {}),
+            },
         }
 
     while True:
@@ -3014,8 +3041,19 @@ def run_dynamic_analysis(
                 }
                 crash_names -= {""}
 
+                # A DLL's root is the bench's rundll32. Attributed by its PID,
+                # never by its name -- Windows' own maintenance runs rundll32,
+                # and the name would claim those crashes as the sample's.
+                launch = (observation or {}).get("launch", {}) or {}
+                crash_hosts: set[int] = set()
+                if launch.get("hosted"):
+                    crash_names.discard(str(launch.get("host_image", "")).lower())
+                    if launch.get("root_pid"):
+                        crash_hosts.add(int(launch["root_pid"]))
+
                 crash_records, crash_summary = collect_crashes(
-                    sysmon_since, sample_pids=crash_pids, sample_names=crash_names
+                    sysmon_since, sample_pids=crash_pids, sample_names=crash_names,
+                    host_pids=crash_hosts,
                 )
                 write_json(crash_events_json, crash_records)
 
