@@ -50,10 +50,10 @@ bottom. It does not move the finish line.
 - [x] **`mal-112b-dll-r2` finished, 10 Nov.** 109 of 110 detonated,
       **91.7%** Corroborated or stronger. `bec14eeafcf1` is recorded as a
       known limit. Resume task unregistered.
-- [ ] **Heartbeat from `signalled ready`, not from detonation.** Right
+- [x] **Heartbeat from `signalled ready`, not from detonation.** Done in `b3c4530`, on the guest. Right
       now, a hang during static triage sends nothing home (HANDOFF,
       *10 Nov*). Ships with the next guest drop.
-- [ ] **Fix the misleading reason text.** An unmapped PE image in the
+- [x] **Fix the misleading reason text.** Done in `b3c4530`. An unmapped PE image in the
       bench's own `rundll32` host currently reads "a process loaders
       hollow". It should say the DLL unpacked an image into its host. The
       score does not change; only the wording does.
@@ -61,7 +61,7 @@ bottom. It does not move the finish line.
       guest's `agent.log` before the restore discards it. If none recurs,
       record this as a known flake, with the 30-minute readiness timeout
       as the mitigation.
-- [ ] **`f306` (GuLoader): name-match termination, then one re-run.** If
+- [ ] **`f306` (GuLoader): name-match termination, then one re-run.** Termination made in `b3c4530`; re-run `mal-112b-f306-b3c4530` running. If
       it still times out, record it as a known limit: a resident sample
       that starves the guest. Do not try a third approach. `cca6a5ed0923`
       may join it there.
