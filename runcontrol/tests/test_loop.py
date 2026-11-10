@@ -82,6 +82,10 @@ class FakeHypervisor:
         self._record("power_off", vm)
         self._running = False
 
+    def screenshot(self, vm, path):
+        self._record("screenshot", vm, str(path))
+        Path(path).write_bytes(b"PNG fake")
+
     def set_link(self, vm, nic, connected):
         self._record("set_link", vm, nic, connected)
 
@@ -560,6 +564,47 @@ class ARunTimeoutStillCollects(LoopFixture):
         self.assertIs(Outcome.RUN_TIMEOUT, report.outcome)
         self.assertIsNotNone(report.collected)
         self.assertTrue((self.cases / "thing" / "partial.json").is_file())
+
+
+class ATimeoutLeavesAScreenshot(LoopFixture):
+    """10 Nov: one heartbeat 58 s into triage, then two silent hours, and
+    nothing left to look at once the restore had run."""
+
+    def test_a_run_timeout_saves_the_screen_into_the_case(self) -> None:
+        hv = FakeHypervisor()
+        report = self.detonate(hv, sleep=self.guest_cooperates(done=False))
+        self.assertIs(Outcome.RUN_TIMEOUT, report.outcome)
+        self.assertTrue((self.cases / "thing" / "host-screen-at-timeout.png").is_file())
+        self.assertLess(hv.index("screenshot"), hv.index("power_off"))
+
+    def test_no_readiness_saves_it_beside_the_cases_not_in_one(self) -> None:
+        report = self.detonate(FakeHypervisor(),
+                               sleep=self.guest_cooperates(ready=False))
+        self.assertIs(Outcome.NO_READINESS, report.outcome)
+        self.assertFalse((self.cases / "thing").exists())
+        shots = list(self.cases.glob("thing.no-readiness-*.png"))
+        self.assertEqual(1, len(shots))
+
+    def test_a_finished_run_takes_none(self) -> None:
+        hv = FakeHypervisor()
+        self.detonate(hv)
+        self.assertNotIn("screenshot", hv.names)
+
+    def test_a_failing_screenshot_is_a_note_not_a_failure(self) -> None:
+        hv = FakeHypervisor(fail_on="screenshot")
+        report = self.detonate(hv, sleep=self.guest_cooperates(done=False))
+        self.assertIs(Outcome.RUN_TIMEOUT, report.outcome)
+        notes = [s for s in report.steps if s[0] == "screenshot"]
+        self.assertTrue(notes[0][2].startswith("could not"))
+        self.assertIsNotNone(report.collected)
+
+    def test_a_hypervisor_without_one_still_runs(self) -> None:
+        class NoScreens(FakeHypervisor):
+            screenshot = None
+        report = self.detonate(NoScreens(), sleep=self.guest_cooperates(done=False))
+        self.assertIs(Outcome.RUN_TIMEOUT, report.outcome)
+        notes = [s for s in report.steps if s[0] == "screenshot"]
+        self.assertEqual("not supported", notes[0][2])
 
 
 class FailuresDoNotEscape(LoopFixture):

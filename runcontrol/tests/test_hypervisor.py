@@ -83,6 +83,14 @@ class TheDestructiveGuard(unittest.TestCase):
         with self.assertRaises(NotPermitted):
             _vbox().set_link("RingForge-Analysis", 1, False)
 
+    def test_a_screenshot_is_not_refused(self) -> None:
+        # It changes nothing in the guest, and it is taken on the error path
+        # of a sweep that may hold a read-only handle for diagnosis.
+        vbox = _vbox()
+        vbox.screenshot("RingForge-Analysis", "C:/x/screen.png")
+        self.assertEqual(["controlvm RingForge-Analysis screenshotpng C:/x/screen.png"],
+                         vbox.log)
+
     def test_reading_is_never_refused(self) -> None:
         vbox = _vbox({"list": LIST_VMS})
         self.assertIn("RingForge-Analysis", vbox.vms())

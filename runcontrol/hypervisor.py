@@ -78,6 +78,9 @@ class Hypervisor(Protocol):
     def restore(self, vm: str, snapshot: str) -> None: ...
     def start(self, vm: str, headless: bool = True) -> None: ...
     def power_off(self, vm: str) -> None: ...
+    # Optional: the loop calls it through `getattr`, best effort, so a
+    # hypervisor without one still runs.
+    def screenshot(self, vm: str, path: Path | str) -> None: ...
     def set_link(self, vm: str, nic: int, connected: bool) -> None: ...
     def link_connected(self, vm: str, nic: int) -> bool: ...
     def shared_folders(self, vm: str) -> dict[str, str]: ...
@@ -233,6 +236,17 @@ class VirtualBox:
     def start(self, vm: str, headless: bool = True) -> None:
         self._run(["startvm", vm, "--type", "headless" if headless else "gui"],
                   changes_guest=True)
+
+    def screenshot(self, vm: str, path: Path | str) -> None:
+        """Save the running guest's screen as a PNG on the host.
+
+        Read-only: it changes nothing in the guest. Used on a timeout, before
+        the power-off and the restore erase the only record of what the
+        guest was showing -- a dialog, a frozen clock, a console in selection
+        mode.
+        """
+        self._run(["controlvm", vm, "screenshotpng", str(path)],
+                  changes_guest=False)
 
     def power_off(self, vm: str) -> None:
         """Pull the plug. Not a shutdown request.

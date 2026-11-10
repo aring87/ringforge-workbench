@@ -264,6 +264,30 @@ def start_with_retry(hypervisor, vm: str, *, attempts: int = 3,
         f"{vm!r} would not start after {attempts} attempts: {last}")
 
 
+def _screenshot(hypervisor, vm: str, path: Path) -> str:
+    """Save the guest's screen on the host at `path`; return a step note.
+
+    **Taken because a timeout used to leave nothing to look at.** On 10 Nov
+    `f306f95f4a9b` sent one triage heartbeat, 58 s in, and then nothing for
+    two hours; VBox.log showed a healthy VM, and the power-off and restore
+    erased whatever the guest was showing. A frozen clock, an error dialog
+    or a console stuck in selection mode would each have said which.
+
+    On the host side, not the exchange: the guest cannot touch it, and
+    `collect_case` merges into an existing case folder. Best effort -- a
+    failure is a note, never a changed outcome.
+    """
+    take = getattr(hypervisor, "screenshot", None)
+    if take is None:
+        return "not supported"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        take(vm, path)
+        return path.name
+    except Exception as error:                       # noqa: BLE001
+        return f"could not: {str(error)[:80]}"
+
+
 def _why_no_readiness(hypervisor, vm: str) -> str:
     """Which half of the transport failed, asked of the hypervisor.
 
@@ -394,12 +418,21 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
                 f"{_why_no_readiness(hypervisor, guest.vm)}"
             )
             report.note("readiness", started, "TIMED OUT")
+            # Beside the case folders, not in one: a void run has no case
+            # folder, and a retry must not overwrite the first attempt's.
+            report.note("screenshot", started, _screenshot(
+                hypervisor, guest.vm, Path(case_root) /
+                f"{case}.no-readiness-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.png"))
             return report
         report.note("readiness", started)
 
         # 7. The run itself.
         finished = signals.wait_for(signals.done, guest.run_timeout, sleep=sleep)
         report.note("run", started, "finished" if finished else "TIMED OUT")
+        if not finished:
+            report.note("screenshot", started, _screenshot(
+                hypervisor, guest.vm,
+                Path(case_root) / case / "host-screen-at-timeout.png"))
 
         # 8. Off, not shutdown. A sample can refuse to shut down.
         hypervisor.power_off(guest.vm)
