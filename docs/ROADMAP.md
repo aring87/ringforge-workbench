@@ -5,11 +5,136 @@ Written 13 Aug 2026, extended 24 Aug. The original scope was
 `422e30ed` investigation, not to this, and mixing the two is why "how much is
 left" keeps feeling unanswerable.
 
-**That scope is now largely closed, and the work moved.** For the current plan,
-start at *After dynamic — the roadmap from 24 Aug* at the end of this file. The
-sections between are the dynamic plan and its outcomes, kept because the
-standard below is quoted by `docs/SCORING.md` and because how each item closed
-is more useful than the fact that it did.
+**The current plan is the next section, *The roadmap from 10 Nov*.** It
+replaces both *After dynamic — the roadmap from 24 Aug* at the end of this
+file and *Roadmap, as of 30 Sep* in `docs/HANDOFF.md`'s NEXT. The sections
+between are the dynamic plan and its outcomes, kept because the standard
+below is quoted by `docs/SCORING.md` and because how each item closed is more
+useful than the fact that it did.
+
+---
+
+## The roadmap from 10 Nov — and where it ends
+
+**Where things stand.** Every detector is built, and every module had a
+polish pass on 3 Sep. Two corpora have been measured end to end. Malware is
+110 samples, 108 of which have executed so far (the DLL re-run is still
+going). Benign is 167 programs, 165 executed. **The number to quote is
+91.7% of executed malware at 6.7% of executed benign, Corroborated or
+stronger.** That figure is partly in-sample, because rules were tuned on
+the same corpora. What remains is about trusting that number, finishing,
+and polishing, not building detectors.
+
+### The end, defined
+
+**RingForge v1 is done when all of these hold:**
+
+1. **A headline measured with the rules frozen**, on a corpus no rule was
+   tuned on (step 3 below). It gets reported whatever it shows.
+2. **Every open measurement is closed.** It either has a result or is
+   written down as a known limit with its reason (`f306`, the voids).
+3. **Every module has had its second polish pass** (step 4).
+4. **The docs describe what is actually there**: `USER_GUIDE.md`,
+   `SCORING.md` and `INSTALL.md` checked against the v1 build, and a
+   tagged release.
+
+That is a finish line for **a research workbench you run yourself**.
+**Giving it to other people is a separate track (step 5), and not part
+of "done" unless you decide it is.** It is the largest piece of engineering
+left, and it only pays off if someone else runs it.
+
+Anything that comes up after this list is agreed goes under *Later* at the
+bottom. It does not move the finish line.
+
+### Step 1 — close the current measurement (days)
+
+- [ ] **`mal-112b-dll-r2` finishes.** The two remaining samples are
+      `bec14eeafcf1` and `cca6a5ed0923`. Then record the final count,
+      update the headline, and unregister the resume task.
+      `400a51e2406f` is done: Strongly Corroborated 110.
+- [ ] **Fix the misleading reason text.** An unmapped PE image in the
+      bench's own `rundll32` host currently reads "a process loaders
+      hollow". It should say the DLL unpacked an image into its host. The
+      score does not change; only the wording does.
+- [ ] **The two `no_readiness` voids.** If any void recurs, read the
+      guest's `agent.log` before the restore discards it. If none recurs,
+      record this as a known flake, with the 30-minute readiness timeout
+      as the mitigation.
+- [ ] **`f306` (GuLoader): name-match termination, then one re-run.** If
+      it still times out, record it as a known limit: a resident sample
+      that starves the guest. Do not try a third approach. `cca6a5ed0923`
+      may join it there.
+
+### Step 2 — sweep throughput (a day)
+
+Moved ahead of the held-out corpus, because that corpus is the next big
+sweep and every sample on it pays the cost.
+
+- [ ] Move `G:\VMs` off the USB drive. Slow runs are drive stalls on `G:`.
+- [ ] Make the agent's pruning cheaper: hashing the dumps before deleting
+      them is where the time goes.
+
+### Step 3 — the held-out corpus, rules frozen (1–2 weeks, mostly waiting)
+
+This is the step that says whether the 91.7% is real.
+
+- [ ] Pin a commit. **No scoring change of any kind until the sweep is
+      scored.**
+- [ ] New malware: collected on different dates from `mal-112b`, with
+      families it lacks where possible. **Include DLLs**, because DLL
+      hosting has only been measured on these ten.
+- [ ] New benign from a source not used yet: the guest's own `System32`,
+      or installers from vendors no corpus has. **Include benign DLLs**,
+      because no benign DLL has ever been detonated.
+- [ ] Report the result whatever it shows. If the number holds, it means
+      something. If it drops, it shows where the scorer is overfit, and
+      *that* is the next rule change, measured on the next corpus.
+- [ ] Open question to settle here: CPU-Z-style all-weak Strongly
+      Corroborated. Variant B gets tested only if it shows up on benign
+      software more than once (HANDOFF, *Open* item 3).
+
+### Step 4 — the second module polish pass (1–2 weeks)
+
+Same method as 3 Sep: find widget-free logic still living in a window,
+move it beside its data, and write the tests the move makes possible. Then
+use each module end to end, by hand, on real cases from the corpora. The
+first pass was done by reading code; this one is done by using the tool.
+One module at a time, each closed in HANDOFF before the next starts:
+
+- [ ] Static Analysis
+- [ ] Dynamic Analysis, including the `_find_latest_dynamic_summary` /
+      `_find_latest_dynamic_findings` pairing in `gui/dynamic_window.py`.
+      Each picks the newest file on its own, so a summary can be paired
+      with another run's findings.
+- [ ] Spec Analysis, including its two views that disagree: a product
+      decision to make, not a bug
+- [ ] Browser Extension
+- [ ] Manual API Tester
+- [ ] Unified Report, which now has to present DLL launches (host, export,
+      exit code)
+- [ ] Launcher / main window, plus `logon_capture.py`'s default path in
+      `scripts/`
+
+### Step 5 — only if RingForge is going to other people
+
+Not part of v1 unless you decide otherwise. If you do, it moves ahead of
+step 3, because a frozen-rules measurement should be taken on the build
+people would get.
+
+- [ ] Replace the tools that cannot be redistributed: ETW instead of
+      Procmon, ASEP enumeration instead of Autorunsc, `pktmon` instead of
+      Npcap. Sized in HANDOFF's 14 Sep entry.
+- [ ] Code signing for the released binary.
+- [ ] The exchange's *read-only-in* half: results still come back over
+      a writable share.
+
+### Later — explicitly not on the path to v1
+
+- `422e30ed` stage 4's unexecuted two-thirds. The bench has run out of
+  route. It needs a guest measurement taken while the gate runs.
+- Gap 4 (VM-check correlation) stays context-only by decision.
+- The `0bw` deployer, the FakeNet shim for `beacon_responder.py`, and the
+  stale CA in the guest's Root store (see *Standing items* at the end).
 
 ---
 

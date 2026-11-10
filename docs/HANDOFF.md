@@ -4009,7 +4009,13 @@ next sweep's `autoruns_before_status` will say.
 
 ## NEXT
 
-### Roadmap, as of 30 Sep
+**The plan is now `docs/ROADMAP.md`, *The roadmap from 10 Nov — and where
+it ends*.** It defines the finish line for v1, puts throughput ahead of the
+held-out corpus, adds the second module polish pass, and makes
+distribution an optional track. The 30 Sep version below is kept for
+history.
+
+### Roadmap, as of 30 Sep (superseded 10 Nov)
 
 **RingForge is not going to anyone soon, so measurement comes before
 product work.** The order:
