@@ -18,8 +18,7 @@ useful than the fact that it did.
 
 **Where things stand.** Every detector is built, and every module had a
 polish pass on 3 Sep. Two corpora have been measured end to end. Malware is
-110 samples, 108 of which have executed so far (the DLL re-run is still
-going). Benign is 167 programs, 165 executed. **The number to quote is
+110 samples, 109 executed. Benign is 167 programs, 165 executed. **The number to quote is
 91.7% of executed malware at 6.7% of executed benign, Corroborated or
 stronger.** That figure is partly in-sample, because rules were tuned on
 the same corpora. What remains is about trusting that number, finishing,
@@ -48,10 +47,12 @@ bottom. It does not move the finish line.
 
 ### Step 1 — close the current measurement (days)
 
-- [ ] **`mal-112b-dll-r2` finishes.** The two remaining samples are
-      `bec14eeafcf1` and `cca6a5ed0923`. Then record the final count,
-      update the headline, and unregister the resume task.
-      `400a51e2406f` is done: Strongly Corroborated 110.
+- [x] **`mal-112b-dll-r2` finished, 10 Nov.** 109 of 110 detonated,
+      **91.7%** Corroborated or stronger. `bec14eeafcf1` is recorded as a
+      known limit. Resume task unregistered.
+- [ ] **Heartbeat from `signalled ready`, not from detonation.** Right
+      now, a hang during static triage sends nothing home (HANDOFF,
+      *10 Nov*). Ships with the next guest drop.
 - [ ] **Fix the misleading reason text.** An unmapped PE image in the
       bench's own `rundll32` host currently reads "a process loaders
       hollow". It should say the DLL unpacked an image into its host. The
