@@ -39,9 +39,9 @@ and polishing, not building detectors.
    tagged release.
 
 That is a finish line for **a research workbench you run yourself**.
-**Giving it to other people is a separate track (step 5), and not part
-of "done" unless you decide it is.** It is the largest piece of engineering
-left, and it only pays off if someone else runs it.
+**Replacing Procmon, Autorunsc and Npcap (step 5) is planned for after
+v1**, the first thing after the finish line. It is the largest piece of
+engineering left, so it is kept off the path to v1 deliberately.
 
 Anything that comes up after this list is agreed goes under *Later* at the
 bottom. It does not move the finish line.
@@ -115,15 +115,20 @@ One module at a time, each closed in HANDOFF before the next starts:
 - [ ] Launcher / main window, plus `logon_capture.py`'s default path in
       `scripts/`
 
-### Step 5 — only if RingForge is going to other people
+### Step 5 — after v1: replace the tools that cannot be redistributed
 
-Not part of v1 unless you decide otherwise. If you do, it moves ahead of
-step 3, because a frozen-rules measurement should be taken on the build
-people would get.
+**Decided 10 Nov: this will happen, just not now.** It comes after v1,
+not instead of any step before it. Expect the scores to shift. Replacing a
+collector changes what gets observed, so this step ends with a re-run of
+the held-out corpus from step 3. That shows whether the new collectors see
+what the old ones saw.
 
 - [ ] Replace the tools that cannot be redistributed: ETW instead of
       Procmon, ASEP enumeration instead of Autorunsc, `pktmon` instead of
       Npcap. Sized in HANDOFF's 14 Sep entry.
+- [ ] Re-measure on the step 3 corpus, rules still frozen, and compare.
+
+Only if RingForge goes to other people (not decided):
 - [ ] Code signing for the released binary.
 - [ ] The exchange's *read-only-in* half: results still come back over
       a writable share.
