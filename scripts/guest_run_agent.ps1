@@ -302,18 +302,27 @@ function Send-Progress {
   if (-not $Work) { return }
   try { Copy-Item -LiteralPath $LogFile -Destination (Join-Path $Work "agent.log") -Force } catch { }
   if ($LocalRoot) {
-    $stderr = Join-Path $LocalRoot "detonate.stderr.txt"
-    if (Test-Path -LiteralPath $stderr) {
-      try { Copy-Item -LiteralPath $stderr -Destination $Work -Force } catch { }
+    foreach ($name in @("scan.stderr.txt", "detonate.stderr.txt")) {
+      $stderr = Join-Path $LocalRoot $name
+      if (Test-Path -LiteralPath $stderr) {
+        try { Copy-Item -LiteralPath $stderr -Destination $Work -Force } catch { }
+      }
     }
   }
 }
 
 function Write-Heartbeat {
   <#
-    Write `ringforge-heartbeat` to the exchange: the time, how long the
-    detonation has run, whether its process is alive, and every process that
-    was not running when the detonation began.
+    Write `ringforge-heartbeat` to the exchange: the time, which stage is
+    running and for how long, whether its process is alive, and every process
+    that was not running when the stage began.
+
+    **From `ready` onwards, not from the detonation.** Until 10 Nov the first
+    heartbeat came with the detonation, and static triage -- ~20 minutes --
+    sent nothing: `bec14eeafcf1` timed out on `mal-112b-dll-r2` with
+    `signalled ready` as the last line home and no heartbeat, so where it
+    stopped could not be told. `-Stage` names the step (`ready`, `triage`,
+    `detonate`); the `detonate` line reads as it always has.
 
     Read it after a timeout. A stale timestamp says the agent died and when;
     `alive False` with a fresh timestamp says the orchestrator exited and the
@@ -322,11 +331,14 @@ function Write-Heartbeat {
     `ringforge-`, so `Get-DeliveredSample` can never mistake it for a sample.
     Never throws.
   #>
-  param([string]$Work, [datetime]$Since, $Process, [int[]]$BaselinePids)
+  param([string]$Work, [datetime]$Since, $Process, [int[]]$BaselinePids,
+        [string]$Stage = "detonate")
   if (-not $Work) { return }
   try {
     $now = Get-Date
-    $alive = try { -not $Process.HasExited } catch { "unknown" }
+    # No process yet (the `ready` beat) reads as `-`, not as alive: `-not
+    # $null.HasExited` is $true in PowerShell, and it would say so.
+    $alive = if (-not $Process) { "-" } else { try { -not $Process.HasExited } catch { "unknown" } }
     $new = @(Get-Process -ErrorAction SilentlyContinue |
              Where-Object { $BaselinePids -notcontains $_.Id } |
              Sort-Object Id |
@@ -334,8 +346,8 @@ function Write-Heartbeat {
     $lines = @(
       "utc       $($now.ToUniversalTime().ToString('o'))",
       ("elapsed   {0:N0}s" -f ($now - $Since).TotalSeconds),
-      "detonate  pid $(try { $Process.Id } catch { '?' }) alive $alive",
-      "new processes since the detonation began: $($new.Count)"
+      ("{0,-9} pid {1} alive {2}" -f $Stage, $(if ($Process) { try { $Process.Id } catch { '?' } } else { '-' }), $alive),
+      "new processes since the $Stage stage began: $($new.Count)"
     ) + ($new | Select-Object -First 200)
     Write-Utf8NoBom -Path (Join-Path $Work "ringforge-heartbeat") -Text (($lines -join "`n") + "`n")
   } catch { }
@@ -483,6 +495,10 @@ try {
     Set-Content -LiteralPath $readyFile -Encoding utf8
   Write-Log "signalled ready"
   Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
+  # The first heartbeat, before anything can hang. A run that stops after
+  # this line now leaves a timestamp saying when; see Write-Heartbeat.
+  $readyBaseline = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+  Write-Heartbeat -Work $work -Since (Get-Date) -Process $null -BaselinePids $readyBaseline -Stage "ready"
 
   if ($WhatIfOnly) {
     Write-Log "WhatIfOnly: not detonating"
@@ -530,11 +546,26 @@ try {
     if (-not (Test-Path -LiteralPath $py)) { $py = "python" }
 
     Write-Log "running static triage"
-    # Captured and written rather than piped to Out-File: -Encoding utf8 puts
-    # a BOM on it and json.load then refuses the file. A native command's
-    # stdout arrives as one string per line, so joining restores it exactly.
-    $scanJson = (& $py -m ringforge.cli scan $sample.FullName --case $caseName --json) -join "`n"
-    Write-Utf8NoBom -Path (Join-Path $localRoot "scan.json") -Text $scanJson
+    # **Watched, with a heartbeat, like the detonation** -- it is ~20 minutes
+    # and a hang in it used to leave no trace (see Write-Heartbeat).
+    # Redirected straight to scan.json: the CLI forces UTF-8 on a redirected
+    # stdout (`_force_utf8_streams`) and Python writes no BOM, which is what
+    # the old capture-and-Write-Utf8NoBom existed to guarantee. stderr was
+    # lost to a console before; it comes home now as scan.stderr.txt.
+    $triageBaseline = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    $triageStarted = Get-Date
+    $scanExit = Invoke-Watched -FilePath $py `
+      -ArgumentList @('-m', 'ringforge.cli', 'scan', $sample.FullName,
+                      '--case', $caseName, '--json') `
+      -StdOut (Join-Path $localRoot "scan.json") `
+      -StdErr (Join-Path $localRoot "scan.stderr.txt") `
+      -HeartbeatSeconds $HeartbeatSeconds `
+      -OnTick {
+        param($p)
+        Write-Heartbeat -Work $work -Since $triageStarted -Process $p -BaselinePids $triageBaseline -Stage "triage"
+        Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
+      }
+    if ($scanExit -ne 0) { Write-Log "static triage exited $scanExit" }
     Write-Log "static triage finished"
     Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
 

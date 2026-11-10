@@ -641,6 +641,29 @@ class CarveTests(unittest.TestCase):
         self.assertEqual(result["counts"]["unmapped_in_hollowing_target"], 1)
         self.assertEqual(result["counts"]["dotnet_images"], 1)
 
+    def test_an_image_in_the_bench_host_is_unmapped_but_not_in_a_target(self) -> None:
+        # 9 Nov: both MpClient proxies read "8 in a process loaders hollow"
+        # for images in the rundll32 the bench itself started. Still an
+        # unmapped image -- the DLL put it there -- but nobody hollowed it.
+        result = carve_dumps([self.record], output_dir=self.tmp / "carved",
+                             host_pids={4312})
+        counts = result["counts"]
+
+        self.assertEqual(counts["unmapped_images"], 1)
+        self.assertEqual(counts["unmapped_in_hollowing_target"], 0)
+        self.assertEqual(counts["unmapped_in_bench_host"], 1)
+        self.assertFalse(result["images"][0]["hollowing_target"])
+        self.assertTrue(result["images"][0]["bench_host"])
+        self.assertTrue(summarize_pe_carve(result)["images"][0]["bench_host"])
+
+    def test_another_pid_of_the_same_name_is_still_a_target(self) -> None:
+        # By PID, never by name: a target the sample started is not the host.
+        result = carve_dumps([self.record], output_dir=self.tmp / "carved",
+                             host_pids={9999})
+
+        self.assertEqual(result["counts"]["unmapped_in_hollowing_target"], 1)
+        self.assertEqual(result["counts"]["unmapped_in_bench_host"], 0)
+
     def test_the_carved_file_is_not_double_clickable(self) -> None:
         # This is live malware written to a directory an analyst browses.
         result = carve_dumps([self.record], output_dir=self.tmp / "carved")

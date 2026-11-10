@@ -158,6 +158,19 @@ $w.Dispose()
         self.assertIn("log=[stage one]", out)
         self.assertIn("stderr=[Exporting Procmon CSV]", out)
 
+    def test_brings_the_triage_stderr_home_too(self) -> None:
+        out = self.ps(r"""
+$work = New-Item -ItemType Directory "$T\work"
+$local = New-Item -ItemType Directory "$T\local"
+Set-Content "$T\agent.log" 'log'
+Set-Content "$local\scan.stderr.txt" 'capa: something'
+Send-Progress -Work $work -LocalRoot $local -LogFile "$T\agent.log"
+"scan=$(Test-Path "$work\scan.stderr.txt")"
+"detonate=$(Test-Path "$work\detonate.stderr.txt")"
+""")
+        self.assertIn("scan=True", out)
+        self.assertIn("detonate=False", out)
+
     def test_never_throws(self) -> None:
         """No work directory yet, a missing log, an unreachable exchange."""
         out = self.ps(r"""
@@ -196,6 +209,30 @@ $after
         self.assertRegex(running, rf"\n\s+{pid} powershell")
         self.assertRegex(running, r"elapsed   9\ds")
         self.assertIn(f"detonate  pid {pid} alive False", after)
+
+    def test_heartbeat_names_its_stage_from_ready_onwards(self) -> None:
+        """10 Nov: `bec14eeafcf1` stopped somewhere after `ready` and sent no
+        heartbeat, because the first one came with the detonation. The
+        `ready` beat has no process yet; the triage beat names its own."""
+        out = self.ps(r"""
+$work = New-Item -ItemType Directory "$T\work"
+Write-Heartbeat -Work $work -Since (Get-Date) -Process $null -BaselinePids @() -Stage "ready"
+"---ready"
+Get-Content "$work\ringforge-heartbeat" -Raw
+$p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 5') -PassThru -WindowStyle Hidden
+$null = $p.Handle
+Write-Heartbeat -Work $work -Since (Get-Date) -Process $p -BaselinePids @() -Stage "triage"
+"---triage"
+Get-Content "$work\ringforge-heartbeat" -Raw
+"pid=$($p.Id)"
+$p.Kill(); $p.WaitForExit()
+""")
+        ready = out.split("---ready")[1].split("---triage")[0]
+        triage = out.split("---triage")[1]
+        pid = out.split("pid=")[1].split()[0]
+        self.assertIn("ready     pid - alive -", ready)
+        self.assertIn("since the ready stage began", ready)
+        self.assertIn(f"triage    pid {pid} alive True", triage)
 
     def test_heartbeat_never_throws(self) -> None:
         out = self.ps(r"""

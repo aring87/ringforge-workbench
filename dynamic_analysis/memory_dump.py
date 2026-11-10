@@ -350,6 +350,8 @@ class MemoryDumpSession:
         self.procdump: Optional[Path] = None
         self.started = False
         self.error = ""
+        self._started_at: Optional[float] = None
+        self._preexisting_names: set[str] = set()
 
         self._root_pid: Optional[int] = None
         self._root_pid_event = threading.Event()
@@ -412,6 +414,18 @@ class MemoryDumpSession:
             }
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # What was running before the sample, for `terminate_by_name`: a name
+        # already in use here is not the sample's alone, and a process created
+        # before this moment is not the sample's at all.
+        self._started_at = time.time()
+        self._preexisting_names = set()
+        if psutil is not None:
+            for proc in psutil.process_iter():
+                try:
+                    self._preexisting_names.add(str(proc.name()).lower())
+                except Exception:                       # noqa: BLE001
+                    continue
 
         self._thread = threading.Thread(
             target=self._watch,
@@ -483,6 +497,19 @@ class MemoryDumpSession:
                 handles.update(self._procs)
 
         return terminate_survivors(handles, refresh=refresh)
+
+    def terminate_by_name(self, sample_name: str) -> dict[str, Any]:
+        """Terminate processes running the sample's own image name.
+
+        Call after `terminate_survivors`. See the module-level function. A
+        session that never started has no baseline, and refuses.
+        """
+        if self._started_at is None:
+            return {"name": _image_name(sample_name), "outcomes": [],
+                    "refused": "the watcher never started, so there is no "
+                               "baseline of what was running before"}
+        return terminate_by_name(sample_name, started_after=self._started_at,
+                                 preexisting_names=self._preexisting_names)
 
     def stop(self, timeout: float = _DUMP_TIMEOUT_SECONDS + 30) -> dict[str, Any]:
         """Stop watching and return everything collected."""
@@ -1754,6 +1781,85 @@ def terminate_survivors(
             break
 
     return sorted(outcomes.values(), key=lambda r: r["pid"])
+
+
+#: Names `terminate_by_name` refuses whatever else is true: Windows itself, and
+#: the bench's own tools. A sample named after one of these is matched by
+#: nothing -- the watcher's tracked tree is all that is ended for it.
+NAME_MATCH_PROTECTED = frozenset({
+    "system", "registry", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+    "services.exe", "lsass.exe", "lsaiso.exe", "svchost.exe", "explorer.exe",
+    "dwm.exe", "sihost.exe", "taskhostw.exe", "runtimebroker.exe", "fontdrvhost.exe",
+    "conhost.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "python.exe",
+    "pythonw.exe", "rundll32.exe", "regsvr32.exe", "procmon.exe", "procmon64.exe",
+    "procdump.exe", "procdump64.exe", "fakenet.exe", "dumpcap.exe", "sysmon.exe",
+    "sysmon64.exe", "autorunsc.exe", "autorunsc64.exe", "vboxservice.exe",
+    "vboxtray.exe",
+})
+
+
+def terminate_by_name(
+    image_name: str,
+    *,
+    started_after: float,
+    preexisting_names: set[str],
+    rounds: int = 2,
+    wait_seconds: float = 5.0,
+    iterate: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
+    """Terminate processes named as the sample is, created after it was launched.
+
+    **Why the tracked tree is not enough.** GuLoader `f306f95f4a9b` re-launches
+    itself in a chain, each copy's parent exiting before the watcher's poll sees
+    the child -- 29 Sep, Sysmon recorded ~30 descendants the watcher never
+    held a handle for. `terminate_survivors` found its whole tracked set
+    already gone and ended nothing, while three copies ran on through two
+    hours of analysis and the run missed the host's limit three times.
+
+    **What makes a name safe to match, all three required:** the name is not
+    Windows' or the bench's (`NAME_MATCH_PROTECTED`, and Error Reporting is
+    exempt as everywhere); no process of that name was running before the
+    detonation (`preexisting_names`), so the name belongs to the sample alone;
+    and the process was created after `started_after`. Corpus samples are
+    named by their hash, so on this bench the first two only ever refuse a
+    misnamed sample -- which is what they are for.
+
+    Returns `{"name", "refused", "outcomes"}`: `refused` is the reason nothing
+    was examined, or empty; `outcomes` are `terminate_survivors` records.
+    """
+    name = _image_name(image_name)
+    result: dict[str, Any] = {"name": name, "refused": "", "outcomes": []}
+    if iterate is None:
+        if psutil is None:
+            result["refused"] = "psutil is not installed"
+            return result
+        iterate = psutil.process_iter
+    if not name:
+        result["refused"] = "no sample name"
+        return result
+    if name in NAME_MATCH_PROTECTED or name in SURVIVOR_EXEMPT_NAMES:
+        result["refused"] = f"{name} is a Windows or bench process name"
+        return result
+    if name in {str(n).lower() for n in preexisting_names}:
+        result["refused"] = (f"a process named {name} was running before the "
+                             "detonation, so the name is not the sample's alone")
+        return result
+
+    handles: dict[int, Any] = {}
+
+    def scan() -> None:
+        # Re-run every round: a loader that loses a copy starts another.
+        for proc in iterate():
+            try:
+                if (str(proc.name()).lower() == name
+                        and float(proc.create_time()) >= started_after):
+                    handles.setdefault(int(proc.pid), proc)
+            except Exception:                           # noqa: BLE001
+                continue
+
+    result["outcomes"] = terminate_survivors(
+        handles, refresh=scan, rounds=rounds, wait_seconds=wait_seconds)
+    return result
 
 
 def successful_dumps(dump_result: dict[str, Any]) -> list[dict[str, Any]]:

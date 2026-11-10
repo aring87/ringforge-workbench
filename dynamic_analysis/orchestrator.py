@@ -1379,6 +1379,7 @@ def _injection_reason(
     unmapped_pe_images: int = 0,
     unmapped_memory_crashes: int = 0,
     sysmon_injections: int = 0,
+    unmapped_pe_in_bench_host: int = 0,
 ) -> str:
     """Why `process_injection` fired, naming the route that actually fired it.
 
@@ -1417,6 +1418,17 @@ def _injection_reason(
     # name: framework assemblies are excluded by their own metadata now, so
     # what reaches this count is an image nothing explains. This is the route
     # that was missing the payload in `SecurityHealthHost.exe`.
+    # Before the general sentence, because "the process" there would be the
+    # bench's own rundll32 -- true, and it hides the useful part: a DLL put an
+    # executable into the host it was given. Not hollowing; nobody had to
+    # hollow a process the bench started for the sample. As strong as any
+    # unmapped image, so only the words change.
+    if unmapped_pe_in_bench_host:
+        return ("A PE image is present in the memory of the rundll32 the "
+                "bench started to host this DLL, at an address no loaded "
+                "module covers -- the DLL unpacked or loaded an executable "
+                "the loader never mapped. This is not hollowing: the bench "
+                "chose the host.")
     if unmapped_pe_images:
         return ("A PE image is present in process memory at an address no "
                 "loaded module covers, and it is not a framework assembly the "
@@ -1456,6 +1468,7 @@ def _evidence_categories(
     hollowing_target_crashes: int,
     unmapped_pe_images: int,
     unmapped_pe_in_hollowing_target: int,
+    unmapped_pe_in_bench_host: int = 0,
     image_timestamp_mismatches: int = 0,
     image_timestamp_mismatch_in_target: int = 0,
     module_header_mismatches: int = 0,
@@ -1608,7 +1621,8 @@ def _evidence_categories(
                 f"{unmapped_memory_crashes} crash(es) in unmapped memory "
                 f"({hollowing_target_crashes} in a process loaders hollow), "
                 f"{unmapped_pe_images} unmapped PE image(s) in memory "
-                f"({unmapped_pe_in_hollowing_target} in a process loaders hollow), "
+                f"({unmapped_pe_in_hollowing_target} in a process loaders hollow, "
+                f"{unmapped_pe_in_bench_host} in the bench's DLL host), "
                 f"{image_timestamp_mismatches} running image(s) not matching the "
                 f"file on disk ({image_timestamp_mismatch_in_target} in a process "
                 f"loaders hollow), "
@@ -1620,6 +1634,7 @@ def _evidence_categories(
                 image_timestamp_mismatch_in_target=image_timestamp_mismatch_in_target,
                 module_header_mismatch_in_target=module_header_mismatch_in_target,
                 unmapped_pe_in_hollowing_target=unmapped_pe_in_hollowing_target,
+                unmapped_pe_in_bench_host=unmapped_pe_in_bench_host,
                 hollowing_target_crashes=hollowing_target_crashes,
                 image_timestamp_mismatches=image_timestamp_mismatches,
                 module_header_mismatches=module_header_mismatches,
@@ -1927,6 +1942,9 @@ def calculate_dynamic_score(
     unmapped_pe_in_hollowing_target = int(
         carve_counts.get("unmapped_in_hollowing_target", 0) or 0
     )
+    unmapped_pe_in_bench_host = int(
+        carve_counts.get("unmapped_in_bench_host", 0) or 0
+    )
 
     # The WER route. `available` is checked rather than the count alone: a run
     # that could compare nothing must not read the same as one that compared
@@ -1982,6 +2000,7 @@ def calculate_dynamic_score(
         hollowing_target_crashes=hollowing_target_crashes,
         unmapped_pe_images=unmapped_pe_images,
         unmapped_pe_in_hollowing_target=unmapped_pe_in_hollowing_target,
+        unmapped_pe_in_bench_host=unmapped_pe_in_bench_host,
         image_timestamp_mismatches=image_timestamp_mismatches,
         image_timestamp_mismatch_in_target=image_timestamp_mismatch_in_target,
         module_header_mismatches=module_header_mismatches,
@@ -2459,6 +2478,7 @@ def run_dynamic_analysis(
     memory_dump_result: dict[str, Any] = {}
     memory_summary: dict[str, Any] = {}
     survivors_terminated: list[dict[str, Any]] = []
+    survivors_by_name: dict[str, Any] = {}
     memory_start_result: dict[str, Any] = {"started": False}
     memory_yara_result: dict[str, Any] = {}
     memory_yara_summary: dict[str, Any] = {}
@@ -2923,6 +2943,49 @@ def run_dynamic_analysis(
                     )
             except Exception as error:
                 _emit(status_cb, f"Terminating leftover sample processes failed: {error}")
+
+            # Then by name: the tracked tree misses a loader that re-launches
+            # itself faster than the watcher polls -- `f306`, three copies
+            # alive through two hours of analysis while the step above found
+            # nothing. See `memory_dump.terminate_by_name` for what makes a
+            # name safe to match.
+            try:
+                survivors_by_name = memory_session.terminate_by_name(sample_path.name)
+                by_name = survivors_by_name.get("outcomes", []) or []
+                ended_by_name = [s for s in by_name if s.get("result") == "terminated"]
+                left_by_name = [s for s in by_name
+                                if s.get("result") in ("still_running", "access_denied", "failed")]
+                if survivors_by_name.get("refused"):
+                    _emit(status_cb, "Name-match termination skipped: "
+                          + str(survivors_by_name["refused"]))
+                if ended_by_name:
+                    _emit(
+                        status_cb,
+                        f"Terminated {len(ended_by_name)} process(es) by the sample's "
+                        f"name ({survivors_by_name.get('name')}) the tracked tree had lost: "
+                        + ", ".join(str(s.get("pid")) for s in ended_by_name[:10]),
+                    )
+                if left_by_name:
+                    _emit(
+                        status_cb,
+                        f"WARNING: {len(left_by_name)} process(es) named "
+                        f"{survivors_by_name.get('name')} could not be terminated: "
+                        + ", ".join(f"{s.get('pid')} ({s.get('result')})"
+                                    for s in left_by_name[:6]),
+                    )
+            except Exception as error:
+                _emit(status_cb, f"Name-match termination failed: {error}")
+
+            # Said when it is true, because silence here used to read the same
+            # as a step that never ran -- which is how `f306`'s three copies
+            # went unnoticed until a heartbeat listed them.
+            found_any = any(
+                s.get("result") in ("terminated", "still_running", "access_denied", "failed")
+                for s in (survivors_terminated
+                          + list(survivors_by_name.get("outcomes", []) or []))
+            )
+            if not found_any:
+                _emit(status_cb, "Survivor check: nothing of the sample's was left running.")
 
         if sysmon_enabled and sysmon_since:
             _emit(status_cb, "Collecting Sysmon telemetry...")
@@ -3438,10 +3501,18 @@ def run_dynamic_analysis(
             if pe_carve_enabled and scannable:
                 _emit(status_cb, "Searching memory dumps for unmapped PE images...")
                 try:
+                    # The DLL host, by PID, as the crash evidence does it.
+                    launch = (observation or {}).get("launch", {}) or {}
+                    carve_hosts = (
+                        {int(launch["root_pid"])}
+                        if launch.get("hosted") and launch.get("root_pid")
+                        else set()
+                    )
                     pe_carve_result = carve_dumps(
                         dump_records=scannable,
                         output_dir=pe_carve_dir,
                         status_cb=status_cb,
+                        host_pids=carve_hosts,
                     )
                     pe_carve_summary = summarize_pe_carve(pe_carve_result)
                     write_json(pe_carve_json, pe_carve_result)
@@ -3759,6 +3830,7 @@ def run_dynamic_analysis(
         "module_integrity_budget_seconds": module_integrity_budget,
         "terminate_survivors_enabled": terminate_survivors_enabled,
         "survivors_terminated": survivors_terminated,
+        "survivors_by_name": survivors_by_name,
         "module_integrity_summary": module_integrity_summary,
         "crash_evidence_enabled": crash_evidence_enabled,
         "crash_dump_preflight": crash_dump_preflight,

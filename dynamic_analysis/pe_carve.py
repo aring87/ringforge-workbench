@@ -1082,13 +1082,22 @@ def carve_dumps(
     max_bytes: int = DEFAULT_MAX_CARVE_BYTES,
     max_per_dump: int = DEFAULT_MAX_CARVED_PER_DUMP,
     status_cb: StatusCallback = None,
+    host_pids: set[int] | None = None,
 ) -> dict[str, Any]:
     """Analyse every dump and write out the images the loader did not map.
 
     ``dump_records`` are the successful entries from a MemoryDumpSession or the
     crash-dump collector -- the same list the YARA pass scans, so a carved image
     can be traced back to the process and moment it came from.
+
+    ``host_pids`` are processes the *bench* started to host the sample -- the
+    ``rundll32`` a DLL runs in. An unmapped image there still counts as
+    unmapped (the DLL put an executable in memory the loader never mapped),
+    but never as "in a hollowing target": nobody hollowed a process the bench
+    started on purpose, and saying so on 9 Nov mislabelled both MpClient
+    proxies. Attributed by PID, the same as ``collect_crashes``.
     """
+    hosts = set(host_pids or ())
     def emit(message: str) -> None:
         if status_cb:
             status_cb(message)
@@ -1103,6 +1112,7 @@ def carve_dumps(
             "dumps_failed": 0,
             "unmapped_images": 0,
             "unmapped_in_hollowing_target": 0,
+            "unmapped_in_bench_host": 0,
             "dotnet_images": 0,
             "inside_module_images": 0,
             "carved": 0,
@@ -1148,7 +1158,10 @@ def carve_dumps(
         else:
             analyzed += 1
 
-        hollowing_target = is_hollowing_target(analysis["process_name"])
+        bench_host = analysis["pid"] in hosts
+        hollowing_target = (
+            is_hollowing_target(analysis["process_name"]) and not bench_host
+        )
 
         # Only the images that are not ordinary loaded modules are reported, and
         # only they are carved. Writing out every mapped DLL would bury the one
@@ -1179,6 +1192,7 @@ def carve_dumps(
                     "dump_file": analysis["file"],
                     "host_image_timestamp_hex": analysis.get("host_image_timestamp_hex", ""),
                     "hollowing_target": hollowing_target,
+                    "bench_host": bench_host,
                     "carved_path": "",
                     "carved_sha256": "",
                     "carved_size": 0,
@@ -1226,6 +1240,8 @@ def carve_dumps(
         # a foreign image inside a binary that loaders hollow is a different
         # claim from a foreign image inside anything else.
         "unmapped_in_hollowing_target": sum(1 for i in unmapped if i["hollowing_target"]),
+        # Counted in `unmapped_images`, never in the line above.
+        "unmapped_in_bench_host": sum(1 for i in unmapped if i["bench_host"]),
         "dotnet_images": sum(1 for i in unmapped if i["dotnet"]),
         "inside_module_images": sum(1 for i in carried if i["classification"] == "inside_module"),
         # Real, unmapped, and not evidence. Windows maps localised resource
@@ -1248,7 +1264,8 @@ def carve_dumps(
         emit(
             f"PE carve: {len(unmapped)} image(s) present that no module covers "
             f"({result['counts']['unmapped_in_hollowing_target']} in a process "
-            f"loaders hollow, {result['counts']['dotnet_images']} .NET)."
+            f"loaders hollow, {result['counts']['unmapped_in_bench_host']} in "
+            f"the bench's DLL host, {result['counts']['dotnet_images']} .NET)."
         )
     elif analyzed:
         emit(f"PE carve: {analyzed} dump(s) analysed, no unmapped PE images.")
@@ -1294,6 +1311,7 @@ def summarize_pe_carve(carve_result: dict[str, Any]) -> dict[str, Any]:
                 "host_image_timestamp_hex": image.get("host_image_timestamp_hex", ""),
                 "dotnet": bool(image.get("dotnet")),
                 "hollowing_target": bool(image.get("hollowing_target")),
+                "bench_host": bool(image.get("bench_host")),
                 "carved_file": Path(str(image.get("carved_path", ""))).name
                 if image.get("carved_path")
                 else "",

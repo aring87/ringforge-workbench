@@ -1238,7 +1238,10 @@ def _unmapped_pe_section(summary: dict[str, Any]) -> str:
 
     rows = [
         {
-            "Process": image.get("process", ""),
+            # The host is named so a reader does not take it for a hollowed
+            # process: the bench started this rundll32 for the DLL.
+            "Process": (f"{image.get('process', '')} (bench's DLL host)"
+                        if image.get("bench_host") else image.get("process", "")),
             "PID": image.get("pid", ""),
             "Address": image.get("virtual_address", ""),
             "Size": image.get("size_of_image", 0),

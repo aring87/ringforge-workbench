@@ -169,6 +169,23 @@ class TheReasonLineNamesTheRouteThatFired(unittest.TestCase):
         self.assertEqual(_injection_reason(),
                          "No injection route reported a finding.")
 
+    def test_an_image_in_the_bench_host_is_named_as_such(self):
+        # The general unmapped sentence is true but hides the point; and the
+        # host is not a hollowing target, so neither sentence about one fits.
+        reason = _injection_reason(unmapped_pe_images=8,
+                                   unmapped_pe_in_bench_host=8)
+        self.assertIn("bench started to host this DLL", reason)
+        self.assertIn("not hollowing", reason)
+        self.assertNotIn("loaders commonly hollow", reason)
+
+    def test_the_bench_host_does_not_change_strength(self):
+        plain = injection(unmapped_pe_images=8)
+        hosted = injection(unmapped_pe_images=8, unmapped_pe_in_bench_host=8)
+        self.assertEqual((plain["present"], plain["strong"]),
+                         (hosted["present"], hosted["strong"]))
+        self.assertTrue(hosted["strong"])
+        self.assertIn("8 in the bench's DLL host", hosted["detail"])
+
     def test_in_target_routes_outrank_their_own_out_of_target_counters(self):
         # A hollow in a hollowing target also increments the plain counter, so
         # the in-target sentence has to win or `strong` runs get the weaker text.
