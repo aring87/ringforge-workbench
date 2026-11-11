@@ -1190,9 +1190,13 @@ def run_case(
                     "name": sub_name,
                     "path": str(sub_dir),
                     "filename": sub_sample.name,
-                    "score": sf_score,
-                    "verdict": sf_verdict,
-                    "confidence": sf_conf,
+                    # From `sf`: the names `sf_score`, `sf_verdict` and
+                    # `sf_conf` lost their assignment in 6684981 (24 Aug), and
+                    # every sample with an embedded file died here with a
+                    # NameError -- after its own verdict, before its summary.
+                    "score": sf["score"],
+                    "verdict": sf["verdict"],
+                    "confidence": sf["confidence"],
                     "signed_ok": signed_ok,
                     "signer": sub_summary["signing"].get("subject", ""),
                     "trust_override": trust_override,
@@ -1201,7 +1205,7 @@ def run_case(
             
             _progress(
                 f"[subfile:done] {idx}/{total_subfiles} {sub_name} "
-                f"score={sf_score} verdict={sf_verdict}"
+                f"score={sf['score']} verdict={sf['verdict']}"
             )
 
         sub_results_sorted = sorted(sub_results, key=lambda x: int(x.get("score", 0)), reverse=True)

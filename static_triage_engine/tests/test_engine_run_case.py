@@ -18,8 +18,14 @@ in a suite that finishes in thirty. `scripts/static_corpus.py` is where the real
 thing runs.
 """
 
+import builtins
+import dis
+import importlib
 import inspect
+import sys
+import types
 import unittest
+from pathlib import Path
 
 from static_triage_engine import engine
 from static_triage_engine.combine_case import static_verdict_for_case
@@ -84,6 +90,62 @@ class TheUnpackingLineStillLooksLikeThis(unittest.TestCase):
         self.assertIn('static["suspicious"]', source)
         self.assertIn('static["benign"]', source)
         self.assertIn("static_verdict_for_case", source)
+
+
+
+def _undefined_globals(module_name: str) -> list[tuple[str, str]]:
+    """(function, name) for every global a module's code reads and nothing defines.
+
+    A name that is read but never assigned in a function compiles to a global
+    load, so the compiler accepts it and only the line that runs it fails.
+    """
+    if module_name.startswith("scripts."):
+        # The scripts import their siblings by bare name, as they do when run.
+        scripts = str(Path(__file__).resolve().parents[2] / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+    module = importlib.import_module(module_name)
+    source = Path(module.__file__).read_text(encoding="utf-8")
+
+    def walk(code: types.CodeType):
+        yield code
+        for const in code.co_consts:
+            if isinstance(const, types.CodeType):
+                yield from walk(const)
+
+    missing = set()
+    for code in walk(compile(source, module.__file__, "exec")):
+        for ins in dis.get_instructions(code):
+            if (ins.opname == "LOAD_GLOBAL" and ins.argval not in vars(module)
+                    and not hasattr(builtins, ins.argval)):
+                missing.add((code.co_name, ins.argval))
+    return sorted(missing)
+
+
+class NoNameIsReadThatNothingDefines(unittest.TestCase):
+    """**10 Nov: static triage had crashed on every sample with an embedded
+    file since 24 Aug.** 6684981 removed the assignments to `sf_score`,
+    `sf_verdict` and `sf_conf` and left three reads, in the subfile branch
+    that no test reaches. 31 swept cases lost their static summary to it. The
+    same scan found `ENV_TOGGLES` read bare inside an emulator method.
+
+    Cheap where an engine run is not: it reads the bytecode, runs nothing.
+    """
+
+    MODULES = (
+        "static_triage_engine.engine",
+        "static_triage_engine.combine_case",
+        "dynamic_analysis.orchestrator",
+        "ringforge.cli",
+        "runcontrol.loop",
+        "runcontrol.sweep",
+        "scripts.emulate_native_stub",
+    )
+
+    def test_every_global_read_is_defined(self) -> None:
+        for name in self.MODULES:
+            with self.subTest(module=name):
+                self.assertEqual([], _undefined_globals(name))
 
 
 if __name__ == "__main__":

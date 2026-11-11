@@ -351,7 +351,7 @@ class Emulator:
             # in by hand from the run that captured it.
             "thread_contexts": self.thread_contexts,
             # v4. The toggles that were set when this ran. See `ENV_TOGGLES`.
-            "env_toggles": {k: os.environ.get(k) for k in ENV_TOGGLES},
+            "env_toggles": {k: os.environ.get(k) for k in self.ENV_TOGGLES},
         }
         Path(path).write_bytes(pickle.dumps(state, protocol=4))
 
