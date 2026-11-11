@@ -57,10 +57,12 @@ bottom. It does not move the finish line.
       bench's own `rundll32` host currently reads "a process loaders
       hollow". It should say the DLL unpacked an image into its host. The
       score does not change; only the wording does.
-- [ ] **The two `no_readiness` voids.** If any void recurs, read the
-      guest's `agent.log` before the restore discards it. If none recurs,
-      record this as a known flake, with the 30-minute readiness timeout
-      as the mitigation.
+- [x] **The `no_readiness` voids: a known flake.** All three came on
+      the `5c51020` baseline on 9-10 Nov. None came in 205 attempts on
+      the two malware baselines before it, nor on `b3c4530` or
+      `dc1507c`. Mitigations: the 30-minute readiness timeout, the retry,
+      and a host screenshot that now shows a live frame. See HANDOFF
+      *11 Nov, step 1 closed*.
 - [x] **`f306` (GuLoader): name-match termination, then one re-run.**
       Done, 11 Nov. Termination was made in `b3c4530`.
       `mal-112b-f306-b3c4530-r3` completed in 5,052 s and gave `f306` its
@@ -71,10 +73,15 @@ bottom. It does not move the finish line.
 - [x] **Static triage crashed on samples with embedded files** (since
       24 Aug, 31 cases). Fixed in `ddaaf87`; the headline is unaffected.
       The guest gets it with the next drop.
-- [ ] **Next drop:** `ddaaf87`, plus `powercfg /change monitor-timeout-ac 0`
-      (the timeout screenshot showed a stale frame), plus `Send-Progress`
-      around pruning and the case copy. Pruning was 25 silent minutes on
-      `f306`.
+- [x] **Next drop, done 11 Nov:** guest on `dc1507c`, malware baseline
+      `corpus-agent-detonate-dc1507c-noselfupdate`. It carries:
+      * `ddaaf87`;
+      * progress through pruning and the copy;
+      * display and sleep timeouts never;
+      * Automatic Maintenance and the scheduled defrag off.
+
+      Smoke run `smoke-dc1507c` passed: triage exit 0, the same band.
+      See HANDOFF *11 Nov, step 1 closed*.
 
 ### Step 2 — sweep throughput (a day)
 
@@ -82,9 +89,11 @@ Moved ahead of the held-out corpus, because that corpus is the next big
 sweep and every sample on it pays the cost.
 
 - [ ] Move `G:\VMs` off the USB drive. Slow runs are drive stalls on `G:`.
-- [ ] Make the agent's pruning cheaper: hashing the dumps before deleting
-      them is where the time goes. Measured on `f306` r3: 13,416 MB in
-      25 min 22 s, about 9 MB/s, on a quiet guest.
+- [ ] ~~Make the agent's pruning cheaper.~~ **Measured, and not a
+      bottleneck.** `fd30c8f25d9b` pruned 5,630 MB in 8 s on `dc1507c`.
+      `f306`'s 25 minutes for 13,416 MB came with three un-terminated
+      copies of the sample still running. Drop this item unless a sweep
+      shows `pruned ... in Ns` running long on ordinary samples.
 
 ### Step 3 — the held-out corpus, rules frozen (1–2 weeks, mostly waiting)
 
