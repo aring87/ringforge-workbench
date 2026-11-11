@@ -89,6 +89,11 @@ $receipt = [ordered]@{
   defender_exclusion  = ""
   defender_via_cmdlet = $false
   defender_via_policy = $false
+  #: The quiet-guest settings below, each recorded as applied or not.
+  display_never_off   = $false
+  sleep_never         = $false
+  maintenance_off     = $false
+  defrag_task_off     = $false
   ok            = $false
   error         = ""
 }
@@ -260,6 +265,63 @@ try {
       $receipt.defender_exclusion = ""
       Say "skipped the Defender exclusion, as asked"
     }
+
+    # -- keep the screen on and Windows housekeeping out of the run ---------
+    #
+    # **The display.** The host screenshots the guest when a run times out
+    # or never signals ready (`runcontrol.loop._screenshot`). Its first use,
+    # on `f306` (11 Nov), showed a frame two hours stale: the guest's taskbar
+    # clock read 18:56 local at a 01:50Z screenshot. Windows had powered the
+    # display off about ten minutes after boot, and VirtualBox kept the last
+    # frame. AC and DC both, because what a VM reports is not worth guessing.
+    #
+    # **Automatic Maintenance and the scheduled defrag.** `f306`'s r2 ran
+    # with TiWorker, TrustedInstaller, Defrag and VSSVC in its last
+    # heartbeat. Every disk-heavy stage was several times slower than on r3,
+    # which had none of them: memory YARA took 2,492 s against 312 s.
+    # Maintenance runs when the machine is idle, and a detonating guest has no
+    # user input. Every boot restores a snapshot whose last maintenance is
+    # long past its deadline, so every run is a candidate. The disk is on USB.
+    #
+    # Each setting is best effort and recorded, like the Defender exclusion:
+    # a provisioning run that got the clone right is not failed for these.
+    # A field reads true only if both its AC and DC halves took.
+    $receipt.display_never_off = $true
+    $receipt.sleep_never = $true
+    foreach ($pc in @(
+        @{ key = "display_never_off"; setting = "monitor-timeout-ac" },
+        @{ key = "display_never_off"; setting = "monitor-timeout-dc" },
+        @{ key = "sleep_never";       setting = "standby-timeout-ac" },
+        @{ key = "sleep_never";       setting = "standby-timeout-dc" })) {
+      try {
+        & powercfg.exe /change $pc.setting 0 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
+      } catch {
+        $receipt[$pc.key] = $false
+        Warn "powercfg /change $($pc.setting) 0 failed: $($_.Exception.Message)"
+      }
+    }
+
+    try {
+      $mkey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance"
+      if (-not (Test-Path -LiteralPath $mkey)) { New-Item -Path $mkey -Force | Out-Null }
+      New-ItemProperty -Path $mkey -Name "MaintenanceDisabled" -Value 1 `
+                       -PropertyType DWord -Force | Out-Null
+      $receipt.maintenance_off =
+        ((Get-ItemProperty -LiteralPath $mkey -Name "MaintenanceDisabled").MaintenanceDisabled -eq 1)
+    } catch {
+      Warn "could not turn Automatic Maintenance off: $($_.Exception.Message)"
+    }
+
+    try {
+      $t = Disable-ScheduledTask -TaskPath "\Microsoft\Windows\Defrag\" `
+                                 -TaskName "ScheduledDefrag" -ErrorAction Stop
+      $receipt.defrag_task_off = ("$($t.State)" -eq "Disabled")
+    } catch {
+      Warn "could not disable the scheduled defrag: $($_.Exception.Message)"
+    }
+    Good ("quiet guest: display_never_off={0} sleep_never={1} maintenance_off={2} defrag_task_off={3}" -f `
+      $receipt.display_never_off, $receipt.sleep_never, $receipt.maintenance_off, $receipt.defrag_task_off)
 
     # -- prove it took ------------------------------------------------------
     # Read back through the same function the verdict envelope uses, rather

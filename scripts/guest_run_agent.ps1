@@ -403,6 +403,78 @@ function Invoke-Watched {
   return $proc.ExitCode
 }
 
+function Remove-RawArtifacts {
+  <#
+    Hash and delete the files `$Specs` names under `$CaseHome`, and return
+    what happened: `pruned` (one entry per file found), `prunedBytes` (gone)
+    and `keptBytes` (meant to go, still there).
+
+    **`$OnProgress` is called every `$ProgressSeconds` while it works, and
+    that is why this is a function now.** On `f306` (11 Nov) pruning
+    hashed 23 files, 13,416 MB, in 25 minutes and said nothing until the end.
+    The run before it overran the host's window somewhere after `combine`,
+    and which of pruning or the copy was still running could not be told.
+    `$OnProgress` receives the files done, the files found and the bytes
+    hashed so far. Its failures and output are swallowed, as `Invoke-Watched`
+    does with `$OnTick`.
+
+    **A file is recorded as removed only if it is gone.** A file still held
+    open, such as Procmon's raw.pml when its /Terminate timed out, fails both
+    the hash and the delete silently. Before this check it was recorded as
+    pruned anyway: five benign-wide cases (Oct 2026) brought home a 2.8 GB
+    raw.pml that pruned_artifacts.json said had been dropped.
+
+    Throws only on what the caller already catches. The caller keeps every
+    file and carries on to the copy, because a failed optimisation must
+    not cost a finished run.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$CaseHome,
+    [Parameter(Mandatory = $true)][object[]]$Specs,
+    [int]$ProgressSeconds = 60,
+    [scriptblock]$OnProgress = { }
+  )
+  $found = @()
+  foreach ($spec in $Specs) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $CaseHome -Recurse -File `
+                       -Filter $spec.filter -ErrorAction SilentlyContinue)) {
+      if ($spec.parent -and $f.Directory.Name -ne $spec.parent) { continue }
+      $found += $f
+    }
+  }
+
+  $pruned = @()
+  $prunedBytes = 0
+  $keptBytes = 0
+  $hashedBytes = 0
+  $lastTick = Get-Date
+  $done = 0
+  foreach ($f in $found) {
+    $hash = try { (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash } catch { "" }
+    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+    $removed = -not (Test-Path -LiteralPath $f.FullName)
+    if ($removed) { $prunedBytes += $f.Length } else { $keptBytes += $f.Length }
+    $hashedBytes += $f.Length
+    $done += 1
+    $pruned += [pscustomobject][ordered]@{
+      path    = $f.FullName.Substring($CaseHome.Length).TrimStart('\')
+      bytes   = $f.Length
+      sha256  = $hash
+      removed = $removed
+    }
+    if (((Get-Date) - $lastTick).TotalSeconds -ge $ProgressSeconds) {
+      try { & $OnProgress $done $found.Count $hashedBytes | Out-Null } catch { }
+      $lastTick = Get-Date
+    }
+  }
+
+  return [pscustomobject]@{
+    pruned      = $pruned
+    prunedBytes = $prunedBytes
+    keptBytes   = $keptBytes
+  }
+}
+
 # ---------------------------------------------------------------------------
 
 try {
@@ -700,32 +772,28 @@ try {
   $prunedBytes = 0
   $keptBytes = 0
   if (-not $KeepRawArtifacts) {
+    # **Logged and beaten before it starts, and every heartbeat while it
+    # runs.** See `Remove-RawArtifacts`: 25 silent minutes on `f306`.
+    Write-Log "pruning raw artifacts before the copy"
+    Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
+    $pruneStarted = Get-Date
+    $pruneBaseline = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    Write-Heartbeat -Work $work -Since $pruneStarted -Process $null -BaselinePids $pruneBaseline -Stage "prune"
     try {
-      foreach ($spec in $pruneSpecs) {
-        $found = @(Get-ChildItem -LiteralPath $caseHome -Recurse -File `
-                     -Filter $spec.filter -ErrorAction SilentlyContinue)
-        foreach ($f in $found) {
-          if ($spec.parent -and $f.Directory.Name -ne $spec.parent) { continue }
-          $hash = try { (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash } catch { "" }
-          Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
-          # **Recorded as removed only if it is gone.** A file still held open
-          # -- Procmon's raw.pml when its /Terminate timed out -- fails both
-          # the hash and the delete, silently, and was recorded as pruned
-          # anyway: five benign-wide cases (Oct 2026) brought home a 2.8 GB
-          # raw.pml that pruned_artifacts.json said had been dropped.
-          $removed = -not (Test-Path -LiteralPath $f.FullName)
-          if ($removed) { $prunedBytes += $f.Length } else { $keptBytes += $f.Length }
-          $pruned += [pscustomobject][ordered]@{
-            path    = $f.FullName.Substring($caseHome.Length).TrimStart('\')
-            bytes   = $f.Length
-            sha256  = $hash
-            removed = $removed
-          }
+      $result = Remove-RawArtifacts -CaseHome $caseHome -Specs $pruneSpecs `
+        -ProgressSeconds $HeartbeatSeconds -OnProgress {
+          param($done, $total, $bytes)
+          Write-Log ("  pruning: {0} of {1} file(s), {2:N0} MB hashed" -f $done, $total, ($bytes / 1MB))
+          Write-Heartbeat -Work $work -Since $pruneStarted -Process $null -BaselinePids $pruneBaseline -Stage "prune"
+          Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
         }
-      }
+      $pruned = @($result.pruned)
+      $prunedBytes = $result.prunedBytes
+      $keptBytes = $result.keptBytes
       if ($pruned.Count -gt 0) {
-        Write-Log ("pruned {0} raw artifact(s), {1:N0} MB, before the copy" -f `
-          @($pruned | Where-Object removed).Count, ($prunedBytes / 1MB))
+        Write-Log ("pruned {0} raw artifact(s), {1:N0} MB, before the copy, in {2:N0}s" -f `
+          @($pruned | Where-Object removed).Count, ($prunedBytes / 1MB),
+          ((Get-Date) - $pruneStarted).TotalSeconds)
       }
       if ($keptBytes -gt 0) {
         Write-Log ("could not remove {0} raw artifact(s), {1:N0} MB, still in use -- they travel with the case" -f `
@@ -742,7 +810,15 @@ try {
   }
 
   Write-Log "copying the case to the exchange"
+  Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
+  $copyStarted = Get-Date
+  # One beat, not a stream: `Copy-Item` blocks. A stale `copy` heartbeat
+  # after a timeout says the copy is what hung, which is the question
+  # `f306`'s r2 left open.
+  $copyBaseline = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+  Write-Heartbeat -Work $work -Since $copyStarted -Process $null -BaselinePids $copyBaseline -Stage "copy"
   Copy-Item -LiteralPath $caseHome -Destination $work -Recurse -Force
+  Write-Log ("case copied in {0:N0}s" -f ((Get-Date) - $copyStarted).TotalSeconds)
 
   # Written after the copy, into the copy, so it describes what arrived. A
   # reader who finds memory_yara.json referring to files that are not there

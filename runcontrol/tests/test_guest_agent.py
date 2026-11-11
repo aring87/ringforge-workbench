@@ -262,6 +262,82 @@ Write-Heartbeat -Work $work -Since (Get-Date) -Process $null -BaselinePids @()
         self.assertIn("heartbeat=True", out)
         self.assertIn("picked=abc123.exe", out)
 
+    # --- Remove-RawArtifacts ---------------------------------------------
+
+    # The agent's own specs, restated: a test that read them out of the
+    # script body would be testing the regex that found them.
+    SPECS = r"""
+$specs = @(
+  @{ filter = '*.dmp';              parent = $null    },
+  @{ filter = 'raw.pml';            parent = 'procmon' },
+  @{ filter = 'export.csv';         parent = 'procmon' },
+  @{ filter = 'parsed_events.json'; parent = 'procmon' }
+)
+$case = New-Item -ItemType Directory "$T\case"
+New-Item -ItemType Directory "$case\memory", "$case\procmon", "$case\other" | Out-Null
+Set-Content "$case\memory\a.dmp" ('x' * 1000) -NoNewline
+Set-Content "$case\memory\b.dmp" ('y' * 2000) -NoNewline
+Set-Content "$case\procmon\raw.pml" ('z' * 500) -NoNewline
+Set-Content "$case\other\export.csv" 'kept, wrong parent' -NoNewline
+Set-Content "$case\procmon\interesting_events.json" '{}' -NoNewline
+"""
+
+    def test_prunes_what_the_specs_name_and_nothing_else(self) -> None:
+        out = self.ps(self.SPECS + r"""
+$want = (Get-FileHash "$case\memory\a.dmp" -Algorithm SHA256).Hash
+$r = Remove-RawArtifacts -CaseHome $case -Specs $specs
+"count=$(@($r.pruned).Count) pruned=$($r.prunedBytes) kept=$($r.keptBytes)"
+"paths=$((@($r.pruned) | ForEach-Object path | Sort-Object) -join ',')"
+"hash_ok=$((@($r.pruned) | Where-Object path -eq 'memory\a.dmp').sha256 -eq $want)"
+"left=$((Get-ChildItem $case -Recurse -File | ForEach-Object Name | Sort-Object) -join ',')"
+""")
+        self.assertIn("count=3 pruned=3500 kept=0", out)
+        self.assertIn(r"paths=memory\a.dmp,memory\b.dmp,procmon\raw.pml", out)
+        self.assertIn("hash_ok=True", out)
+        # The CSV outside `procmon` and the scorer's input both survive.
+        self.assertIn("left=export.csv,interesting_events.json", out)
+
+    def test_a_file_still_held_open_is_kept_and_says_so(self) -> None:
+        """Procmon's raw.pml when its /Terminate timed out: five benign-wide
+        cases once brought home a 2.8 GB file recorded as pruned."""
+        out = self.ps(self.SPECS + r"""
+$h = [IO.File]::Open("$case\procmon\raw.pml", 'Open', 'Read', 'Read')
+$r = Remove-RawArtifacts -CaseHome $case -Specs $specs
+$h.Dispose()
+$pml = @($r.pruned) | Where-Object path -eq 'procmon\raw.pml'
+"pml_removed=$($pml.removed) pruned=$($r.prunedBytes) kept=$($r.keptBytes)"
+"pml_there=$(Test-Path "$case\procmon\raw.pml")"
+""")
+        self.assertIn("pml_removed=False pruned=3000 kept=500", out)
+        self.assertIn("pml_there=True", out)
+
+    def test_reports_progress_while_it_works(self) -> None:
+        """11 Nov: `f306` pruned 13,416 MB in 25 silent minutes, and the run
+        before it overran with no way to tell pruning from the copy."""
+        out = self.ps(self.SPECS + r"""
+$script:ticks = @()
+$r = Remove-RawArtifacts -CaseHome $case -Specs $specs -ProgressSeconds 0 `
+  -OnProgress { param($done, $total, $bytes) $script:ticks += "$done/$total/$bytes" }
+"ticks=$($script:ticks -join ' ')"
+""")
+        self.assertIn("ticks=1/3/1000 2/3/3000 3/3/3500", out)
+
+    def test_a_failing_or_chatty_progress_changes_nothing(self) -> None:
+        out = self.ps(self.SPECS + r"""
+$r = Remove-RawArtifacts -CaseHome $case -Specs $specs -ProgressSeconds 0 `
+  -OnProgress { 'noise'; throw 'progress failed' }
+"type=$($r.GetType().Name) count=$(@($r.pruned).Count) pruned=$($r.prunedBytes)"
+""")
+        self.assertIn("type=PSCustomObject count=3 pruned=3500", out)
+
+    def test_nothing_to_prune(self) -> None:
+        out = self.ps(r"""
+$case = New-Item -ItemType Directory "$T\empty"
+$r = Remove-RawArtifacts -CaseHome $case -Specs @(@{ filter = '*.dmp'; parent = $null })
+"count=$(@($r.pruned).Count) pruned=$($r.prunedBytes) kept=$($r.keptBytes)"
+""")
+        self.assertIn("count=0 pruned=0 kept=0", out)
+
 
 if __name__ == "__main__":
     unittest.main()
