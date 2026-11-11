@@ -88,7 +88,12 @@ bottom. It does not move the finish line.
 Moved ahead of the held-out corpus, because that corpus is the next big
 sweep and every sample on it pays the cost.
 
-- [ ] Move `G:\VMs` off the USB drive. Slow runs are drive stalls on `G:`.
+- [ ] **Move the VM off the USB drive, to a new 1 TB SSD.** Measured
+      11 Nov: `G:` reads at 9-11 MB/s and ~65 random reads/s after
+      writes, an SSD here at 837 MB/s and 3,421/s. The guest disk is a
+      29-image chain, 99 GiB flattened. The plan is a flattened copy of
+      both `dc1507c` baselines with the original kept on `G:`, then an A/B
+      phase by phase. See HANDOFF *11 Nov, step 2 started*.
 - [ ] ~~Make the agent's pruning cheaper.~~ **Measured, and not a
       bottleneck.** `fd30c8f25d9b` pruned 5,630 MB in 8 s on `dc1507c`.
       `f306`'s 25 minutes for 13,416 MB came with three un-terminated
