@@ -61,10 +61,21 @@ bottom. It does not move the finish line.
       guest's `agent.log` before the restore discards it. If none recurs,
       record this as a known flake, with the 30-minute readiness timeout
       as the mitigation.
-- [ ] **`f306` (GuLoader): name-match termination, then one re-run.** Termination made in `b3c4530`; re-run `mal-112b-f306-b3c4530` running. If
-      it still times out, record it as a known limit: a resident sample
-      that starves the guest. Do not try a third approach. `cca6a5ed0923`
-      may join it there.
+- [ ] **`f306` (GuLoader): name-match termination, then one re-run.** Termination made in `b3c4530`, and
+      **it works**: on `mal-112b-f306-b3c4530-r2` it ended 5 lost copies and
+      the analysis finished in 79 min. The run still overran: 33 min of
+      pruning and copying after `combine` (about 13 GB of dumps) and no
+      `done`. The first re-run stalled in triage (the bench flake). One
+      host-only option is left: `--run-timeout 14400`. If that overruns,
+      record it as a known limit of the bench's post-analysis cost, which
+      step 2 addresses. See HANDOFF *11 Nov night*. `cca6a5ed0923` may join
+      it there.
+- [x] **Static triage crashed on samples with embedded files** (since
+      24 Aug, 31 cases). Fixed in `ddaaf87`; the headline is unaffected.
+      The guest gets it with the next drop.
+- [ ] **Next drop:** `ddaaf87`, plus `powercfg /change monitor-timeout-ac 0`
+      (the timeout screenshot showed a stale frame), plus `Send-Progress`
+      around pruning and the case copy.
 
 ### Step 2 — sweep throughput (a day)
 
