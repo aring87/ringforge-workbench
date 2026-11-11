@@ -18,9 +18,9 @@ useful than the fact that it did.
 
 **Where things stand.** Every detector is built, and every module had a
 polish pass on 3 Sep. Two corpora have been measured end to end. Malware is
-110 samples, 109 executed. Benign is 167 programs, 165 executed. **The number to quote is
-91.7% of executed malware at 6.7% of executed benign, Corroborated or
-stronger.** That figure is partly in-sample, because rules were tuned on
+111 samples with a verdict, 110 executed. Benign is 167 programs, 165 executed. **The number to quote is
+91.8% of executed malware at 6.7% of executed benign, Corroborated or
+stronger** (101/110, since `f306` got its verdict on 11 Nov). That figure is partly in-sample, because rules were tuned on
 the same corpora. What remains is about trusting that number, finishing,
 and polishing, not building detectors.
 
@@ -61,21 +61,20 @@ bottom. It does not move the finish line.
       guest's `agent.log` before the restore discards it. If none recurs,
       record this as a known flake, with the 30-minute readiness timeout
       as the mitigation.
-- [ ] **`f306` (GuLoader): name-match termination, then one re-run.** Termination made in `b3c4530`, and
-      **it works**: on `mal-112b-f306-b3c4530-r2` it ended 5 lost copies and
-      the analysis finished in 79 min. The run still overran: 33 min of
-      pruning and copying after `combine` (about 13 GB of dumps) and no
-      `done`. The first re-run stalled in triage (the bench flake). One
-      host-only option is left: `--run-timeout 14400`. If that overruns,
-      record it as a known limit of the bench's post-analysis cost, which
-      step 2 addresses. See HANDOFF *11 Nov night*. `cca6a5ed0923` may join
-      it there.
+- [x] **`f306` (GuLoader): name-match termination, then one re-run.**
+      Done, 11 Nov. Termination was made in `b3c4530`.
+      `mal-112b-f306-b3c4530-r3` completed in 5,052 s and gave `f306` its
+      first verdict ever: **Strongly Corroborated**, Likely Malicious 130.
+      It would have fit in the old 2-hour window. r2 overran because
+      Windows maintenance was running on the USB disk. See HANDOFF
+      *11 Nov, `f306` has a verdict*.
 - [x] **Static triage crashed on samples with embedded files** (since
       24 Aug, 31 cases). Fixed in `ddaaf87`; the headline is unaffected.
       The guest gets it with the next drop.
 - [ ] **Next drop:** `ddaaf87`, plus `powercfg /change monitor-timeout-ac 0`
       (the timeout screenshot showed a stale frame), plus `Send-Progress`
-      around pruning and the case copy.
+      around pruning and the case copy. Pruning was 25 silent minutes on
+      `f306`.
 
 ### Step 2 — sweep throughput (a day)
 
@@ -84,11 +83,12 @@ sweep and every sample on it pays the cost.
 
 - [ ] Move `G:\VMs` off the USB drive. Slow runs are drive stalls on `G:`.
 - [ ] Make the agent's pruning cheaper: hashing the dumps before deleting
-      them is where the time goes.
+      them is where the time goes. Measured on `f306` r3: 13,416 MB in
+      25 min 22 s, about 9 MB/s, on a quiet guest.
 
 ### Step 3 — the held-out corpus, rules frozen (1–2 weeks, mostly waiting)
 
-This is the step that says whether the 91.7% is real.
+This is the step that says whether the 91.8% is real.
 
 - [ ] Pin a commit. **No scoring change of any kind until the sweep is
       scored.**
