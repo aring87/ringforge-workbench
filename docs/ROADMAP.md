@@ -100,7 +100,9 @@ sweep and every sample on it pays the cost.
         from reaching the host.
 
       See HANDOFF *Pick up here — 12 Nov, step 2: the VM on `H:`, and the freezes were Memory Integrity*.
-- [ ] **Update VirtualBox** from 7.1.4 (Oct 2024), then do a smoke run.
+- [x] **Update VirtualBox.** Done 12 Nov: 7.1.4 to 7.2.22. The smoke run
+      `smoke-vbox722` gave the same verdict as before, Strongly
+      Corroborated 95, with no freezes.
 - [ ] **Static triage on large binaries.** `elevated_tracing_service`
       (4.5 MB) spends 47 min in triage, CPU-bound. Find the stage that
       takes the time.
