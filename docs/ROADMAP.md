@@ -88,17 +88,30 @@ bottom. It does not move the finish line.
 Moved ahead of the held-out corpus, because that corpus is the next big
 sweep and every sample on it pays the cost.
 
-- [ ] **Move the VM off the USB drive, to a new 1 TB SSD.** Measured
-      11 Nov: `G:` reads at 9-11 MB/s and ~65 random reads/s after
-      writes, an SSD here at 837 MB/s and 3,421/s. The guest disk is a
-      29-image chain, 99 GiB flattened. The plan is a flattened copy of
-      both `dc1507c` baselines with the original kept on `G:`, then an A/B
-      phase by phase. See HANDOFF *11 Nov, step 2 started*.
+- [x] **Move the VM off the USB drive.** Done 12 Nov.
+      * **The new VM:** `RingForge-Bench`, a flattened clone on `H:` (a
+        2 TB USB SSD). Pass `--vm RingForge-Bench`.
+      * **Result:** six samples took 2.7 h, against 8.7 h on `G:`.
+      * **Most of that gap was not the disk.** VirtualBox was running on
+        Hyper-V under Memory Integrity, and the guest froze for minutes at a
+        time: 5.0 of the 8.7 h. Memory Integrity is now off, and there have
+        been no freezes since.
+      * **The network:** a host firewall rule now blocks the bench network
+        from reaching the host.
+
+      See HANDOFF *Pick up here — 12 Nov, step 2: the VM on `H:`, and the freezes were Memory Integrity*.
+- [ ] **Update VirtualBox** from 7.1.4 (Oct 2024), then do a smoke run.
+- [ ] **Static triage on large binaries.** `elevated_tracing_service`
+      (4.5 MB) spends 47 min in triage, CPU-bound. Find the stage that
+      takes the time.
 - [ ] ~~Make the agent's pruning cheaper.~~ **Measured, and not a
       bottleneck.** `fd30c8f25d9b` pruned 5,630 MB in 8 s on `dc1507c`.
       `f306`'s 25 minutes for 13,416 MB came with three un-terminated
       copies of the sample still running. Drop this item unless a sweep
       shows `pruned ... in Ns` running long on ordinary samples.
+      **12 Nov:** it ran long once, 1,514 s for 10,497 MB (`f27b`, on `H:`,
+      under Hyper-V). On AMD-V the worst was 4.7 min. Still not a
+      bottleneck.
 
 ### Step 3 — the held-out corpus, rules frozen (1–2 weeks, mostly waiting)
 
