@@ -106,8 +106,10 @@ sweep and every sample on it pays the cost.
 - [x] **Static triage on large binaries.** Found 12 Nov: capa ran a
       second full analysis only to print `capa.txt`, a third to two fifths
       of all triage time. Fixed in `80d75d0`: the text is rendered from
-      `capa.json`, byte-identical. **It reaches the guest with the next
-      drop.** What remains is capa's own single analysis (about 22 min on
+      `capa.json`, byte-identical. **In the guest since 12 Nov**
+      (`806e88a`, baseline `corpus-agent-detonate-806e88a-noselfupdate`).
+      The smoke run cut triage from 46.6 to 24.6 min, with the same verdict.
+      What remains is capa's own single analysis (about 22 min on
       `elevated_tracing_service`). Cutting that changes the evidence, so it
       is a scoring decision. See HANDOFF *Pick up here — 12 Nov, static triage: capa analysed every sample twice*.
 - [ ] ~~Make the agent's pruning cheaper.~~ **Measured, and not a
