@@ -3874,9 +3874,22 @@ the likely reason. The fetch itself lost nothing.
 * **The draw:** seeded (20261113), one package per publisher. The targets
   are 80 programs with PE installers, plus 20 zip packages as the source of
   benign DLLs, the first ever detonated here.
-* **The scripts and the candidate list** are in the session scratchpad,
-  `benign-plan\`. **Nothing is downloaded until the user approves the
-  list.**
+* **The scripts and the candidate list** are in
+  `G:\ringforge-artifacts\benign-heldout-2026-11-plan`:
+  * `select_benign.py`, the seeded walk;
+  * `pass2.py`, a second pass;
+  * `benign-candidates-v2.json`, the list with each URL and SHA-256;
+  * `table.md`.
+* **Pass 2 fixed two things.**
+  * winget reports a zip package as `portable (zip)`, so the first pass
+    found none.
+  * A manual review dropped ten picks whose label is not clean benign: an
+    injector, three proxies or tunnels, an MBR tool, a profiling agent, a
+    COM re-registration, two vendors that engines label PUP or HackTool,
+    and a "setup" under 50 KB. Each is in `pass2.py` with its reason. The
+    keywords added for them caught three more.
+* **The draw is 80 programs (7.2 GB) and 30 zips (0.9 GB).** **Nothing is
+  downloaded until the user approves the list.**
 
 
 ### Pick up here — 12 Nov evening, guest on `806e88a`
