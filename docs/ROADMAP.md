@@ -125,11 +125,14 @@ sweep and every sample on it pays the cost.
 
 This is the step that says whether the 91.8% is real.
 
-- [ ] Pin a commit. **No scoring change of any kind until the sweep is
-      scored.**
+- [x] Pin a commit. **No scoring change of any kind until the sweep is
+      scored.** Done 13 Nov: tag `heldout-rules-806e88a`, baseline
+      `corpus-agent-detonate-806e88a-noselfupdate`.
 - [ ] New malware: collected on different dates from `mal-112b`, with
       families it lacks where possible. **Include DLLs**, because DLL
-      hosting has only been measured on these ten.
+      hosting has only been measured on these ten. **Fetched 13 Nov:**
+      102 from 17 families `mal-112b` lacks, 23 of them DLLs by header,
+      0 overlap. **Sweeping as `heldout-mal`.**
 - [ ] New benign from a source not used yet: the guest's own `System32`,
       or installers from vendors no corpus has. **Include benign DLLs**,
       because no benign DLL has ever been detonated.
