@@ -103,9 +103,13 @@ sweep and every sample on it pays the cost.
 - [x] **Update VirtualBox.** Done 12 Nov: 7.1.4 to 7.2.22. The smoke run
       `smoke-vbox722` gave the same verdict as before, Strongly
       Corroborated 95, with no freezes.
-- [ ] **Static triage on large binaries.** `elevated_tracing_service`
-      (4.5 MB) spends 47 min in triage, CPU-bound. Find the stage that
-      takes the time.
+- [x] **Static triage on large binaries.** Found 12 Nov: capa ran a
+      second full analysis only to print `capa.txt`, a third to two fifths
+      of all triage time. Fixed in `80d75d0`: the text is rendered from
+      `capa.json`, byte-identical. **It reaches the guest with the next
+      drop.** What remains is capa's own single analysis (about 22 min on
+      `elevated_tracing_service`). Cutting that changes the evidence, so it
+      is a scoring decision. See HANDOFF *Pick up here — 12 Nov, static triage: capa analysed every sample twice*.
 - [ ] ~~Make the agent's pruning cheaper.~~ **Measured, and not a
       bottleneck.** `fd30c8f25d9b` pruned 5,630 MB in 8 s on `dc1507c`.
       `f306`'s 25 minutes for 13,416 MB came with three un-terminated
