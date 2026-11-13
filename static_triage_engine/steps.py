@@ -311,6 +311,9 @@ def find_capa(configured: str | Path | None = None) -> str | None:
     return shutil.which("capa") or shutil.which("capa.exe")
 
 
+CAPA_RENDER_TIMEOUT_SEC = 300
+
+
 def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int = 1800, max_size_mb: int = 100) -> dict[str, Any]:
     sample_size = sample.stat().st_size if sample.exists() else 0
     size_limit_bytes = max(1, int(max_size_mb)) * 1024 * 1024
@@ -405,10 +408,25 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
             json_res["stderr"] = "[!] capa failed or produced empty stdout in -j mode"
         return {**json_res, "capa_json": str(capa_json), "capa_txt": str(capa_txt)}
 
-    cmd_text = [capa_cmd, *rule_args, str(sample)]
-    text_res = run_cmd(cmd_text, cwd=case_dir, timeout=capa_timeout)
-    if (text_res.get("stdout") or "").strip():
+    # **The text report is rendered from capa.json, not analysed again.** Given
+    # a result document as its input, capa renders it without touching the
+    # sample, and the text is byte-identical to a second analysis: checked
+    # 12 Nov on 27 cases from four sweeps, slowest render 8 s. The second
+    # analysis used to cost as much as the first on any large binary --
+    # 1,316 s of `elevated_tracing_service`'s 2,626 s, and over the sweeps
+    # 4.9 h of `mal-112b`'s 14.6 h of triage and 6.9 h of `benign-wide`'s
+    # 16.2. Nothing scores capa.txt (only the report's file list names it), so
+    # a failed render costs the text file, never a verdict; a stale one is
+    # removed rather than left to pass as this run's.
+    render_timeout = min(capa_timeout, CAPA_RENDER_TIMEOUT_SEC)
+    text_res = run_cmd([capa_cmd, str(capa_json)], cwd=case_dir, timeout=render_timeout)
+    if text_res.get("returncode") == 0 and (text_res.get("stdout") or "").strip():
         safe_write(capa_txt, text_res["stdout"])
+    else:
+        try:
+            capa_txt.unlink()
+        except Exception:
+            pass
 
     return {
         **json_res,
@@ -420,7 +438,11 @@ def step_capa(sample: Path, case_dir: Path, cfg: TriageConfig, capa_timeout: int
         "sample_size_bytes": sample_size,
         "sample_size_mb": _format_mb(sample_size),
         "max_size_mb": int(max_size_mb),
-        "text_pass": {"returncode": text_res.get("returncode"), "duration_sec": text_res.get("duration_sec")},
+        "text_pass": {
+            "returncode": text_res.get("returncode"),
+            "duration_sec": text_res.get("duration_sec"),
+            "rendered_from": "capa.json",
+        },
     }
 
 
