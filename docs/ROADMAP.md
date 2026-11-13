@@ -135,7 +135,10 @@ This is the step that says whether the 91.8% is real.
       0 overlap. **Sweeping as `heldout-mal`.**
 - [ ] New benign from a source not used yet: the guest's own `System32`,
       or installers from vendors no corpus has. **Include benign DLLs**,
-      because no benign DLL has ever been detonated.
+      because no benign DLL has ever been detonated. **Fetched 13 Nov**
+      from winget, vendors no corpus has, on an approved list: 73
+      installers and 23 DLLs from zips, all hash-verified. **Queued as
+      `heldout-ben`** after the malware, by `heldout-chain.ps1`.
 - [ ] Report the result whatever it shows. If the number holds, it means
       something. If it drops, it shows where the scorer is overfit, and
       *that* is the next rule change, measured on the next corpus.
