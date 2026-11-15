@@ -132,13 +132,15 @@ This is the step that says whether the 91.8% is real.
       families it lacks where possible. **Include DLLs**, because DLL
       hosting has only been measured on these ten. **Fetched 13 Nov:**
       102 from 17 families `mal-112b` lacks, 23 of them DLLs by header,
-      0 overlap. **Sweeping as `heldout-mal`.**
+      0 overlap. **Swept 13-14 Nov as `heldout-mal`** plus a one-sample
+      top-up: 102 of 102 usable. Not scored yet.
 - [ ] New benign from a source not used yet: the guest's own `System32`,
       or installers from vendors no corpus has. **Include benign DLLs**,
       because no benign DLL has ever been detonated. **Fetched 13 Nov**
       from winget, vendors no corpus has, on an approved list: 73
-      installers and 23 DLLs from zips, all hash-verified. **Queued as
-      `heldout-ben`** after the malware, by `heldout-chain.ps1`.
+      installers and 23 DLLs from zips, all hash-verified. **Sweeping as
+      `heldout-ben`** since 14 Nov, on an 8 h run timeout: installers get
+      up to 25 subfiles triaged and take 37-114 min each.
 - [ ] Report the result whatever it shows. If the number holds, it means
       something. If it drops, it shows where the scorer is overfit, and
       *that* is the next rule change, measured on the next corpus.

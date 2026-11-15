@@ -375,6 +375,21 @@ $caseRoot = Get-Property $document "case_root"
 $guest = Get-Property $document "guest"
 $policy = Get-Property $document "policy"
 
+# The header's guest and policy are the first leg's and are never rewritten.
+# A leg resumed by hand with different terms (heldout-ben, 14 Nov: run timeout
+# raised from 3 h to 8 h) records its own under `resumed`, and the run is now
+# measuring under the newest of those. Continuing from the header instead
+# would quietly put the first leg's terms back after a restart.
+$legs = @(Get-Property $document "resumed" @())
+if ($legs.Count -gt 0) {
+    $newest = $legs[$legs.Count - 1]
+    $legGuest = Get-Property $newest "guest"
+    $legPolicy = Get-Property $newest "policy"
+    if ($legGuest) { $guest = $legGuest }
+    if ($legPolicy) { $policy = $legPolicy }
+    Write-Line ("terms from leg {0} of the run, the newest" -f (Get-Property $newest "leg" $legs.Count))
+}
+
 if (-not $source -or -not $exchange -or -not $guest) {
     Write-Line "giving up: the manifest does not carry the source, exchange and guest this needs."
     exit 1
