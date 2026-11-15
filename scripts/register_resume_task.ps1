@@ -140,7 +140,15 @@ if ($RescoreWhenDone) {
     $arguments += " -RescoreWhenDone"
 }
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments `
+# Through `conhost --headless`, not powershell.exe directly. Where Windows
+# Terminal is the default console host (Windows 11's "let Windows decide"),
+# a task's PowerShell opens a visible, empty Terminal window that
+# -WindowStyle Hidden cannot hide, and closing that window kills the task
+# with 0xC000013A. Measured 15 Nov: a plain task started a WindowsTerminal
+# process, a headless one did not. resume_sweep.ps1 can wait minutes for the
+# drive and for VirtualBox, which is ample time for someone to close it.
+$conhost = Join-Path $env:WINDIR "System32\conhost.exe"
+$action = New-ScheduledTaskAction -Execute $conhost -Argument ("--headless powershell.exe " + $arguments) `
     -WorkingDirectory (Split-Path -Parent $PSScriptRoot)
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)

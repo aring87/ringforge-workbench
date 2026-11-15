@@ -63,6 +63,11 @@
   generous because the cost of waiting is nothing and the cost of giving up
   early is a stalled corpus nobody notices.
 
+.PARAMETER WaitForHypervisorSeconds
+  How long to wait, before launching, for `VBoxManage list vms` to answer.
+  VBoxSVC can take minutes after logon; a sweep launched before it answers
+  refuses to start and leaves the run `refused`.
+
 .PARAMETER StripBomsWhenDone
   Once the run reads `completed`, strip the byte-order marks the guest's
   PowerShell left on its JSON (`runcontrol.debom`). Does nothing until then,
@@ -96,6 +101,8 @@ param(
     [string]$Repo,
 
     [int]$WaitForVolumeSeconds = 300,
+
+    [int]$WaitForHypervisorSeconds = 600,
 
     [switch]$StripBomsWhenDone,
 
@@ -214,6 +221,31 @@ function Invoke-CorpusTool {
             foreach ($line in $reason) { Write-Line "   $line" }
             Write-Line "   (full stderr: $ErrLog)"
         }
+    }
+}
+
+function Test-Hypervisor {
+    <#  True when VBoxManage answers within the bound. A hung call is killed
+        rather than waited on: a VBoxSVC that is still starting can sit on a
+        client for minutes. #>
+    param([string]$Manage, [string]$Arguments = "list vms", [int]$TimeoutSeconds = 60)
+    $out = [System.IO.Path]::GetTempFileName()
+    $err = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $Manage -ArgumentList $Arguments -WindowStyle Hidden -PassThru `
+             -RedirectStandardOutput $out -RedirectStandardError $err
+        # Windows PowerShell only keeps ExitCode if the handle was taken
+        # before the process exits.
+        $null = $p.Handle
+        if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $p.Kill() } catch {}
+            return $false
+        }
+        return ($p.ExitCode -eq 0)
+    } catch {
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $out, $err -ErrorAction SilentlyContinue
     }
 }
 
@@ -456,6 +488,40 @@ try {
 
 Write-Line ("resuming as leg {0}: {1} {2}" -f $leg, $python, $commandLine)
 Write-Line ("  stdout -> {0}" -f $outLog)
+
+# --- wait for the hypervisor ------------------------------------------------
+# At logon VBoxSVC can take minutes to answer. On 15 Nov this fired 2.5 min
+# after boot; the sweep's first `list vms` hit runcontrol's 120 s bound and
+# the sweep refused to start -- correctly, but it left the run `refused` until
+# it was resumed by hand. Waiting here costs one probe when it already answers.
+$vboxManage = @(
+    $(if ($env:VBOX_MSI_INSTALL_PATH) { Join-Path $env:VBOX_MSI_INSTALL_PATH "VBoxManage.exe" }),
+    "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe",
+    "C:\Program Files (x86)\Oracle\VirtualBox\VBoxManage.exe"
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+
+if (-not $vboxManage) {
+    Write-Line "VBoxManage.exe not found here; leaving the hypervisor to the sweep's own preflight."
+} else {
+    $deadline = (Get-Date).AddSeconds($WaitForHypervisorSeconds)
+    $announced = $false
+    while (-not (Test-Hypervisor -Manage $vboxManage)) {
+        if ($DryRun) {
+            Write-Line "dry run: VirtualBox is not answering yet; a real run would wait for it"
+            break
+        }
+        if ((Get-Date) -gt $deadline) {
+            Write-Line ("giving up: VirtualBox did not answer 'list vms' within {0}s. Nothing was started; the next logon retries, or run this by hand." -f $WaitForHypervisorSeconds)
+            exit 1
+        }
+        if (-not $announced) {
+            Write-Line "waiting for VirtualBox to answer (VBoxSVC is still starting)"
+            $announced = $true
+        }
+        Start-Sleep -Seconds 15
+    }
+    Write-Line "VirtualBox answers 'list vms'"
+}
 
 if ($DryRun) {
     if ($blocked) {
