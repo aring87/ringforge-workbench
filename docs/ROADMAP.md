@@ -141,7 +141,9 @@ This is the step that says whether the 91.8% is real.
       installers and 23 DLLs from zips, all hash-verified. **Sweeping as
       `heldout-ben`** since 14 Nov, on an 8 h run timeout: installers get
       up to 25 subfiles triaged and take 37-114 min each.
-- [ ] Report the result whatever it shows. If the number holds, it means
+- [ ] Report the result whatever it shows. **Preview, 19 Nov** (99 malware, 89
+      benign, 10 reruns pending): malware 79.8% Corroborated or stronger,
+      benign 47.2%; installers' temp extraction reads as `payload_dropped`. If the number holds, it means
       something. If it drops, it shows where the scorer is overfit, and
       *that* is the next rule change, measured on the next corpus.
 - [ ] Open question to settle here: CPU-Z-style all-weak Strongly
