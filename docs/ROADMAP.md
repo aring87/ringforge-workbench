@@ -30,10 +30,14 @@ and polishing, not building detectors.
 
 1. **A headline measured with the rules frozen**, on a corpus no rule was
    tuned on (step 3 below). It gets reported whatever it shows.
-2. **Every open measurement is closed.** It either has a result or is
+2. **The installer rule change** (step 3b), measured the same way: rules
+   frozen, on a second held-out corpus. Added 21 Nov by the user's
+   decision, because the first held-out result showed installers reading
+   as droppers.
+3. **Every open measurement is closed.** It either has a result or is
    written down as a known limit with its reason (`f306`, the voids).
-3. **Every module has had its second polish pass** (step 4).
-4. **The docs describe what is actually there**: `USER_GUIDE.md`,
+4. **Every module has had its second polish pass** (step 4).
+5. **The docs describe what is actually there**: `USER_GUIDE.md`,
    `SCORING.md` and `INSTALL.md` checked against the v1 build, and a
    tagged release.
 
@@ -161,6 +165,39 @@ This is the step that says whether the 91.8% is real.
       disabling its tasks and services (`ebd6e02`; no restart in a 04:05-05:55
       clock-shifted test). Baseline `corpus-agent-detonate-ebd6e02-noselfupdate`.
       `heldout-longrun` reruns DeepSeek, Joplin and Heybox on it.
+
+### Step 3b — the installer rule change, on a second held-out corpus (1–2 weeks, mostly waiting)
+
+**Added 21 Nov, ahead of the polish pass, by the user's decision.** The
+held-out benign rate was 46.8% Corroborated or stronger, against 6.7%
+in-sample. It is installers' own temp extraction read as `payload_dropped`:
+the signal is in 35 of the 44 benign Corroborated+ cases, and strong in 26 of
+them (HANDOFF, *Pick up here — 21 Nov, held-out scored*). The alternative,
+shipping v1 with the rate written down as a known limit, was declined.
+
+- [ ] **Characterise it, diagnostically, on the scored data only.** For each
+      benign case: which files were dropped, by which installer framework,
+      and how they differ from what the droppers in `mal-112b` and
+      `heldout-mal` drop. **NSIS is also a malware packer** (GuLoader is
+      NSIS), so "the sample is an installer" cannot be the exemption.
+- [ ] **Propose the change in HANDOFF before making it**, with its effect on
+      all four scored corpora (`mal-112b`, `benign-wide`/`pf-corpus`,
+      `heldout-mal`, `heldout-ben`). Agree it first. Those numbers are
+      in-sample for the change by construction, and are labelled so.
+- [ ] Make it, test it, and pin a new rules tag. **No further scoring change
+      until the second held-out corpus is scored.**
+- [ ] **The second held-out corpus, unseen by both rule sets.**
+      * **Benign:** installers and DLLs from vendors no corpus has, on an
+        approved list.
+      * **Malware:** collected on different dates, from families that
+        neither `mal-112b` nor `heldout-mal` has where possible.
+- [ ] **Sweep it on the `ebd6e02` baseline** (or its successor), score it,
+      and report the result whatever it shows. **The 21 Nov number stays the
+      record for the old rules.**
+- [ ] **Only if cheap and separable: the DLL-loader misses.** BumbleBee,
+      HijackLoader, DarkGate, Latrodectus, PrivateLoader and ValleyRAT sit
+      below Corroborated on `heldout-mal`. Check whether they share a cause.
+      If a fix is not small and independent, it goes under *Later*.
 
 ### Step 4 — the second module polish pass (1–2 weeks)
 
