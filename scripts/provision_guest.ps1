@@ -104,6 +104,12 @@ $receipt = [ordered]@{
   #: The agent's scheduled task, read back after the limit is cleared:
   #: "PT0S" means none. Empty if the task could not be read.
   agent_task_time_limit = ""
+  #: From `guest_disable_update_restarts.ps1`, run as SYSTEM: true when
+  #: UsoSvc and wuauserv are disabled and the orchestrator's tasks are off.
+  update_restarts_off   = $false
+  update_tasks_disabled = 0
+  update_tasks_failed   = @()
+  update_services       = $null
   ok            = $false
   error         = ""
 }
@@ -362,6 +368,25 @@ try {
       $receipt.wu_no_auto_reboot = ($read.NoAutoRebootWithLoggedOnUsers -eq 1)
     } catch {
       Warn "could not set the Windows Update policy: $($_.Exception.Message)"
+    }
+
+    # **The policy alone did not hold.** Booted with its clock at 04:05, a
+    # baseline carrying it ran the orchestrator's `Start Oobe Expedite Work`
+    # and `Schedule Work` and was restarted by MoUsoCoreWorker at 04:42 --
+    # the expedited-update path does not read those values. So the tasks
+    # and services themselves are disabled, as SYSTEM, by a script that
+    # refuses to run outside a VirtualBox guest.
+    try {
+      $updScript = Join-Path $Repo "scripts\guest_disable_update_restarts.ps1"
+      $updJson = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $updScript
+      if ($LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
+      $upd = ($updJson -join "`n") | ConvertFrom-Json
+      $receipt.update_tasks_disabled = @($upd.tasks_disabled).Count
+      $receipt.update_tasks_failed = @($upd.tasks_failed)
+      $receipt.update_services = $upd.services
+      $receipt.update_restarts_off = [bool]$upd.ok
+    } catch {
+      Warn "could not disable the update tasks and services: $($_.Exception.Message)"
     }
 
     # **The agent task's own time limit, cleared.** `install_guest_agent.ps1`
