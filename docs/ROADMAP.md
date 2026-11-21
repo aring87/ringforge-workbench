@@ -128,27 +128,31 @@ This is the step that says whether the 91.8% is real.
 - [x] Pin a commit. **No scoring change of any kind until the sweep is
       scored.** Done 13 Nov: tag `heldout-rules-806e88a`, baseline
       `corpus-agent-detonate-806e88a-noselfupdate`.
-- [ ] New malware: collected on different dates from `mal-112b`, with
+- [x] New malware: collected on different dates from `mal-112b`, with
       families it lacks where possible. **Include DLLs**, because DLL
       hosting has only been measured on these ten. **Fetched 13 Nov:**
       102 from 17 families `mal-112b` lacks, 23 of them DLLs by header,
       0 overlap. **Swept 13-14 Nov as `heldout-mal`** plus a one-sample
-      top-up: 102 of 102 usable. Not scored yet.
-- [ ] New benign from a source not used yet: the guest's own `System32`,
+      top-up: 102 of 102 usable. Scored 21 Nov.
+- [x] New benign from a source not used yet: the guest's own `System32`,
       or installers from vendors no corpus has. **Include benign DLLs**,
       because no benign DLL has ever been detonated. **Fetched 13 Nov**
       from winget, vendors no corpus has, on an approved list: 73
       installers and 23 DLLs from zips, all hash-verified. **Sweeping as
       `heldout-ben`** since 14 Nov, on an 8 h run timeout: installers get
-      up to 25 subfiles triaged and take 37-114 min each.
-- [ ] Report the result whatever it shows. **Preview, 19 Nov** (99 malware, 89
-      benign, 10 reruns pending): malware 79.8% Corroborated or stronger,
-      benign 47.2%; installers' temp extraction reads as `payload_dropped`. If the number holds, it means
+      up to 25 subfiles triaged and take 37-114 min each. 94 of 96
+      scored 21 Nov; DeepSeek and Joplin left no verdict.
+- [x] Report the result whatever it shows. **Scored 21 Nov** (102 malware,
+      94 benign, all executed): malware 79.4% Corroborated or stronger
+      (in-sample 91.8%), benign 46.8% (in-sample 6.7%); installers' temp
+      extraction reads as `payload_dropped`. HANDOFF, *Pick up here — 21 Nov*. If the number holds, it means
       something. If it drops, it shows where the scorer is overfit, and
       *that* is the next rule change, measured on the next corpus.
-- [ ] Open question to settle here: CPU-Z-style all-weak Strongly
+- [x] Open question to settle here: CPU-Z-style all-weak Strongly
       Corroborated. Variant B gets tested only if it shows up on benign
-      software more than once (HANDOFF, *Open* item 3).
+      software more than once (HANDOFF, *Open* item 3). **Settled 21 Nov: no
+      change.** Once on held-out benign (Synology Chat Client, 4 weak),
+      which B would not catch either.
 
 ### Step 4 — the second module polish pass (1–2 weeks)
 
