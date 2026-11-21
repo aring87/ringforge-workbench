@@ -91,6 +91,11 @@ $ErrorActionPreference = "Stop"
 # nothing at all. A first run produced no signal, no error file and no way to
 # tell "the task never fired" from "the task fired and failed immediately".
 $work = ""
+# **Read the parameter before the line after this one.** PowerShell names are
+# case-insensitive, so `$exchange = ""` IS `$Exchange`, and until 21 Nov it
+# erased `-Exchange` before discovery ran: the parameter never worked. The
+# guest never passed it, which is why nothing noticed.
+$configuredExchange = $Exchange
 $exchange = ""
 # Same reason as the two above, and the error handler now reads it: under
 # StrictMode an unassigned variable throws, so a failure before the local
@@ -270,17 +275,89 @@ function Invoke-SelfUpdate {
 
 function Get-DeliveredSample {
   <#
-    The one file that is not ours. `ringforge-ready` and `ringforge-done` are
-    signals, and anything else the host dropped is a run spec; the sample is
-    whatever remains. Returned newest-first so a re-delivery wins, though the
-    host clears the directory before every run so there should only be one.
+    The one file that is not ours. `ringforge-*` are signals, anything else
+    the host dropped is a run spec, and the names below are what this agent
+    writes into the work directory itself; the sample is whatever remains.
+    Returned newest-first so a re-delivery wins, though the host clears the
+    directory before every run so there should only be one.
+
+    **Our own files are excluded by name, and that is not optional.** Until
+    21 Nov only `ringforge-*` and `.json` were, on the reasoning that the
+    sample is looked for before anything else is written. That holds for one
+    agent life. Ten held-out runs (HANDOFF, 19 Nov) were a guest restart
+    mid-run: the second life found `scan.stderr.txt` or `detonate.stderr.txt`
+    newer than the sample, analysed it, and signalled done. The main body now
+    refuses a restarted run outright; this is the second line.
   #>
   param([string]$Work)
 
+  $ours = @("agent.log", "scan.stderr.txt", "detonate.stderr.txt")
   Get-ChildItem -LiteralPath $Work -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notlike "ringforge-*" -and $_.Extension -ne ".json" } |
+    Where-Object { $_.Name -notlike "ringforge-*" -and $_.Extension -ne ".json" -and
+                   $ours -notcontains $_.Name } |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
+}
+
+function Add-AgentStart {
+  <#
+    Append one line to `ringforge-agent-starts` in the work directory, and
+    return how many lines it had before this one.
+
+    The host recreates the work directory for every run, so the file's line
+    count is the number of times the agent has started on this delivery, with
+    no clock involved. The host reads it (`runcontrol.loop.check_integrity`)
+    and voids a run with more than one. Never throws: a failure to count is
+    not a reason to lose a run, and returns 0.
+  #>
+  param([string]$Work)
+  $before = 0
+  try {
+    # Inside the try: `Join-Path` throws on a drive that does not exist.
+    $path = Join-Path $Work "ringforge-agent-starts"
+    if (Test-Path -LiteralPath $path) {
+      $before = @(Get-Content -LiteralPath $path | Where-Object { $_.Trim() }).Count
+    }
+    $boot = try { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString("o") } catch { "?" }
+    $line = "{0} pid {1} boot {2}" -f (Get-Date).ToUniversalTime().ToString("o"), $PID, $boot
+    [System.IO.File]::AppendAllText($path, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  } catch { }
+  return $before
+}
+
+function Copy-CaseTree {
+  <#
+    Copy the finished case to the exchange with robocopy, and throw if any of
+    it failed.
+
+    **Replaces `Copy-Item -Recurse`, which cannot pass MAX_PATH.** Two
+    held-out installers lost their copy to it: `720kb.ndm` (17 Nov) and
+    HeyboxChat (20 Nov), both on nested `node_modules` under `extracted\`
+    past 260 characters. The verdict had been written and the copy threw
+    part-way, so no `done` and a run timeout. robocopy handles long paths on
+    both sides and, unlike `Copy-Item`, carries on past a file it cannot
+    copy, so everything else still arrives -- the throw afterwards is so a
+    partial copy is never signalled as a finished one.
+
+    `/R:2 /W:5` because robocopy's defaults retry a failed file a million
+    times at 30 s each, which would turn one bad file into a hung run.
+    `/XJ` because a junction inside a case is not evidence, and the host
+    refuses one anyway. Exit codes below 8 are success (1 = files copied).
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$Source,
+    [Parameter(Mandatory = $true)][string]$Destination,
+    [Parameter(Mandatory = $true)][string]$Log
+  )
+  $null = & robocopy.exe $Source $Destination /E /XJ /R:2 /W:5 /NP /NFL /NDL "/LOG:$Log"
+  $code = $LASTEXITCODE
+  if ($code -ge 8) {
+    $errors = try {
+      @(Get-Content -LiteralPath $Log | Where-Object { $_ -match "ERROR " } | Select-Object -First 5) -join " | "
+    } catch { "" }
+    throw "robocopy exited $code copying the case to the exchange: $errors"
+  }
+  return $code
 }
 
 function Send-Progress {
@@ -480,7 +557,7 @@ function Remove-RawArtifacts {
 try {
   Write-Log "=== agent starting ==="
   Write-Identity
-  $exchange = Find-Exchange -Configured $Exchange -WorkDir $WorkDir
+  $exchange = Find-Exchange -Configured $configuredExchange -WorkDir $WorkDir
   $work = Join-Path $exchange $WorkDir
   Write-Log "exchange: $exchange"
   Write-Log "work    : $work"
@@ -536,6 +613,25 @@ try {
   $readyFile = Join-Path $work "ringforge-ready"
   $doneFile = Join-Path $work "ringforge-done"
 
+  # **A restarted agent refuses the run.** `ready` already there means an
+  # earlier life of this agent began this run: the host recreates the work
+  # directory for every delivery, and only this agent writes `ready`. So the
+  # guest restarted after the run started -- ten held-out runs on 13-19 Nov,
+  # each a second life that analysed its own log file and signalled done.
+  # Whatever the first life had begun is gone with the restart, and the
+  # sample may have run already, so a second analysis of the same delivery
+  # is not one run of the sample. Fail it; the host voids it and retries.
+  # Counted first, so the host sees the restart even if this throw is the
+  # last thing that works.
+  $earlierLives = Add-AgentStart -Work $work
+  if (Test-Path -LiteralPath $readyFile) {
+    $was = try { (Get-Content -LiteralPath $readyFile -TotalCount 1) } catch { "?" }
+    throw ("the agent restarted mid-run: ringforge-ready was already written " +
+           "('$was'), and this is agent life $($earlierLives + 1) on this delivery. " +
+           "The guest restarted after the run began; refusing to start another " +
+           "run on the same delivery.")
+  }
+
   # Wait for the sample. It is normally already there, because the host
   # delivers before it boots this machine.
   $deadline = (Get-Date).AddSeconds($WaitSeconds)
@@ -563,7 +659,9 @@ try {
   # **`ready` goes out here and nowhere earlier.** Everything above can fail
   # without a run having started, and a `ready` with no run behind it would
   # turn a void run into a silent one.
-  "collection up at " + (Get-Date).ToUniversalTime().ToString("o") |
+  # The sample's name goes in it: the host checks it against what it
+  # delivered (`runcontrol.loop.check_integrity`).
+  "collection up at " + (Get-Date).ToUniversalTime().ToString("o") + " for " + $sample.Name |
     Set-Content -LiteralPath $readyFile -Encoding utf8
   Write-Log "signalled ready"
   Send-Progress -Work $work -LocalRoot $localRoot -LogFile $LogFile
@@ -817,8 +915,11 @@ try {
   # `f306`'s r2 left open.
   $copyBaseline = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   Write-Heartbeat -Work $work -Since $copyStarted -Process $null -BaselinePids $copyBaseline -Stage "copy"
-  Copy-Item -LiteralPath $caseHome -Destination $work -Recurse -Force
-  Write-Log ("case copied in {0:N0}s" -f ((Get-Date) - $copyStarted).TotalSeconds)
+  # Into `<work>\<case>`, where `Copy-Item -Recurse` used to put it. The
+  # robocopy log stays local and goes home only on failure, in the throw.
+  $copyCode = Copy-CaseTree -Source $caseHome -Destination (Join-Path $work $caseName) `
+    -Log (Join-Path $localRoot "copy.robocopy.log")
+  Write-Log ("case copied in {0:N0}s (robocopy {1})" -f ((Get-Date) - $copyStarted).TotalSeconds, $copyCode)
 
   # Written after the copy, into the copy, so it describes what arrived. A
   # reader who finds memory_yara.json referring to files that are not there
@@ -868,20 +969,25 @@ catch {
   # failed run would present as a finished one with thin results.
   Write-Log "FAILED: $($_.Exception.Message)"
   try {
-    if ($work -ne "") {
-      "agent failed: $($_.Exception.Message)" |
-        Set-Content -LiteralPath (Join-Path $work "ringforge-agent-error.txt") -Encoding utf8
+    if ($work -ne "" -and (Test-Path -LiteralPath $work)) {
       # **Especially on this path.** A failed run is the one whose log is
       # worth reading, and it is also the one the host's closing restore is
       # about to erase. Best effort: if the exchange is what failed, there is
       # nothing to copy it to, and the guest-local copy is all there is.
       try { Copy-Item -LiteralPath $LogFile -Destination (Join-Path $work "agent.log") -Force } catch { }
-      if ($localRoot -and (Test-Path -LiteralPath (Join-Path $localRoot "detonate.stderr.txt"))) {
-        try {
-          Copy-Item -LiteralPath (Join-Path $localRoot "detonate.stderr.txt") `
-            -Destination $work -Force
-        } catch { }
+      if ($localRoot) {
+        foreach ($name in @("scan.stderr.txt", "detonate.stderr.txt", "copy.robocopy.log")) {
+          $src = Join-Path $localRoot $name
+          if (Test-Path -LiteralPath $src) {
+            try { Copy-Item -LiteralPath $src -Destination $work -Force } catch { }
+          }
+        }
       }
+      # **Last, after the logs.** Since 21 Nov the host stops waiting the
+      # moment this appears and powers the guest off shortly after, so
+      # anything copied after it could be cut off.
+      "agent failed: $($_.Exception.Message)" |
+        Set-Content -LiteralPath (Join-Path $work "ringforge-agent-error.txt") -Encoding utf8
     }
   } catch { }
   exit 1

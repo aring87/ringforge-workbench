@@ -629,5 +629,177 @@ class FailuresDoNotEscape(LoopFixture):
         self.assertTrue(after and "FAILED" in after[0][2], report.steps)
 
 
+class AnAgentErrorEndsTheWait(LoopFixture):
+    """21 Nov: HeyboxChat's agent failed its case copy at 12:18, wrote
+    `ringforge-agent-error.txt`, and the host waited out the 8 h limit
+    until 16:37 because it only ever looked for `done`.
+
+    The windows here are an hour, and the fake `sleep` returns at once, so a
+    wait that ignored the error would spin for an hour of wall time: the
+    sleep count is the evidence that it stopped."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.guest = Guest(vm="RingForge-Analysis", baseline="corpus-baseline",
+                           readiness_timeout=3600, run_timeout=3600)
+        self.sleeps = 0
+
+    def guest_that(self, ready: bool, error: str, done: bool = False):
+        def sleep(_seconds: float) -> None:
+            self.sleeps += 1
+            if self.sleeps > 50:
+                raise AssertionError("the host kept waiting after the agent failed")
+            if ready and not self.signals.ready.exists():
+                self.signals.ready.write_text("up", encoding="utf-8")
+                return
+            if error and not self.signals.agent_error.exists():
+                (self.work / "combined_verdict.json").write_text("{}", encoding="utf-8")
+                self.signals.agent_error.write_text(error, encoding="utf-8")
+                if done:
+                    self.signals.done.write_text("done", encoding="utf-8")
+        return sleep
+
+    def test_an_error_after_ready_is_agent_failed_and_not_void(self) -> None:
+        report = self.detonate(sleep=self.guest_that(ready=True, error="agent failed: copy"))
+        self.assertIs(Outcome.AGENT_FAILED, report.outcome, report.error)
+        self.assertFalse(report.outcome.void)
+        self.assertFalse(report.usable)
+        self.assertIn("copy", report.error)
+        self.assertIn(("run", "AGENT FAILED"), [(s[0], s[2]) for s in report.steps])
+
+    def test_what_the_agent_wrote_before_failing_still_comes_home(self) -> None:
+        self.detonate(sleep=self.guest_that(ready=True, error="agent failed"))
+        self.assertTrue((self.cases / "thing" / "combined_verdict.json").is_file())
+
+    def test_the_host_waits_a_grace_before_the_power_off(self) -> None:
+        # Old agents copy their log after writing the error.
+        waits = []
+
+        def sleep(seconds):
+            waits.append(seconds)
+            self.guest_that(ready=True, error="agent failed")(seconds)
+        self.detonate(sleep=sleep, error_grace=7.0)
+        self.assertIn(7.0, waits)
+
+    def test_an_error_before_ready_is_a_void_that_names_it(self) -> None:
+        report = self.detonate(sleep=self.guest_that(ready=False, error="agent failed: no sample"))
+        self.assertIs(Outcome.NO_READINESS, report.outcome)
+        self.assertTrue(report.outcome.void)
+        self.assertIn("no sample", report.error)
+        self.assertIsNone(report.collected)
+
+    def test_done_wins_when_both_are_there(self) -> None:
+        report = self.detonate(sleep=self.guest_that(ready=True, error="late noise", done=True))
+        self.assertIs(Outcome.COMPLETED, report.outcome, report.error)
+
+
+class OneAgentLifeOneSample(LoopFixture):
+    """19 Nov: ten held-out runs were a guest restart mid-run, then a second
+    agent life that took its own `scan.stderr.txt` or `detonate.stderr.txt`
+    for the sample and signalled done. The host recorded them `completed`
+    and usable, because `done` was all it looked at."""
+
+    def guest_writes(self, **files: str):
+        def sleep(_seconds: float) -> None:
+            if not self.signals.ready.exists():
+                for name, text in files.items():
+                    (self.work / name.replace("_", "-")
+                     if name.startswith("ringforge") else self.work / name
+                     ).write_text(text, encoding="utf-8")
+                if not self.signals.ready.exists():
+                    self.signals.ready.write_text("up", encoding="utf-8")
+                return
+            if not self.signals.done.exists():
+                self.signals.done.write_text("done", encoding="utf-8")
+        return sleep
+
+    def test_two_agent_starts_void_the_run(self) -> None:
+        report = self.detonate(sleep=self.guest_writes(
+            ringforge_agent_starts="2026-11-20T13:37:25Z pid 1\n2026-11-20T14:02:10Z pid 2\n"))
+        self.assertIs(Outcome.INVALID, report.outcome)
+        self.assertTrue(report.outcome.void)
+        self.assertFalse(report.usable)
+        self.assertIn("started 2 times", report.error)
+        # Kept: it is the evidence for why the run was voided.
+        self.assertIsNotNone(report.collected)
+
+    def test_one_agent_start_is_a_normal_run(self) -> None:
+        report = self.detonate(sleep=self.guest_writes(
+            ringforge_agent_starts="2026-11-20T13:37:25Z pid 1\n"))
+        self.assertIs(Outcome.COMPLETED, report.outcome, report.error)
+
+    def test_ready_naming_another_file_voids_the_run(self) -> None:
+        report = self.detonate(sleep=self.guest_writes(
+            ringforge_ready="collection up at 2026-11-20T14:03:00Z for scan.stderr.txt"))
+        self.assertIs(Outcome.INVALID, report.outcome)
+        self.assertIn("scan.stderr.txt", report.error)
+
+    def test_ready_naming_the_sample_is_a_normal_run(self) -> None:
+        report = self.detonate(sleep=self.guest_writes(
+            ringforge_ready="collection up at 2026-11-20T14:03:00Z for thing.exe"))
+        self.assertIs(Outcome.COMPLETED, report.outcome, report.error)
+
+    def test_an_invalid_run_is_retried_by_policy(self) -> None:
+        self.assertTrue(Outcome.INVALID.void)
+        self.assertFalse(Outcome.AGENT_FAILED.void)
+
+
+class CheckIntegrityFromAnOldAgentsLog(unittest.TestCase):
+    """Agents before 21 Nov write neither the starts file nor a named
+    `ready`, so the log is all there is. The guest's log is appended across
+    the baseline's whole life, which is what these histories model."""
+
+    HISTORY = (
+        "[2026-11-13T00:40:06Z] === agent starting ===\n"
+        "[2026-11-13T00:40:06Z] FAILED: '\\\\VBOXSVR\\ringforge\\current' does not exist.\n"
+        "[2026-11-12T19:00:00Z] === agent starting ===\n"
+        "[2026-11-12T19:00:01Z] sample  : thing.exe (12 bytes)\n"
+        "[2026-11-12T19:30:00Z] signalled done\n"
+    )
+
+    def setUp(self) -> None:
+        self.work = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+
+    def check(self, log: str) -> str:
+        from runcontrol.loop import check_integrity
+        (self.work / "agent.log").write_text(log, encoding="utf-8")
+        return check_integrity(self.work, "thing.exe")
+
+    def test_a_clean_run_after_any_history_passes(self) -> None:
+        self.assertEqual("", self.check(self.HISTORY +
+            "[2026-11-20T13:37:25Z] === agent starting ===\n"
+            "[2026-11-20T13:37:26Z] sample  : thing.exe (12 bytes)\n"
+            "[2026-11-20T14:00:00Z] signalled done\n"))
+
+    def test_a_restart_that_took_its_own_log_is_caught(self) -> None:
+        # The 19 Nov shape exactly.
+        reason = self.check(self.HISTORY +
+            "[2026-11-13T09:22:00Z] === agent starting ===\n"
+            "[2026-11-13T09:22:01Z] sample  : thing.exe (12 bytes)\n"
+            "[2026-11-13T09:48:00Z] === agent starting ===\n"
+            "[2026-11-13T09:48:02Z] sample  : scan.stderr.txt (2210 bytes)\n"
+            "[2026-11-13T09:49:00Z] signalled done\n")
+        self.assertIn("starting again", reason)
+
+    def test_another_sample_after_the_delivered_one_is_caught(self) -> None:
+        reason = self.check(
+            "[2026-11-13T09:22:01Z] sample  : thing.exe (12 bytes)\n"
+            "[2026-11-13T09:48:02Z] sample  : detonate.stderr.txt (7776 bytes)\n")
+        self.assertIn("detonate.stderr.txt", reason)
+
+    def test_no_log_or_no_sample_line_passes(self) -> None:
+        from runcontrol.loop import check_integrity
+        self.assertEqual("", check_integrity(self.work, "thing.exe"))
+        self.assertEqual("", self.check("[2026-11-13T00:40:06Z] === agent starting ===\n"))
+
+    def test_the_starts_file_outranks_the_log(self) -> None:
+        # A 21 Nov agent writes it, and its log's history is not consulted.
+        (self.work / "ringforge-agent-starts").write_text("x pid 1\n", encoding="utf-8")
+        self.assertEqual("", self.check(
+            "[2026-11-13T09:22:01Z] sample  : thing.exe (12 bytes)\n"
+            "[2026-11-13T09:48:00Z] === agent starting ===\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

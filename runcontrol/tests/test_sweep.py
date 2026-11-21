@@ -444,7 +444,7 @@ class RetriesAreRecordedNotHidden(SweepFixture):
         self.sweep(attempts=2)
         policy = self.manifest()["policy"]
         self.assertEqual(2, policy["attempts"])
-        self.assertEqual(["no_readiness", "failed"], policy["retry_on"])
+        self.assertEqual(["no_readiness", "failed", "invalid"], policy["retry_on"])
 
 
 class WhenTheBenchIsBroken(SweepFixture):

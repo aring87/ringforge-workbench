@@ -262,6 +262,76 @@ Write-Heartbeat -Work $work -Since (Get-Date) -Process $null -BaselinePids @()
         self.assertIn("heartbeat=True", out)
         self.assertIn("picked=abc123.exe", out)
 
+    def test_the_agents_own_files_are_never_taken_for_a_sample(self) -> None:
+        """19 Nov: after a guest restart, a second agent life took
+        `scan.stderr.txt` or `detonate.stderr.txt` -- newer than the sample,
+        and written by its first life -- as the sample, ten times."""
+        out = self.ps(r"""
+$work = New-Item -ItemType Directory "$T\work"
+Set-Content "$work\abc123.exe" 'MZ'
+(Get-Item "$work\abc123.exe").LastWriteTime = (Get-Date).AddMinutes(-30)
+foreach ($n in 'agent.log', 'scan.stderr.txt', 'detonate.stderr.txt', 'ringforge-agent-starts') {
+  Set-Content "$work\$n" 'ours'
+}
+"picked=$((Get-DeliveredSample -Work $work).Name)"
+Remove-Item "$work\abc123.exe"
+"alone=[$((Get-DeliveredSample -Work $work).Name)]"
+""")
+        self.assertIn("picked=abc123.exe", out)
+        self.assertIn("alone=[]", out)
+
+    # --- Add-AgentStart --------------------------------------------------
+
+    def test_each_agent_life_adds_a_line_and_learns_how_many_came_before(self) -> None:
+        out = self.ps(r"""
+$work = New-Item -ItemType Directory "$T\work"
+$a = Add-AgentStart -Work $work
+$b = Add-AgentStart -Work $work
+$bytes = [IO.File]::ReadAllBytes("$work\ringforge-agent-starts")
+"first=$a second=$b lines=$(@(Get-Content "$work\ringforge-agent-starts").Count)"
+"bom=$($bytes[0] -eq 0xEF)"
+"never_throws=$(Add-AgentStart -Work 'Z:\no\such\share')"
+""")
+        self.assertIn("first=0 second=1 lines=2", out)
+        self.assertIn("bom=False", out)
+        self.assertIn("never_throws=0", out)
+
+    # --- Copy-CaseTree ---------------------------------------------------
+
+    def test_the_case_copy_gets_past_max_path(self) -> None:
+        """`720kb.ndm` (17 Nov) and HeyboxChat (20 Nov) lost their case copy
+        to nested `node_modules` past 260 characters. The control shows
+        `Copy-Item -Recurse` still fails on this tree, so a pass is the fix
+        and not a short path."""
+        out = self.ps(r"""
+$src = "$T\case"
+$deep = $src + ('\node_modules\@scope\package-with-a-long-name' * 8)
+[void][IO.Directory]::CreateDirectory("\\?\$deep")
+[IO.File]::WriteAllText("\\?\$deep\identifier.js", 'deep')
+Set-Content "$src\combined_verdict.json" '{}'
+"srclen=$(("$deep\identifier.js").Length)"
+$control = try { Copy-Item -LiteralPath $src -Destination "$T\ctl" -Recurse -Force -ErrorAction Stop; 'ok' } catch { 'threw' }
+"control=$control"
+$code = Copy-CaseTree -Source $src -Destination "$T\out\case" -Log "$T\copy.log"
+$copied = $deep.Replace("$T\case", "$T\out\case") + '\identifier.js'
+"code=$code deep=$([IO.File]::Exists("\\?\$copied")) top=$(Test-Path "$T\out\case\combined_verdict.json")"
+""", timeout=120)
+        srclen = int(out.split("srclen=")[1].split()[0])
+        self.assertGreater(srclen, 300)
+        self.assertIn("control=threw", out)
+        self.assertIn("deep=True top=True", out)
+        code = int(out.split("code=")[1].split()[0])
+        self.assertLess(code, 8)
+
+    def test_a_failed_case_copy_throws_rather_than_passing_as_done(self) -> None:
+        out = self.ps(r"""
+New-Item -ItemType Directory "$T\case" | Out-Null
+Set-Content "$T\case\a.json" '{}'
+$r = try { Copy-CaseTree -Source "$T\case" -Destination 'Q:\no\such\drive\case' -Log "$T\copy.log"; 'returned' } catch { "threw: $($_.Exception.Message)" }
+"r=$r"
+""", timeout=120)
+        self.assertIn("r=threw: robocopy exited", out)
+
     # --- Remove-RawArtifacts ---------------------------------------------
 
     # The agent's own specs, restated: a test that read them out of the

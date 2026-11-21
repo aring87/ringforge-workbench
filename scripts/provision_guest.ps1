@@ -94,6 +94,13 @@ $receipt = [ordered]@{
   sleep_never         = $false
   maintenance_off     = $false
   defrag_task_off     = $false
+  #: Windows Update policy: no automatic updates, and no automatic restart
+  #: while a user is logged on (the autologon user always is).
+  wu_no_auto_update   = $false
+  wu_no_auto_reboot   = $false
+  #: Read before the policy is written: whether this guest already carries
+  #: an update waiting for a restart. Diagnostic, not a setting.
+  reboot_pending      = $null
   ok            = $false
   error         = ""
 }
@@ -320,8 +327,43 @@ try {
     } catch {
       Warn "could not disable the scheduled defrag: $($_.Exception.Message)"
     }
-    Good ("quiet guest: display_never_off={0} sleep_never={1} maintenance_off={2} defrag_task_off={3}" -f `
-      $receipt.display_never_off, $receipt.sleep_never, $receipt.maintenance_off, $receipt.defrag_task_off)
+    # **Windows Update restarts.** Between 13 and 19 Nov the guest restarted
+    # itself mid-run on ten held-out samples, every time between about 04:20
+    # and 05:50 local and about 25 minutes after boot (`GIM: HyperV: Reset
+    # initiated through MSR` in VBox.log, no bugcheck): the guest OS asked
+    # for it, at a time of day, which is what a scheduled update restart
+    # looks like. Automatic Maintenance was already off, so it is not that.
+    # Each restart cost a run -- and, before the agent refused restarted
+    # runs, produced a bogus one (HANDOFF, *Pick up here -- 19 Nov*; the
+    # file stays ASCII, because Windows PowerShell 5.1 reads a BOM-less
+    # script as ANSI).
+    #
+    # The two documented policy values, under the policy key so a settings
+    # page cannot quietly undo them. The guest has no network during a run,
+    # so nothing new arrives; what this stops is an update already staged
+    # in the baseline restarting the machine on its own schedule.
+    # `reboot_pending` is read first, so the receipt says whether there was
+    # one to stop.
+    try {
+      $pending = (Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") -or
+                 (Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending")
+      $receipt.reboot_pending = [bool]$pending
+    } catch { }
+    try {
+      $wkey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+      if (-not (Test-Path -LiteralPath $wkey)) { New-Item -Path $wkey -Force | Out-Null }
+      New-ItemProperty -Path $wkey -Name "NoAutoUpdate" -Value 1 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $wkey -Name "NoAutoRebootWithLoggedOnUsers" -Value 1 -PropertyType DWord -Force | Out-Null
+      $read = Get-ItemProperty -LiteralPath $wkey
+      $receipt.wu_no_auto_update = ($read.NoAutoUpdate -eq 1)
+      $receipt.wu_no_auto_reboot = ($read.NoAutoRebootWithLoggedOnUsers -eq 1)
+    } catch {
+      Warn "could not set the Windows Update policy: $($_.Exception.Message)"
+    }
+
+    Good ("quiet guest: display_never_off={0} sleep_never={1} maintenance_off={2} defrag_task_off={3} wu_no_auto_update={4} wu_no_auto_reboot={5} reboot_pending={6}" -f `
+      $receipt.display_never_off, $receipt.sleep_never, $receipt.maintenance_off, $receipt.defrag_task_off,
+      $receipt.wu_no_auto_update, $receipt.wu_no_auto_reboot, $receipt.reboot_pending)
 
     # -- prove it took ------------------------------------------------------
     # Read back through the same function the verdict envelope uses, rather

@@ -705,7 +705,7 @@ def sweep(
             "attempts": attempts,
             # Named rather than implied: a reader should not have to know
             # which outcomes `Outcome.void` covers to interpret the corpus.
-            "retry_on": [Outcome.NO_READINESS.value, Outcome.FAILED.value],
+            "retry_on": [o.value for o in Outcome if o.void],
             "abort_after_consecutive_void": abort_after_consecutive_void,
             "recursive": recursive,
             "extensions": list(extensions) if extensions else None,

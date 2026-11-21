@@ -49,6 +49,7 @@ fake and assert the order.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -94,15 +95,34 @@ class Outcome(str, Enum):
     #: The hypervisor, the delivery or the import failed.
     FAILED = "failed"
 
+    #: Collection came up, then the agent wrote `ringforge-agent-error.txt`
+    #: instead of `done`. **Not void**, for the reason a run timeout is not:
+    #: what happened before the failure was observed. Its own outcome rather
+    #: than a run timeout because the host stops waiting the moment the
+    #: error appears. Until 21 Nov it did not, and HeyboxChat's agent failed
+    #: its case copy at 12:18 and the host waited out the 8 h limit until
+    #: 16:37 (HANDOFF, *Pick up here — 21 Nov*).
+    AGENT_FAILED = "agent_failed"
+
+    #: The run did not analyse the delivered sample in one agent life: the
+    #: agent started more than once, or named a different file as the
+    #: sample. **Void, so it is retried.** Ten held-out runs (HANDOFF,
+    #: *Pick up here — 19 Nov*) were a guest restart mid-run followed by a
+    #: second agent life that analysed its own log file as the sample and
+    #: signalled done -- recorded as `completed` and usable, because `done`
+    #: was all the host looked at.
+    INVALID = "invalid"
+
     @property
     def void(self) -> bool:
         """Whether this run observed too little to draw a conclusion from.
 
         A run timeout is *not* void: collection was up and whatever happened
         before the window closed is real evidence. A readiness failure is,
-        because nothing was watching.
+        because nothing was watching. An invalid run is, because what was
+        watched was not one run of the delivered sample.
         """
-        return self in (Outcome.NO_READINESS, Outcome.FAILED)
+        return self in (Outcome.NO_READINESS, Outcome.FAILED, Outcome.INVALID)
 
 
 @dataclass
@@ -141,6 +161,16 @@ class Signals:
 
     READY = "ringforge-ready"
     DONE = "ringforge-done"
+    #: Written by the agent's `catch` instead of `done`. Read so the host can
+    #: stop waiting; it is not a third signal the guest can use to finish a
+    #: run, because it never makes one usable.
+    AGENT_ERROR = "ringforge-agent-error.txt"
+    #: One line per agent life in this run, appended at startup. Since the
+    #: host recreates the working directory for every run, the line count is
+    #: the number of times the agent started on this delivery -- no clock
+    #: involved. Written by agents from 21 Nov on; older ones leave only
+    #: their log, which `check_integrity` falls back to.
+    STARTS = "ringforge-agent-starts"
 
     def __init__(self, exchange: Path) -> None:
         self.exchange = Path(exchange)
@@ -153,14 +183,23 @@ class Signals:
     def done(self) -> Path:
         return self.exchange / self.DONE
 
+    @property
+    def agent_error(self) -> Path:
+        return self.exchange / self.AGENT_ERROR
+
+    @property
+    def starts(self) -> Path:
+        return self.exchange / self.STARTS
+
     def clear(self) -> None:
-        """Remove both, before a run.
+        """Remove the signals, before a run.
 
         A stale `done` from the previous sample would make the next run look
         finished before it started -- and it would look like a fast, quiet
-        sample rather than like a controller bug.
+        sample rather than like a controller bug. A stale error would end
+        the next run's wait at once.
         """
-        for path in (self.ready, self.done):
+        for path in (self.ready, self.done, self.agent_error, self.starts):
             try:
                 path.unlink()
             except FileNotFoundError:
@@ -168,12 +207,103 @@ class Signals:
 
     def wait_for(self, path: Path, timeout: float,
                  poll: float = 2.0, sleep=time.sleep) -> bool:
+        return self.wait_for_any([path], timeout, poll, sleep) is not None
+
+    def wait_for_any(self, paths: list[Path], timeout: float,
+                     poll: float = 2.0, sleep=time.sleep) -> Path | None:
+        """The first of `paths` that exists, in list order, or None at the
+        deadline. List order breaks a tie: when `done` and the error both
+        exist, the caller decides which one it trusts by putting it first."""
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if path.exists():
-                return True
+        while True:
+            for path in paths:
+                if path.exists():
+                    return path
+            if time.monotonic() >= deadline:
+                return None
             sleep(poll)
-        return path.exists()
+
+
+def _read_text(path: Path, limit: int = 4096) -> str:
+    """A small guest-written file as text, or "" if it cannot be read.
+    Bounded and decoded leniently: the guest wrote it, and it is a note
+    rather than data."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(limit)
+    except OSError:
+        return ""
+    return raw.decode("utf-8-sig", errors="replace").strip()
+
+
+#: `[2026-11-20T13:37:26Z] sample  : db0a8789758d.exe (146419160 bytes)`
+_SAMPLE_LINE = re.compile(r"^\[[^\]]*\] sample  : (.+) \(\d+ bytes\)\s*$")
+_START_LINE = "=== agent starting ==="
+_READY_FOR = re.compile(r" for (.+)$")
+
+
+def check_integrity(work: Path, sample_name: str) -> str:
+    """Why this run is not one agent life analysing `sample_name`, or "".
+
+    Read from the working directory after the guest is off, from three
+    things the agent writes:
+
+    * `ringforge-agent-starts`: more than one line means the agent started
+      more than once on this delivery -- a guest restart mid-run.
+    * `ringforge-ready`: from 21 Nov it ends `for <sample>`, and a second
+      life overwrites it, so a different name there is a different sample.
+    * `agent.log`, for agents older than both. The guest's log is appended
+      across the baseline's whole life, so this run's part is taken to
+      start at the **last** `sample  :` line naming the delivered file, and
+      anything after it is suspect: another `=== agent starting ===`, or a
+      `sample  :` naming something else. No clocks, because the guest's is
+      not the host's. That is exactly the check that found the ten bogus
+      held-out runs by hand on 19 Nov.
+
+    Empty means nothing contradicts one clean life, not proof of one: a
+    test harness that writes none of these files passes.
+    """
+    work = Path(work)
+    starts = [line for line in _read_text(work / Signals.STARTS, 65536).splitlines()
+              if line.strip()]
+    if len(starts) > 1:
+        return (f"the agent started {len(starts)} times on this delivery: the "
+                f"guest restarted after the run began, and nothing a second "
+                f"agent life does on the same delivery is one run of the sample")
+
+    ready = _read_text(work / Signals.READY).splitlines()
+    if ready:
+        named = _READY_FOR.search(ready[0])
+        if named and named.group(1).strip() != sample_name:
+            return (f"ringforge-ready names {named.group(1).strip()!r}, not the "
+                    f"delivered {sample_name!r}: the agent analysed another file")
+
+    if starts:
+        # A 21 Nov agent: the starts file is the authority, and its log's
+        # history is not needed.
+        return ""
+
+    try:
+        with open(work / "agent.log", "rb") as handle:
+            lines = handle.read().decode("utf-8-sig", errors="replace").splitlines()
+    except OSError:
+        return ""
+    last = None
+    for index, line in enumerate(lines):
+        found = _SAMPLE_LINE.match(line)
+        if found and found.group(1) == sample_name:
+            last = index
+    if last is None:
+        return ""
+    for line in lines[last + 1:]:
+        if _START_LINE in line:
+            return ("agent.log shows the agent starting again after it took "
+                    "the delivered sample: the guest restarted mid-run")
+        found = _SAMPLE_LINE.match(line)
+        if found and found.group(1) != sample_name:
+            return (f"agent.log shows the agent taking {found.group(1)!r} as the "
+                    f"sample after {sample_name!r}: it analysed another file")
+    return ""
 
 
 def prepare_work(exchange: Path) -> Path:
@@ -347,12 +477,14 @@ def _why_no_readiness(hypervisor, vm: str) -> str:
 def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
             case_root: Path, *, limits: Limits | None = None,
             signals_override: Signals | None = None,
-            sleep=time.sleep) -> RunReport:
+            sleep=time.sleep, error_grace: float = 30.0) -> RunReport:
     """Detonate one sample and bring its case folder home.
 
     `exchange` is the directory both sides can see. The controller works only
     in `exchange/current`, which it recreates each run -- see `RUN_DIR`.
     `case_root` is on the host and receives the imported case.
+    `error_grace` is how long to wait after the agent's error file appears
+    before powering off; see step 7.
 
     Never raises for a run that went wrong: a sweep needs a report per sample,
     and an exception would lose the ones already done.
@@ -400,24 +532,35 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         report.note("start", started,
                     "" if tries == 1 else f"took {tries} attempts")
 
-        # 6. Readiness. Its absence is a void run, not a quiet sample.
-        if not signals.wait_for(signals.ready, guest.readiness_timeout,
-                                sleep=sleep):
+        # 6. Readiness. Its absence is a void run, not a quiet sample. An
+        #    agent error before `ready` ends the wait early with the same
+        #    outcome: nothing was observed either way.
+        first = signals.wait_for_any([signals.ready, signals.agent_error],
+                                     guest.readiness_timeout, sleep=sleep)
+        if first != signals.ready:
             report.outcome = Outcome.NO_READINESS
-            # Asked *before* the guest is powered off, because it is the only
-            # thing that separates "nobody ever logged on" from "a session
-            # came up and the agent said nothing" -- and the closing restore
-            # discards the guest's own log, so nothing inside it survives to
-            # tell us. Measured 15 Sep: autologon pointed at a deleted
-            # account, the guest sat at the sign-in screen at runlevel 2, and
-            # the manifest said only `void`.
-            report.error = (
-                f"collection never signalled ready within "
-                f"{guest.readiness_timeout:.0f}s. Nothing was observed, so this "
-                f"is a void run rather than a quiet sample. "
-                f"{_why_no_readiness(hypervisor, guest.vm)}"
-            )
-            report.note("readiness", started, "TIMED OUT")
+            if first == signals.agent_error:
+                report.error = (
+                    f"the agent failed before collection came up: "
+                    f"{_read_text(signals.agent_error, 600)!r}. Nothing was "
+                    f"observed, so this is a void run rather than a quiet sample."
+                )
+                report.note("readiness", started, "AGENT FAILED")
+            else:
+                # Asked *before* the guest is powered off, because it is the
+                # only thing that separates "nobody ever logged on" from "a
+                # session came up and the agent said nothing" -- and the
+                # closing restore discards the guest's own log, so nothing
+                # inside it survives to tell us. Measured 15 Sep: autologon
+                # pointed at a deleted account, the guest sat at the sign-in
+                # screen at runlevel 2, and the manifest said only `void`.
+                report.error = (
+                    f"collection never signalled ready within "
+                    f"{guest.readiness_timeout:.0f}s. Nothing was observed, so this "
+                    f"is a void run rather than a quiet sample. "
+                    f"{_why_no_readiness(hypervisor, guest.vm)}"
+                )
+                report.note("readiness", started, "TIMED OUT")
             # Beside the case folders, not in one: a void run has no case
             # folder, and a retry must not overwrite the first attempt's.
             report.note("screenshot", started, _screenshot(
@@ -426,9 +569,21 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
             return report
         report.note("readiness", started)
 
-        # 7. The run itself.
-        finished = signals.wait_for(signals.done, guest.run_timeout, sleep=sleep)
-        report.note("run", started, "finished" if finished else "TIMED OUT")
+        # 7. The run itself -- until `done`, or until the agent says it
+        #    failed. `done` first, so a run that has both is judged finished
+        #    and then checked like any other.
+        last = signals.wait_for_any([signals.done, signals.agent_error],
+                                    guest.run_timeout, sleep=sleep)
+        finished = last == signals.done
+        failed = last == signals.agent_error
+        report.note("run", started, "finished" if finished
+                    else "AGENT FAILED" if failed else "TIMED OUT")
+        if failed:
+            # Agents before 21 Nov wrote the error first and copied their
+            # log after it; a short wait lets that copy land before the
+            # power-off cuts it. Newer agents write the error last.
+            report.error = f"the agent failed: {_read_text(signals.agent_error, 600)!r}"
+            sleep(error_grace)
         if not finished:
             report.note("screenshot", started, _screenshot(
                 hypervisor, guest.vm,
@@ -438,14 +593,28 @@ def run_one(sample: Path, guest: Guest, hypervisor, exchange: Path,
         hypervisor.power_off(guest.vm)
         report.note("power_off", started)
 
-        # 9. Collect, from a guest that is off.
+        # Was this one agent life analysing this sample? Read from a guest
+        # that is off, before anything is believed. See `check_integrity`.
+        invalid = check_integrity(work, sample.name)
+
+        # 9. Collect, from a guest that is off. An invalid run is collected
+        #    too: it is the evidence for why it was voided.
         destination = Path(case_root) / case
         report.collected = collect_case(work, destination, limits)
         report.note("collect", started, report.collected.summary())
 
         # A run that ran out of window still collected real evidence: what
         # happened before the window closed was observed.
-        report.outcome = Outcome.COMPLETED if finished else Outcome.RUN_TIMEOUT
+        if invalid:
+            report.outcome = Outcome.INVALID
+            report.error = (invalid + (f" ({report.error})" if report.error else ""))
+            report.note("integrity", started, "INVALID")
+        elif finished:
+            report.outcome = Outcome.COMPLETED
+        elif failed:
+            report.outcome = Outcome.AGENT_FAILED
+        else:
+            report.outcome = Outcome.RUN_TIMEOUT
         return report
 
     except Exception as error:                       # noqa: BLE001
