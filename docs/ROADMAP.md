@@ -153,6 +153,10 @@ This is the step that says whether the 91.8% is real.
       software more than once (HANDOFF, *Open* item 3). **Settled 21 Nov: no
       change.** Once on held-out benign (Synology Chat Client, 4 weak),
       which B would not catch either.
+- [x] Fix what the sweep exposed in the bench (21 Nov, `1c569b3`): robocopy
+      case copy, restarted agents refuse the run and the host voids it,
+      agent errors end the wait, Windows Update restarts off. New
+      baseline `corpus-agent-detonate-1c569b3-noselfupdate`; smoke run passed.
 
 ### Step 4 — the second module polish pass (1–2 weeks)
 
