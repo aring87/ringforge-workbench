@@ -138,9 +138,19 @@ $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
 # those makes Task Scheduler's throttling worse, and the whole reason the host
 # waits for a `ready` file is that this trigger cannot be trusted to be prompt.
 # Nothing here should make it less prompt on purpose.
+#
+# **No execution time limit.** It was 4 h until 21 Nov, and Task Scheduler
+# enforces it by killing the agent: the sample and the orchestrator run on,
+# but nothing is left to beat, copy the case or signal done, and the guest
+# sits alive and silent until the host's limit. Harmless while the host gave
+# up at 3 h; from 14 Nov the benign installers had 8 h, and three held-out
+# runs (Joplin twice, DeepSeek once) died at 3 h 59 min of agent life -- read
+# for a week as a shared-folder stall. The host's run timeout, followed by a
+# hard power-off, is the bound that matters; this one only ever cut runs
+# short. Zero means no limit.
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-  -ExecutionTimeLimit ([TimeSpan]::FromHours(4)) `
+  -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -MultipleInstances IgnoreNew
 
 if ($OnStart) {

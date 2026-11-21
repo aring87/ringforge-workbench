@@ -101,6 +101,9 @@ $receipt = [ordered]@{
   #: Read before the policy is written: whether this guest already carries
   #: an update waiting for a restart. Diagnostic, not a setting.
   reboot_pending      = $null
+  #: The agent's scheduled task, read back after the limit is cleared:
+  #: "PT0S" means none. Empty if the task could not be read.
+  agent_task_time_limit = ""
   ok            = $false
   error         = ""
 }
@@ -359,6 +362,23 @@ try {
       $receipt.wu_no_auto_reboot = ($read.NoAutoRebootWithLoggedOnUsers -eq 1)
     } catch {
       Warn "could not set the Windows Update policy: $($_.Exception.Message)"
+    }
+
+    # **The agent task's own time limit, cleared.** `install_guest_agent.ps1`
+    # registered it with a 4 h ExecutionTimeLimit until 21 Nov, and Task
+    # Scheduler kills the agent when it expires -- three held-out runs died
+    # at 3 h 59 min of agent life and read as a shared-folder stall (HANDOFF,
+    # *Pick up here -- 21 Nov evening*). Fixed there for new registrations;
+    # done here too so a drop fixes a guest without a console step. Only
+    # the settings change: the action, and with it -NoSelfUpdate, is kept.
+    try {
+      $agentTask = Get-ScheduledTask -TaskName "RingForgeRunAgent" -ErrorAction Stop
+      $agentTask.Settings.ExecutionTimeLimit = "PT0S"
+      Set-ScheduledTask -InputObject $agentTask -ErrorAction Stop | Out-Null
+      $receipt.agent_task_time_limit =
+        "$((Get-ScheduledTask -TaskName 'RingForgeRunAgent').Settings.ExecutionTimeLimit)"
+    } catch {
+      Warn "could not clear the agent task's time limit: $($_.Exception.Message)"
     }
 
     Good ("quiet guest: display_never_off={0} sleep_never={1} maintenance_off={2} defrag_task_off={3} wu_no_auto_update={4} wu_no_auto_reboot={5} reboot_pending={6}" -f `
