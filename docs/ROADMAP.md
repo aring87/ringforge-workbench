@@ -155,8 +155,12 @@ This is the step that says whether the 91.8% is real.
       which B would not catch either.
 - [x] Fix what the sweep exposed in the bench (21 Nov, `1c569b3`): robocopy
       case copy, restarted agents refuse the run and the host voids it,
-      agent errors end the wait, Windows Update restarts off. New
-      baseline `corpus-agent-detonate-1c569b3-noselfupdate`; smoke run passed.
+      agent errors end the wait. Smoke run passed. **Same evening:** the
+      "shared-folder stall" was the agent task's 4 h time limit (`18cfc2c`),
+      and the restarts were Windows Update's orchestrator, stopped only by
+      disabling its tasks and services (`ebd6e02`; no restart in a 04:05-05:55
+      clock-shifted test). Baseline `corpus-agent-detonate-ebd6e02-noselfupdate`.
+      `heldout-longrun` reruns DeepSeek, Joplin and Heybox on it.
 
 ### Step 4 — the second module polish pass (1–2 weeks)
 
