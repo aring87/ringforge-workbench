@@ -175,7 +175,8 @@ the signal is in 35 of the 44 benign Corroborated+ cases, and strong in 26 of
 them (HANDOFF, *Pick up here — 21 Nov, held-out scored*). The alternative,
 shipping v1 with the rate written down as a known limit, was declined.
 
-- [ ] **Characterise it, diagnostically, on the scored data only.** For each
+- [x] **Characterise it, diagnostically, on the scored data only.** Done
+      21 Nov: HANDOFF, *Pick up here — 21 Nov night, Step 3b*. For each
       benign case: which files were dropped, by which installer framework,
       and how they differ from what the droppers in `mal-112b` and
       `heldout-mal` drop. **NSIS is also a malware packer** (GuLoader is
