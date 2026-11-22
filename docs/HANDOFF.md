@@ -3904,8 +3904,8 @@ held-out corpus.
   injection, invalid signature and stripped metadata.
 * **Malware must be staged under `G:\malware-corpus`.** A copy into
   `G:\ringforge-corpus` was blocked and removed by the host antivirus.
-  * Its empty folder, `G:\ringforge-corpus\smoke-92350f1`, was still
-    locked; remove it later.
+  * Its empty folder, `G:\ringforge-corpus\smoke-92350f1`, was locked at
+    first and gone by 12:45.
   * Do not change the antivirus; that is the user's setting.
 
 **The second held-out corpus: proposed, awaiting the user** (22 Nov).
