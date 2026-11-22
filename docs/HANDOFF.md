@@ -3880,7 +3880,21 @@ held-out corpus.
 * **A OneDrive backup toast took focus once.** The `cls` focus check caught
   it. Screenshots are in `G:\ringforge-artifacts\noselfupdate-92350f1-console`.
 
-**`smoke-92350f1`, running** (corpus `G:\malware-corpus\smoke-92350f1`):
+**`smoke-92350f1` passed** (finished 12:45 on 22 Nov; both usable):
+
+| sample | before | now |
+|---|---|---|
+| Superf4 `1-dea3dcae56ac` | Corroborated 55: `payload_dropped`, `stripped_metadata` | **Single Observation 35**: its one drop, `nsp2E7.tmp\System.dll`, set aside |
+| `2-744437d93633` (malware) | Strongly Corroborated 95 | **Strongly Corroborated 95**: `nsbCB7A.tmp\System.dll` set aside; `process_injection`, `external_contact`, `invalid_signature`, `stripped_metadata` |
+
+* **Both drop summaries read** `installer_scratch_set_aside: 1`,
+  `reinstated: 0`.
+* **NSIS folder names are `ns` plus four or five characters**
+  (`nsp2E7.tmp`), and the pattern takes 2-8.
+* **Cleaned up:** the launch task is removed, and the resume task points at
+  the completed run.
+
+**What it tested** (corpus `G:\malware-corpus\smoke-92350f1`):
 * **`1-dea3dcae56ac`, StefanSundin.Superf4.** Held-out benign, NSIS,
   Corroborated on `$PLUGINSDIR` drops. Expected: set aside, and the band
   falls below Corroborated.
@@ -3893,6 +3907,34 @@ held-out corpus.
   * Its empty folder, `G:\ringforge-corpus\smoke-92350f1`, was still
     locked; remove it later.
   * Do not change the antivirus; that is the user's setting.
+
+**The second held-out corpus: proposed, awaiting the user** (22 Nov).
+* **Benign:** `G:\ringforge-artifacts\benign-heldout2-2026-11-plan`.
+  * **The list:** 80 installers (34 NSIS, 25 Inno, 12 portable, 8 other
+    EXE, 1 Burn) and 30 zips; 8.84 GB known, 5 sizes unknown. Nothing is
+    downloaded.
+  * **How it was chosen:** `select_benign2.py` uses the same method as the
+    first list. Seed 20261122, winget index 2026.1119. Every vendor in an
+    earlier benign corpus or in the first held-out list is excluded.
+  * **The review removed nine:** CleanFlashPlayer, RegAlyzer, GPU-Z, EaseUS
+    Todo Backup, Thorlabs Kinesis, BambooMintKey, Crypt,
+    AllDllsDependencies and Heimdall. Replacements came from the **same**
+    seeded order.
+  * **A trap, found by doing it:** filtering those nine out of the pool
+    changed its size, and with it the whole shuffle, so it re-drew the
+    list. They are now skipped during the walk instead.
+  * **The output:** `benign-candidates.json` and `table.md`;
+    `benign-candidates-pass1.json` is the unreviewed draw.
+* **Malware: proposed to the user, for the user to fetch.** 18 families
+  that neither `mal-112b` nor `heldout-mal` has, 6 each, with seed 20261122
+  into `G:\malware-corpus\heldout2-2026-11`, and a `--list-only` pass first:
+  * **stealers:** RisePro, MetaStealer, ACRStealer, RecordBreaker;
+  * **RATs:** SectopRAT, AveMaria, BitRAT, XenoRAT, Gh0stRAT, PlugX;
+  * **loaders and crypters:** ModiLoader, PureCrypter, DarkTortilla,
+    CryptBot, Pikabot, SystemBC, Socks5Systemz, GCleaner.
+
+  **No ransomware and no file infectors**, because the shared folder carries
+  the results home.
 
 **Not done, offered:** a YARA scan of set-aside files on disk, as a third
 way back. Nothing scans dropped files on disk today. The user has not asked
