@@ -57,7 +57,7 @@ from pathlib import Path
 
 import shutil
 
-from runcontrol.collect import Collected, Limits, collect_case
+from runcontrol.collect import Collected, Limits, _extended, collect_case
 from runcontrol.guest import Guest
 
 #: The one subdirectory inside the exchange that the controller owns.
@@ -327,8 +327,14 @@ def prepare_work(exchange: Path) -> Path:
             f"({exchange}); refusing, because collecting the root would import "
             f"everything the share holds"
         )
+    # **Through the extended-length form**, as `collect_case` reads it. Since
+    # 21 Nov the agent copies the case with robocopy, which gets paths past
+    # MAX_PATH onto the share -- and a plain rmtree then could not delete
+    # them: `heldout-longrun` lost its second and third samples to
+    # `[WinError 3]` on DeepSeek's `node_modules` before either was
+    # delivered.
     if work.exists():
-        shutil.rmtree(work)
+        shutil.rmtree(_extended(work))
     work.mkdir(parents=True)
     return work
 

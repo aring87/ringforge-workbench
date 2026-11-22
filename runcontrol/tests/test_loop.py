@@ -380,6 +380,36 @@ class TheWorkingDirectory(LoopFixture):
                         "rmtree deleted through the junction")
         self.assertFalse((self.work / "trap").exists())
 
+    def test_a_tree_past_max_path_is_cleared(self) -> None:
+        """21 Nov: robocopy put DeepSeek's `node_modules` on the share past
+        260 characters, and a plain rmtree failed on it with `[WinError 3]`,
+        so the next two samples were never delivered. The control shows a
+        plain rmtree still fails on this tree on this machine."""
+        if not WINDOWS:
+            self.skipTest("MAX_PATH is a Windows limit")
+        import os
+        from runcontrol.collect import _extended
+        from runcontrol.loop import prepare_work
+
+        def make_deep(root: Path) -> Path:
+            deep = root / ("node_modules\\@scope\\package-with-a-long-name\\" * 8).rstrip("\\")
+            os.makedirs(_extended(deep), exist_ok=True)
+            with open(_extended(deep / "identifier.js"), "w", encoding="utf-8") as fh:
+                fh.write("deep")
+            return deep
+
+        self.assertGreater(len(str(make_deep(self.work))), 300)
+        control = self.tmp / "control"
+        make_deep(control)
+        with self.assertRaises(OSError):
+            shutil.rmtree(control)
+        shutil.rmtree(_extended(control))
+
+        prepare_work(self.exchange)
+
+        self.assertTrue(self.work.is_dir())
+        self.assertEqual([], list(self.work.iterdir()))
+
 
 class AVoidRunIsNotAQuietSample(LoopFixture):
     def test_no_readiness_is_its_own_outcome(self) -> None:
