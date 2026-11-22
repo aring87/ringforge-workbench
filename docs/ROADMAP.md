@@ -183,12 +183,15 @@ shipping v1 with the rate written down as a known limit, was declined.
       and how they differ from what the droppers in `mal-112b` and
       `heldout-mal` drop. **NSIS is also a malware packer** (GuLoader is
       NSIS), so "the sample is an installer" cannot be the exemption.
-- [ ] **Propose the change in HANDOFF before making it**, with its effect on
+- [x] **Propose the change in HANDOFF before making it**, with its effect on
       all four scored corpora (`mal-112b`, `benign-wide`/`pf-corpus`,
       `heldout-mal`, `heldout-ben`). Agree it first. Those numbers are
       in-sample for the change by construction, and are labelled so.
-- [ ] Make it, test it, and pin a new rules tag. **No further scoring change
-      until the second held-out corpus is scored.**
+- [x] Make it, test it, and pin a new rules tag. **No further scoring change
+      until the second held-out corpus is scored.** Done 22 Nov: option H
+      with a run/persist safeguard, tag `heldout2-rules-92350f1`, baseline
+      `corpus-agent-detonate-92350f1-noselfupdate`. In-sample effect: held-out
+      benign 46.8% -> 25.5%, no malware lost on any corpus.
 - [ ] **The second held-out corpus, unseen by both rule sets.**
       * **Benign:** installers and DLLs from vendors no corpus has, on an
         approved list.
