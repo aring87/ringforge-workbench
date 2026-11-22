@@ -3928,7 +3928,7 @@ and sweeping as `heldout2-ben`.**
   * **The signer filter** used `used-orgs.json` in the plan folder: the
     earlier corpora's signers plus the first held-out list's publishers.
   * **Names:** `sweep-benign-heldout2-2026-11-names.json`.
-* **`heldout2-ben` started 13:5x on 22 Nov.**
+* **`heldout2-ben` started 17:43 on 22 Nov.**
   * **Settings:** baseline `corpus-agent-detonate-92350f1-noselfupdate`, 8 h
     run timeout, `--attempts 2`, no quiet hours.
   * **The launcher** is `G:\ringforge-runs\heldout2-ben.start.ps1`.
