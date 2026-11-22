@@ -4019,8 +4019,26 @@ quiet hours.
 * **Whether these verdicts enter the held-out score is the user's
   decision.**
 
-**Still open:** nothing from the held-out sweep, once `heldout-longrun`
-shows a run past 4 h and no restart.
+**What `heldout-longrun` did** (finished 21:19 on 21 Nov).
+* **DeepSeek `completed`, usable, in 4 h 46 min.** The agent ran from
+  21:33Z to 02:18Z, with one start and `ready` naming the sample. That is the
+  first run past the old 4 h kill. Its verdict is Corroborated 70:
+  `payload_dropped` strong, plus `stripped_metadata`.
+* **Heybox and Joplin never ran: `failed` (void) twice each, in 1-3 s.**
+  * **The cause:** `prepare_work`'s plain `shutil.rmtree` could not delete
+    DeepSeek's `node_modules` past MAX_PATH, which the new robocopy copy had
+    put on the share.
+  * **Fixed in `a687646`:** rmtree uses the `\\?\` form that `collect_case`
+    already reads with, with a test that fails without it.
+  * **Checked live:** the next delivery cleared that tree.
+* **Rerun as `heldout-longrun2`**, from 21:40 on 21 Nov: Heybox, then
+  Joplin, on `ebd6e02-noselfupdate`. The resume task points at it.
+  * **The launcher** is `G:\ringforge-runs\heldout-longrun2.start.ps1`, and
+    the corpus is `G:\ringforge-corpus\heldout-longrun2-ebd6e02`.
+  * **Joplin should be running through 04:20-05:50**, the real window.
+
+**Still open:** nothing from the held-out sweep, once `heldout-longrun2`
+finishes with no restart.
 
 
 ### Pick up here — 21 Nov afternoon, the post-scoring fixes are in the guest (`1c569b3`)
