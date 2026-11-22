@@ -3908,7 +3908,38 @@ held-out corpus.
     first and gone by 12:45.
   * Do not change the antivirus; that is the user's setting.
 
-**The second held-out corpus: proposed, awaiting the user** (22 Nov).
+**The second held-out benign corpus: approved by the user 22 Nov, fetched,
+and sweeping as `heldout2-ben`.**
+* **Fetched** to `G:\ringforge-corpus\benign-heldout2-2026-11` with
+  `fetch_benign2.py`, each package hash-checked against its winget
+  manifest; `fetch-results.json` is beside it.
+  * **75 of 80 installers and 27 of 30 zips verified**, 8.73 GB in 35 min.
+    Nothing was quarantined at the 90 s re-check.
+  * **Rejected on hash, because the vendor replaced the file at its URL:**
+    DiskInternals ExcelRecovery, AMS Photo Calendar Creator.
+  * **Unreachable:** Postbox (DNS); OSCAR, MCAD2026 and KQode (404);
+    Shattered (400); WinScan2PDF (503).
+* **The sweep folder** is `G:\ringforge-corpus\sweep-benign-heldout2-2026-11`,
+  built by `build_benign_sweep2.py` (seed 20261122):
+  * **99 files: 75 installers and 24 DLLs**, all re-hashed. The first
+    corpus had 73 and 23.
+  * **The DLLs come from 5 zips:** InfluxDB, PixelWheels, Unison and
+    AquaShell (5 each), Cromite (4). Most zips are single-EXE CLI tools.
+  * **The signer filter** used `used-orgs.json` in the plan folder: the
+    earlier corpora's signers plus the first held-out list's publishers.
+  * **Names:** `sweep-benign-heldout2-2026-11-names.json`.
+* **`heldout2-ben` started 13:5x on 22 Nov.**
+  * **Settings:** baseline `corpus-agent-detonate-92350f1-noselfupdate`, 8 h
+    run timeout, `--attempts 2`, no quiet hours.
+  * **The launcher** is `G:\ringforge-runs\heldout2-ben.start.ps1`.
+  * **Tasks:** the resume task points at it.
+    `RingForge heldout2-ben keep vbox logs` keeps each VBox.log in
+    `G:\ringforge-artifacts\heldout-vboxlogs\heldout2-ben`; it has a logon
+    trigger, and stops when the run is done or after 168 h.
+  * **Expect about 4 days.** The first benign corpus took 37-114 min per
+    installer.
+
+**The malware half: proposed, for the user to fetch** (22 Nov).
 * **Benign:** `G:\ringforge-artifacts\benign-heldout2-2026-11-plan`.
   * **The list:** 80 installers (34 NSIS, 25 Inno, 12 portable, 8 other
     EXE, 1 Burn) and 30 zips; 8.84 GB known, 5 sizes unknown. Nothing is

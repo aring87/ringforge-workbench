@@ -192,7 +192,9 @@ shipping v1 with the rate written down as a known limit, was declined.
       with a run/persist safeguard, tag `heldout2-rules-92350f1`, baseline
       `corpus-agent-detonate-92350f1-noselfupdate`. In-sample effect: held-out
       benign 46.8% -> 25.5%, no malware lost on any corpus.
-- [ ] **The second held-out corpus, unseen by both rule sets.**
+- [ ] **The second held-out corpus, unseen by both rule sets.** Benign
+      approved and fetched 22 Nov (75 installers, 24 DLLs), sweeping as
+      `heldout2-ben`; malware proposed, for the user to fetch.
       * **Benign:** installers and DLLs from vendors no corpus has, on an
         approved list.
       * **Malware:** collected on different dates, from families that
