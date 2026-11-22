@@ -4037,8 +4037,36 @@ quiet hours.
     the corpus is `G:\ringforge-corpus\heldout-longrun2-ebd6e02`.
   * **Joplin should be running through 04:20-05:50**, the real window.
 
-**Still open:** nothing from the held-out sweep, once `heldout-longrun2`
-finishes with no restart.
+**`heldout-longrun2`: both `completed` and usable** (finished 05:07 local,
+22 Nov).
+
+| sample | agent life | verdict | before |
+|---|---|---|---|
+| HeyboxChat `db0a8789758d` | 3 h 29 min, 02:27Z-05:56Z | No Evidence 15 | the same, from its in-guest verdict |
+| Joplin `ee11551239e7` | **4 h 10 min**, 05:57Z-10:07Z | Corroborated 50 (`payload_dropped` strong) | no verdict |
+
+* **Both have one agent start.** Robocopy copied each case home (76 s and
+  41 s).
+* **Joplin ran from 00:56 to 05:07 local**, through the hour when the
+  orchestrator fired and restarted the old baselines (04:10-04:42).
+  **No reset** is in any `VBox.log`. So the real night agrees with the
+  clock-shifted test, for the part of the window it covered.
+* **The VM is off**, and the launch task was removed. The resume task points
+  at the completed `heldout-longrun2`, so it does nothing.
+
+**Held-out addendum, 22 Nov** (`G:\ringforge-artifacts\heldout-score\score_heldout_addendum.py`,
+output `heldout-score-addendum-20261122.json`):
+* **What it is:** the 21 Nov final, with DeepSeek, Joplin and Heybox
+  replaced by these reruns. The analysis code is identical to the frozen
+  rules.
+* **Benign: 96 of 96, 47.9% Corroborated or stronger** (46), 8.3% Strongly,
+  81.2% above No Evidence. **Malware: unchanged**, 79.4% of 102.
+* **Both new Corroborated cases are installers whose only counted category
+  is `payload_dropped`.** That is the Step 3b pattern.
+* **The 21 Nov number stays the record**, and this is reported beside it,
+  labelled.
+
+**Still open from the held-out sweep: nothing.**
 
 
 ### Pick up here — 21 Nov afternoon, the post-scoring fixes are in the guest (`1c569b3`)

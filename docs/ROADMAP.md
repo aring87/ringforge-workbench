@@ -164,7 +164,9 @@ This is the step that says whether the 91.8% is real.
       and the restarts were Windows Update's orchestrator, stopped only by
       disabling its tasks and services (`ebd6e02`; no restart in a 04:05-05:55
       clock-shifted test). Baseline `corpus-agent-detonate-ebd6e02-noselfupdate`.
-      `heldout-longrun` reruns DeepSeek, Joplin and Heybox on it.
+      DeepSeek, Joplin and Heybox reran on it (22 Nov): all usable, Joplin
+      through 04:10-05:07 with no restart. **Addendum:** benign 96/96 at
+      47.9% Corroborated or stronger; the 21 Nov 46.8% stays the record.
 
 ### Step 3b — the installer rule change, on a second held-out corpus (1–2 weeks, mostly waiting)
 
