@@ -192,6 +192,36 @@ def diff_part(document: dict, name: str) -> dict:
     return wrapped
 
 
+def dropped_part(summary_path: Path, stored: dict) -> dict:
+    """The dropped-file summary under the **current** triage rules.
+
+    Unlike every other input, this one is re-derived rather than re-read. The
+    run summary stores the count the guest computed and only the first 50
+    files, and from 21 Nov the count depends on a rule -- installer scratch
+    set aside unless it was started or persisted -- that old runs never
+    applied. So the full `files/dropped_files.json` is re-triaged with
+    `apply_installer_scratch`, against the same Sysmon, Procmon and
+    persistence files the guest reads at the end of a run.
+
+    Falls back to the stored summary when the list is missing or unreadable:
+    a rescore must never turn "could not read" into "nothing was dropped".
+    """
+    from dynamic_analysis.dropped_file_triage import (
+        apply_installer_scratch, started_and_persisted, summarize_dropped_files)
+
+    run_dir = summary_path.parent.parent
+    try:
+        with open(_extended(run_dir / "files" / "dropped_files.json"),
+                  encoding="utf-8-sig") as handle:
+            items = json.load(handle)
+    except (OSError, ValueError):
+        return stored
+    if not isinstance(items, list):
+        return stored
+    return summarize_dropped_files(
+        apply_installer_scratch(items, started_and_persisted(run_dir)))
+
+
 def rescore_one(summary_path: Path, run_directory: Path, *,
                 dry_run: bool) -> CaseResult:
     """Recompute one run's score from what it already recorded."""
@@ -224,7 +254,7 @@ def rescore_one(summary_path: Path, run_directory: Path, *,
             findings_summary=part("findings"),
             task_diff_summary=diff_part(document, "task_diff_summary"),
             service_diff_summary=diff_part(document, "service_diff_summary"),
-            dropped_files_summary=part("dropped_files_summary"),
+            dropped_files_summary=dropped_part(summary_path, part("dropped_files_summary")),
             autoruns_diff_summary=diff_part(document, "autoruns_diff_summary"),
             sysmon_summary=part("sysmon_summary"),
             network_summary=part("network_summary"),

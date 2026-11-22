@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,175 @@ def path_is_compiler_artifact(path_value: str) -> bool:
     return stem.lower() == parts[-2].lower()
 
 
+#: Where an installer or a self-extracting runtime unpacks **its own** files
+#: into temp, to load them in its own process.
+#:
+#: Added 21 Nov (roadmap Step 3b). On the held-out benign corpus,
+#: `payload_dropped` was in 35 of the 44 installers at Corroborated or
+#: stronger -- strong in 26 -- and almost all of it was these. Every such
+#: installer or app writes them, benign or not, so on their own they say
+#: nothing about the sample.
+#:
+#:     %TEMP%\nsXXXX.tmp\          NSIS $PLUGINSDIR (System.dll, nsExec.dll, ...)
+#:     %TEMP%\.net\<app>\          .NET single-file extraction
+#:     %TEMP%\e4j*.tmp_dir*\       install4j's bundled Java runtime
+#:     %TEMP%\AI_EXTUI_BIN_*\      Advanced Installer UI
+#:     %TEMP%\aitmp<n>\            Advanced Installer scratch
+#:
+#: **Not exempt, deliberately:** install destinations (`%LOCALAPPDATA%\
+#: Programs\`, Squirrel's `app-x.y`), where malware posing as an app would
+#: write; Inno's `is-*.tmp`, which two held-out malware samples used; and
+#: anything outside these exact shapes, even from the same installer.
+#:
+#: Measured before it was made (HANDOFF, *21 Nov night, Step 3b*): held-out
+#: benign 46.8% -> 25.5% Corroborated or stronger, and **no malware case left
+#: Corroborated+** on either corpus. The 15 NSIS-built malware in `mal-112b`,
+#: whose only drop was NSIS's own `System.dll`, all stayed on other evidence.
+_INSTALLER_SCRATCH = re.compile("|".join([
+    r"\\temp\\ns[a-z0-9]{2,8}\.tmp\\",
+    r"\\temp\\[.]net\\",
+    r"\\temp\\e4j[^\\]*\.tmp_dir",
+    r"\\temp\\ai_extui_bin_[^\\]*",
+    r"\\temp\\aitmp\d+\\",
+]), re.I)
+
+#: A Windows 8.3 short-name segment inside temp, e.g. `E4J1C1~1.TMP`. Sysmon
+#: reports an image by the path it was started with, so a scratch folder can
+#: arrive under a name the shapes above do not match.
+_SHORT_TEMP_SEGMENT = re.compile(r"\\temp\\[^\\]*~\d[^\\]*\\", re.I)
+
+#: A file name with a candidate extension, as it appears in a command line or
+#: a persistence entry.
+_NAMED_FILE = re.compile(
+    r"([^\\/:*?\"<>|\s,;=']+\.(?:" +
+    "|".join(ext.lstrip(".") for ext in DROPPED_FILE_EXTENSIONS) + r"))\b", re.I)
+
+
+def path_is_installer_scratch(path_value: str) -> bool:
+    """A file an installer or runtime unpacked into temp for itself. See
+    `_INSTALLER_SCRATCH`."""
+    return bool(_INSTALLER_SCRATCH.search(normalize_windows_path(path_value)))
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        with open(path, encoding="utf-8-sig") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def started_and_persisted(run_dir: Path) -> dict[str, Any] | None:
+    """What this run started as a process, and what it made persistent.
+
+    Read from the files the run writes, so detonation and `runcontrol.rescore`
+    answer the same question the same way:
+
+    * Sysmon event 1 (image and command line) and Procmon `process_create`
+      (path and command line) -- every process started, whoever started it;
+    * the Autoruns, task and service diffs -- every new persistence entry.
+
+    Returns the lower-cased file names those mention, and whether anything
+    was started from inside a scratch folder -- by its long path, or by a
+    short `~1` path in temp, which the shapes cannot recognise.
+
+    **Returns None when neither process-start record could be read.** Not
+    knowing what was started is not evidence that nothing was, and
+    `apply_installer_scratch` sets nothing aside on None. A missing
+    persistence diff alone does not do this: Autoruns has failed on runs
+    before, and a scratch file made persistent would usually be started too.
+    """
+    run_dir = Path(run_dir)
+    names: set[str] = set()
+    from_scratch = False
+    lines: list[str] = []
+
+    sysmon = _read_json(run_dir / "sysmon" / "sysmon_events.json")
+    procmon = _read_json(run_dir / "procmon" / "interesting_events.json")
+    if not isinstance(sysmon, list) and not isinstance(procmon, list):
+        return None
+    for event in sysmon if isinstance(sysmon, list) else []:
+        if not isinstance(event, dict) or str(event.get("event_id")) != "1":
+            continue
+        values = event.get("data_values") or []
+        image = str(values[4]) if len(values) > 4 else ""
+        command = str(values[10]) if len(values) > 10 else ""
+        lines += [image, command]
+
+    for event in procmon if isinstance(procmon, list) else []:
+        if isinstance(event, dict) and event.get("category") == "process_create":
+            lines += [str(event.get("path", "")), str(event.get("detail", ""))]
+
+    for line in lines:
+        if not line:
+            continue
+        names.update(n.lower() for n in _NAMED_FILE.findall(line))
+        names.add(Path(line.strip().strip('"').replace("/", "\\").split("\\")[-1]).name.lower())
+        if _INSTALLER_SCRATCH.search(line) or _SHORT_TEMP_SEGMENT.search(line):
+            from_scratch = True
+
+    for rel in (("autoruns", "autoruns_diff.json"), ("persistence", "task_diffs.json"),
+                ("persistence", "service_diffs.json")):
+        try:
+            text = (run_dir.joinpath(*rel)).read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        names.update(n.lower() for n in _NAMED_FILE.findall(text.replace("\\\\", "\\")))
+
+    return {"names": names, "started_from_scratch": from_scratch}
+
+
+def apply_installer_scratch(items: list[dict[str, Any]],
+                            evidence: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Set installer scratch aside -- unless the run started it or persisted it.
+
+    `installer_scratch` says where a file is; `installer_scratch_set_aside`
+    says it is not scored. **A scratch file counts again as an ordinary drop**
+    when its name was started as a process, appears in a command line or a
+    new persistence entry, or when anything at all was started from inside a
+    scratch folder -- the shape malware unpacking a payload there and running
+    it would leave. Matching by name, and the case-wide rule, are
+    deliberately loose: they err towards counting.
+
+    `evidence` is `started_and_persisted(...)`. **None means it could not be
+    read, and then nothing is set aside**: the exemption is only granted on
+    evidence that the files were not run.
+
+    Measured on the scored corpora (21 Nov): of 25 scratch files in 15
+    malware cases, none was started or persisted; of 3,501 in benign
+    installers, 3 were (one install4j app starting its own Java runtime).
+    """
+    names = set(evidence.get("names", ())) if evidence else set()
+    from_scratch = bool(evidence.get("started_from_scratch")) if evidence else False
+    out: list[dict[str, Any]] = []
+    for item in items:
+        record = dict(item)
+        scratch = path_is_installer_scratch(str(record.get("path", "")))
+        record["installer_scratch"] = scratch
+        reinstated = scratch and (
+            evidence is None or from_scratch
+            or Path(str(record.get("path", ""))).name.lower() in names)
+        record["installer_scratch_set_aside"] = scratch and not reinstated
+        if scratch and reinstated:
+            record["installer_scratch_reinstated_because"] = (
+                "the run's start and persistence records could not be read"
+                if evidence is None else
+                "something was started from inside a scratch folder"
+                if from_scratch else
+                "it was started as a process or named by new persistence")
+        # Recomputed, so this stays right however the record arrived -- fresh
+        # from the guest, or re-read from an old case by a rescore. A record
+        # too old to carry `reasons` keeps the verdict it was written with.
+        record["compiler_artifact"] = path_is_compiler_artifact(str(record.get("path", "")))
+        base = (bool(record.get("reasons")) if "reasons" in record
+                else bool(record.get("suspicious")))
+        record["suspicious"] = (base
+                                and not record["compiler_artifact"]
+                                and not record["installer_scratch_set_aside"])
+        out.append(record)
+    return out
+
+
 def classify_path(path_value: str) -> str:
     ext = Path(path_value).suffix.lower()
     return DROPPED_FILE_EXTENSIONS.get(ext, "unknown")
@@ -329,6 +499,8 @@ def summarize_dropped_files(items: list[dict[str, Any]]) -> dict[str, int]:
         "missing_on_disk": 0,
         "suspicious": 0,
         "compiler_artifacts": 0,
+        "installer_scratch_set_aside": 0,
+        "installer_scratch_reinstated": 0,
     }
 
     for item in items:
@@ -341,5 +513,9 @@ def summarize_dropped_files(items: list[dict[str, Any]]) -> dict[str, int]:
             summary["suspicious"] += 1
         if item.get("compiler_artifact"):
             summary["compiler_artifacts"] += 1
+        if item.get("installer_scratch_set_aside"):
+            summary["installer_scratch_set_aside"] += 1
+        elif item.get("installer_scratch"):
+            summary["installer_scratch_reinstated"] += 1
 
     return summary

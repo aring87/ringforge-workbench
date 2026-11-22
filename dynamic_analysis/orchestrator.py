@@ -23,8 +23,10 @@ from dynamic_analysis.dll_launch import plan_dll_launch
 from dynamic_analysis.diff_services import diff_services
 from dynamic_analysis.diff_tasks import diff_scheduled_tasks
 from dynamic_analysis.dropped_file_triage import (
+    apply_installer_scratch,
     collect_dropped_file_candidates,
     enrich_dropped_files,
+    started_and_persisted,
     summarize_dropped_files,
 )
 from dynamic_analysis.fakenet_runner import (
@@ -3689,6 +3691,22 @@ def run_dynamic_analysis(
         memory_summary=memory_summary,
         memory_yara_summary=memory_yara_summary,
     )
+
+    # **Installer scratch is set aside here, at the end, not at triage.** The
+    # exemption is granted only on evidence that the files were not started
+    # or persisted, and that evidence -- Sysmon, Procmon's process starts and
+    # the three persistence diffs -- is complete only now. The files are
+    # rewritten so what the case shows is what was scored, and
+    # `runcontrol.rescore` makes the same call from the same files.
+    if dropped_files:
+        dropped_files = apply_installer_scratch(
+            dropped_files, started_and_persisted(run_case_dir))
+        dropped_files_summary = summarize_dropped_files(dropped_files)
+        try:
+            write_json(dropped_files_json, dropped_files)
+            write_json(dropped_files_summary_json, dropped_files_summary)
+        except OSError as error:
+            _emit(status_cb, f"Could not rewrite the dropped-file record: {error}")
 
     score_data = calculate_dynamic_score(
         findings_summary=findings_summary,
