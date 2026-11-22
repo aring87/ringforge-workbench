@@ -16,13 +16,24 @@ useful than the fact that it did.
 
 ## The roadmap from 10 Nov — and where it ends
 
-**Where things stand.** Every detector is built, and every module had a
-polish pass on 3 Sep. Two corpora have been measured end to end. Malware is
-111 samples with a verdict, 110 executed. Benign is 167 programs, 165 executed. **The number to quote is
-91.8% of executed malware at 6.7% of executed benign, Corroborated or
-stronger** (101/110, since `f306` got its verdict on 11 Nov). That figure is partly in-sample, because rules were tuned on
-the same corpora. What remains is about trusting that number, finishing,
-and polishing, not building detectors.
+**Where things stand (22 Nov).** Every detector is built, and every module
+had a polish pass on 3 Sep.
+* **In-sample**, on the corpora the rules were tuned on: 91.8% of executed
+  malware, and 6.7% of executed benign, at Corroborated or stronger.
+* **Held-out, with the rules frozen** (step 3, scored 21 Nov):
+  * malware **79.4%** of 102;
+  * benign **46.8%** of 94; the 22 Nov addendum, with all 96, is 47.9%.
+
+  That is the record for the old rules.
+* **Why benign rose:** the benign rate was installers' own temp extraction,
+  read as `payload_dropped`.
+* **Step 3b changed that rule** (22 Nov, tag `heldout2-rules-92350f1`):
+  in-sample for the change, held-out benign 46.8% -> 25.5%, with no malware
+  lost.
+* **It is being measured now**, on a second held-out corpus.
+
+What remains is that measurement, the polish pass and the docs, not new
+detectors.
 
 ### The end, defined
 
@@ -199,9 +210,10 @@ shipping v1 with the rate written down as a known limit, was declined.
         approved list.
       * **Malware:** collected on different dates, from families that
         neither `mal-112b` nor `heldout-mal` has where possible.
-- [ ] **Sweep it on the `ebd6e02` baseline** (or its successor), score it,
+- [ ] **Sweep it on `corpus-agent-detonate-92350f1-noselfupdate`**, score it,
       and report the result whatever it shows. **The 21 Nov number stays the
-      record for the old rules.**
+      record for the old rules.** `heldout2-ben` running since 17:43 on 22
+      Nov (about 4 days); the malware sweep follows once fetched.
 - [ ] **Only if cheap and separable: the DLL-loader misses.** BumbleBee,
       HijackLoader, DarkGate, Latrodectus, PrivateLoader and ValleyRAT sit
       below Corroborated on `heldout-mal`. Check whether they share a cause.
@@ -252,6 +264,9 @@ Only if RingForge goes to other people (not decided):
 - `422e30ed` stage 4's unexecuted two-thirds. The bench has run out of
   route. It needs a guest measurement taken while the gate runs.
 - Gap 4 (VM-check correlation) stays context-only by decision.
+- A YARA scan of set-aside installer scratch on disk, as a third way for it
+  to count again (offered 22 Nov, not requested; nothing scans dropped files
+  on disk today).
 - The `0bw` deployer, the FakeNet shim for `beacon_responder.py`, and the
   stale CA in the guest's Root store (see *Standing items* at the end).
 
