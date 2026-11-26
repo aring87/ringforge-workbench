@@ -410,6 +410,66 @@ class TheWorkingDirectory(LoopFixture):
         self.assertTrue(self.work.is_dir())
         self.assertEqual([], list(self.work.iterdir()))
 
+    def test_read_only_files_and_directories_are_cleared(self) -> None:
+        """25 Nov: ACDSee's case held 661 read-only files (extracted MSI
+        contents, kept read-only by robocopy). A plain rmtree failed on
+        `dxupdate.inf` with `[WinError 5]`, so the next three samples were
+        never delivered. The control shows a plain extended-path rmtree still
+        fails on this tree."""
+        if not WINDOWS:
+            self.skipTest("the read-only attribute blocks deletion only on Windows")
+        import os
+        import stat
+        from runcontrol.collect import _extended
+        from runcontrol.loop import _clear_read_only_and_retry, prepare_work
+
+        def make_read_only(root: Path) -> None:
+            nested = root / "extracted" / "$TEMP" / "Data1.cab.d"
+            nested.mkdir(parents=True)
+            for name in ("dxupdate.inf", "dxupdate.cab"):
+                (nested / name).write_text("x", encoding="utf-8")
+                os.chmod(nested / name, stat.S_IREAD)
+            os.chmod(nested, stat.S_IREAD)
+
+        make_read_only(self.work)
+        control = self.tmp / "control"
+        make_read_only(control)
+        with self.assertRaises(PermissionError):
+            shutil.rmtree(_extended(control))
+        shutil.rmtree(_extended(control), onexc=_clear_read_only_and_retry)
+
+        prepare_work(self.exchange)
+
+        self.assertTrue(self.work.is_dir())
+        self.assertEqual([], list(self.work.iterdir()))
+
+    def test_a_read_only_target_behind_a_junction_keeps_its_attribute(self) -> None:
+        # The read-only handler must never reach through a link: the
+        # junction goes, and the file it pointed at is unchanged.
+        if not WINDOWS:
+            self.skipTest("junctions are a Windows construct")
+        import _winapi
+        import os
+        import stat
+        from runcontrol.loop import prepare_work
+
+        precious = self.tmp / "precious"
+        precious.mkdir()
+        keep = precious / "keep.txt"
+        keep.write_text("keep", encoding="utf-8")
+        os.chmod(keep, stat.S_IREAD)
+        self.addCleanup(os.chmod, keep, stat.S_IWRITE)
+        self.work.mkdir(parents=True, exist_ok=True)
+        _winapi.CreateJunction(str(precious), str(self.work / "trap"))
+
+        prepare_work(self.exchange)
+
+        self.assertFalse((self.work / "trap").exists())
+        self.assertTrue(keep.is_file())
+        self.assertTrue(os.lstat(keep).st_file_attributes
+                        & stat.FILE_ATTRIBUTE_READONLY,
+                        "the handler cleared an attribute through the junction")
+
 
 class AVoidRunIsNotAQuietSample(LoopFixture):
     def test_no_readiness_is_its_own_outcome(self) -> None:

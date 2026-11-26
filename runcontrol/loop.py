@@ -49,7 +49,9 @@ fake and assert the order.
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -334,9 +336,37 @@ def prepare_work(exchange: Path) -> Path:
     # `[WinError 3]` on DeepSeek's `node_modules` before either was
     # delivered.
     if work.exists():
-        shutil.rmtree(_extended(work))
+        shutil.rmtree(_extended(work), onexc=_clear_read_only_and_retry)
     work.mkdir(parents=True)
     return work
+
+
+def _clear_read_only_and_retry(func, path, exc) -> None:
+    """`rmtree`'s `onexc`: a read-only entry is made writable and deleted.
+
+    **This cost `heldout2-ben` its last 14 samples on 25 Nov.** ACDSee Photo
+    Studio's case (`d0331bdaba78`) held 661 read-only files: extracted MSI
+    contents, kept read-only by the guest's robocopy. Windows will not delete
+    a read-only file, so the next three deliveries failed in one second each
+    with `[WinError 5]` on `dxupdate.inf`, and the sweep aborted.
+
+    **Only a plain file or directory, and only to retry the delete that
+    failed.** A reparse point is never touched, so this cannot change an
+    attribute through a link the sample planted. Such a link fails the run
+    void, which is safe. Anything else re-raises the original error.
+    """
+    if func not in (os.unlink, os.rmdir) or not isinstance(exc, PermissionError):
+        raise exc
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except (OSError, AttributeError):
+        raise exc from None
+    if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise exc
+    if not attributes & stat.FILE_ATTRIBUTE_READONLY:
+        raise exc
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 def ensure_stopped(hypervisor, vm: str, sleep=time.sleep,
