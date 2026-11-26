@@ -212,8 +212,12 @@ shipping v1 with the rate written down as a known limit, was declined.
         neither `mal-112b` nor `heldout-mal` has where possible.
 - [ ] **Sweep it on `corpus-agent-detonate-92350f1-noselfupdate`**, score it,
       and report the result whatever it shows. **The 21 Nov number stays the
-      record for the old rules.** `heldout2-ben` running since 17:43 on 22
-      Nov (about 4 days); the malware sweep follows once fetched.
+      record for the old rules.** `heldout2-ben` ran from 17:43 on 22 Nov:
+      82 of 82 usable until a host cleanup bug aborted it at 85 of 99 on
+      25 Nov (read-only files; fixed in `92f444f`). From 20:44 on 25 Nov
+      its 3 voids rerun as `heldout2-ben-rerun`, then `--resume` runs the
+      last 14; done around 26 Nov afternoon. The malware sweep follows once
+      fetched.
 - [ ] **Only if cheap and separable: the DLL-loader misses.** BumbleBee,
       HijackLoader, DarkGate, Latrodectus, PrivateLoader and ValleyRAT sit
       below Corroborated on `heldout-mal`. Check whether they share a cause.
