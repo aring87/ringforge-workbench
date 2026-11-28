@@ -140,9 +140,12 @@ class TheSpecWindowResults(unittest.TestCase):
             box = getattr(win, name)
             linespace = tkfont.Font(font=box.cget("font")).metrics("linespace")
             with self.subTest(box=name):
-                # Three separate boxes showed one line each at this size, and
-                # about three once they shared the column equally.
-                self.assertGreaterEqual(box.winfo_height() // linespace, 12)
+                # Not squeezed below what it asks for. The three separate
+                # boxes each asked for 11-12 lines and got one. A fixed line
+                # count would depend on the screen: Windows clips the 1080-high
+                # default to a smaller one (a CI runner gave 7 lines; 25 here).
+                self.assertGreaterEqual(box.winfo_height(), box.winfo_reqheight())
+                self.assertGreaterEqual(box.winfo_height() // linespace, SpecAnalysisWindow.FINDINGS_LINES)
                 self.assertTrue(box.get("1.0", "end").strip())
 
 
