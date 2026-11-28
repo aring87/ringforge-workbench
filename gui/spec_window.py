@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from gui import theme as T
-from gui.components import Card, HeaderBar, RoundedButton, StatTile, card_title
+from gui.components import Card, HeaderBar, RoundedButton, ScrolledText, StatTile, card_title
 from gui.styles import apply_window_theme
 from ringforge.resources import app_root, asset
 from typing import Any, Optional
@@ -259,9 +259,7 @@ class SpecAnalysisWindow(tk.Toplevel):
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=0)
         left.rowconfigure(1, weight=1)
-        left.rowconfigure(2, weight=1)
-        left.rowconfigure(3, weight=1)
-        left.rowconfigure(4, weight=0)
+        left.rowconfigure(2, weight=0)
 
         summary_card = Card(left, parent_bg=T.BG)
         summary_card.grid(row=0, column=0, sticky="ew")
@@ -279,12 +277,13 @@ class SpecAnalysisWindow(tk.Toplevel):
         )
         self.summary_label.grid(row=0, column=0, sticky="w", padx=12, pady=12)
 
-        self.notes_text = self._build_sidebar_box(left, 1, "Risk Notes", height=11)
-        self.top_risky_text = self._build_sidebar_box(left, 2, "Top Risky Endpoints", height=12)
-        self.recommended_tests_text = self._build_sidebar_box(left, 3, "Recommended Tests", height=11)
+        self._build_findings(left, 1)
 
-        getting_started_card = Card(left, parent_bg=T.BG)
-        getting_started_card.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        # Shown until a spec is analysed, then removed to give its room to the
+        # findings (see `_populate_result`); the Summary placeholder says the
+        # same thing before then.
+        self.getting_started_card = getting_started_card = Card(left, parent_bg=T.BG)
+        getting_started_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         card_title(getting_started_card.body, "Getting Started")
         getting_started = tk.Frame(getting_started_card.body, bg=T.SURFACE)
         getting_started.pack(fill="both", expand=True)
@@ -306,19 +305,45 @@ class SpecAnalysisWindow(tk.Toplevel):
             style="CardMuted.TLabel",
         ).grid(row=2, column=0, sticky="w", padx=12, pady=(8, 10))
 
-    def _build_sidebar_box(self, parent: tk.Misc, row: int, title: str, height: int) -> tk.Text:
+    #: Lines a findings tab asks for. It grows past this to whatever the column
+    #: has left; this is only the floor, and a scrollbar covers the rest.
+    FINDINGS_LINES = 6
+
+    def _build_findings(self, parent: tk.Misc, row: int) -> None:
+        """Risk notes, top risky endpoints and recommended tests, as tabs.
+
+        **One card with three tabs, not three cards.** Three boxes each asked
+        for 11-12 lines, a column of over 1,100 px that the default 1080-high
+        window cannot hold, so grid squeezed every box to a single clipped line.
+        Sharing the room equally still left each about three lines once every
+        card had paid for its own title and padding. One card pays that once,
+        and the tab that is showing gets the whole of what is left.
+        """
         card = Card(parent, parent_bg=T.BG)
         card.grid(row=row, column=0, sticky="nsew", pady=(T.SPACE_MD, 0))
-        card_title(card.body, title)
+        card_title(card.body, "Findings")
 
         section = tk.Frame(card.body, bg=T.SURFACE)
         section.pack(fill="both", expand=True)
         section.columnconfigure(0, weight=1)
         section.rowconfigure(0, weight=1)
 
-        text = tk.Text(
-            section,
-            height=height,
+        self.findings_notebook = ttk.Notebook(section, style="Card.TNotebook")
+        self.findings_notebook.grid(row=0, column=0, sticky="nsew")
+
+        self.notes_text = self._findings_tab("Risk Notes")
+        self.top_risky_text = self._findings_tab("Top Risky Endpoints")
+        self.recommended_tests_text = self._findings_tab("Recommended Tests")
+
+    def _findings_tab(self, title: str) -> tk.Text:
+        tab = ttk.Frame(self.findings_notebook, style="Card.TFrame")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self.findings_notebook.add(tab, text=title)
+
+        text = ScrolledText(
+            tab,
+            height=self.FINDINGS_LINES,
             wrap="word",
             bg=self.colors["entry_bg"],
             fg=self.colors["text"],
@@ -432,6 +457,10 @@ class SpecAnalysisWindow(tk.Toplevel):
     def _populate_result(self, result: dict[str, Any]) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
+
+        # Onboarding is done once there is a result; its room goes to the
+        # result boxes above it.
+        self.getting_started_card.grid_remove()
 
         summary = result.get("summary", {})
         title = result.get("title") or Path(result.get("input_file", "spec")).name

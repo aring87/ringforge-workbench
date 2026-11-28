@@ -149,14 +149,17 @@ class UnifiedReportWindow(tk.Toplevel):
                 ("Overall Verdict", self.overall_verdict_var),
                 ("Modules Found", self.modules_var),
                 ("Report Path", self.report_path_var))):
-            tile = StatTile(summary, label, textvariable=var, parent_bg=T.SURFACE)
+            body_text = label in ("Modules Found", "Report Path")
+            tile = StatTile(summary, label, textvariable=var, parent_bg=T.SURFACE,
+                            fit=not body_text)
             tile.grid(row=0, column=col, sticky="nsew",
                       padx=(0 if col == 0 else T.SPACE_SM, 0))
-            if label in ("Modules Found", "Report Path"):
+            if body_text:
                 # Long paths and module lists are not metrics; keep them
-                # readable rather than rendering them at metric size.
-                tile.value.configure(font=T.f_body(), wraplength=260,
-                                     justify="left")
+                # readable rather than rendering them at metric size. 260 is
+                # only the first layout's width; the tile then wraps them at
+                # its own.
+                tile.value.configure(font=T.f_body(), wraplength=260, justify="left")
             elif label == "Overall Verdict":
                 self.verdict_tile = tile
 

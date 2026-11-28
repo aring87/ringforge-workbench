@@ -822,7 +822,22 @@ class Checkbox(tk.Frame):
 
 
 class StatTile(Card):
-    """A small metric readout: eyebrow label above a large value."""
+    """A small metric readout: eyebrow label above a large value.
+
+    **A value wider than the tile is never cut off.** It first steps down in
+    size, to :attr:`MIN_FIT_SIZE` at the least, and only wraps onto a second
+    line if it still does not fit. A label neither shrinks nor wraps by
+    default, so the Static window's verdict tile read "Elevated Atte" at
+    anything narrower than a maximised window. Shrinking first keeps a row of
+    tiles one line tall, which matters because the Static window's VirusTotal
+    panel sits under them and is the first thing to lose its space.
+
+    ``fit=False`` is for a tile whose caller sets its own smaller font (the
+    Unified Report's path and module tiles): it only wraps.
+    """
+
+    #: The smallest point size a value steps down to before it wraps instead.
+    MIN_FIT_SIZE = 14
 
     def __init__(
         self,
@@ -833,6 +848,7 @@ class StatTile(Card):
         textvariable: tk.Variable | None = None,
         accent: str | None = None,
         value_color: str = T.TEXT,
+        fit: bool = True,
         **kwargs,
     ):
         kwargs.setdefault("fill", T.RAISED)
@@ -849,7 +865,7 @@ class StatTile(Card):
         )
         self.label.pack(anchor="w")
 
-        opts = dict(bg=surface, fg=value_color, font=T.f_metric(), anchor="w")
+        opts = dict(bg=surface, fg=value_color, font=T.f_metric(), anchor="w", justify="left")
         if textvariable is not None:
             opts["textvariable"] = textvariable
         else:
@@ -857,6 +873,83 @@ class StatTile(Card):
 
         self.value = tk.Label(self.body, **opts)
         self.value.pack(anchor="w", pady=(T.SPACE_XS, 0))
+
+        self._fit = fit
+        self._width = 0
+        self._fonts: dict[int, tkfont.Font] = {}
+        self.body.bind("<Configure>", self._on_resize, add="+")
+        if textvariable is not None:
+            self._var = textvariable
+            self._trace = textvariable.trace_add("write", self._on_text_change)
+            self.bind("<Destroy>", self._drop_trace, add="+")
+
+    #: Below this the tile has not been laid out yet. Fitting to the 1 px a
+    #: frame reports before its first layout would make the label ask for one
+    #: character's width, and a tile in a column that sizes to its content
+    #: would then stay that narrow.
+    _MIN_WIDTH = 40
+
+    def _label_pad(self) -> int:
+        """What the value label adds around its text, both sides.
+
+        Exact rather than a constant. Wrapping at the tile's width would leave
+        the label that much wider than the tile; wrapping at a guess larger
+        than this would wrap a value that a content-sized tile was sized to
+        hold, and that tile would then shrink to the wrapped width, again and
+        again.
+        """
+        v = self.value
+        return 2 * sum(int(v.winfo_fpixels(v.cget(o))) for o in ("padx", "borderwidth", "highlightthickness"))
+
+    def _on_resize(self, event) -> None:
+        if event.width < self._MIN_WIDTH or event.width == self._width:
+            return
+        self._width = event.width
+        self._fit_value()
+
+    def _on_text_change(self, *_args) -> None:
+        try:
+            self.after_idle(self._fit_value)
+        except tk.TclError:
+            pass  # the tile is being torn down
+
+    def _drop_trace(self, event) -> None:
+        if event.widget is self:
+            try:
+                self._var.trace_remove("write", self._trace)
+            except (tk.TclError, ValueError):
+                pass
+
+    def _metric_font(self, size: int) -> tkfont.Font:
+        font = self._fonts.get(size)
+        if font is None:
+            family, _size, weight = T.f_metric()
+            font = self._fonts[size] = tkfont.Font(root=self, family=family, size=size, weight=weight)
+        return font
+
+    def _fit_value(self) -> None:
+        """Size the value to the tile's width: shrink, then wrap.
+
+        This cannot feed back. A tile wide enough for its value keeps the full
+        size and a width at least its own request, so nothing changes; a tile
+        too narrow ends with a label that asks for no more than it was given.
+        """
+        width = self._width
+        if width < self._MIN_WIDTH or not self.value.winfo_exists():
+            return
+        room = width - self._label_pad()
+        if not self._fit:
+            self.value.configure(wraplength=room)
+            return
+
+        lines = str(self.value.cget("text")).splitlines() or [""]
+        size = T.f_metric()[1]
+        while size > self.MIN_FIT_SIZE:
+            font = self._metric_font(size)
+            if max(font.measure(line) for line in lines) <= room:
+                break
+            size -= 1
+        self.value.configure(font=self._metric_font(size), wraplength=room)
 
     def set_value_color(self, color: str) -> None:
         self.value.configure(fg=color)
