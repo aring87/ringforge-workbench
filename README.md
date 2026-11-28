@@ -17,6 +17,19 @@ It is designed for malware analysts, SOC analysts, detection engineers, and secu
 
 ---
 
+## Screenshots
+
+The results shown are real, not mock-ups. The sample is njRAT `515d1070878b`, from the held-out malware sweep: analysed statically, then detonated in the analysis VM. The spec is the Swagger Petstore definition in [`test_specs/`](test_specs/).
+
+| | |
+|---|---|
+| ![The launcher](docs/images/launcher.png)<br>**Launcher.** The six analysis modules, and saved cases with their scores. | ![Static Analysis](docs/images/static-analysis.png)<br>**Static Analysis.** The pipeline, its console, and the result for one sample. |
+| ![Unified Report](docs/images/unified-report.png)<br>**Unified Report.** Every module's artifacts for a case, and one overall verdict. | ![Spec Analysis](docs/images/spec-analysis.png)<br>**Spec Analysis.** Endpoint inventory, auth, and findings for an OpenAPI spec. |
+| ![Case Verdict report](docs/images/case-verdict-report.png)<br>**Case Verdict report.** The band, and each kind of evidence in plain words: what was seen, and how much of it. | ![Static report](docs/images/static-report.png)<br>**Static report.** Hashes, signing, YARA, capa, and the reasoning behind the static verdict. |
+| ![Manual API Tester](docs/images/api-analysis.png)<br>**Manual API Tester.** Send a request and score the response for risk indicators. | |
+
+---
+
 ## Current Release
 
 | Field | Value |
