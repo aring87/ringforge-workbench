@@ -21,6 +21,7 @@ thing runs.
 import builtins
 import dis
 import importlib
+import importlib.util
 import inspect
 import sys
 import types
@@ -142,9 +143,18 @@ class NoNameIsReadThatNothingDefines(unittest.TestCase):
         "scripts.emulate_native_stub",
     )
 
+    #: Modules that import an optional extra at module scope, so they cannot be
+    #: imported to be read without it. The emulator needs the `emulation`
+    #: extra, which CI does not install; skipped, like the emulator's own
+    #: tests, so `-rs` reports the gap rather than failing the run on it.
+    NEEDS = {"scripts.emulate_native_stub": "unicorn"}
+
     def test_every_global_read_is_defined(self) -> None:
         for name in self.MODULES:
             with self.subTest(module=name):
+                needs = self.NEEDS.get(name)
+                if needs and importlib.util.find_spec(needs) is None:
+                    self.skipTest("the emulation extra is not installed")
                 self.assertEqual([], _undefined_globals(name))
 
 

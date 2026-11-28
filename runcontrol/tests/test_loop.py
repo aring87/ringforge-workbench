@@ -29,6 +29,23 @@ from runcontrol.hypervisor import Snapshot
 from runcontrol.loop import RUN_DIR, Outcome, RunReport, Signals, run_one
 
 
+def max_path_enforced() -> bool:
+    """Whether this host still holds unprefixed paths to 260 characters.
+
+    `LongPathsEnabled=1` lifts it for python.exe, and GitHub's runner sets it:
+    there a plain rmtree clears the deep tree, so a control that expects it to
+    fail shows nothing. The bench reads 0. Absent or unreadable is the default.
+    """
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError:
+        return True
+    return not value
+
+
 class FakeHypervisor:
     """Records calls; optionally fails one of them."""
 
@@ -384,7 +401,9 @@ class TheWorkingDirectory(LoopFixture):
         """21 Nov: robocopy put DeepSeek's `node_modules` on the share past
         260 characters, and a plain rmtree failed on it with `[WinError 3]`,
         so the next two samples were never delivered. The control shows a
-        plain rmtree still fails on this tree on this machine."""
+        plain rmtree still fails on this tree on this machine. It is skipped
+        where long paths are enabled, which no plain rmtree can show; the
+        clearing itself is checked anyway."""
         if not WINDOWS:
             self.skipTest("MAX_PATH is a Windows limit")
         import os
@@ -399,11 +418,14 @@ class TheWorkingDirectory(LoopFixture):
             return deep
 
         self.assertGreater(len(str(make_deep(self.work))), 300)
-        control = self.tmp / "control"
-        make_deep(control)
-        with self.assertRaises(OSError):
-            shutil.rmtree(control)
-        shutil.rmtree(_extended(control))
+        with self.subTest("control: a plain rmtree fails on this tree"):
+            if not max_path_enforced():
+                self.skipTest("LongPathsEnabled=1: a plain rmtree passes here too")
+            control = self.tmp / "control"
+            make_deep(control)
+            with self.assertRaises(OSError):
+                shutil.rmtree(control)
+            shutil.rmtree(_extended(control))
 
         prepare_work(self.exchange)
 

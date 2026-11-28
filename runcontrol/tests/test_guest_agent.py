@@ -37,6 +37,31 @@ foreach ($f in $defs) {{ . ([scriptblock]::Create($f.Extent.Text)) }}
 $T = '{tmp}'
 """
 
+# **Without PSModulePath, so 5.1 builds its own, as on the guest.** A
+# PowerShell 7 parent puts its own `Microsoft.PowerShell.Utility` first on the
+# path, a child inherits it through python, and 5.1 then loads that one, which
+# it cannot use. `Get-FileHash` is a function of 5.1's own copy, so it is never
+# defined: CommandNotFound on GitHub's runner, whose steps run under `pwsh`, and
+# in the agent's `try` an empty sha256 for every pruned file.
+CHILD_ENV = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+
+
+def max_path_enforced() -> bool:
+    """Whether this host still holds unprefixed paths to 260 characters.
+
+    `LongPathsEnabled=1` lifts it, and GitHub's runner sets it: there a plain
+    `Copy-Item -Recurse` copies the deep tree, so a control that expects it to
+    fail shows nothing. The bench reads 0. Absent or unreadable is the default.
+    """
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError:
+        return True
+    return not value
+
 
 @unittest.skipUnless(POWERSHELL, "needs Windows PowerShell")
 class GuestAgentTests(unittest.TestCase):
@@ -53,7 +78,7 @@ class GuestAgentTests(unittest.TestCase):
         done = subprocess.run(
             [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
              "Bypass", "-File", str(path)],
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True, text=True, timeout=timeout, env=CHILD_ENV)
         self.assertEqual(done.returncode, 0,
                          f"stdout:\n{done.stdout}\nstderr:\n{done.stderr}")
         return done.stdout
@@ -302,7 +327,8 @@ $bytes = [IO.File]::ReadAllBytes("$work\ringforge-agent-starts")
         """`720kb.ndm` (17 Nov) and HeyboxChat (20 Nov) lost their case copy
         to nested `node_modules` past 260 characters. The control shows
         `Copy-Item -Recurse` still fails on this tree, so a pass is the fix
-        and not a short path."""
+        and not a short path. It is skipped where long paths are enabled,
+        which no plain copy can show; the copy itself is checked anyway."""
         out = self.ps(r"""
 $src = "$T\case"
 $deep = $src + ('\node_modules\@scope\package-with-a-long-name' * 8)
@@ -318,7 +344,10 @@ $copied = $deep.Replace("$T\case", "$T\out\case") + '\identifier.js'
 """, timeout=120)
         srclen = int(out.split("srclen=")[1].split()[0])
         self.assertGreater(srclen, 300)
-        self.assertIn("control=threw", out)
+        with self.subTest("control: Copy-Item -Recurse fails on this tree"):
+            if not max_path_enforced():
+                self.skipTest("LongPathsEnabled=1: a plain copy passes here too")
+            self.assertIn("control=threw", out)
         self.assertIn("deep=True top=True", out)
         code = int(out.split("code=")[1].split()[0])
         self.assertLess(code, 8)
